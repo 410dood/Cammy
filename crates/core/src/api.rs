@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router {
             "/api/cameras/{id}",
             get(get_camera).patch(patch_camera).delete(delete_camera),
         )
+        .route("/api/cameras/{id}/ptz", get(ptz_caps).post(ptz_command))
         .route("/api/events", get(list_events))
         .route("/api/events/{id}/clip", get(event_clip))
         .route("/api/snapshots/{file}", get(snapshot))
@@ -345,6 +346,66 @@ async fn delete_camera(State(st): State<AppState>, Path(id): Path<i64>) -> ApiRe
     st.db.delete_camera(id)?;
     st.go2rtc.restart_with(&st.db)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// --- PTZ --------------------------------------------------------------------
+
+fn ptz_target(st: &AppState, id: i64) -> Result<crate::ptz::CamTarget, ApiError> {
+    let cam = st
+        .db
+        .get_camera(id)
+        .map_err(ApiError::from)?
+        .ok_or_else(not_found)?;
+    crate::ptz::parse_source(&cam.source)
+        .ok_or_else(|| bad_request("camera source has no host/credentials for ONVIF"))
+}
+
+/// Does this camera answer ONVIF PTZ? (Used by the UI to decide whether to
+/// draw the control pad.)
+async fn ptz_caps(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let target = match ptz_target(&st, id) {
+        Ok(t) => t,
+        Err(_) => return Ok(Json(serde_json::json!({ "supported": false }))),
+    };
+    let supported = tokio::task::spawn_blocking(move || crate::ptz::supports_ptz(&target))
+        .await
+        .unwrap_or(false);
+    Ok(Json(serde_json::json!({ "supported": supported })))
+}
+
+#[derive(Deserialize)]
+struct PtzReq {
+    action: String, // "move" | "stop"
+    #[serde(default)]
+    pan: f32,
+    #[serde(default)]
+    tilt: f32,
+    #[serde(default)]
+    zoom: f32,
+}
+
+async fn ptz_command(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<PtzReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let target = ptz_target(&st, id)?;
+    let clamp = |v: f32| v.clamp(-1.0, 1.0);
+    let action = req.action.clone();
+    let result = tokio::task::spawn_blocking(move || match action.as_str() {
+        "move" => {
+            crate::ptz::continuous_move(&target, clamp(req.pan), clamp(req.tilt), clamp(req.zoom))
+        }
+        "stop" => crate::ptz::stop(&target),
+        other => anyhow::bail!("unknown ptz action {other:?}"),
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    result.map_err(|e| bad_request(format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 // --- events ----------------------------------------------------------------

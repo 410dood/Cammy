@@ -14,6 +14,7 @@ mod auth;
 mod db;
 mod go2rtc;
 mod pipeline;
+mod ptz;
 mod record;
 mod status;
 

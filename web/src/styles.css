@@ -197,6 +197,33 @@ button.danger:hover { background: #3d1d1f; }
 }
 .modal-bg img, .modal-bg video { max-width: 92vw; max-height: 88vh; border-radius: 8px; }
 
+/* --- PTZ pad ---------------------------------------------------------------- */
+.ptz-pad {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, 34px);
+  gap: 4px;
+  z-index: 3;
+  opacity: 0.45;
+  transition: opacity 0.15s;
+}
+.tile:hover .ptz-pad { opacity: 1; }
+.ptz-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.7);
+  color: var(--text);
+  font-size: 0.95rem;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+.ptz-btn:active { background: var(--accent-2); }
+
 /* --- timeline scrubber ---------------------------------------------------- */
 .timeline {
   position: relative;

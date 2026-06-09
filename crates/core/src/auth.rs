@@ -42,7 +42,7 @@ pub fn hash_password(password: &str) -> String {
     let salt: [u8; 16] = rand::random();
     let salt_hex = hex(&salt);
     let digest = Sha256::new()
-        .chain_update(&salt)
+        .chain_update(salt)
         .chain_update(password.as_bytes())
         .finalize();
     format!("v1${salt_hex}${}", hex(&digest))
@@ -114,7 +114,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len() / 2)

@@ -146,6 +146,9 @@ export const api = {
     req<{ segment: Segment; offset_secs: number }>(
       `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
     ),
+  ptzCaps: (id: number) => req<{ supported: boolean }>(`/api/cameras/${id}/ptz`),
+  ptz: (id: number, cmd: { action: "move" | "stop"; pan?: number; tilt?: number; zoom?: number }) =>
+    req<{ ok: boolean }>(`/api/cameras/${id}/ptz`, { method: "POST", body: JSON.stringify(cmd) }),
   authStatus: () => req<{ enabled: boolean }>("/api/auth"),
   login: (password: string) =>
     req<{ ok: boolean }>("/api/login", { method: "POST", body: JSON.stringify({ password }) }),
