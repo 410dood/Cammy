@@ -166,17 +166,47 @@ export default function Cameras({
   }, []);
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
+  const [detectSource, setDetectSource] = useState("");
   const [detect, setDetect] = useState(true);
   const [record, setRecord] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [ip, setIp] = useState("");
+  const [user, setUser] = useState("admin");
+  const [pass, setPass] = useState("");
+  const [found, setFound] = useState<string | null>(null);
+
+  const resolve = async () => {
+    setBusy(true);
+    setFound(null);
+    try {
+      const r = await api.discover(ip.trim(), user, pass);
+      const streams = r.sources.filter((s) => !s.url.includes("snapshot"));
+      if (streams.length === 0) throw new Error("no streams found");
+      setSource(streams[0].url);
+      if (streams.length > 1) setDetectSource(streams[1].url);
+      setFound(`${streams[0].name.replace(/ stream\d+$/, "")} — ${streams.length} streams`);
+    } catch (e) {
+      onError(`ONVIF resolve failed: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const add = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     try {
-      await api.addCamera({ name: name.trim(), source: source.trim(), detect, record });
+      await api.addCamera({
+        name: name.trim(),
+        source: source.trim(),
+        detect_source: detectSource.trim() || undefined,
+        detect,
+        record,
+      });
       setName("");
       setSource("");
+      setDetectSource("");
+      setFound(null);
       onChange();
     } catch (err) {
       onError(String(err));
@@ -210,6 +240,24 @@ export default function Cameras({
 
       <div className="card">
         <h2>Add camera</h2>
+        <div className="row" style={{ marginBottom: 14 }}>
+          <label className="field">
+            camera IP / host
+            <input type="text" placeholder="192.168.1.50" value={ip} onChange={(e) => setIp(e.target.value)} />
+          </label>
+          <label className="field">
+            username
+            <input type="text" value={user} onChange={(e) => setUser(e.target.value)} />
+          </label>
+          <label className="field">
+            password
+            <input type="text" value={pass} onChange={(e) => setPass(e.target.value)} />
+          </label>
+          <button type="button" className="ghost" disabled={busy || !ip.trim()} onClick={resolve}>
+            🔍 Resolve via ONVIF
+          </button>
+          {found && <span style={{ color: "var(--ok)" }}>✓ {found} (form filled below)</span>}
+        </div>
         <form onSubmit={add} className="row">
           <label className="field">
             name
@@ -229,6 +277,16 @@ export default function Cameras({
               value={source}
               onChange={(e) => setSource(e.target.value)}
               required
+              style={{ width: "100%" }}
+            />
+          </label>
+          <label className="field" style={{ flex: 1, minWidth: 220 }}>
+            sub-stream for detection (optional)
+            <input
+              type="text"
+              placeholder="auto-filled by ONVIF resolve"
+              value={detectSource}
+              onChange={(e) => setDetectSource(e.target.value)}
               style={{ width: "100%" }}
             />
           </label>

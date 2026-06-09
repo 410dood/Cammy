@@ -30,7 +30,7 @@ which of those features we adopt, in what order.*
 | 10 | Timeline scrubber UI across segments + event markers | UniFi Protect | ✅ shipped |
 | 11 | Review split: alerts (person/car in zone) vs detections | Frigate 0.14 | ✅ shipped |
 | 12 | Event clips (pre/post-roll MP4 export) | Frigate clips, BI export | ✅ shipped |
-| 13 | ONVIF discovery + PTZ | Blue Iris, Frigate 0.16 | planned (needs PTZ hardware to validate) |
+| 13 | ONVIF discovery + PTZ | Blue Iris, Frigate 0.16 | ✅ resolve shipped (PTZ still hardware-gated) |
 | 14 | Face recognition / LPR | Frigate 0.16 (free since 0.16) | later — model sourcing + privacy defaults |
 | 15 | MQTT broker integration (Home Assistant) | Frigate | later — webhook covers notify path first |
 | 16 | Auth + HTTPS for off-LAN exposure | all commercial | later — required before any WAN story |

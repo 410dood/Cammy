@@ -32,6 +32,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/config", get(config))
         .route("/api/status", get(camera_status))
         .route("/api/cameras", get(list_cameras).post(add_camera))
+        .route("/api/discover", axum::routing::post(discover))
         .route(
             "/api/cameras/{id}",
             get(get_camera).patch(patch_camera).delete(delete_camera),
@@ -109,6 +110,62 @@ async fn camera_status(State(st): State<AppState>) -> ApiResult<Json<serde_json:
         );
     }
     Ok(Json(serde_json::Value::Object(out)))
+}
+
+#[derive(Deserialize)]
+struct DiscoverReq {
+    host: String,
+    username: String,
+    password: String,
+}
+
+/// Resolve a camera's stream profiles from IP + credentials via go2rtc's
+/// ONVIF client ("reuse, don't rebuild"). The returned onvif:// URLs are
+/// valid go2rtc sources; by convention profile 0 is the main stream and
+/// profile 1 the low-res sub-stream.
+async fn discover(
+    State(st): State<AppState>,
+    Json(req): Json<DiscoverReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if req.host.trim().is_empty() {
+        return Err(bad_request("host required"));
+    }
+    let onvif_src = format!(
+        "onvif://{}:{}@{}",
+        urlencode(&req.username),
+        urlencode(&req.password),
+        req.host.trim()
+    );
+    let url = format!(
+        "{}/api/onvif?src={}",
+        st.go2rtc.api_base(),
+        urlencode(&onvif_src)
+    );
+    let body: serde_json::Value = tokio::task::spawn_blocking(move || {
+        ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(15))
+            .call()
+            .map_err(|e| anyhow::anyhow!("ONVIF probe failed: {e}"))?
+            .into_json()
+            .map_err(|e| anyhow::anyhow!("bad ONVIF response: {e}"))
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(body))
+}
+
+/// Percent-encode credential characters that would break URL parsing.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 // --- cameras --------------------------------------------------------------

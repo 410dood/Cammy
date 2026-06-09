@@ -143,6 +143,11 @@ export const api = {
     req<{ segment: Segment; offset_secs: number }>(
       `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
     ),
+  discover: (host: string, username: string, password: string) =>
+    req<{ sources: { name: string; url: string }[] }>("/api/discover", {
+      method: "POST",
+      body: JSON.stringify({ host, username, password }),
+    }),
   stats: () => req<Stats>("/api/stats"),
   settings: () => req<Settings>("/api/settings"),
   saveSettings: (s: Settings) =>
