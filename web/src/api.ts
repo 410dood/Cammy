@@ -98,6 +98,9 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
+  if (r.status === 401) {
+    window.dispatchEvent(new Event("zoomy-401"));
+  }
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
     try {
@@ -143,6 +146,14 @@ export const api = {
     req<{ segment: Segment; offset_secs: number }>(
       `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
     ),
+  authStatus: () => req<{ enabled: boolean }>("/api/auth"),
+  login: (password: string) =>
+    req<{ ok: boolean }>("/api/login", { method: "POST", body: JSON.stringify({ password }) }),
+  setPassword: (password: string) =>
+    req<{ enabled: boolean }>("/api/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
   discover: (host: string, username: string, password: string) =>
     req<{ sources: { name: string; url: string }[] }>("/api/discover", {
       method: "POST",

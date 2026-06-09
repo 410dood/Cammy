@@ -10,6 +10,7 @@
 //!   - runs the motion-gated AI detection pipeline (ONNX Runtime)
 
 mod api;
+mod auth;
 mod db;
 mod go2rtc;
 mod pipeline;
@@ -121,10 +122,13 @@ pub async fn run(
         clips_dir: cfg.data_dir.join("clips"),
         ffmpeg_bin: cfg.ffmpeg_bin.clone(),
         status: status_board,
+        sessions: auth::Sessions::default(),
     };
     let ui =
         ServeDir::new(&cfg.ui_dir).not_found_service(ServeFile::new(cfg.ui_dir.join("index.html")));
-    let app = api::router(state).fallback_service(ui);
+    let app = api::router(state.clone()).fallback_service(ui).layer(
+        axum::middleware::from_fn_with_state(state, auth::middleware),
+    );
 
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.port));
     let listener = tokio::net::TcpListener::bind(addr)
@@ -137,12 +141,15 @@ pub async fn run(
         "ZoomyZoomyCamCam is running"
     );
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.changed().await;
-            tracing::info!("shutting down");
-        })
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = shutdown_rx.changed().await;
+        tracing::info!("shutting down");
+    })
+    .await?;
 
     // Orderly teardown: stop workers (they finalize ffmpeg segments), then go2rtc.
     workers_stop.store(true, Ordering::Relaxed);

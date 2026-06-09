@@ -486,6 +486,33 @@ impl Db {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
     }
 
+    // --- generic KV (password hash etc.) ----------------------------------
+
+    pub fn get_kv(&self, key: &str) -> Option<String> {
+        self.conn()
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    pub fn set_kv(&self, key: &str, value: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_kv(&self, key: &str) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM settings WHERE key = ?1", [key])?;
+        Ok(())
+    }
+
     // --- settings --------------------------------------------------------
 
     pub fn settings(&self) -> Settings {

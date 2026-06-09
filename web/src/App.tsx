@@ -17,20 +17,60 @@ const ICONS: Record<Page, string> = {
   Settings: "⚙️",
 };
 
+function LoginOverlay() {
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await api.login(pw);
+      window.location.reload();
+    } catch {
+      setErr("wrong password");
+    }
+  };
+  return (
+    <div className="modal-bg">
+      <form className="card" style={{ minWidth: 320 }} onSubmit={submit}>
+        <h2>🔒 ZoomyZoomyCamCam</h2>
+        <p className="muted">This NVR is password-protected for remote access.</p>
+        <div className="row">
+          <input
+            type="password"
+            placeholder="password"
+            value={pw}
+            autoFocus
+            onChange={(e) => setPw(e.target.value)}
+            style={{ flex: 1 }}
+          />
+          <button className="primary">Unlock</button>
+        </div>
+        {err && <p style={{ color: "var(--danger)" }}>{err}</p>}
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>("Live");
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [locked, setLocked] = useState(false);
 
   const refresh = () => {
     api.cameras().then(setCameras).catch((e) => setError(String(e)));
   };
 
   useEffect(() => {
+    const onLocked = () => setLocked(true);
+    window.addEventListener("zoomy-401", onLocked);
     api.config().then(setConfig).catch((e) => setError(String(e)));
     refresh();
+    return () => window.removeEventListener("zoomy-401", onLocked);
   }, []);
+
+  if (locked) return <LoginOverlay />;
 
   return (
     <>

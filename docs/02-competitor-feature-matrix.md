@@ -33,7 +33,7 @@ which of those features we adopt, in what order.*
 | 13 | ONVIF discovery + PTZ | Blue Iris, Frigate 0.16 | ✅ resolve shipped (PTZ still hardware-gated) |
 | 14 | Face recognition / LPR | Frigate 0.16 (free since 0.16) | later — model sourcing + privacy defaults |
 | 15 | MQTT broker integration (Home Assistant) | Frigate | later — webhook covers notify path first |
-| 16 | Auth + HTTPS for off-LAN exposure | all commercial | later — required before any WAN story |
+| 16 | Auth + HTTPS for off-LAN exposure | all commercial | ✅ shipped (LAN password; argon2+HTTPS still needed for WAN) |
 
 Sources: [Frigate docs](https://docs.frigate.video/), [Frigate releases](https://github.com/blakeblackshear/frigate/releases),
 [Frigate review system](https://docs.frigate.video/configuration/review/),

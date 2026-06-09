@@ -24,12 +24,16 @@ pub struct AppState {
     pub clips_dir: PathBuf,
     pub ffmpeg_bin: Option<PathBuf>,
     pub status: StatusBoard,
+    pub sessions: crate::auth::Sessions,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/config", get(config))
+        .route("/api/auth", get(auth_status))
+        .route("/api/auth/password", axum::routing::post(set_password))
+        .route("/api/login", axum::routing::post(login))
         .route("/api/status", get(camera_status))
         .route("/api/cameras", get(list_cameras).post(add_camera))
         .route("/api/discover", axum::routing::post(discover))
@@ -110,6 +114,58 @@ async fn camera_status(State(st): State<AppState>) -> ApiResult<Json<serde_json:
         );
     }
     Ok(Json(serde_json::Value::Object(out)))
+}
+
+// --- auth -------------------------------------------------------------------
+
+async fn auth_status(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "enabled": st.db.get_kv(crate::auth::KV_PASSWORD).is_some() }))
+}
+
+#[derive(Deserialize)]
+struct PasswordReq {
+    password: String,
+}
+
+/// Set (or clear, with an empty string) the remote-access password. Existing
+/// sessions are invalidated either way.
+async fn set_password(
+    State(st): State<AppState>,
+    Json(req): Json<PasswordReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let pw = req.password.trim();
+    if pw.is_empty() {
+        st.db.delete_kv(crate::auth::KV_PASSWORD)?;
+    } else {
+        if pw.len() < 6 {
+            return Err(bad_request("password must be at least 6 characters"));
+        }
+        st.db
+            .set_kv(crate::auth::KV_PASSWORD, &crate::auth::hash_password(pw))?;
+    }
+    st.sessions.clear();
+    Ok(Json(serde_json::json!({ "enabled": !pw.is_empty() })))
+}
+
+async fn login(State(st): State<AppState>, Json(req): Json<PasswordReq>) -> ApiResult<Response> {
+    let Some(stored) = st.db.get_kv(crate::auth::KV_PASSWORD) else {
+        return Ok(
+            Json(serde_json::json!({ "ok": true, "note": "auth disabled" })).into_response(),
+        );
+    };
+    if !crate::auth::verify_password(&stored, &req.password) {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong password".into()));
+    }
+    let token = crate::auth::new_token();
+    st.sessions.insert(token.clone());
+    let mut resp = Json(serde_json::json!({ "ok": true })).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        crate::auth::session_cookie(&token)
+            .parse()
+            .expect("valid cookie header"),
+    );
+    Ok(resp)
 }
 
 #[derive(Deserialize)]

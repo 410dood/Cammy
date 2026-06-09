@@ -1,6 +1,55 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, Settings as S } from "../api";
 
+function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
+  const [enabled, setEnabled] = useState(false);
+  const [pw, setPw] = useState("");
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    api.authStatus().then((a) => setEnabled(a.enabled)).catch(() => {});
+  }, []);
+
+  const apply = async (password: string) => {
+    try {
+      const r = await api.setPassword(password);
+      setEnabled(r.enabled);
+      setPw("");
+      setMsg(r.enabled ? "Password set — other devices must now log in." : "Password cleared.");
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Remote access</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        When a password is set, other devices on your network must log in. This computer
+        (localhost / the desktop app) is always exempt.
+      </p>
+      <div className="row">
+        <span className={`pill ${enabled ? "on" : ""}`}>{enabled ? "protected" : "open"}</span>
+        <input
+          type="password"
+          placeholder="new password (min 6 chars)"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+        />
+        <button type="button" className="primary" disabled={pw.trim().length < 6} onClick={() => apply(pw)}>
+          Set password
+        </button>
+        {enabled && (
+          <button type="button" className="danger" onClick={() => apply("")}>
+            Clear
+          </button>
+        )}
+        {msg && <span style={{ color: "var(--ok)" }}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
 export default function Settings({ onError }: { onError: (e: string) => void }) {
   const [s, setS] = useState<S | null>(null);
   const [saved, setSaved] = useState(false);
@@ -107,6 +156,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             </label>
           </div>
         </div>
+
+        <RemoteAccessCard onError={onError} />
 
         <div className="card">
           <h2>Notifications</h2>
