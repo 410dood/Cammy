@@ -122,6 +122,8 @@ async fn get_camera(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResul
 struct NewCamera {
     name: String,
     source: String,
+    #[serde(default)]
+    detect_source: Option<String>,
     #[serde(default = "yes")]
     detect: bool,
     #[serde(default = "yes")]
@@ -152,9 +154,20 @@ async fn add_camera(
     if body.source.trim().is_empty() {
         return Err(bad_request("source must not be empty"));
     }
+    let detect_source = body
+        .detect_source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let cam = st
         .db
-        .add_camera(&body.name, body.source.trim(), body.detect, body.record)
+        .add_camera(
+            &body.name,
+            body.source.trim(),
+            detect_source,
+            body.detect,
+            body.record,
+        )
         .map_err(|e| bad_request(format!("could not add camera: {e}")))?;
     st.go2rtc.restart_with(&st.db)?;
     Ok((StatusCode::CREATED, Json(cam)))
@@ -164,6 +177,8 @@ async fn add_camera(
 struct CameraPatch {
     name: Option<String>,
     source: Option<String>,
+    /// `Some("")` clears the sub-stream; `None` leaves it unchanged.
+    detect_source: Option<String>,
     enabled: Option<bool>,
     detect: Option<bool>,
     record: Option<bool>,
@@ -184,6 +199,10 @@ async fn patch_camera(
     }
     if let Some(source) = patch.source {
         cam.source = source;
+    }
+    if let Some(ds) = patch.detect_source {
+        let ds = ds.trim();
+        cam.detect_source = (!ds.is_empty()).then(|| ds.to_string());
     }
     cam.enabled = patch.enabled.unwrap_or(cam.enabled);
     cam.detect = patch.detect.unwrap_or(cam.detect);

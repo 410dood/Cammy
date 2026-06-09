@@ -18,6 +18,7 @@ export interface Camera {
   id: number;
   name: string;
   source: string;
+  detect_source: string | null;
   enabled: boolean;
   detect: boolean;
   record: boolean;
@@ -114,8 +115,13 @@ export const api = {
   config: () => req<AppConfig>("/api/config"),
   status: () => req<StatusMap>("/api/status"),
   cameras: () => req<Camera[]>("/api/cameras"),
-  addCamera: (c: { name: string; source: string; detect: boolean; record: boolean }) =>
-    req<Camera>("/api/cameras", { method: "POST", body: JSON.stringify(c) }),
+  addCamera: (c: {
+    name: string;
+    source: string;
+    detect_source?: string;
+    detect: boolean;
+    record: boolean;
+  }) => req<Camera>("/api/cameras", { method: "POST", body: JSON.stringify(c) }),
   patchCamera: (id: number, patch: Partial<Camera>) =>
     req<Camera>(`/api/cameras/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteCamera: (id: number) => req<void>(`/api/cameras/${id}`, { method: "DELETE" }),

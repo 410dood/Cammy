@@ -19,6 +19,11 @@ pub struct Camera {
     /// go2rtc source string: an rtsp:// URL, or any other source go2rtc accepts
     /// (ffmpeg:, exec:, onvif:, ...).
     pub source: String,
+    /// Optional low-res second stream (e.g. a Dahua subtype=1 URL). When set,
+    /// the detection pipeline samples frames from it instead of the main
+    /// stream — decoding 640x480 instead of 4K (Frigate's "detect role").
+    #[serde(default)]
+    pub detect_source: Option<String>,
     pub enabled: bool,
     /// Run the motion gate + AI detector on this camera.
     pub detect: bool,
@@ -197,6 +202,7 @@ impl Db {
         )?;
         // Additive migrations; "duplicate column" on rerun is expected.
         let _ = conn.execute("ALTER TABLE cameras ADD COLUMN detect_json TEXT", []);
+        let _ = conn.execute("ALTER TABLE cameras ADD COLUMN detect_source TEXT", []);
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
@@ -209,7 +215,7 @@ impl Db {
     pub fn list_cameras(&self) -> Result<Vec<Camera>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, source, enabled, detect, record, created_ts, detect_json
+            "SELECT id, name, source, enabled, detect, record, created_ts, detect_json, detect_source
              FROM cameras ORDER BY id",
         )?;
         let rows = stmt
@@ -222,7 +228,7 @@ impl Db {
         let conn = self.conn();
         let cam = conn
             .query_row(
-                "SELECT id, name, source, enabled, detect, record, created_ts, detect_json
+                "SELECT id, name, source, enabled, detect, record, created_ts, detect_json, detect_source
                  FROM cameras WHERE id = ?1",
                 [id],
                 row_to_camera,
@@ -235,21 +241,23 @@ impl Db {
         &self,
         name: &str,
         source: &str,
+        detect_source: Option<&str>,
         detect: bool,
         record: bool,
     ) -> Result<Camera> {
         let now = chrono::Local::now().timestamp();
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO cameras (name, source, enabled, detect, record, created_ts)
-             VALUES (?1, ?2, 1, ?3, ?4, ?5)",
-            params![name, source, detect, record, now],
+            "INSERT INTO cameras (name, source, detect_source, enabled, detect, record, created_ts)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6)",
+            params![name, source, detect_source, detect, record, now],
         )?;
         let id = conn.last_insert_rowid();
         Ok(Camera {
             id,
             name: name.into(),
             source: source.into(),
+            detect_source: detect_source.map(String::from),
             enabled: true,
             detect,
             record,
@@ -262,7 +270,7 @@ impl Db {
         let detect_json = serde_json::to_string(&cam.detect_config)?;
         self.conn().execute(
             "UPDATE cameras SET name=?1, source=?2, enabled=?3, detect=?4, record=?5,
-             detect_json=?6 WHERE id=?7",
+             detect_json=?6, detect_source=?7 WHERE id=?8",
             params![
                 cam.name,
                 cam.source,
@@ -270,6 +278,7 @@ impl Db {
                 cam.detect,
                 cam.record,
                 detect_json,
+                cam.detect_source,
                 cam.id
             ],
         )?;
@@ -489,6 +498,7 @@ fn row_to_camera(r: &rusqlite::Row<'_>) -> rusqlite::Result<Camera> {
         detect_config: detect_json
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default(),
+        detect_source: r.get(8)?,
     })
 }
 
@@ -505,7 +515,9 @@ mod tests {
     #[test]
     fn camera_crud_roundtrip() {
         let db = mem_db();
-        let cam = db.add_camera("porch", "rtsp://x", true, true).unwrap();
+        let cam = db
+            .add_camera("porch", "rtsp://x", None, true, true)
+            .unwrap();
         assert_eq!(db.list_cameras().unwrap().len(), 1);
 
         let mut cam2 = cam.clone();
@@ -520,7 +532,9 @@ mod tests {
     #[test]
     fn events_filter_and_cascade() {
         let db = mem_db();
-        let cam = db.add_camera("porch", "rtsp://x", true, true).unwrap();
+        let cam = db
+            .add_camera("porch", "rtsp://x", None, true, true)
+            .unwrap();
         db.add_event(cam.id, 100, "person", 0.9, [1.0, 2.0, 3.0, 4.0], None)
             .unwrap();
         db.add_event(cam.id, 200, "car", 0.8, [0.0; 4], None)
@@ -543,7 +557,9 @@ mod tests {
     #[test]
     fn detect_config_roundtrip_and_zone_math() {
         let db = mem_db();
-        let mut cam = db.add_camera("porch", "rtsp://x", true, true).unwrap();
+        let mut cam = db
+            .add_camera("porch", "rtsp://x", None, true, true)
+            .unwrap();
         assert_eq!(cam.detect_config, DetectConfig::default());
 
         cam.detect_config = DetectConfig {

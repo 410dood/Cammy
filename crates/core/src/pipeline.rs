@@ -74,7 +74,12 @@ pub fn run(
             if shutdown.load(Ordering::Relaxed) {
                 break;
             }
-            let frame = match fetch_frame(&go2rtc.api_base(), &cam.name) {
+            // Sample the low-res sub-stream when one is configured.
+            let stream_key = match cam.detect_source.as_deref().filter(|s| !s.is_empty()) {
+                Some(_) => format!("{}_sub", cam.name),
+                None => cam.name.clone(),
+            };
+            let frame = match fetch_frame(&go2rtc.api_base(), &stream_key) {
                 Ok(f) => {
                     status.frame_ok(cam.id, chrono::Local::now().timestamp());
                     f

@@ -18,6 +18,7 @@ function TuneModal({
     motion_threshold: camera.detect_config.motion_threshold,
     ignore_zones: [...camera.detect_config.ignore_zones],
   });
+  const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
   const setZone = (i: number, field: keyof Zone, v: number) => {
     const zones = dc.ignore_zones.map((z, j) => (j === i ? { ...z, [field]: v } : z));
@@ -26,7 +27,10 @@ function TuneModal({
 
   const save = async () => {
     try {
-      await api.patchCamera(camera.id, { detect_config: dc } as Partial<Camera>);
+      await api.patchCamera(camera.id, {
+        detect_config: dc,
+        detect_source: subSource.trim(),
+      } as Partial<Camera>);
       onSaved();
       onClose();
     } catch (e) {
@@ -41,6 +45,17 @@ function TuneModal({
         <p className="muted" style={{ marginTop: 0 }}>
           Empty fields inherit the global Settings values.
         </p>
+        <div className="row" style={{ marginBottom: 10 }}>
+          <label className="field" style={{ flex: 1, minWidth: 380 }}>
+            low-res sub-stream for detection (empty = detect on main stream)
+            <input
+              type="text"
+              placeholder="rtsp://user:pass@cam/...subtype=1"
+              value={subSource}
+              onChange={(e) => setSubSource(e.target.value)}
+            />
+          </label>
+        </div>
         <div className="row">
           <label className="field" style={{ flex: 1 }}>
             objects (comma-separated override)

@@ -99,6 +99,11 @@ impl Go2Rtc {
         );
         for cam in cameras.iter().filter(|c| c.enabled) {
             yaml.push_str(&format!("  {}:\n    - {}\n", cam.name, cam.source));
+            // Low-res detect stream gets its own go2rtc key (Frigate's
+            // "detect role"): the pipeline decodes this instead of the 4K main.
+            if let Some(sub) = cam.detect_source.as_deref().filter(|s| !s.is_empty()) {
+                yaml.push_str(&format!("  {}_sub:\n    - {}\n", cam.name, sub));
+            }
         }
         let mut f = std::fs::File::create(&self.config_path)
             .with_context(|| format!("creating {}", self.config_path.display()))?;
