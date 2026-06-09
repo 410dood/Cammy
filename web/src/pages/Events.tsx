@@ -1,11 +1,24 @@
 import { useEffect, useState } from "react";
-import { api, CamEvent, Camera, fmtTime } from "../api";
+import { api, CamEvent, Camera, fmtTime, Segment } from "../api";
 
 export default function Events({ cameras }: { cameras: Camera[] }) {
   const [events, setEvents] = useState<CamEvent[]>([]);
   const [cameraId, setCameraId] = useState<number | "">("");
   const [label, setLabel] = useState("");
   const [open, setOpen] = useState<CamEvent | null>(null);
+  const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
+  const [noClip, setNoClip] = useState<number | null>(null);
+
+  const jumpToRecording = async (ev: CamEvent) => {
+    try {
+      const r = await api.recordingAt(ev.camera_id, ev.ts);
+      // Land a few seconds before the event so you see it happen.
+      setPlaying({ segment: r.segment, offset: Math.max(0, r.offset_secs - 3) });
+    } catch {
+      setNoClip(ev.id);
+      setTimeout(() => setNoClip(null), 2500);
+    }
+  };
 
   const load = () => {
     api
@@ -67,6 +80,16 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
               <div className="meta">
                 <b>{ev.label}</b> {(ev.score * 100).toFixed(0)}% · {ev.camera}
                 <div className="muted">{fmtTime(ev.ts)}</div>
+                <button
+                  className="ghost"
+                  style={{ marginTop: 8 }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    jumpToRecording(ev);
+                  }}
+                >
+                  {noClip === ev.id ? "no recording for this moment" : "▶ view recording"}
+                </button>
               </div>
             </div>
           ))}
@@ -76,6 +99,20 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
       {open && (
         <div className="modal-bg" onClick={() => setOpen(null)}>
           {open.snapshot && <img src={`/api/snapshots/${open.snapshot}`} alt={open.label} />}
+        </div>
+      )}
+
+      {playing && (
+        <div className="modal-bg" onClick={() => setPlaying(null)}>
+          <video
+            src={`/api/recordings/${playing.segment.id}/video`}
+            controls
+            autoPlay
+            onClick={(e) => e.stopPropagation()}
+            onLoadedMetadata={(e) => {
+              e.currentTarget.currentTime = playing.offset;
+            }}
+          />
         </div>
       )}
     </>

@@ -333,6 +333,33 @@ impl Db {
             .find(|s| s.id == id))
     }
 
+    /// The newest segment for a camera that starts at or before `ts` — i.e. the
+    /// recording most likely to contain that instant. The caller checks whether
+    /// `ts` actually falls inside the segment's duration.
+    pub fn find_segment_at(&self, camera_id: i64, ts: i64) -> Result<Option<SegmentRow>> {
+        let conn = self.conn();
+        let row = conn
+            .query_row(
+                "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path
+                 FROM segments s JOIN cameras c ON c.id = s.camera_id
+                 WHERE s.camera_id = ?1 AND s.start_ts <= ?2
+                 ORDER BY s.start_ts DESC LIMIT 1",
+                params![camera_id, ts],
+                |r| {
+                    Ok(SegmentRow {
+                        id: r.get(0)?,
+                        camera_id: r.get(1)?,
+                        camera: r.get(2)?,
+                        start_ts: r.get(3)?,
+                        bytes: r.get::<_, i64>(4)? as u64,
+                        path: r.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
     // --- settings --------------------------------------------------------
 
     pub fn settings(&self) -> Settings {

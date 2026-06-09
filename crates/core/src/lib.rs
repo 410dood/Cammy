@@ -14,6 +14,7 @@ mod db;
 mod go2rtc;
 mod pipeline;
 mod record;
+mod status;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -69,6 +70,7 @@ pub async fn run(
     let workers_stop = Arc::new(AtomicBool::new(false));
     let snapshots_dir = cfg.data_dir.join("snapshots");
     let recordings_dir = cfg.data_dir.join("recordings");
+    let status_board = status::StatusBoard::default();
 
     // Recording manager + detection pipeline run on their own threads (both
     // drive blocking child processes / inference).
@@ -80,7 +82,8 @@ pub async fn run(
             workers_stop.clone(),
         );
         let ffmpeg_bin = cfg.ffmpeg_bin.clone();
-        move || record::run(db, go2rtc, dir, ffmpeg_bin, stop)
+        let status = status_board.clone();
+        move || record::run(db, go2rtc, dir, ffmpeg_bin, status, stop)
     })?;
     let det_thread = std::thread::Builder::new().name("detector".into()).spawn({
         let (db, go2rtc, dir, stop) = (
@@ -89,7 +92,8 @@ pub async fn run(
             snapshots_dir.clone(),
             workers_stop.clone(),
         );
-        move || pipeline::run(db, go2rtc, dir, stop)
+        let status = status_board.clone();
+        move || pipeline::run(db, go2rtc, dir, status, stop)
     })?;
 
     // go2rtc watchdog.
@@ -114,6 +118,7 @@ pub async fn run(
         db: db.clone(),
         go2rtc: go2rtc.clone(),
         snapshots_dir,
+        status: status_board,
     };
     let ui =
         ServeDir::new(&cfg.ui_dir).not_found_service(ServeFile::new(cfg.ui_dir.join("index.html")));

@@ -49,6 +49,15 @@ export interface AppConfig {
   go2rtc_base: string;
 }
 
+export interface CamStatus {
+  online: boolean;
+  recording: boolean;
+  last_frame_ts: number | null;
+  last_error: string | null;
+}
+
+export type StatusMap = Record<string, CamStatus>;
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, {
     headers: { "Content-Type": "application/json" },
@@ -70,6 +79,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   config: () => req<AppConfig>("/api/config"),
+  status: () => req<StatusMap>("/api/status"),
   cameras: () => req<Camera[]>("/api/cameras"),
   addCamera: (c: { name: string; source: string; detect: boolean; record: boolean }) =>
     req<Camera>("/api/cameras", { method: "POST", body: JSON.stringify(c) }),
@@ -89,6 +99,10 @@ export const api = {
     if (q.limit) p.set("limit", String(q.limit));
     return req<Segment[]>(`/api/recordings?${p}`);
   },
+  recordingAt: (camera_id: number, ts: number) =>
+    req<{ segment: Segment; offset_secs: number }>(
+      `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
+    ),
   settings: () => req<Settings>("/api/settings"),
   saveSettings: (s: Settings) =>
     req<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),

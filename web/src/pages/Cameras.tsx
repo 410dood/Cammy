@@ -1,5 +1,5 @@
-import { FormEvent, useState } from "react";
-import { api, Camera } from "../api";
+import { FormEvent, useEffect, useState } from "react";
+import { api, Camera, StatusMap } from "../api";
 
 export default function Cameras({
   cameras,
@@ -10,6 +10,14 @@ export default function Cameras({
   onChange: () => void;
   onError: (e: string) => void;
 }) {
+  const [status, setStatus] = useState<StatusMap>({});
+
+  useEffect(() => {
+    const load = () => api.status().then(setStatus).catch(() => {});
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, []);
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
   const [detect, setDetect] = useState(true);
@@ -102,6 +110,7 @@ export default function Cameras({
           <table>
             <thead>
               <tr>
+                <th>Status</th>
                 <th>Name</th>
                 <th>Source</th>
                 <th>Enabled</th>
@@ -113,6 +122,20 @@ export default function Cameras({
             <tbody>
               {cameras.map((cam) => (
                 <tr key={cam.id}>
+                  <td title={status[String(cam.id)]?.last_error ?? ""}>
+                    <span
+                      className={`dot ${
+                        status[String(cam.id)] ? (status[String(cam.id)].online ? "on" : "off") : ""
+                      }`}
+                    />{" "}
+                    <span className="muted">
+                      {status[String(cam.id)]?.online
+                        ? "online"
+                        : status[String(cam.id)]
+                          ? "offline"
+                          : "…"}
+                    </span>
+                  </td>
                   <td>
                     <b>{cam.name}</b>
                   </td>

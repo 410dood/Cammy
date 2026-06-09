@@ -14,18 +14,21 @@ use tower_http::services::ServeFile;
 
 use crate::db::{Camera, Db, Settings};
 use crate::go2rtc::Go2Rtc;
+use crate::status::StatusBoard;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
     pub go2rtc: Arc<Go2Rtc>,
     pub snapshots_dir: PathBuf,
+    pub status: StatusBoard,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/config", get(config))
+        .route("/api/status", get(camera_status))
         .route("/api/cameras", get(list_cameras).post(add_camera))
         .route(
             "/api/cameras/{id}",
@@ -34,6 +37,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/events", get(list_events))
         .route("/api/snapshots/{file}", get(snapshot))
         .route("/api/recordings", get(list_recordings))
+        .route("/api/recordings/at", get(recording_at))
         .route("/api/recordings/{id}/video", get(segment_video))
         .route("/api/settings", get(get_settings).put(put_settings))
         .with_state(state)
@@ -72,6 +76,35 @@ async fn health() -> Json<serde_json::Value> {
 /// Tells the UI where go2rtc's WebRTC endpoints live.
 async fn config(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "go2rtc_base": st.go2rtc.api_base() }))
+}
+
+/// Per-camera health: frame freshness from the detection pipeline + recorder
+/// liveness. `online` means a frame arrived within the last 3 poll intervals,
+/// or (for detect-off cameras) the recorder is alive.
+async fn camera_status(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let now = chrono::Local::now().timestamp();
+    let window = (st.db.settings().poll_ms as i64 * 3) / 1000 + 5;
+    let mut out = serde_json::Map::new();
+    for cam in st.db.list_cameras()? {
+        let h = st
+            .status
+            .snapshot()
+            .get(&cam.id)
+            .cloned()
+            .unwrap_or_default();
+        let fresh_frame = h.last_frame_ts.map(|t| now - t <= window).unwrap_or(false);
+        let online = if cam.detect { fresh_frame } else { h.recording };
+        out.insert(
+            cam.id.to_string(),
+            serde_json::json!({
+                "online": online && cam.enabled,
+                "recording": h.recording,
+                "last_frame_ts": h.last_frame_ts,
+                "last_error": h.last_error,
+            }),
+        );
+    }
+    Ok(Json(serde_json::Value::Object(out)))
 }
 
 // --- cameras --------------------------------------------------------------
@@ -222,6 +255,34 @@ async fn list_recordings(
     Query(q): Query<RecordingQuery>,
 ) -> ApiResult<Json<Vec<crate::db::SegmentRow>>> {
     Ok(Json(st.db.list_segments(q.camera_id, q.limit.min(1000))?))
+}
+
+#[derive(Deserialize)]
+struct AtQuery {
+    camera_id: i64,
+    ts: i64,
+}
+
+/// Find the recording segment that contains a moment in time (used to jump
+/// from an event straight into playback at the right offset).
+async fn recording_at(
+    State(st): State<AppState>,
+    Query(q): Query<AtQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let seg = st
+        .db
+        .find_segment_at(q.camera_id, q.ts)?
+        .ok_or_else(not_found)?;
+    let offset = q.ts - seg.start_ts;
+    // Generous slack: ffmpeg cuts segments on keyframes, so real duration can
+    // exceed the configured length by a GOP.
+    let max_len = i64::from(st.db.settings().segment_seconds) + 15;
+    if offset > max_len {
+        return Err(not_found());
+    }
+    Ok(Json(
+        serde_json::json!({ "segment": seg, "offset_secs": offset }),
+    ))
 }
 
 /// Stream a recording segment with HTTP range support (so <video> can seek).

@@ -13,6 +13,7 @@ use recorder::Recording;
 
 use crate::db::Db;
 use crate::go2rtc::Go2Rtc;
+use crate::status::StatusBoard;
 
 /// Completed-segment quiet window: a file untouched this long is closed.
 const SEGMENT_QUIET_SECS: u64 = 5;
@@ -24,6 +25,7 @@ pub fn run(
     go2rtc: Arc<Go2Rtc>,
     recordings_dir: PathBuf,
     ffmpeg_bin: Option<PathBuf>,
+    status: StatusBoard,
     shutdown: Arc<AtomicBool>,
 ) {
     let ffmpeg = match recorder::locate_ffmpeg(ffmpeg_bin.as_deref()) {
@@ -80,6 +82,12 @@ pub fn run(
                 }
             }
         }
+
+        // Publish recorder liveness + drop status for deleted cameras.
+        for cam in &cameras {
+            status.set_recording(cam.id, running.contains_key(&cam.id));
+        }
+        status.retain(&cameras.iter().map(|c| c.id).collect::<Vec<_>>());
 
         // --- index completed segments ------------------------------------
         for cam in cameras.iter().filter(|c| c.record) {

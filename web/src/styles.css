@@ -102,7 +102,21 @@ body {
   font-size: 0.8rem;
   z-index: 2;
   pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
+.tile .label .rec { color: var(--danger); font-size: 0.7rem; font-weight: 700; }
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--muted);
+}
+.dot.on { background: var(--ok); }
+.dot.off { background: var(--danger); }
 
 /* --- cards / tables -------------------------------------------------------- */
 .card {

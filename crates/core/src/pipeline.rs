@@ -21,11 +21,18 @@ use motion::MotionGate;
 
 use crate::db::Db;
 use crate::go2rtc::Go2Rtc;
+use crate::status::StatusBoard;
 
 /// Cap on a fetched JPEG frame (sanity guard, not a real limit).
 const MAX_FRAME_BYTES: u64 = 32 * 1024 * 1024;
 
-pub fn run(db: Db, go2rtc: Arc<Go2Rtc>, snapshots_dir: PathBuf, shutdown: Arc<AtomicBool>) {
+pub fn run(
+    db: Db,
+    go2rtc: Arc<Go2Rtc>,
+    snapshots_dir: PathBuf,
+    status: StatusBoard,
+    shutdown: Arc<AtomicBool>,
+) {
     let mut detector: Option<Detector> = None;
     let mut detector_key = String::new();
     let mut gates: HashMap<i64, MotionGate> = HashMap::new();
@@ -73,8 +80,12 @@ pub fn run(db: Db, go2rtc: Arc<Go2Rtc>, snapshots_dir: PathBuf, shutdown: Arc<At
                 break;
             }
             let frame = match fetch_frame(&go2rtc.api_base(), &cam.name) {
-                Ok(f) => f,
+                Ok(f) => {
+                    status.frame_ok(cam.id, chrono::Local::now().timestamp());
+                    f
+                }
                 Err(e) => {
+                    status.frame_err(cam.id, format!("{e:#}"));
                     tracing::debug!(camera = %cam.name, "no frame: {e:#}");
                     continue;
                 }
