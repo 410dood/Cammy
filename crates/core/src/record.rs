@@ -36,7 +36,9 @@ pub fn run(
         }
     };
 
-    let mut running: HashMap<i64, Recording> = HashMap::new();
+    // Value carries the audio flag the recording was started with, so a
+    // settings flip restarts recorders with the new codec args.
+    let mut running: HashMap<i64, (bool, Recording)> = HashMap::new();
     let mut last_retention = Instant::now() - RETENTION_EVERY;
 
     while !shutdown.load(Ordering::Relaxed) {
@@ -56,15 +58,18 @@ pub fn run(
             .copied()
             .collect();
         for id in stop_ids {
-            if let Some(rec) = running.remove(&id) {
+            if let Some((_, rec)) = running.remove(&id) {
                 rec.stop();
             }
         }
 
         for (id, name) in &desired {
-            let alive = running.get_mut(id).map(|r| r.is_alive()).unwrap_or(false);
-            if !alive {
-                if let Some(dead) = running.remove(id) {
+            let healthy = running
+                .get_mut(id)
+                .map(|(audio, r)| r.is_alive() && *audio == settings.record_audio)
+                .unwrap_or(false);
+            if !healthy {
+                if let Some((_, dead)) = running.remove(id) {
                     dead.stop();
                 }
                 let dir = recordings_dir.join(name);
@@ -74,9 +79,10 @@ pub fn run(
                     &go2rtc.rtsp_url(name),
                     &dir,
                     settings.segment_seconds,
+                    settings.record_audio,
                 ) {
                     Ok(rec) => {
-                        running.insert(*id, rec);
+                        running.insert(*id, (settings.record_audio, rec));
                     }
                     Err(e) => tracing::warn!(camera = %name, "failed to start recording: {e:#}"),
                 }
@@ -128,7 +134,7 @@ pub fn run(
     }
 
     tracing::info!("stopping {} recording(s)", running.len());
-    for (_, rec) in running.drain() {
+    for (_, (_, rec)) in running.drain() {
         rec.stop();
     }
 }

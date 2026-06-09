@@ -197,6 +197,20 @@ button.danger:hover { background: #3d1d1f; }
 }
 .modal-bg img, .modal-bg video { max-width: 92vw; max-height: 88vh; border-radius: 8px; }
 
+.usage-bar {
+  flex: 1;
+  height: 10px;
+  background: var(--panel-2);
+  border-radius: 5px;
+  overflow: hidden;
+  min-width: 120px;
+}
+.usage-fill {
+  height: 100%;
+  background: var(--accent-2);
+  border-radius: 5px;
+}
+
 .empty {
   border: 1px dashed var(--border);
   border-radius: 10px;

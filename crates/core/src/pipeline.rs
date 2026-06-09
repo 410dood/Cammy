@@ -35,9 +35,10 @@ pub fn run(
 ) {
     let mut detector: Option<Detector> = None;
     let mut detector_key = String::new();
-    let mut gates: HashMap<i64, MotionGate> = HashMap::new();
+    // Per-camera motion gate, keyed with the threshold it was built for so a
+    // settings or per-camera-config change rebuilds it.
+    let mut gates: HashMap<i64, (f32, MotionGate)> = HashMap::new();
     let mut last_event: HashMap<(i64, &'static str), i64> = HashMap::new();
-    let mut last_threshold = f32::NAN;
 
     while !shutdown.load(Ordering::Relaxed) {
         let tick = Instant::now();
@@ -68,12 +69,6 @@ pub fn run(
             }
         }
 
-        // Reset gates if the motion threshold was changed in settings.
-        if settings.motion_threshold != last_threshold {
-            gates.clear();
-            last_threshold = settings.motion_threshold;
-        }
-
         let cameras = db.list_cameras().unwrap_or_default();
         for cam in cameras.iter().filter(|c| c.enabled && c.detect) {
             if shutdown.load(Ordering::Relaxed) {
@@ -91,9 +86,20 @@ pub fn run(
                 }
             };
 
-            let gate = gates
-                .entry(cam.id)
-                .or_insert_with(|| MotionGate::new(settings.motion_threshold));
+            let threshold = cam
+                .detect_config
+                .motion_threshold
+                .unwrap_or(settings.motion_threshold);
+            let gate = match gates.get_mut(&cam.id) {
+                Some((t, g)) if *t == threshold => g,
+                _ => {
+                    &mut gates
+                        .entry(cam.id)
+                        .insert_entry((threshold, MotionGate::new(threshold)))
+                        .into_mut()
+                        .1
+                }
+            };
             let verdict = gate.update(&frame);
             if !verdict.is_motion() {
                 continue;
@@ -113,11 +119,23 @@ pub fn run(
             };
 
             let now = chrono::Local::now().timestamp();
+            let labels = cam
+                .detect_config
+                .labels
+                .as_ref()
+                .unwrap_or(&settings.detect_labels);
+            let min_score = cam.detect_config.min_score.unwrap_or(0.0);
+            let (fw, fh) = (frame.width() as f32, frame.height() as f32);
             let wanted: Vec<_> = dets
                 .iter()
+                .filter(|d| labels.is_empty() || labels.iter().any(|l| l == d.label))
+                .filter(|d| d.score >= min_score)
                 .filter(|d| {
-                    settings.detect_labels.is_empty()
-                        || settings.detect_labels.iter().any(|l| l == d.label)
+                    !in_ignore_zone(
+                        &cam.detect_config.ignore_zones,
+                        (d.x1 + d.x2) / 2.0 / fw,
+                        (d.y1 + d.y2) / 2.0 / fh,
+                    )
                 })
                 .filter(|d| {
                     last_event
@@ -155,6 +173,9 @@ pub fn run(
                             event = id,
                             "event recorded"
                         );
+                        if !settings.webhook_url.is_empty() {
+                            post_webhook(&settings.webhook_url, &cam.name, id, d, now, &snap_rel);
+                        }
                     }
                     Err(e) => tracing::warn!("event insert failed: {e:#}"),
                 }
@@ -167,6 +188,41 @@ pub fn run(
             sleep_responsive(budget - elapsed, &shutdown);
         }
     }
+}
+
+/// Fire-and-forget event notification (Blue Iris alarm-server style). Runs on
+/// the pipeline thread with a short timeout; a dead listener must never stall
+/// detection, so failures are logged at debug and dropped.
+fn post_webhook(
+    url: &str,
+    camera: &str,
+    event_id: i64,
+    d: &detector::Detection,
+    ts: i64,
+    snapshot: &str,
+) {
+    let payload = serde_json::json!({
+        "type": "detection",
+        "event_id": event_id,
+        "camera": camera,
+        "label": d.label,
+        "score": d.score,
+        "box": [d.x1, d.y1, d.x2, d.y2],
+        "ts": ts,
+        "snapshot": format!("/api/snapshots/{snapshot}"),
+    });
+    if let Err(e) = ureq::post(url)
+        .timeout(Duration::from_secs(3))
+        .send_json(payload)
+    {
+        tracing::debug!("webhook delivery failed: {e}");
+    }
+}
+
+/// True when a detection's box center (frame fractions) lands inside any
+/// ignore zone — e.g. the busy street at the edge of a driveway camera.
+fn in_ignore_zone(zones: &[crate::db::Zone], cx: f32, cy: f32) -> bool {
+    zones.iter().any(|z| z.contains(cx, cy))
 }
 
 fn sleep_responsive(total: Duration, shutdown: &AtomicBool) {
@@ -227,5 +283,24 @@ fn draw_rect(img: &mut image::RgbImage, x1: i64, y1: i64, x2: i64, y2: i64) {
             put(x1 + t, y);
             put(x2 - t, y);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::in_ignore_zone;
+    use crate::db::Zone;
+
+    #[test]
+    fn ignore_zone_drops_center_hits_only() {
+        let zones = vec![Zone {
+            x: 0.8,
+            y: 0.0,
+            w: 0.2,
+            h: 1.0,
+        }];
+        assert!(in_ignore_zone(&zones, 0.9, 0.5)); // street strip on the right
+        assert!(!in_ignore_zone(&zones, 0.5, 0.5)); // driveway center
+        assert!(!in_ignore_zone(&[], 0.9, 0.5)); // no zones -> nothing ignored
     }
 }

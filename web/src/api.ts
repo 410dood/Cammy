@@ -1,5 +1,19 @@
 // Typed client for the zoomy core API.
 
+export interface Zone {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface DetectConfig {
+  labels: string[] | null;
+  min_score: number | null;
+  motion_threshold: number | null;
+  ignore_zones: Zone[];
+}
+
 export interface Camera {
   id: number;
   name: string;
@@ -8,6 +22,7 @@ export interface Camera {
   detect: boolean;
   record: boolean;
   created_ts: number;
+  detect_config: DetectConfig;
 }
 
 export interface CamEvent {
@@ -43,6 +58,24 @@ export interface Settings {
   model_path: string;
   force_cpu: boolean;
   go2rtc_api_port: number;
+  webhook_url: string;
+  record_audio: boolean;
+}
+
+export interface CamStorage {
+  camera_id: number;
+  camera: string;
+  segments: number;
+  bytes: number;
+  oldest_ts: number | null;
+  newest_ts: number | null;
+}
+
+export interface Stats {
+  cameras: CamStorage[];
+  total_bytes: number;
+  snapshots_bytes: number;
+  events_total: number;
 }
 
 export interface AppConfig {
@@ -103,6 +136,7 @@ export const api = {
     req<{ segment: Segment; offset_secs: number }>(
       `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
     ),
+  stats: () => req<Stats>("/api/stats"),
   settings: () => req<Settings>("/api/settings"),
   saveSettings: (s: Settings) =>
     req<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),

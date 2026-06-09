@@ -35,3 +35,6 @@ Cargo.lock
 Thumbs.db
 .idea/
 .vscode/
+
+# webhook test listener output
+/webhook_log.jsonl

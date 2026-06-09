@@ -94,6 +94,21 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <div className="card">
+          <h2>Notifications</h2>
+          <div className="row">
+            <label className="field" style={{ flex: 1, minWidth: 320 }}>
+              webhook URL (POST per event; empty = off)
+              <input
+                type="text"
+                placeholder="http://homeassistant.local:8123/api/webhook/zoomy"
+                value={s.webhook_url}
+                onChange={(e) => set({ webhook_url: e.target.value })}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="card">
           <h2>Recording &amp; retention</h2>
           <div className="row">
             <label className="field">
@@ -126,6 +141,14 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 type="text"
                 value={s.model_path}
                 onChange={(e) => set({ model_path: e.target.value })}
+              />
+            </label>
+            <label className="toggle field">
+              record audio (AAC)
+              <input
+                type="checkbox"
+                checked={s.record_audio}
+                onChange={() => set({ record_audio: !s.record_audio })}
               />
             </label>
           </div>

@@ -35,21 +35,29 @@ pub struct Recording {
 
 impl Recording {
     /// Start recording `rtsp_url` into `out_dir` as `segment_seconds`-long parts.
+    /// Video is always packet-copied; `audio` transcodes the camera's audio to
+    /// AAC (RTSP audio is often PCM/G.711, which MP4 can't carry verbatim).
     pub fn start(
         ffmpeg_bin: &Path,
         camera: &str,
         rtsp_url: &str,
         out_dir: &Path,
         segment_seconds: u32,
+        audio: bool,
     ) -> Result<Self> {
         std::fs::create_dir_all(out_dir)
             .with_context(|| format!("creating {}", out_dir.display()))?;
         let pattern = out_dir.join(SEGMENT_PATTERN);
 
+        let codec_args: &[&str] = if audio {
+            &["-c:v", "copy", "-c:a", "aac", "-b:a", "96k"]
+        } else {
+            &["-c", "copy", "-an"]
+        };
         let child = Command::new(ffmpeg_bin)
             .args(["-loglevel", "error", "-rtsp_transport", "tcp", "-i"])
             .arg(rtsp_url)
-            .args(["-c", "copy", "-an"]) // video packets verbatim; skip audio for now
+            .args(codec_args)
             .args(["-f", "segment"])
             .args(["-segment_time", &segment_seconds.to_string()])
             .args(["-segment_format", "mp4"])

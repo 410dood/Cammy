@@ -37,7 +37,7 @@ image = "0.25"
 ndarray = "0.16"
 chrono = { version = "0.4", features = ["serde"] }
 which = "7"
-ureq = "2"
+ureq = { version = "2", features = ["json"] }
 tower = "0.5"
 
 [workspace.package]

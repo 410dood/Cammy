@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/recordings/at", get(recording_at))
         .route("/api/recordings/{id}/video", get(segment_video))
         .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/stats", get(stats))
         .with_state(state)
 }
 
@@ -166,6 +167,7 @@ struct CameraPatch {
     enabled: Option<bool>,
     detect: Option<bool>,
     record: Option<bool>,
+    detect_config: Option<crate::db::DetectConfig>,
 }
 
 async fn patch_camera(
@@ -186,6 +188,18 @@ async fn patch_camera(
     cam.enabled = patch.enabled.unwrap_or(cam.enabled);
     cam.detect = patch.detect.unwrap_or(cam.detect);
     cam.record = patch.record.unwrap_or(cam.record);
+    if let Some(dc) = patch.detect_config {
+        for z in &dc.ignore_zones {
+            if !(0.0..=1.0).contains(&z.x)
+                || !(0.0..=1.0).contains(&z.y)
+                || !(0.0..=1.0).contains(&z.w)
+                || !(0.0..=1.0).contains(&z.h)
+            {
+                return Err(bad_request("zone coordinates must be fractions 0..1"));
+            }
+        }
+        cam.detect_config = dc;
+    }
     st.db.update_camera(&cam)?;
     st.go2rtc.restart_with(&st.db)?;
     Ok(Json(cam))
@@ -293,6 +307,30 @@ async fn segment_video(
 ) -> ApiResult<Response> {
     let seg = st.db.get_segment(id)?.ok_or_else(not_found)?;
     Ok(ServeFile::new(seg.path).oneshot(req).await.into_response())
+}
+
+// --- stats -----------------------------------------------------------------
+
+/// Storage + event totals for the dashboard: per-camera disk usage from the
+/// segment index, overall event count, and snapshot footprint.
+async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let cameras = st.db.storage_stats()?;
+    let total_bytes: u64 = cameras.iter().map(|c| c.bytes).sum();
+    let snapshots_bytes: u64 = std::fs::read_dir(&st.snapshots_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.len())
+                .sum()
+        })
+        .unwrap_or(0);
+    Ok(Json(serde_json::json!({
+        "cameras": cameras,
+        "total_bytes": total_bytes,
+        "snapshots_bytes": snapshots_bytes,
+        "events_total": st.db.count_events()?,
+    })))
 }
 
 // --- settings ----------------------------------------------------------------

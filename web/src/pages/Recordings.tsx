@@ -1,16 +1,18 @@
 import { useEffect, useState } from "react";
-import { api, Camera, fmtBytes, fmtTime, Segment } from "../api";
+import { api, Camera, fmtBytes, fmtTime, Segment, Stats } from "../api";
 
 export default function Recordings({ cameras }: { cameras: Camera[] }) {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [cameraId, setCameraId] = useState<number | "">("");
   const [playing, setPlaying] = useState<Segment | null>(null);
+  const [stats, setStats] = useState<Stats | null>(null);
 
   const load = () => {
     api
       .recordings({ camera_id: cameraId === "" ? undefined : cameraId, limit: 200 })
       .then(setSegments)
       .catch(() => {});
+    api.stats().then(setStats).catch(() => {});
   };
 
   useEffect(() => {
@@ -23,6 +25,38 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   return (
     <>
       <h1>Recordings</h1>
+
+      {stats && (
+        <div className="card">
+          <h2>Storage</h2>
+          <div className="row" style={{ marginBottom: 10 }}>
+            <span className="muted">
+              {fmtBytes(stats.total_bytes)} of recordings · {fmtBytes(stats.snapshots_bytes)} of
+              snapshots · {stats.events_total} events all-time
+            </span>
+          </div>
+          {stats.cameras.map((c) => (
+            <div className="row" key={c.camera_id} style={{ marginBottom: 6 }}>
+              <span style={{ width: 120 }}>
+                <b>{c.camera}</b>
+              </span>
+              <div className="usage-bar">
+                <div
+                  className="usage-fill"
+                  style={{
+                    width: `${stats.total_bytes ? Math.max(2, (c.bytes / stats.total_bytes) * 100) : 0}%`,
+                  }}
+                />
+              </div>
+              <span className="muted" style={{ width: 220 }}>
+                {fmtBytes(c.bytes)} · {c.segments} segments
+                {c.oldest_ts ? ` · since ${new Date(c.oldest_ts * 1000).toLocaleDateString()}` : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="row" style={{ marginBottom: 16 }}>
         <select value={cameraId} onChange={(e) => setCameraId(e.target.value === "" ? "" : Number(e.target.value))}>
           <option value="">all cameras</option>

@@ -25,6 +25,40 @@ pub struct Camera {
     /// Record this camera continuously to disk.
     pub record: bool,
     pub created_ts: i64,
+    /// Per-camera detection tuning; unset fields inherit global settings.
+    #[serde(default)]
+    pub detect_config: DetectConfig,
+}
+
+/// A rectangle in frame-fraction coordinates (0..1), so it survives resolution
+/// changes and sub-stream switches.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Zone {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl Zone {
+    pub fn contains(&self, fx: f32, fy: f32) -> bool {
+        fx >= self.x && fx <= self.x + self.w && fy >= self.y && fy <= self.y + self.h
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct DetectConfig {
+    /// Override of the global label filter; `None` inherits.
+    pub labels: Option<Vec<String>>,
+    /// Per-camera minimum score; effective only above the global confidence
+    /// (the model is run with the global threshold).
+    pub min_score: Option<f32>,
+    /// Override of the global motion threshold; `None` inherits.
+    pub motion_threshold: Option<f32>,
+    /// Detections whose box center falls in any of these are dropped —
+    /// e.g. a busy street at the edge of a driveway camera.
+    pub ignore_zones: Vec<Zone>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -38,6 +72,16 @@ pub struct Event {
     #[serde(rename = "box")]
     pub bbox: [f32; 4],
     pub snapshot: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CamStorage {
+    pub camera_id: i64,
+    pub camera: String,
+    pub segments: i64,
+    pub bytes: u64,
+    pub oldest_ts: Option<i64>,
+    pub newest_ts: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -70,6 +114,11 @@ pub struct Settings {
     pub model_path: String,
     pub force_cpu: bool,
     pub go2rtc_api_port: u16,
+    /// POSTed a JSON payload for every event when non-empty (Blue Iris
+    /// "alarm server" style).
+    pub webhook_url: String,
+    /// Transcode camera audio into recordings as AAC.
+    pub record_audio: bool,
 }
 
 impl Default for Settings {
@@ -98,6 +147,8 @@ impl Default for Settings {
             model_path: "yolov8n.onnx".into(),
             force_cpu: false,
             go2rtc_api_port: 1984,
+            webhook_url: String::new(),
+            record_audio: false,
         }
     }
 }
@@ -144,6 +195,8 @@ impl Db {
                  value TEXT NOT NULL
              );",
         )?;
+        // Additive migrations; "duplicate column" on rerun is expected.
+        let _ = conn.execute("ALTER TABLE cameras ADD COLUMN detect_json TEXT", []);
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
@@ -156,7 +209,7 @@ impl Db {
     pub fn list_cameras(&self) -> Result<Vec<Camera>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, source, enabled, detect, record, created_ts
+            "SELECT id, name, source, enabled, detect, record, created_ts, detect_json
              FROM cameras ORDER BY id",
         )?;
         let rows = stmt
@@ -169,7 +222,7 @@ impl Db {
         let conn = self.conn();
         let cam = conn
             .query_row(
-                "SELECT id, name, source, enabled, detect, record, created_ts
+                "SELECT id, name, source, enabled, detect, record, created_ts, detect_json
                  FROM cameras WHERE id = ?1",
                 [id],
                 row_to_camera,
@@ -201,18 +254,22 @@ impl Db {
             detect,
             record,
             created_ts: now,
+            detect_config: DetectConfig::default(),
         })
     }
 
     pub fn update_camera(&self, cam: &Camera) -> Result<()> {
+        let detect_json = serde_json::to_string(&cam.detect_config)?;
         self.conn().execute(
-            "UPDATE cameras SET name=?1, source=?2, enabled=?3, detect=?4, record=?5 WHERE id=?6",
+            "UPDATE cameras SET name=?1, source=?2, enabled=?3, detect=?4, record=?5,
+             detect_json=?6 WHERE id=?7",
             params![
                 cam.name,
                 cam.source,
                 cam.enabled,
                 cam.detect,
                 cam.record,
+                detect_json,
                 cam.id
             ],
         )?;
@@ -360,6 +417,37 @@ impl Db {
         Ok(row)
     }
 
+    // --- stats -----------------------------------------------------------
+
+    pub fn storage_stats(&self) -> Result<Vec<CamStorage>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.name, COUNT(s.id), COALESCE(SUM(s.bytes), 0),
+                    MIN(s.start_ts), MAX(s.start_ts)
+             FROM cameras c LEFT JOIN segments s ON s.camera_id = c.id
+             GROUP BY c.id ORDER BY c.id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(CamStorage {
+                    camera_id: r.get(0)?,
+                    camera: r.get(1)?,
+                    segments: r.get(2)?,
+                    bytes: r.get::<_, i64>(3)? as u64,
+                    oldest_ts: r.get(4)?,
+                    newest_ts: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn count_events(&self) -> Result<i64> {
+        Ok(self
+            .conn()
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
+    }
+
     // --- settings --------------------------------------------------------
 
     pub fn settings(&self) -> Settings {
@@ -389,6 +477,7 @@ impl Db {
 }
 
 fn row_to_camera(r: &rusqlite::Row<'_>) -> rusqlite::Result<Camera> {
+    let detect_json: Option<String> = r.get(7)?;
     Ok(Camera {
         id: r.get(0)?,
         name: r.get(1)?,
@@ -397,6 +486,9 @@ fn row_to_camera(r: &rusqlite::Row<'_>) -> rusqlite::Result<Camera> {
         detect: r.get::<_, i64>(4)? != 0,
         record: r.get::<_, i64>(5)? != 0,
         created_ts: r.get(6)?,
+        detect_config: detect_json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -446,6 +538,32 @@ mod tests {
         // Deleting the camera cascades to its events.
         db.delete_camera(cam.id).unwrap();
         assert!(db.list_events(None, None, None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn detect_config_roundtrip_and_zone_math() {
+        let db = mem_db();
+        let mut cam = db.add_camera("porch", "rtsp://x", true, true).unwrap();
+        assert_eq!(cam.detect_config, DetectConfig::default());
+
+        cam.detect_config = DetectConfig {
+            labels: Some(vec!["person".into()]),
+            min_score: Some(0.6),
+            motion_threshold: Some(0.05),
+            ignore_zones: vec![Zone {
+                x: 0.0,
+                y: 0.0,
+                w: 0.5,
+                h: 0.5,
+            }],
+        };
+        db.update_camera(&cam).unwrap();
+        let back = db.get_camera(cam.id).unwrap().unwrap();
+        assert_eq!(back.detect_config, cam.detect_config);
+
+        let z = back.detect_config.ignore_zones[0];
+        assert!(z.contains(0.25, 0.25));
+        assert!(!z.contains(0.75, 0.25));
     }
 
     #[test]

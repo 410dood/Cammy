@@ -1,5 +1,135 @@
 import { FormEvent, useEffect, useState } from "react";
-import { api, Camera, StatusMap } from "../api";
+import { api, Camera, DetectConfig, StatusMap, Zone } from "../api";
+
+function TuneModal({
+  camera,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  camera: Camera;
+  onClose: () => void;
+  onSaved: () => void;
+  onError: (e: string) => void;
+}) {
+  const [dc, setDc] = useState<DetectConfig>({
+    labels: camera.detect_config.labels,
+    min_score: camera.detect_config.min_score,
+    motion_threshold: camera.detect_config.motion_threshold,
+    ignore_zones: [...camera.detect_config.ignore_zones],
+  });
+
+  const setZone = (i: number, field: keyof Zone, v: number) => {
+    const zones = dc.ignore_zones.map((z, j) => (j === i ? { ...z, [field]: v } : z));
+    setDc({ ...dc, ignore_zones: zones });
+  };
+
+  const save = async () => {
+    try {
+      await api.patchCamera(camera.id, { detect_config: dc } as Partial<Camera>);
+      onSaved();
+      onClose();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="card" style={{ minWidth: 540 }} onClick={(e) => e.stopPropagation()}>
+        <h2>Detection tuning — {camera.name}</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Empty fields inherit the global Settings values.
+        </p>
+        <div className="row">
+          <label className="field" style={{ flex: 1 }}>
+            objects (comma-separated override)
+            <input
+              type="text"
+              value={dc.labels ? dc.labels.join(", ") : ""}
+              placeholder="inherit global"
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setDc({
+                  ...dc,
+                  labels: v === "" ? null : v.split(",").map((x) => x.trim()).filter(Boolean),
+                });
+              }}
+            />
+          </label>
+          <label className="field">
+            min score (0-1)
+            <input
+              type="number" step="0.05" min="0" max="1"
+              value={dc.min_score ?? ""}
+              placeholder="inherit"
+              onChange={(e) =>
+                setDc({ ...dc, min_score: e.target.value === "" ? null : Number(e.target.value) })
+              }
+            />
+          </label>
+          <label className="field">
+            motion threshold (0-1)
+            <input
+              type="number" step="0.005" min="0" max="1"
+              value={dc.motion_threshold ?? ""}
+              placeholder="inherit"
+              onChange={(e) =>
+                setDc({
+                  ...dc,
+                  motion_threshold: e.target.value === "" ? null : Number(e.target.value),
+                })
+              }
+            />
+          </label>
+        </div>
+
+        <h2 style={{ marginTop: 18 }}>Ignore zones</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Detections whose center falls inside a zone are dropped. Coordinates are fractions of
+          the frame (0–1) from the top-left.
+        </p>
+        {dc.ignore_zones.map((z, i) => (
+          <div className="row" key={i} style={{ marginBottom: 8 }}>
+            {(["x", "y", "w", "h"] as const).map((f) => (
+              <label className="field" key={f}>
+                {f}
+                <input
+                  type="number" step="0.05" min="0" max="1" style={{ width: 80 }}
+                  value={z[f]}
+                  onChange={(e) => setZone(i, f, Number(e.target.value))}
+                />
+              </label>
+            ))}
+            <button
+              className="danger"
+              onClick={() => setDc({ ...dc, ignore_zones: dc.ignore_zones.filter((_, j) => j !== i) })}
+            >
+              remove
+            </button>
+          </div>
+        ))}
+        <div className="row" style={{ marginTop: 12 }}>
+          <button
+            className="ghost"
+            onClick={() =>
+              setDc({ ...dc, ignore_zones: [...dc.ignore_zones, { x: 0, y: 0, w: 0.25, h: 0.25 }] })
+            }
+          >
+            + add zone
+          </button>
+          <div className="spacer" />
+          <button className="ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="primary" onClick={save}>
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Cameras({
   cameras,
@@ -11,6 +141,7 @@ export default function Cameras({
   onError: (e: string) => void;
 }) {
   const [status, setStatus] = useState<StatusMap>({});
+  const [tuning, setTuning] = useState<Camera | null>(null);
 
   useEffect(() => {
     const load = () => api.status().then(setStatus).catch(() => {});
@@ -150,6 +281,9 @@ export default function Cameras({
                     </td>
                   ))}
                   <td>
+                    <button className="ghost" onClick={() => setTuning(cam)} style={{ marginRight: 8 }}>
+                      Tune
+                    </button>
                     <button className="danger" onClick={() => remove(cam)}>
                       Delete
                     </button>
@@ -160,6 +294,15 @@ export default function Cameras({
           </table>
         )}
       </div>
+
+      {tuning && (
+        <TuneModal
+          camera={tuning}
+          onClose={() => setTuning(null)}
+          onSaved={onChange}
+          onError={onError}
+        />
+      )}
     </>
   );
 }
