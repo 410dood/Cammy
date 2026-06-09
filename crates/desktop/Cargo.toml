@@ -17,6 +17,6 @@ tracing-subscriber.workspace = true
 tokio.workspace = true
 ureq.workspace = true
 
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 
 zoomy = { path = "../core" }

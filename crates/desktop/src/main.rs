@@ -3,7 +3,10 @@
 //! A thin Tauri shell around the `zoomy` library: it starts the whole platform
 //! (API, go2rtc, recorder, AI pipeline) in-process on a background thread, waits
 //! for the HTTP server to come up, then opens a native window onto the web UI.
-//! Closing the window shuts everything down in order, so ffmpeg finalizes its
+//!
+//! NVR semantics: closing the window hides to the system tray and KEEPS
+//! recording — an NVR that stops when you close a window is a paperweight.
+//! Quit (tray menu) shuts everything down in order, so ffmpeg finalizes its
 //! open recording segments and go2rtc dies with the app.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -13,6 +16,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
 /// Off the common 8080 so the desktop app coexists with ad-hoc dev servers.
@@ -50,6 +55,8 @@ fn main() {
                 thread: Mutex::new(Some(thread)),
             });
 
+            build_tray(app.handle())?;
+
             let base = format!("http://127.0.0.1:{PORT}");
             wait_for_health(&base);
 
@@ -60,6 +67,13 @@ fn main() {
                 .min_inner_size(900.0, 600.0)
                 .build()?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Close-to-tray: the NVR keeps recording in the background.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .build(tauri::generate_context!())
         .expect("failed to build tauri app")
@@ -75,6 +89,45 @@ fn main() {
                 }
             }
         });
+}
+
+fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "Open ZoomyZoomyCamCam", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit (stops recording)", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+
+    let mut tray = TrayIconBuilder::with_id("zoomy-tray")
+        .tooltip("ZoomyZoomyCamCam — recording")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
 }
 
 /// Block until the embedded server answers (or ~20s pass; the window will show
@@ -96,8 +149,8 @@ fn wait_for_health(base: &str) {
 
 /// Figure out where everything lives.
 ///
-/// Packaged install (release): resources (web UI, go2rtc, model) are bundled
-/// next to the exe and mutable state goes to the per-user app-data dir.
+/// Packaged install (release): resources (web UI, go2rtc, ffmpeg, model) are
+/// bundled next to the exe and mutable state goes to the per-user app-data dir.
 /// Dev (`cargo run -p zoomy-desktop`, debug): run against the workspace
 /// checkout, same paths and data/ dir the `zoomy` CLI uses — cameras and
 /// events carry over. The branch is decided by build profile, NOT by probing
@@ -116,7 +169,8 @@ fn resolve_config(app: &tauri::AppHandle) -> Result<zoomy::ServerConfig> {
                 port: PORT,
                 data_dir,
                 ui_dir: res.join("web/dist"),
-                go2rtc_bin: Some(res.join("bin").join(go2rtc_exe())),
+                go2rtc_bin: Some(res.join("bin").join(exe_name("go2rtc"))),
+                ffmpeg_bin: existing(res.join("bin").join(exe_name("ffmpeg"))),
             });
         }
     }
@@ -130,14 +184,20 @@ fn resolve_config(app: &tauri::AppHandle) -> Result<zoomy::ServerConfig> {
         port: PORT,
         data_dir: workspace.join("data"),
         ui_dir: workspace.join("web/dist"),
-        go2rtc_bin: Some(workspace.join("bin").join(go2rtc_exe())),
+        go2rtc_bin: Some(workspace.join("bin").join(exe_name("go2rtc"))),
+        ffmpeg_bin: existing(workspace.join("bin").join(exe_name("ffmpeg"))),
     })
 }
 
-fn go2rtc_exe() -> &'static str {
+/// ffmpeg is optional at the explicit path (recording falls back to PATH).
+fn existing(p: PathBuf) -> Option<PathBuf> {
+    p.exists().then_some(p)
+}
+
+fn exe_name(base: &str) -> String {
     if cfg!(windows) {
-        "go2rtc.exe"
+        format!("{base}.exe")
     } else {
-        "go2rtc"
+        base.to_string()
     }
 }

@@ -22,6 +22,7 @@
     "resources": {
       "../../web/dist": "web/dist",
       "../../bin/go2rtc.exe": "bin/go2rtc.exe",
+      "../../bin/ffmpeg.exe": "bin/ffmpeg.exe",
       "../../yolov8n.onnx": "yolov8n.onnx"
     }
   }

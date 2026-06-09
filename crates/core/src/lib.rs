@@ -33,6 +33,8 @@ pub struct ServerConfig {
     pub ui_dir: PathBuf,
     /// Explicit go2rtc binary; `None` = ./bin, then PATH.
     pub go2rtc_bin: Option<PathBuf>,
+    /// Explicit ffmpeg binary; `None` = ./bin, then PATH.
+    pub ffmpeg_bin: Option<PathBuf>,
 }
 
 impl Default for ServerConfig {
@@ -42,6 +44,7 @@ impl Default for ServerConfig {
             data_dir: "data".into(),
             ui_dir: "web/dist".into(),
             go2rtc_bin: None,
+            ffmpeg_bin: None,
         }
     }
 }
@@ -76,7 +79,8 @@ pub async fn run(
             recordings_dir.clone(),
             workers_stop.clone(),
         );
-        move || record::run(db, go2rtc, dir, stop)
+        let ffmpeg_bin = cfg.ffmpeg_bin.clone();
+        move || record::run(db, go2rtc, dir, ffmpeg_bin, stop)
     })?;
     let det_thread = std::thread::Builder::new().name("detector".into()).spawn({
         let (db, go2rtc, dir, stop) = (

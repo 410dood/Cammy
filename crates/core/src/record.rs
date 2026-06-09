@@ -19,8 +19,14 @@ const SEGMENT_QUIET_SECS: u64 = 5;
 const RECONCILE_EVERY: Duration = Duration::from_secs(3);
 const RETENTION_EVERY: Duration = Duration::from_secs(60);
 
-pub fn run(db: Db, go2rtc: Arc<Go2Rtc>, recordings_dir: PathBuf, shutdown: Arc<AtomicBool>) {
-    let ffmpeg = match recorder::locate_ffmpeg(None) {
+pub fn run(
+    db: Db,
+    go2rtc: Arc<Go2Rtc>,
+    recordings_dir: PathBuf,
+    ffmpeg_bin: Option<PathBuf>,
+    shutdown: Arc<AtomicBool>,
+) {
+    let ffmpeg = match recorder::locate_ffmpeg(ffmpeg_bin.as_deref()) {
         Ok(p) => p,
         Err(e) => {
             tracing::error!("recording disabled: {e:#}");

@@ -94,15 +94,24 @@ impl Recording {
     }
 }
 
-/// Locate ffmpeg: explicit path, then PATH.
+/// Locate ffmpeg: explicit path, then a vendored ./bin copy, then PATH.
 pub fn locate_ffmpeg(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         anyhow::ensure!(p.exists(), "ffmpeg not found at {}", p.display());
         return Ok(p.to_path_buf());
     }
+    let exe = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+    let vendored = PathBuf::from("bin").join(exe);
+    if vendored.exists() {
+        return Ok(vendored);
+    }
     which::which("ffmpeg").context(
-        "ffmpeg not found on PATH. Install it (e.g. winget install Gyan.FFmpeg) \
-         or set its location in settings.",
+        "ffmpeg not found. Install it (e.g. winget install Gyan.FFmpeg), drop it \
+         at ./bin/, or set FFMPEG_BIN.",
     )
 }
 

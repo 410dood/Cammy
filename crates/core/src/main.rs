@@ -26,6 +26,10 @@ struct Args {
     /// Path to the go2rtc binary. Falls back to ./bin, then PATH.
     #[arg(long, env = "GO2RTC_BIN")]
     go2rtc_bin: Option<PathBuf>,
+
+    /// Path to the ffmpeg binary. Falls back to ./bin, then PATH.
+    #[arg(long, env = "FFMPEG_BIN")]
+    ffmpeg_bin: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -57,6 +61,7 @@ async fn main() -> Result<()> {
             data_dir: args.data_dir,
             ui_dir: args.ui_dir,
             go2rtc_bin: args.go2rtc_bin,
+            ffmpeg_bin: args.ffmpeg_bin,
         },
         shutdown_rx,
     )
