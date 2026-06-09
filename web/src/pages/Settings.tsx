@@ -154,6 +154,22 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               force CPU
               <input type="checkbox" checked={s.force_cpu} onChange={() => set({ force_cpu: !s.force_cpu })} />
             </label>
+            <label className="toggle field">
+              face recognition
+              <input
+                type="checkbox"
+                checked={s.face_recognition}
+                onChange={() => set({ face_recognition: !s.face_recognition })}
+              />
+            </label>
+            <label className="field">
+              face match threshold (0-1)
+              <input
+                type="number" step="0.05" min="0" max="1"
+                value={s.face_match_threshold}
+                onChange={(e) => set({ face_match_threshold: num(e.target.value, s.face_match_threshold) })}
+              />
+            </label>
           </div>
         </div>
 

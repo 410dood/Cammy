@@ -33,41 +33,48 @@ pub struct Detector {
     iou: f32,
 }
 
+/// Build an ONNX Runtime session with the best execution provider for this OS
+/// (DirectML / CoreML / CUDA) and CPU fallback. Shared by every model we run
+/// (YOLO objects, face detection, face embeddings).
+pub fn build_ort_session(model_path: &str, force_cpu: bool) -> Result<Session> {
+    let mut builder = Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .with_intra_threads(4)?;
+
+    if !force_cpu {
+        #[cfg(target_os = "windows")]
+        {
+            use ort::execution_providers::DirectMLExecutionProvider;
+            let ep = DirectMLExecutionProvider::default();
+            log_ep("DirectML", ep.is_available().unwrap_or(false));
+            builder = builder.with_execution_providers([ep.build()])?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use ort::execution_providers::CoreMLExecutionProvider;
+            let ep = CoreMLExecutionProvider::default();
+            log_ep("CoreML", ep.is_available().unwrap_or(false));
+            builder = builder.with_execution_providers([ep.build()])?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use ort::execution_providers::CUDAExecutionProvider;
+            let ep = CUDAExecutionProvider::default();
+            log_ep("CUDA", ep.is_available().unwrap_or(false));
+            builder = builder.with_execution_providers([ep.build()])?;
+        }
+    }
+
+    builder
+        .commit_from_file(model_path)
+        .with_context(|| format!("loading model {model_path}"))
+}
+
 impl Detector {
     /// Load the model with the best execution provider for this OS (or CPU when
     /// `force_cpu` is set). `conf` / `iou` are the confidence and NMS thresholds.
     pub fn new(model_path: &str, force_cpu: bool, conf: f32, iou: f32) -> Result<Self> {
-        let mut builder = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?;
-
-        if !force_cpu {
-            #[cfg(target_os = "windows")]
-            {
-                use ort::execution_providers::DirectMLExecutionProvider;
-                let ep = DirectMLExecutionProvider::default();
-                log_ep("DirectML", ep.is_available().unwrap_or(false));
-                builder = builder.with_execution_providers([ep.build()])?;
-            }
-            #[cfg(target_os = "macos")]
-            {
-                use ort::execution_providers::CoreMLExecutionProvider;
-                let ep = CoreMLExecutionProvider::default();
-                log_ep("CoreML", ep.is_available().unwrap_or(false));
-                builder = builder.with_execution_providers([ep.build()])?;
-            }
-            #[cfg(target_os = "linux")]
-            {
-                use ort::execution_providers::CUDAExecutionProvider;
-                let ep = CUDAExecutionProvider::default();
-                log_ep("CUDA", ep.is_available().unwrap_or(false));
-                builder = builder.with_execution_providers([ep.build()])?;
-            }
-        }
-
-        let session = builder
-            .commit_from_file(model_path)
-            .with_context(|| format!("loading model {model_path}"))?;
+        let session = build_ort_session(model_path, force_cpu)?;
         Ok(Self { session, conf, iou })
     }
 

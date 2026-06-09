@@ -35,6 +35,7 @@ export interface CamEvent {
   score: number;
   box: [number, number, number, number];
   snapshot: string | null;
+  face: string | null;
 }
 
 export interface Segment {
@@ -64,6 +65,10 @@ export interface Settings {
   alert_labels: string[];
   mqtt_url: string;
   mqtt_prefix: string;
+  face_recognition: boolean;
+  face_match_threshold: number;
+  face_det_model: string;
+  face_rec_model: string;
 }
 
 export interface CamStorage {
@@ -148,6 +153,16 @@ export const api = {
     req<{ segment: Segment; offset_secs: number }>(
       `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
     ),
+  faces: () =>
+    req<{ enrolled: { id: number; name: string; created_ts: number }[]; unknown: string[] }>(
+      "/api/faces"
+    ),
+  enrollFace: (name: string, unknown_file: string) =>
+    req<{ id: number }>("/api/faces", {
+      method: "POST",
+      body: JSON.stringify({ name, unknown_file }),
+    }),
+  deleteFace: (id: number) => req<void>(`/api/faces/${id}`, { method: "DELETE" }),
   ptzCaps: (id: number) => req<{ supported: boolean }>(`/api/cameras/${id}/ptz`),
   ptz: (id: number, cmd: { action: "move" | "stop"; pan?: number; tilt?: number; zoom?: number }) =>
     req<{ ok: boolean }>(`/api/cameras/${id}/ptz`, { method: "POST", body: JSON.stringify(cmd) }),

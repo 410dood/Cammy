@@ -34,5 +34,6 @@ base64.workspace = true
 rand.workspace = true
 
 detector = { path = "../detector" }
+facerec = { path = "../facerec" }
 motion = { path = "../motion" }
 recorder = { path = "../recorder" }

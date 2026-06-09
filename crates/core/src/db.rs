@@ -77,6 +77,18 @@ pub struct Event {
     #[serde(rename = "box")]
     pub bbox: [f32; 4],
     pub snapshot: Option<String>,
+    /// Recognized identity (face recognition), when the detection is a person
+    /// whose face matched an enrolled embedding.
+    pub face: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FaceRow {
+    pub id: i64,
+    pub name: String,
+    #[serde(skip)]
+    pub embedding: Vec<f32>,
+    pub created_ts: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -132,6 +144,14 @@ pub struct Settings {
     pub mqtt_url: String,
     /// Topic prefix for MQTT publishes.
     pub mqtt_prefix: String,
+    /// Run face recognition on person detections (needs the two face models
+    /// on disk; silently inactive when they are missing).
+    pub face_recognition: bool,
+    /// Cosine similarity needed to call a face a known person (ArcFace
+    /// same-person scores typically land 0.4-0.7).
+    pub face_match_threshold: f32,
+    pub face_det_model: String,
+    pub face_rec_model: String,
 }
 
 impl Default for Settings {
@@ -165,6 +185,10 @@ impl Default for Settings {
             alert_labels: ["person"].map(String::from).to_vec(),
             mqtt_url: String::new(),
             mqtt_prefix: "zoomy".into(),
+            face_recognition: true,
+            face_match_threshold: 0.4,
+            face_det_model: "det_10g.onnx".into(),
+            face_rec_model: "w600k_r50.onnx".into(),
         }
     }
 }
@@ -214,6 +238,15 @@ impl Db {
         // Additive migrations; "duplicate column" on rerun is expected.
         let _ = conn.execute("ALTER TABLE cameras ADD COLUMN detect_json TEXT", []);
         let _ = conn.execute("ALTER TABLE cameras ADD COLUMN detect_source TEXT", []);
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN face TEXT", []);
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS faces (
+                 id         INTEGER PRIMARY KEY,
+                 name       TEXT NOT NULL,
+                 embedding  BLOB NOT NULL,
+                 created_ts INTEGER NOT NULL
+             );",
+        )?;
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
@@ -313,12 +346,15 @@ impl Db {
         score: f32,
         bbox: [f32; 4],
         snapshot: Option<&str>,
+        face: Option<&str>,
     ) -> Result<i64> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![camera_id, ts, label, score, bbox[0], bbox[1], bbox[2], bbox[3], snapshot],
+            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                camera_id, ts, label, score, bbox[0], bbox[1], bbox[2], bbox[3], snapshot, face
+            ],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -333,7 +369,7 @@ impl Db {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
-                    e.x1, e.y1, e.x2, e.y2, e.snapshot
+                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -351,6 +387,7 @@ impl Db {
                     score: r.get(5)?,
                     bbox: [r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?],
                     snapshot: r.get(10)?,
+                    face: r.get(11)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -362,7 +399,7 @@ impl Db {
         let ev = conn
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
-                        e.x1, e.y1, e.x2, e.y2, e.snapshot
+                        e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 |r| {
@@ -375,11 +412,50 @@ impl Db {
                         score: r.get(5)?,
                         bbox: [r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?],
                         snapshot: r.get(10)?,
+                        face: r.get(11)?,
                     })
                 },
             )
             .optional()?;
         Ok(ev)
+    }
+
+    // --- faces -------------------------------------------------------------
+
+    pub fn add_face(&self, name: &str, embedding: &[f32]) -> Result<i64> {
+        let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO faces (name, embedding, created_ts) VALUES (?1, ?2, ?3)",
+            params![name, bytes, chrono::Local::now().timestamp()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn list_faces(&self) -> Result<Vec<FaceRow>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id, name, embedding, created_ts FROM faces ORDER BY name")?;
+        let rows = stmt
+            .query_map([], |r| {
+                let bytes: Vec<u8> = r.get(2)?;
+                Ok(FaceRow {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    embedding: bytes
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect(),
+                    created_ts: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_face(&self, id: i64) -> Result<()> {
+        self.conn().execute("DELETE FROM faces WHERE id=?1", [id])?;
+        Ok(())
     }
 
     // --- segments --------------------------------------------------------
@@ -598,9 +674,9 @@ mod tests {
         let cam = db
             .add_camera("porch", "rtsp://x", None, true, true)
             .unwrap();
-        db.add_event(cam.id, 100, "person", 0.9, [1.0, 2.0, 3.0, 4.0], None)
+        db.add_event(cam.id, 100, "person", 0.9, [1.0, 2.0, 3.0, 4.0], None, None)
             .unwrap();
-        db.add_event(cam.id, 200, "car", 0.8, [0.0; 4], None)
+        db.add_event(cam.id, 200, "car", 0.8, [0.0; 4], None, None)
             .unwrap();
 
         assert_eq!(db.list_events(None, None, None, 10).unwrap().len(), 2);

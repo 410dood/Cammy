@@ -1,0 +1,33 @@
+[package]
+name = "facerec"
+version = "0.1.0"
+description = "Face detection (SCRFD) + recognition embeddings (ArcFace) via ONNX Runtime"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+image.workspace = true
+serde.workspace = true
+
+detector = { path = "../detector" }
+
+# Same pinned ort + feature set as the detector crate (see CLAUDE.md gotchas).
+ort = { version = "=2.0.0-rc.10", default-features = false, features = [
+    "std",
+    "ndarray",
+    "download-binaries",
+    "copy-dylibs",
+] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["directml"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["coreml"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["cuda"] }

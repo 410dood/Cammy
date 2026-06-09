@@ -36,6 +36,11 @@ pub fn run(
 ) {
     let mut detector: Option<Detector> = None;
     let mut detector_key = String::new();
+    let mut face_engine: Option<facerec::FaceEngine> = None;
+    let mut face_key = String::new();
+    // Throttle unknown-face crops: one per camera per 30s, or enrollment
+    // would drown in near-duplicates.
+    let mut last_unknown_save: HashMap<i64, i64> = HashMap::new();
     // Per-camera motion gate, keyed with the threshold it was built for so a
     // settings or per-camera-config change rebuilds it.
     let mut gates: HashMap<i64, (f32, MotionGate)> = HashMap::new();
@@ -161,7 +166,50 @@ pub fn run(
                 tracing::warn!("snapshot save failed: {e:#}");
             }
 
-            for d in &wanted {
+            // --- face recognition on person detections -------------------
+            let mut face_names: Vec<Option<String>> = vec![None; wanted.len()];
+            if settings.face_recognition && wanted.iter().any(|d| d.label == "person") {
+                let fkey = format!(
+                    "{}|{}|{}",
+                    settings.face_det_model, settings.face_rec_model, settings.force_cpu
+                );
+                if (face_engine.is_none() || fkey != face_key)
+                    && std::path::Path::new(&settings.face_det_model).exists()
+                    && std::path::Path::new(&settings.face_rec_model).exists()
+                {
+                    match facerec::FaceEngine::new(
+                        &settings.face_det_model,
+                        &settings.face_rec_model,
+                        settings.force_cpu,
+                    ) {
+                        Ok(e) => {
+                            tracing::info!("face recognition ready");
+                            face_engine = Some(e);
+                            face_key = fkey;
+                        }
+                        Err(e) => tracing::warn!("face engine unavailable: {e:#}"),
+                    }
+                }
+                if let Some(engine) = face_engine.as_mut() {
+                    match run_faces(
+                        engine,
+                        &db,
+                        &frame,
+                        &wanted,
+                        &mut face_names,
+                        settings.face_match_threshold,
+                        &snapshots_dir,
+                        cam,
+                        now,
+                        &mut last_unknown_save,
+                    ) {
+                        Ok(()) => {}
+                        Err(e) => tracing::debug!(camera = %cam.name, "face stage: {e:#}"),
+                    }
+                }
+            }
+
+            for (i, d) in wanted.iter().enumerate() {
                 last_event.insert((cam.id, d.label), now);
                 match db.add_event(
                     cam.id,
@@ -170,12 +218,14 @@ pub fn run(
                     d.score,
                     [d.x1, d.y1, d.x2, d.y2],
                     Some(&snap_rel),
+                    face_names[i].as_deref(),
                 ) {
                     Ok(id) => {
                         tracing::info!(
                             camera = %cam.name,
                             label = d.label,
                             score = format!("{:.0}%", d.score * 100.0),
+                            face = face_names[i].as_deref().unwrap_or("-"),
                             event = id,
                             "event recorded"
                         );
@@ -202,6 +252,97 @@ pub fn run(
             sleep_responsive(budget - elapsed, &shutdown);
         }
     }
+}
+
+/// Detect + embed faces in the frame, match against enrolled identities, and
+/// fill `face_names` for person detections whose box contains a face center.
+/// Confident-but-unknown faces are saved (crop + embedding sidecar) for the
+/// enrollment UI, throttled per camera.
+#[allow(clippy::too_many_arguments)]
+fn run_faces(
+    engine: &mut facerec::FaceEngine,
+    db: &Db,
+    frame: &DynamicImage,
+    wanted: &[&detector::Detection],
+    face_names: &mut [Option<String>],
+    threshold: f32,
+    snapshots_dir: &std::path::Path,
+    cam: &crate::db::Camera,
+    now: i64,
+    last_unknown_save: &mut HashMap<i64, i64>,
+) -> Result<()> {
+    let faces = engine.detect(frame, 0.5)?;
+    if faces.is_empty() {
+        return Ok(());
+    }
+    let enrolled = db.list_faces()?;
+
+    for face in &faces {
+        let emb = engine.embed(frame, face)?;
+        let best = enrolled
+            .iter()
+            .map(|f| (facerec::cosine(&emb, &f.embedding), f))
+            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let name = match best {
+            Some((sim, f)) if sim >= threshold => Some(f.name.clone()),
+            _ => None,
+        };
+
+        let (fcx, fcy) = ((face.x1 + face.x2) / 2.0, (face.y1 + face.y2) / 2.0);
+        if let Some(name) = &name {
+            for (i, d) in wanted.iter().enumerate() {
+                if d.label == "person" && fcx >= d.x1 && fcx <= d.x2 && fcy >= d.y1 && fcy <= d.y2 {
+                    face_names[i] = Some(name.clone());
+                }
+            }
+        } else if face.score >= 0.6 {
+            // Save for enrollment, at most one crop per camera per 30s.
+            let due = last_unknown_save
+                .get(&cam.id)
+                .map(|t| now - t >= 30)
+                .unwrap_or(true);
+            if due {
+                last_unknown_save.insert(cam.id, now);
+                save_unknown_face(frame, face, &emb, snapshots_dir, &cam.name, now)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Crop the face (with margin) into data/faces/unknown plus an embedding
+/// sidecar the enrollment endpoint can ingest without re-running the model.
+fn save_unknown_face(
+    frame: &DynamicImage,
+    face: &facerec::Face,
+    emb: &[f32],
+    snapshots_dir: &std::path::Path,
+    camera: &str,
+    now: i64,
+) -> Result<()> {
+    let dir = snapshots_dir
+        .parent()
+        .unwrap_or(snapshots_dir)
+        .join("faces")
+        .join("unknown");
+    std::fs::create_dir_all(&dir).ok();
+    let (fw, fh) = (face.x2 - face.x1, face.y2 - face.y1);
+    let margin = fw.max(fh) * 0.3;
+    let x = (face.x1 - margin).max(0.0) as u32;
+    let y = (face.y1 - margin).max(0.0) as u32;
+    let w = ((fw + margin * 2.0) as u32).min(frame.width().saturating_sub(x));
+    let h = ((fh + margin * 2.0) as u32).min(frame.height().saturating_sub(y));
+    if w < 8 || h < 8 {
+        return Ok(());
+    }
+    let name = format!("{camera}-{now}.jpg");
+    frame.crop_imm(x, y, w, h).save(dir.join(&name))?;
+    std::fs::write(
+        dir.join(format!("{name}.json")),
+        serde_json::to_string(emb)?,
+    )?;
+    tracing::info!(camera, file = name, "unknown face saved for enrollment");
+    Ok(())
 }
 
 /// Fire-and-forget event notification (Blue Iris alarm-server style). Runs on

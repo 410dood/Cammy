@@ -28,8 +28,10 @@ pub struct EventMsg {
     pub snapshot: String,
 }
 
+type Credentials = Option<(String, String)>;
+
 /// Parse "mqtt://user:pass@host:1883", "host:1883" or "host" forms.
-fn parse_url(url: &str) -> Option<(String, u16, Option<(String, String)>)> {
+fn parse_url(url: &str) -> Option<(String, u16, Credentials)> {
     let rest = url.strip_prefix("mqtt://").unwrap_or(url).trim();
     if rest.is_empty() {
         return None;

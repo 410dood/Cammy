@@ -22,6 +22,7 @@ pub struct AppState {
     pub go2rtc: Arc<Go2Rtc>,
     pub snapshots_dir: PathBuf,
     pub clips_dir: PathBuf,
+    pub faces_dir: PathBuf,
     pub ffmpeg_bin: Option<PathBuf>,
     pub status: StatusBoard,
     pub sessions: crate::auth::Sessions,
@@ -44,6 +45,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cameras/{id}/ptz", get(ptz_caps).post(ptz_command))
         .route("/api/events", get(list_events))
         .route("/api/events/{id}/clip", get(event_clip))
+        .route("/api/faces", get(faces_overview).post(enroll_face))
+        .route("/api/faces/{id}", axum::routing::delete(delete_face_api))
+        .route("/api/faces/unknown/{file}", get(unknown_face_img))
         .route("/api/snapshots/{file}", get(snapshot))
         .route("/api/recordings", get(list_recordings))
         .route("/api/recordings/at", get(recording_at))
@@ -513,6 +517,85 @@ async fn snapshot(
         return Err(bad_request("bad snapshot name"));
     }
     let path = st.snapshots_dir.join(&file);
+    if !path.exists() {
+        return Err(not_found());
+    }
+    Ok(ServeFile::new(path).oneshot(req).await.into_response())
+}
+
+// --- faces -------------------------------------------------------------------
+
+fn safe_file(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['/', '\\']) && !name.contains("..")
+}
+
+/// Enrolled identities + unknown face crops waiting to be named.
+async fn faces_overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let enrolled = st.db.list_faces()?;
+    let mut unknown: Vec<String> = std::fs::read_dir(st.faces_dir.join("unknown"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| n.ends_with(".jpg"))
+                .collect()
+        })
+        .unwrap_or_default();
+    unknown.sort();
+    unknown.reverse(); // newest first (timestamped names)
+    Ok(Json(
+        serde_json::json!({ "enrolled": enrolled, "unknown": unknown }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct EnrollReq {
+    name: String,
+    unknown_file: String,
+}
+
+/// Name an unknown face: ingest the embedding sidecar saved by the pipeline,
+/// then remove the crop from the unknown queue.
+async fn enroll_face(
+    State(st): State<AppState>,
+    Json(req): Json<EnrollReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let name = req.name.trim();
+    if name.is_empty() || name.len() > 64 {
+        return Err(bad_request("name must be 1-64 characters"));
+    }
+    if !safe_file(&req.unknown_file) {
+        return Err(bad_request("bad file name"));
+    }
+    let dir = st.faces_dir.join("unknown");
+    let sidecar = dir.join(format!("{}.json", req.unknown_file));
+    let json = std::fs::read_to_string(&sidecar)
+        .map_err(|_| bad_request("embedding sidecar missing for that crop"))?;
+    let embedding: Vec<f32> =
+        serde_json::from_str(&json).map_err(|_| bad_request("corrupt embedding sidecar"))?;
+    if embedding.len() != 512 {
+        return Err(bad_request("unexpected embedding size"));
+    }
+    let id = st.db.add_face(name, &embedding)?;
+    let _ = std::fs::remove_file(dir.join(&req.unknown_file));
+    let _ = std::fs::remove_file(sidecar);
+    Ok(Json(serde_json::json!({ "id": id, "name": name })))
+}
+
+async fn delete_face_api(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    st.db.delete_face(id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn unknown_face_img(
+    State(st): State<AppState>,
+    Path(file): Path<String>,
+    req: Request,
+) -> ApiResult<Response> {
+    if !safe_file(&file) {
+        return Err(bad_request("bad file name"));
+    }
+    let path = st.faces_dir.join("unknown").join(&file);
     if !path.exists() {
         return Err(not_found());
     }

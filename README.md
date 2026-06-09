@@ -44,6 +44,10 @@ Prerequisites:
 - **ffmpeg** on `PATH` (e.g. `winget install Gyan.FFmpeg`).
 - A **YOLOv8 ONNX model** at `./yolov8n.onnx`:
   `pip install ultralytics && yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12`
+- *(Optional, for face recognition)* the InsightFace **buffalo_l** pair from
+  [Hugging Face](https://huggingface.co/immich-app/buffalo_l): save
+  `detection/model.onnx` as `./det_10g.onnx` and `recognition/model.onnx` as
+  `./w600k_r50.onnx`. Face recognition silently stays off without them.
 
 Build and run:
 
