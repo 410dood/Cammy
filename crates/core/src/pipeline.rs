@@ -38,6 +38,7 @@ pub fn run(
     let mut detector_key = String::new();
     let mut face_engine: Option<facerec::FaceEngine> = None;
     let mut face_key = String::new();
+    let mut clip: Option<crate::smart::ImageEmbedder> = None;
     // Throttle unknown-face crops: one per camera per 30s, or enrollment
     // would drown in near-duplicates.
     let mut last_unknown_save: HashMap<i64, i64> = HashMap::new();
@@ -209,6 +210,7 @@ pub fn run(
                 }
             }
 
+            let mut new_event_ids: Vec<i64> = Vec::new();
             for (i, d) in wanted.iter().enumerate() {
                 last_event.insert((cam.id, d.label), now);
                 match db.add_event(
@@ -240,8 +242,33 @@ pub fn run(
                             ts: now,
                             snapshot: format!("/api/snapshots/{snap_rel}"),
                         });
+                        new_event_ids.push(id);
                     }
                     Err(e) => tracing::warn!("event insert failed: {e:#}"),
+                }
+            }
+
+            // Smart search: one CLIP embedding per event frame (shared by its
+            // events) so snapshots become text-searchable.
+            if !new_event_ids.is_empty() && crate::smart::models_present() {
+                if clip.is_none() {
+                    match crate::smart::ImageEmbedder::try_new() {
+                        Ok(e) => {
+                            tracing::info!("smart search (CLIP) ready");
+                            clip = Some(e);
+                        }
+                        Err(e) => tracing::warn!("smart search unavailable: {e:#}"),
+                    }
+                }
+                if let Some(embedder) = clip.as_mut() {
+                    match embedder.embed(&frame) {
+                        Ok(emb) => {
+                            for id in &new_event_ids {
+                                let _ = db.set_event_embedding(*id, &emb);
+                            }
+                        }
+                        Err(e) => tracing::debug!("clip embed failed: {e:#}"),
+                    }
                 }
             }
         }

@@ -48,6 +48,11 @@ Prerequisites:
   [Hugging Face](https://huggingface.co/immich-app/buffalo_l): save
   `detection/model.onnx` as `./det_10g.onnx` and `recognition/model.onnx` as
   `./w600k_r50.onnx`. Face recognition silently stays off without them.
+- *(Optional, for natural-language smart search)* CLIP from
+  [Xenova/clip-vit-base-patch32](https://huggingface.co/Xenova/clip-vit-base-patch32):
+  save `onnx/vision_model_quantized.onnx` as `./clip_vision.onnx`,
+  `onnx/text_model_quantized.onnx` as `./clip_text.onnx`, and `tokenizer.json`
+  as `./clip_tokenizer.json`. Enables the ✨ search box on the Events page.
 
 Build and run:
 

@@ -17,6 +17,7 @@ mod mqtt;
 mod pipeline;
 mod ptz;
 mod record;
+mod smart;
 mod status;
 
 use std::net::SocketAddr;

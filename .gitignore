@@ -39,3 +39,6 @@ Thumbs.db
 # webhook test listener output
 /webhook_log.jsonl
 /mqtt_sub.log
+
+# CLIP tokenizer (downloaded with the smart-search models)
+/clip_tokenizer.json

@@ -45,6 +45,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cameras/{id}/ptz", get(ptz_caps).post(ptz_command))
         .route("/api/events", get(list_events))
         .route("/api/events/{id}/clip", get(event_clip))
+        .route("/api/search", get(smart_search))
         .route("/api/faces", get(faces_overview).post(enroll_face))
         .route("/api/faces/{id}", axum::routing::delete(delete_face_api))
         .route("/api/faces/unknown/{file}", get(unknown_face_img))
@@ -521,6 +522,56 @@ async fn snapshot(
         return Err(not_found());
     }
     Ok(ServeFile::new(path).oneshot(req).await.into_response())
+}
+
+// --- smart search ------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+}
+
+fn default_search_limit() -> usize {
+    24
+}
+
+/// Natural-language event search (UniFi AI Key style): CLIP text embedding of
+/// the query ranked against the stored snapshot embeddings.
+async fn smart_search(
+    State(st): State<AppState>,
+    Query(q): Query<SearchQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !crate::smart::models_present() {
+        return Err(bad_request(
+            "smart search models not installed (see README: clip_vision.onnx, \
+             clip_text.onnx, clip_tokenizer.json)",
+        ));
+    }
+    let query = q.q.trim().to_string();
+    if query.is_empty() {
+        return Err(bad_request("empty query"));
+    }
+    let qe = tokio::task::spawn_blocking(move || crate::smart::embed_text(&query))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+
+    let mut scored: Vec<(f32, i64)> = st
+        .db
+        .all_event_embeddings()?
+        .into_iter()
+        .map(|(id, emb)| (crate::smart::cosine(&qe, &emb), id))
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut results = Vec::new();
+    for (sim, id) in scored.into_iter().take(q.limit.min(100)) {
+        if let Some(ev) = st.db.get_event(id)? {
+            results.push(serde_json::json!({ "similarity": sim, "event": ev }));
+        }
+    }
+    Ok(Json(serde_json::json!({ "results": results })))
 }
 
 // --- faces -------------------------------------------------------------------

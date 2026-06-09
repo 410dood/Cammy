@@ -11,6 +11,10 @@ use ort::execution_providers::ExecutionProvider;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Tensor;
 
+// Re-exported so downstream crates (core's smart-search module) can build
+// tensors and run sessions without declaring the pinned ort dep themselves.
+pub use ort;
+
 /// Square input size YOLOv8 expects.
 const IMGSZ: u32 = 640;
 

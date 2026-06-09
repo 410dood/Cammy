@@ -153,6 +153,10 @@ export const api = {
     req<{ segment: Segment; offset_secs: number }>(
       `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
     ),
+  search: (q: string, limit = 24) =>
+    req<{ results: { similarity: number; event: CamEvent }[] }>(
+      `/api/search?q=${encodeURIComponent(q)}&limit=${limit}`
+    ),
   faces: () =>
     req<{ enrolled: { id: number; name: string; created_ts: number }[]; unknown: string[] }>(
       "/api/faces"

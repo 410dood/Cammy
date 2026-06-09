@@ -245,6 +245,10 @@ impl Db {
                  name       TEXT NOT NULL,
                  embedding  BLOB NOT NULL,
                  created_ts INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS event_embeddings (
+                 event_id  INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+                 embedding BLOB NOT NULL
              );",
         )?;
         Ok(Self(Arc::new(Mutex::new(conn))))
@@ -418,6 +422,35 @@ impl Db {
             )
             .optional()?;
         Ok(ev)
+    }
+
+    // --- smart-search embeddings -------------------------------------------
+
+    pub fn set_event_embedding(&self, event_id: i64, embedding: &[f32]) -> Result<()> {
+        let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        self.conn().execute(
+            "INSERT OR REPLACE INTO event_embeddings (event_id, embedding) VALUES (?1, ?2)",
+            params![event_id, bytes],
+        )?;
+        Ok(())
+    }
+
+    pub fn all_event_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT event_id, embedding FROM event_embeddings")?;
+        let rows = stmt
+            .query_map([], |r| {
+                let bytes: Vec<u8> = r.get(1)?;
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    bytes
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect(),
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     // --- faces -------------------------------------------------------------

@@ -34,6 +34,7 @@ which of those features we adopt, in what order.*
 | 14 | Face recognition / LPR | Frigate 0.16 (free since 0.16) | ✅ face recognition shipped (SCRFD+ArcFace, enrollment UI, validated live); LPR later |
 | 15 | MQTT broker integration (Home Assistant) | Frigate | ✅ shipped (verified against local broker) |
 | 16 | Auth + HTTPS for off-LAN exposure | all commercial | ✅ shipped (LAN password; argon2+HTTPS still needed for WAN) |
+| 17 | Natural-language smart search (CLIP) | UniFi AI Key | ✅ shipped (validated ranking on live events) |
 
 Sources: [Frigate docs](https://docs.frigate.video/), [Frigate releases](https://github.com/blakeblackshear/frigate/releases),
 [Frigate review system](https://docs.frigate.video/configuration/review/),

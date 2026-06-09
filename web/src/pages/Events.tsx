@@ -7,6 +7,26 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
   const [label, setLabel] = useState("");
   const [review, setReview] = useState<"all" | "alerts">("all");
   const [alertLabels, setAlertLabels] = useState<string[]>(["person"]);
+  const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<CamEvent[] | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  const runSearch = async () => {
+    const q = query.trim();
+    if (!q) {
+      setSearchResults(null);
+      return;
+    }
+    setSearching(true);
+    try {
+      const r = await api.search(q, 24);
+      setSearchResults(r.results.map((x) => x.event));
+    } catch {
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
   const [open, setOpen] = useState<CamEvent | null>(null);
   const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
   const [noClip, setNoClip] = useState<number | null>(null);
@@ -49,11 +69,40 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
 
   const labels = [...new Set(events.map((e) => e.label))];
   const shown =
-    review === "alerts" ? events.filter((e) => alertLabels.includes(e.label)) : events;
+    searchResults ??
+    (review === "alerts" ? events.filter((e) => alertLabels.includes(e.label)) : events);
 
   return (
     <>
       <h1>Events</h1>
+
+      <div className="smart-search">
+        <span>✨</span>
+        <input
+          type="text"
+          placeholder='Smart search — describe what you are looking for ("person in a dark coat", "blue car")'
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            if (e.target.value.trim() === "") setSearchResults(null);
+          }}
+          onKeyDown={(e) => e.key === "Enter" && runSearch()}
+        />
+        {searchResults && (
+          <button
+            className="ghost"
+            onClick={() => {
+              setQuery("");
+              setSearchResults(null);
+            }}
+          >
+            clear
+          </button>
+        )}
+        <button className="primary" onClick={runSearch} disabled={searching || !query.trim()}>
+          {searching ? "searching…" : "Search"}
+        </button>
+      </div>
       <div className="row" style={{ marginBottom: 16 }}>
         <button className={review === "all" ? "primary" : "ghost"} onClick={() => setReview("all")}>
           All
