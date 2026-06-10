@@ -18,6 +18,7 @@ function TuneModal({
     motion_threshold: camera.detect_config.motion_threshold,
     ignore_zones: [...camera.detect_config.ignore_zones],
     autotrack: camera.detect_config.autotrack ?? false,
+    audio_detect: camera.detect_config.audio_detect ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -104,6 +105,14 @@ function TuneModal({
               type="checkbox"
               checked={dc.autotrack}
               onChange={() => setDc({ ...dc, autotrack: !dc.autotrack })}
+            />
+          </label>
+          <label className="toggle field">
+            audio detection
+            <input
+              type="checkbox"
+              checked={dc.audio_detect}
+              onChange={() => setDc({ ...dc, audio_detect: !dc.audio_detect })}
             />
           </label>
         </div>

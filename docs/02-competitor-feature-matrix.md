@@ -35,6 +35,8 @@ which of those features we adopt, in what order.*
 | 15 | MQTT broker integration (Home Assistant) | Frigate | ✅ shipped (verified against local broker) |
 | 16 | Auth + HTTPS for off-LAN exposure | all commercial | ✅ shipped (LAN password; argon2+HTTPS still needed for WAN) |
 | 17 | Natural-language smart search (CLIP) | UniFi AI Key | ✅ shipped (validated ranking on live events) |
+| 18 | PTZ autotracking | Frigate 0.13 | ✅ shipped (move path validated; closed loop pending daylight detections) |
+| 19 | Audio event classification (YAMNet) | Frigate, UniFi AI | ✅ shipped (validated live: tone -> alarm event @0.92 with snapshot) |
 
 Sources: [Frigate docs](https://docs.frigate.video/), [Frigate releases](https://github.com/blakeblackshear/frigate/releases),
 [Frigate review system](https://docs.frigate.video/configuration/review/),

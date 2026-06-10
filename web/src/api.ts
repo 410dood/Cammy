@@ -13,6 +13,7 @@ export interface DetectConfig {
   motion_threshold: number | null;
   ignore_zones: Zone[];
   autotrack: boolean;
+  audio_detect: boolean;
 }
 
 export interface Camera {

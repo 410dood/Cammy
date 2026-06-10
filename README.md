@@ -54,6 +54,10 @@ Prerequisites:
   [monkt/paddleocr-onnx](https://huggingface.co/monkt/paddleocr-onnx)
   `languages/english/rec.onnx` as `./plate_rec.onnx` plus
   `languages/english/dict.txt` as `./plate_dict.txt`.
+- *(Optional, for audio event detection — glass break, sirens, barking…)* YAMNet
+  from [jafet21/yamnetonnx](https://huggingface.co/jafet21/yamnetonnx): save
+  `yamnet.onnx` and `yamnet_class_map.csv` in the repo root, then enable
+  *audio detection* per camera in its Tune dialog.
 - *(Optional, for natural-language smart search)* CLIP from
   [Xenova/clip-vit-base-patch32](https://huggingface.co/Xenova/clip-vit-base-patch32):
   save `onnx/vision_model_quantized.onnx` as `./clip_vision.onnx`,

@@ -1,4 +1,4 @@
-//! SQLite store: camera registry, detection events, recording segment index,
+﻿//! SQLite store: camera registry, detection events, recording segment index,
 //! and a single JSON settings blob. Connection is wrapped in a Mutex — every
 //! query here is sub-millisecond, so contention is a non-issue at home scale.
 
@@ -67,6 +67,8 @@ pub struct DetectConfig {
     /// PTZ autotracking (Frigate-style): steer the camera to keep tracked
     /// objects centered. Only effective on ONVIF PTZ-capable cameras.
     pub autotrack: bool,
+    /// Classify this camera's audio (YAMNet) for security-relevant sounds.
+    pub audio_detect: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -227,6 +229,10 @@ pub struct Settings {
     pub face_match_threshold: f32,
     pub face_det_model: String,
     pub face_rec_model: String,
+    /// AudioSet display names (yamnet_class_map.csv) that produce events.
+    pub audio_labels: Vec<String>,
+    /// Mean YAMNet score required to fire an audio event.
+    pub audio_threshold: f32,
 }
 
 impl Default for Settings {
@@ -265,6 +271,23 @@ impl Default for Settings {
             face_match_threshold: 0.4,
             face_det_model: "det_10g.onnx".into(),
             face_rec_model: "w600k_r50.onnx".into(),
+            audio_labels: [
+                "Glass",
+                "Shatter",
+                "Gunshot, gunfire",
+                "Screaming",
+                "Smoke detector, smoke alarm",
+                "Fire alarm",
+                "Siren",
+                "Car alarm",
+                "Alarm",
+                "Bark",
+                "Doorbell",
+                "Knock",
+            ]
+            .map(String::from)
+            .to_vec(),
+            audio_threshold: 0.4,
         }
     }
 }
@@ -927,6 +950,7 @@ mod tests {
                 h: 0.5,
             }],
             autotrack: true,
+            audio_detect: false,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();

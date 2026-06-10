@@ -10,6 +10,7 @@
 //!   - runs the motion-gated AI detection pipeline (ONNX Runtime)
 
 mod api;
+mod audio;
 mod auth;
 mod db;
 mod go2rtc;
@@ -91,6 +92,7 @@ pub async fn run(
         move || record::run(db, go2rtc, dir, ffmpeg_bin, status, stop)
     })?;
     let (mqtt_tx, mqtt_rx) = std::sync::mpsc::channel::<mqtt::EventMsg>();
+    let mqtt_tx2 = mqtt_tx.clone();
     let det_thread = std::thread::Builder::new().name("detector".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -104,6 +106,16 @@ pub async fn run(
     let mqtt_thread = std::thread::Builder::new().name("mqtt".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || mqtt::run(db, mqtt_rx, stop)
+    })?;
+    let audio_thread = std::thread::Builder::new().name("audio".into()).spawn({
+        let (db, go2rtc, dir, stop) = (
+            db.clone(),
+            go2rtc.clone(),
+            snapshots_dir.clone(),
+            workers_stop.clone(),
+        );
+        let (ffmpeg_bin, tx) = (cfg.ffmpeg_bin.clone(), mqtt_tx2);
+        move || audio::run(db, go2rtc, ffmpeg_bin, dir, tx, stop)
     })?;
 
     // go2rtc watchdog.
@@ -166,6 +178,7 @@ pub async fn run(
     let _ = tokio::task::spawn_blocking(move || {
         let _ = rec_thread.join();
         let _ = det_thread.join();
+        let _ = audio_thread.join();
         let _ = mqtt_thread.join();
     })
     .await;
