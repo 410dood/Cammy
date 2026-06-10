@@ -76,6 +76,7 @@ export interface Settings {
   face_match_threshold: number;
   face_det_model: string;
   face_rec_model: string;
+  health_ntfy_url: string;
 }
 
 export interface CamStorage {

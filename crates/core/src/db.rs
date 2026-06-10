@@ -288,6 +288,9 @@ pub struct Settings {
     pub audio_labels: Vec<String>,
     /// Mean YAMNet score required to fire an audio event.
     pub audio_threshold: f32,
+    /// ntfy topic URL for camera health pushes (offline / back online);
+    /// empty = off.
+    pub health_ntfy_url: String,
 }
 
 impl Default for Settings {
@@ -345,6 +348,7 @@ impl Default for Settings {
             .map(String::from)
             .to_vec(),
             audio_threshold: 0.4,
+            health_ntfy_url: String::new(),
         }
     }
 }

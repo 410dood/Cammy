@@ -187,6 +187,15 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(e) => set({ webhook_url: e.target.value })}
               />
             </label>
+            <label className="field" style={{ flex: 1, minWidth: 320 }}>
+              camera health push — ntfy topic URL (offline/online alerts; empty = off)
+              <input
+                type="text"
+                placeholder="https://ntfy.sh/your-secret-topic"
+                value={s.health_ntfy_url ?? ""}
+                onChange={(e) => set({ health_ntfy_url: e.target.value })}
+              />
+            </label>
             <label className="field" style={{ minWidth: 240 }}>
               MQTT broker (empty = off)
               <input

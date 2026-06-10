@@ -44,6 +44,7 @@ which of those features we adopt, in what order.*
 | 24 | Alarm rule schedules (days + time window, overnight) | Blue Iris profiles/schedules | ✅ shipped (validated live: in-window rule fired 5x while night-window and wrong-day rules on the same events stayed silent; unit tests cover overnight + day filters) |
 | 25 | Event-only recording retention (per camera) | Frigate retain modes | ✅ shipped (validated live: swept 235 eventless porch segments after 15-min grace, kept the segment with a nearby event) |
 | 26 | PWA install (manifest + icons, add-to-home-screen) | UniFi/Reolink mobile apps | ✅ shipped (manifest served as application/manifest+json with 192/512 + maskable icons, apple-touch-icon, theme color) |
+| 27 | Camera disconnect push alerts (offline / back online) | UniFi Protect, Reolink, Blue Iris watchdog | ✅ shipped (validated live: killed a camera's source → "Camera offline" ntfy push with the error, restored it → "back online" push; intentionally disabled cameras don't alert) |
 
 Sources: [Frigate docs](https://docs.frigate.video/), [Frigate releases](https://github.com/blakeblackshear/frigate/releases),
 [Frigate review system](https://docs.frigate.video/configuration/review/),

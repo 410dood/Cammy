@@ -14,6 +14,7 @@ mod audio;
 mod auth;
 mod db;
 mod go2rtc;
+mod health;
 pub mod lpr;
 mod mqtt;
 mod notify;
@@ -109,6 +110,11 @@ pub async fn run(
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || mqtt::run(db, mqtt_rx, stop)
     })?;
+    let health_thread = std::thread::Builder::new().name("health".into()).spawn({
+        let (db, stop) = (db.clone(), workers_stop.clone());
+        let status = status_board.clone();
+        move || health::run(db, status, stop)
+    })?;
     let audio_thread = std::thread::Builder::new().name("audio".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -183,6 +189,7 @@ pub async fn run(
         let _ = det_thread.join();
         let _ = audio_thread.join();
         let _ = mqtt_thread.join();
+        let _ = health_thread.join();
     })
     .await;
     go2rtc.stop();

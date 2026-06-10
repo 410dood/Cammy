@@ -45,6 +45,18 @@ pub fn fire(rule: &AlarmRule, ev: &AlarmEvent, mqtt_tx: &std::sync::mpsc::Sender
     }
 }
 
+/// Plain-text ntfy push (no attachment) — used for camera health alerts.
+pub fn ntfy_text(url: &str, title: &str, message: &str, tags: &str) {
+    if let Err(e) = ureq::post(url)
+        .timeout(Duration::from_secs(10))
+        .set("X-Title", title)
+        .set("X-Tags", tags)
+        .send_string(message)
+    {
+        tracing::debug!("ntfy push failed: {e}");
+    }
+}
+
 fn webhook(url: &str, ev: &AlarmEvent) {
     let payload = serde_json::json!({
         "type": "alarm",
