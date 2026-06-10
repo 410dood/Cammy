@@ -201,6 +201,8 @@ pub struct Settings {
     pub segment_seconds: u32,
     pub retention_days: u32,
     pub retention_gb: u32,
+    /// Events (and their snapshots) older than this are deleted.
+    pub event_retention_days: u32,
     pub model_path: String,
     pub force_cpu: bool,
     pub go2rtc_api_port: u16,
@@ -250,6 +252,7 @@ impl Default for Settings {
             segment_seconds: 60,
             retention_days: 7,
             retention_gb: 50,
+            event_retention_days: 30,
             model_path: "yolov8n.onnx".into(),
             force_cpu: false,
             go2rtc_api_port: 1984,
@@ -756,6 +759,20 @@ impl Db {
         Ok(self
             .conn()
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
+    }
+
+    /// Delete events older than `cutoff_ts`, returning their snapshot names
+    /// so the caller can remove the files. Embeddings cascade.
+    pub fn prune_events_before(&self, cutoff_ts: i64) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT snapshot FROM events WHERE ts < ?1 AND snapshot IS NOT NULL",
+        )?;
+        let snapshots = stmt
+            .query_map([cutoff_ts], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        conn.execute("DELETE FROM events WHERE ts < ?1", [cutoff_ts])?;
+        Ok(snapshots)
     }
 
     // --- generic KV (password hash etc.) ----------------------------------

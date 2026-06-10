@@ -124,6 +124,27 @@ pub fn run(
                 }
                 Err(e) => tracing::warn!("retention failed: {e:#}"),
             }
+
+            // Event retention: expire old events and their snapshot files
+            // (snapshots otherwise grow without bound).
+            if settings.event_retention_days > 0 {
+                let cutoff = chrono::Local::now().timestamp()
+                    - i64::from(settings.event_retention_days) * 86_400;
+                match db.prune_events_before(cutoff) {
+                    Ok(snapshots) if !snapshots.is_empty() => {
+                        let snap_dir = recordings_dir
+                            .parent()
+                            .map(|p| p.join("snapshots"))
+                            .unwrap_or_else(|| PathBuf::from("data/snapshots"));
+                        for s in &snapshots {
+                            let _ = std::fs::remove_file(snap_dir.join(s));
+                        }
+                        tracing::info!(count = snapshots.len(), "event retention pruned");
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("event retention failed: {e:#}"),
+                }
+            }
         }
 
         // Sleep in small steps so shutdown is responsive.
