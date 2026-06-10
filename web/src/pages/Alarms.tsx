@@ -18,6 +18,13 @@ export default function Alarms({
   const [plateLike, setPlateLike] = useState("");
   const [action, setAction] = useState<"webhook" | "mqtt" | "ntfy">("webhook");
   const [target, setTarget] = useState("");
+  const [days, setDays] = useState<number[]>([]);
+  const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
+
+  const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const toggleDay = (d: number) =>
+    setDays((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort()));
 
   const load = () => {
     api.alarms().then(setRules).catch(() => {});
@@ -37,11 +44,17 @@ export default function Alarms({
         min_score: 0,
         action,
         target: target.trim(),
+        days,
+        start_hhmm: startTime || null,
+        end_hhmm: endTime || null,
       });
       setName("");
       setTarget("");
       setFaceLike("");
       setPlateLike("");
+      setDays([]);
+      setStartTime("");
+      setEndTime("");
       load();
     } catch (err) {
       onError(String(err));
@@ -49,6 +62,17 @@ export default function Alarms({
   };
 
   const describe = (r: AlarmRule) => {
+    const sched =
+      (r.days ?? []).length > 0 || r.start_hhmm || r.end_hhmm
+        ? [
+            (r.days ?? []).length > 0 ? (r.days ?? []).map((d) => DAY_NAMES[d]).join(",") : null,
+            r.start_hhmm || r.end_hhmm
+              ? `${r.start_hhmm ?? "00:00"}–${r.end_hhmm ?? "24:00"}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" ")
+        : null;
     const conds = [
       r.camera_id != null
         ? `camera ${cameras.find((c) => c.id === r.camera_id)?.name ?? r.camera_id}`
@@ -56,6 +80,7 @@ export default function Alarms({
       r.label ?? "any object",
       r.face_like ? `face ~ "${r.face_like}"` : null,
       r.plate_like ? `plate ~ "${r.plate_like}"` : null,
+      sched ? `armed ${sched}` : null,
     ].filter(Boolean);
     return conds.join(" · ");
   };
@@ -102,6 +127,27 @@ export default function Alarms({
               plate contains (optional)
               <input type="text" value={plateLike} onChange={(e) => setPlateLike(e.target.value)} placeholder="any plate" />
             </label>
+          </div>
+          <div className="row" style={{ marginBottom: 12 }}>
+            <span className="muted">…armed (optional):</span>
+            {DAY_NAMES.map((d, i) => (
+              <span
+                key={d}
+                className={`pill toggle ${days.includes(i) ? "on" : ""}`}
+                onClick={() => toggleDay(i)}
+              >
+                {d}
+              </span>
+            ))}
+            <label className="field">
+              from
+              <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+            </label>
+            <label className="field">
+              to
+              <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+            </label>
+            <span className="muted">no days/times = always armed; to &lt; from spans midnight</span>
           </div>
           <div className="row">
             <span className="muted">…do this:</span>

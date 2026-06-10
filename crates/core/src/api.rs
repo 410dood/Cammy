@@ -560,6 +560,17 @@ async fn add_alarm_api(
     if rule.target.trim().is_empty() {
         return Err(bad_request("target required (URL or MQTT topic suffix)"));
     }
+    if rule.days.iter().any(|d| *d > 6) {
+        return Err(bad_request("days must be 0 (Sunday) through 6 (Saturday)"));
+    }
+    for t in [&rule.start_hhmm, &rule.end_hhmm].into_iter().flatten() {
+        let ok = t.split_once(':').is_some_and(|(h, m)| {
+            h.parse::<u8>().is_ok_and(|h| h < 24) && m.parse::<u8>().is_ok_and(|m| m < 60)
+        });
+        if !ok {
+            return Err(bad_request("schedule times must be HH:MM (24h)"));
+        }
+    }
     let id = st.db.add_alarm(&rule)?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
 }

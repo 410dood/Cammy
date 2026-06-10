@@ -1,4 +1,4 @@
-﻿//! SQLite store: camera registry, detection events, recording segment index,
+//! SQLite store: camera registry, detection events, recording segment index,
 //! and a single JSON settings blob. Connection is wrapped in a Mutex — every
 //! query here is sub-millisecond, so contention is a non-issue at home scale.
 
@@ -69,6 +69,10 @@ pub struct DetectConfig {
     pub autotrack: bool,
     /// Classify this camera's audio (YAMNet) for security-relevant sounds.
     pub audio_detect: bool,
+    /// Frigate-style retain mode: when true, retention deletes segments with
+    /// no nearby event after a grace period — continuous footage becomes
+    /// event-bracketed clips, saving most of the disk.
+    pub event_only_recording: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -107,10 +111,20 @@ pub struct AlarmRule {
     pub plate_like: Option<String>,
     #[serde(default)]
     pub min_score: f32,
-    /// "webhook" (POST event JSON to target URL) or "mqtt" (publish to
-    /// {prefix}/{target}).
+    /// "webhook" (POST event JSON to target URL), "mqtt" (publish to
+    /// {prefix}/{target}) or "ntfy" (push to target topic URL).
     pub action: String,
     pub target: String,
+    /// Arming schedule (Blue Iris-style): days of week the rule is armed,
+    /// 0 = Sunday .. 6 = Saturday; empty = every day.
+    #[serde(default)]
+    pub days: Vec<u8>,
+    /// Arming window start/end as "HH:MM" local time; both unset = all day.
+    /// end < start spans midnight (e.g. 22:00–06:00).
+    #[serde(default)]
+    pub start_hhmm: Option<String>,
+    #[serde(default)]
+    pub end_hhmm: Option<String>,
     #[serde(default)]
     pub created_ts: i64,
 }
@@ -119,7 +133,39 @@ fn default_true() -> bool {
     true
 }
 
+fn parse_hhmm(s: &str) -> Option<u16> {
+    let (h, m) = s.split_once(':')?;
+    let (h, m): (u16, u16) = (h.trim().parse().ok()?, m.trim().parse().ok()?);
+    (h < 24 && m < 60).then_some(h * 60 + m)
+}
+
 impl AlarmRule {
+    /// Is the rule armed on this weekday (0 = Sunday) at this minute of day?
+    pub fn armed_at(&self, weekday: u8, minute: u16) -> bool {
+        if !self.days.is_empty() && !self.days.contains(&weekday) {
+            return false;
+        }
+        let start = self.start_hhmm.as_deref().and_then(parse_hhmm);
+        let end = self.end_hhmm.as_deref().and_then(parse_hhmm);
+        match (start, end) {
+            (None, None) => true,
+            (Some(s), None) => minute >= s,
+            (None, Some(e)) => minute <= e,
+            (Some(s), Some(e)) if s <= e => minute >= s && minute <= e,
+            // Overnight window, e.g. 22:00–06:00.
+            (Some(s), Some(e)) => minute >= s || minute <= e,
+        }
+    }
+
+    fn armed_now(&self) -> bool {
+        use chrono::{Datelike as _, Timelike as _};
+        let now = chrono::Local::now();
+        self.armed_at(
+            now.weekday().num_days_from_sunday() as u8,
+            (now.hour() * 60 + now.minute()) as u16,
+        )
+    }
+
     pub fn matches(
         &self,
         camera_id: i64,
@@ -129,6 +175,9 @@ impl AlarmRule {
         plate: Option<&str>,
     ) -> bool {
         if !self.enabled || score < self.min_score {
+            return false;
+        }
+        if !self.armed_now() {
             return false;
         }
         if self.camera_id.map(|c| c != camera_id).unwrap_or(false) {
@@ -376,6 +425,8 @@ impl Db {
                  created_ts INTEGER NOT NULL
              );",
         )?;
+        // Additive migration for pre-schedule alarms tables.
+        let _ = conn.execute("ALTER TABLE alarms ADD COLUMN schedule_json TEXT", []);
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
@@ -556,11 +607,15 @@ impl Db {
     // --- alarms --------------------------------------------------------------
 
     pub fn add_alarm(&self, r: &AlarmRule) -> Result<i64> {
+        let schedule = serde_json::json!({
+            "days": r.days, "start": r.start_hhmm, "end": r.end_hhmm
+        })
+        .to_string();
         let conn = self.conn();
         conn.execute(
             "INSERT INTO alarms (name, enabled, camera_id, label, face_like, plate_like,
-             min_score, action, target, created_ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             min_score, action, target, schedule_json, created_ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 r.name,
                 r.enabled,
@@ -571,6 +626,7 @@ impl Db {
                 r.min_score,
                 r.action,
                 r.target,
+                schedule,
                 chrono::Local::now().timestamp()
             ],
         )?;
@@ -581,11 +637,16 @@ impl Db {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, enabled, camera_id, label, face_like, plate_like,
-                    min_score, action, target, created_ts
+                    min_score, action, target, created_ts, schedule_json
              FROM alarms ORDER BY id",
         )?;
         let rows = stmt
             .query_map([], |r| {
+                let schedule: Option<String> = r.get(11)?;
+                let sched: serde_json::Value = schedule
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(serde_json::Value::Null);
                 Ok(AlarmRule {
                     id: r.get(0)?,
                     name: r.get(1)?,
@@ -597,8 +658,47 @@ impl Db {
                     min_score: r.get(7)?,
                     action: r.get(8)?,
                     target: r.get(9)?,
+                    days: sched["days"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_u64())
+                                .map(|v| v as u8)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    start_hhmm: sched["start"].as_str().map(str::to_string),
+                    end_hhmm: sched["end"].as_str().map(str::to_string),
                     created_ts: r.get(10)?,
                 })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Segments of `camera_id` starting before `older_than` with no event
+    /// within `margin` seconds of the segment's span — the deletion set for
+    /// event-only recording retention.
+    pub fn eventless_segments(
+        &self,
+        camera_id: i64,
+        older_than: i64,
+        span_secs: i64,
+        margin: i64,
+    ) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT s.path FROM segments s
+             WHERE s.camera_id = ?1 AND s.start_ts < ?2
+               AND NOT EXISTS (
+                 SELECT 1 FROM events e
+                 WHERE e.camera_id = s.camera_id
+                   AND e.ts BETWEEN s.start_ts - ?4 AND s.start_ts + ?3 + ?4
+               )",
+        )?;
+        let rows = stmt
+            .query_map(params![camera_id, older_than, span_secs, margin], |r| {
+                r.get(0)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -988,6 +1088,7 @@ mod tests {
             }],
             autotrack: true,
             audio_detect: false,
+            event_only_recording: false,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
@@ -1011,6 +1112,9 @@ mod tests {
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
+            days: vec![],
+            start_hhmm: None,
+            end_hhmm: None,
             created_ts: 0,
         };
         assert!(rule.matches(3, "person", 0.8, None, None));
@@ -1056,14 +1160,108 @@ mod tests {
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
+                days: vec![1, 2, 3],
+                start_hhmm: Some("22:00".into()),
+                end_hhmm: Some("06:00".into()),
                 created_ts: 0,
             })
             .unwrap();
+        let back = &db.list_alarms().unwrap()[0];
+        assert_eq!(back.days, vec![1, 2, 3]);
+        assert_eq!(back.start_hhmm.as_deref(), Some("22:00"));
+        assert_eq!(back.end_hhmm.as_deref(), Some("06:00"));
         assert_eq!(db.list_alarms().unwrap().len(), 1);
         db.set_alarm_enabled(id, false).unwrap();
         assert!(!db.list_alarms().unwrap()[0].enabled);
         db.delete_alarm(id).unwrap();
         assert!(db.list_alarms().unwrap().is_empty());
+    }
+
+    #[test]
+    fn alarm_schedule_windows() {
+        let base = AlarmRule {
+            id: 1,
+            name: "night".into(),
+            enabled: true,
+            camera_id: None,
+            label: None,
+            face_like: None,
+            plate_like: None,
+            min_score: 0.0,
+            action: "webhook".into(),
+            target: "http://x".into(),
+            days: vec![],
+            start_hhmm: None,
+            end_hhmm: None,
+            created_ts: 0,
+        };
+        // No schedule = always armed.
+        assert!(base.armed_at(0, 0));
+        assert!(base.armed_at(6, 1439));
+
+        // Day filter: weekdays only (Mon=1..Fri=5).
+        let weekdays = AlarmRule {
+            days: vec![1, 2, 3, 4, 5],
+            ..base.clone()
+        };
+        assert!(weekdays.armed_at(3, 600));
+        assert!(!weekdays.armed_at(0, 600)); // Sunday
+
+        // Same-day window 09:00-17:00.
+        let work = AlarmRule {
+            start_hhmm: Some("09:00".into()),
+            end_hhmm: Some("17:00".into()),
+            ..base.clone()
+        };
+        assert!(work.armed_at(2, 9 * 60));
+        assert!(work.armed_at(2, 17 * 60));
+        assert!(!work.armed_at(2, 8 * 60 + 59));
+        assert!(!work.armed_at(2, 20 * 60));
+
+        // Overnight window 22:00-06:00 spans midnight.
+        let night = AlarmRule {
+            start_hhmm: Some("22:00".into()),
+            end_hhmm: Some("06:00".into()),
+            ..base.clone()
+        };
+        assert!(night.armed_at(2, 23 * 60));
+        assert!(night.armed_at(2, 3 * 60));
+        assert!(!night.armed_at(2, 12 * 60));
+
+        // Garbage times are ignored (treated as unset bound).
+        let bad = AlarmRule {
+            start_hhmm: Some("25:99".into()),
+            end_hhmm: None,
+            ..base
+        };
+        assert!(bad.armed_at(2, 0));
+    }
+
+    #[test]
+    fn eventless_segments_query() {
+        let db = mem_db();
+        let cam = db
+            .add_camera("porch", "rtsp://x", None, true, true)
+            .unwrap();
+        // Three 60s segments: t=1000, 2000, 3000. One event at t=2030
+        // (inside segment 2; within margin of nothing else at margin=15).
+        for ts in [1000, 2000, 3000] {
+            db.upsert_segment(cam.id, ts, &format!("p{ts}.mp4"), 10)
+                .unwrap();
+        }
+        db.add_event(cam.id, 2030, "person", 0.9, [0.0; 4], None, None, None)
+            .unwrap();
+        let mut doomed = db.eventless_segments(cam.id, 5000, 60, 15).unwrap();
+        doomed.sort();
+        assert_eq!(
+            doomed,
+            vec!["p1000.mp4".to_string(), "p3000.mp4".to_string()]
+        );
+        // Grace period: nothing older than 1500 except segment 1.
+        assert_eq!(
+            db.eventless_segments(cam.id, 1500, 60, 15).unwrap(),
+            vec!["p1000.mp4".to_string()]
+        );
     }
 
     #[test]

@@ -163,6 +163,36 @@ pub fn run(
                 }
             }
 
+            // Event-only recording (Frigate retain mode): for cameras with
+            // the flag, drop segments that have no event within one segment
+            // span of them once they age past a 15-minute review grace.
+            for cam in cameras
+                .iter()
+                .filter(|c| c.record && c.detect_config.event_only_recording)
+            {
+                let older_than = chrono::Local::now().timestamp() - 15 * 60;
+                let span = i64::from(settings.segment_seconds);
+                match db.eventless_segments(cam.id, older_than, span, span) {
+                    Ok(paths) if !paths.is_empty() => {
+                        let mut dropped = 0u32;
+                        for path in paths {
+                            let p = PathBuf::from(&path);
+                            if !p.exists() || std::fs::remove_file(&p).is_ok() {
+                                let _ = db.delete_segment_by_path(&path);
+                                dropped += 1;
+                            }
+                        }
+                        tracing::info!(
+                            camera = %cam.name,
+                            count = dropped,
+                            "event-only retention: dropped eventless segments"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("event-only retention failed: {e:#}"),
+                }
+            }
+
             let max_bytes = u64::from(settings.retention_gb) * 1_000_000_000;
             match recorder::prune(&dirs, Some(settings.retention_days), Some(max_bytes)) {
                 Ok(deleted) => {

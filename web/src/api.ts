@@ -14,6 +14,7 @@ export interface DetectConfig {
   ignore_zones: Zone[];
   autotrack: boolean;
   audio_detect: boolean;
+  event_only_recording: boolean;
 }
 
 export interface Camera {
@@ -115,6 +116,9 @@ export interface AlarmRule {
   min_score: number;
   action: string;
   target: string;
+  days: number[];
+  start_hhmm: string | null;
+  end_hhmm: string | null;
   created_ts: number;
 }
 

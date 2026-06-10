@@ -19,6 +19,7 @@ function TuneModal({
     ignore_zones: [...camera.detect_config.ignore_zones],
     autotrack: camera.detect_config.autotrack ?? false,
     audio_detect: camera.detect_config.audio_detect ?? false,
+    event_only_recording: camera.detect_config.event_only_recording ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -113,6 +114,17 @@ function TuneModal({
               type="checkbox"
               checked={dc.audio_detect}
               onChange={() => setDc({ ...dc, audio_detect: !dc.audio_detect })}
+            />
+          </label>
+          <label
+            className="toggle field"
+            title="Keep only footage near events: segments with no detection within a segment-length margin are deleted after a 15-minute grace period. Saves most of the disk on quiet cameras."
+          >
+            event-only recording
+            <input
+              type="checkbox"
+              checked={dc.event_only_recording}
+              onChange={() => setDc({ ...dc, event_only_recording: !dc.event_only_recording })}
             />
           </label>
         </div>

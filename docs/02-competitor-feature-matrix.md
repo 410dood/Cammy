@@ -41,6 +41,9 @@ which of those features we adopt, in what order.*
 | 21 | One-click network camera scan (WS-Discovery) | Blue Iris "Find", Synology camera search | ✅ shipped (validated: found 7 LAN cameras incl. both real ones; probes every local interface to survive WSL/Hyper-V multi-homing) |
 | 22 | Phone push notifications via ntfy (snapshot attached) | UniFi/Reolink push, Frigate notify add-ons | ✅ shipped (validated live: rule fired, ntfy.sh delivered title + message + snapshot.jpg) |
 | 23 | Configurable storage location + free-space display | Blue Iris multi-drive clips, Synology volumes | ✅ shipped (validated: segments wrote + indexed to alt dir, recorders auto-restart on dir change, bad path rejected with 400, free space shown) |
+| 24 | Alarm rule schedules (days + time window, overnight) | Blue Iris profiles/schedules | ✅ shipped (validated live: in-window rule fired 5x while night-window and wrong-day rules on the same events stayed silent; unit tests cover overnight + day filters) |
+| 25 | Event-only recording retention (per camera) | Frigate retain modes | ✅ shipped (validated live: swept 235 eventless porch segments after 15-min grace, kept the segment with a nearby event) |
+| 26 | PWA install (manifest + icons, add-to-home-screen) | UniFi/Reolink mobile apps | ✅ shipped (manifest served as application/manifest+json with 192/512 + maskable icons, apple-touch-icon, theme color) |
 
 Sources: [Frigate docs](https://docs.frigate.video/), [Frigate releases](https://github.com/blakeblackshear/frigate/releases),
 [Frigate review system](https://docs.frigate.video/configuration/review/),
