@@ -12,6 +12,7 @@ export interface DetectConfig {
   min_score: number | null;
   motion_threshold: number | null;
   ignore_zones: Zone[];
+  autotrack: boolean;
 }
 
 export interface Camera {

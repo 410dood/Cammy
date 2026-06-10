@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZoomyZoomyCamCam — Self-hosted AI camera security for every OS</title>
+  <meta name="description" content="Blue Iris-class NVR that runs on Windows, macOS and Linux. Face recognition, license plate reading, natural-language search, PTZ autotracking — all local, no subscriptions." />
+  <style>
+    :root {
+      --bg: #0c0d10; --panel: #15171c; --panel-2: #1c1f26; --border: #262a33;
+      --text: #f2f4f7; --muted: #8a919e; --accent: #006fff; --ok: #38c172; --warn: #f5a524;
+    }
+    * { box-sizing: border-box; margin: 0; }
+    body { background: var(--bg); color: var(--text); font-family: "Segoe UI", -apple-system, Roboto, Helvetica, Arial, sans-serif; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+    a { color: var(--accent); text-decoration: none; }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+    header { padding: 18px 0; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: rgba(12,13,16,0.85); backdrop-filter: blur(8px); z-index: 5; }
+    header .wrap { display: flex; align-items: center; gap: 10px; }
+    .mark { width: 26px; height: 26px; border-radius: 7px; background: radial-gradient(circle at 35% 35%, #4d9aff, var(--accent) 60%, #003c8f); box-shadow: 0 0 12px rgba(0,111,255,0.55); }
+    .brand { font-weight: 700; letter-spacing: 0.3px; }
+    .brand span { color: var(--accent); }
+    header nav { margin-left: auto; display: flex; gap: 22px; font-size: 0.92rem; }
+    header nav a { color: var(--muted); }
+    header nav a:hover { color: var(--text); }
+
+    .hero { padding: 84px 0 40px; text-align: center; }
+    .hero h1 { font-size: clamp(2rem, 5vw, 3.4rem); line-height: 1.12; letter-spacing: -0.5px; }
+    .hero h1 em { font-style: normal; color: var(--accent); }
+    .hero p.sub { color: var(--muted); font-size: 1.15rem; max-width: 680px; margin: 18px auto 30px; }
+    .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+    .btn { display: inline-flex; align-items: center; gap: 10px; padding: 13px 26px; border-radius: 12px; font-weight: 600; font-size: 1rem; border: 1px solid transparent; cursor: pointer; }
+    .btn.buy { background: var(--accent); color: #fff; box-shadow: 0 6px 24px rgba(0,111,255,0.35); }
+    .btn.buy:hover { background: #2585ff; }
+    .btn.dl { background: var(--panel-2); color: var(--text); border-color: var(--border); }
+    .btn.dl:hover { border-color: var(--accent); }
+    .pay-hint { margin-top: 12px; color: var(--muted); font-size: 0.85rem; display: flex; gap: 8px; justify-content: center; align-items: center; }
+    .pay-badge { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 2px 9px; font-size: 0.78rem; }
+
+    .shot { margin: 48px auto 0; max-width: 980px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,0.55); }
+    .shot img { width: 100%; display: block; }
+
+    section { padding: 72px 0; }
+    section h2 { font-size: 1.7rem; text-align: center; margin-bottom: 10px; letter-spacing: -0.3px; }
+    section p.lead { text-align: center; color: var(--muted); max-width: 640px; margin: 0 auto 42px; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px; }
+    .feature { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }
+    .feature .ico { font-size: 1.6rem; }
+    .feature h3 { margin: 10px 0 6px; font-size: 1.05rem; }
+    .feature p { color: var(--muted); font-size: 0.92rem; }
+
+    .pricing { display: flex; justify-content: center; }
+    .price-card { background: var(--panel); border: 1px solid var(--accent); border-radius: 18px; padding: 38px 44px; text-align: center; max-width: 420px; box-shadow: 0 0 60px rgba(0,111,255,0.12); }
+    .price-card .amount { font-size: 3.2rem; font-weight: 700; }
+    .price-card .amount small { font-size: 1rem; color: var(--muted); font-weight: 400; }
+    .price-card ul { list-style: none; padding: 0; margin: 22px 0 28px; color: var(--muted); font-size: 0.95rem; text-align: left; }
+    .price-card li { padding: 6px 0; }
+    .price-card li::before { content: "✓  "; color: var(--ok); font-weight: 700; }
+    .beta-pill { display: inline-block; background: rgba(56,193,114,0.12); color: var(--ok); border: 1px solid var(--ok); border-radius: 999px; padding: 3px 14px; font-size: 0.78rem; font-weight: 600; margin-bottom: 14px; }
+
+    .req { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 26px; max-width: 720px; margin: 0 auto; color: var(--muted); font-size: 0.92rem; }
+    .req b { color: var(--text); }
+
+    footer { border-top: 1px solid var(--border); padding: 34px 0 60px; color: var(--muted); font-size: 0.88rem; text-align: center; }
+    footer a { margin: 0 10px; }
+    @media (max-width: 640px) { .hero { padding-top: 54px; } section { padding: 48px 0; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="mark"></div>
+      <div class="brand">Zoomy<span>Zoomy</span>CamCam</div>
+      <nav>
+        <a href="#features">Features</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#download">Download</a>
+        <a href="https://github.com/410dood/ZoomyZoomyCamCam">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="hero wrap">
+    <h1>AI camera security that <em>you</em> own.<br/>On any OS. No subscriptions.</h1>
+    <p class="sub">
+      A Blue Iris-class NVR with Frigate-class AI that runs natively on Windows, macOS and Linux.
+      Face recognition, license plate reading, natural-language search, PTZ autotracking —
+      every frame processed locally on your machine.
+    </p>
+    <div class="cta-row">
+      <button class="btn buy" id="buy-btn">Buy lifetime license — $49</button>
+      <a class="btn dl" href="#download">⬇ Download free beta</a>
+    </div>
+    <div class="pay-hint">
+      Secure checkout via Stripe
+      <span class="pay-badge"> Apple Pay</span>
+      <span class="pay-badge">G Pay</span>
+      <span class="pay-badge">💳 Cards</span>
+    </div>
+    <div class="shot"><img src="assets/hero-live.jpeg" alt="Live camera grid with AI detections" /></div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>Everything the big names do. Running on your hardware.</h2>
+      <p class="lead">Feature-matched against UniFi Protect, Frigate and Blue Iris — then made portable.</p>
+      <div class="grid">
+        <div class="feature"><div class="ico">🧠</div><h3>Smart detections</h3><p>YOLOv8 object detection with GPU acceleration on any DirectX 12 GPU, Apple Silicon, or Nvidia — gated by cheap motion detection so your GPU sleeps when nothing moves.</p></div>
+        <div class="feature"><div class="ico">👤</div><h3>Face recognition</h3><p>Enroll faces from an unknown-faces gallery; events are tagged with who was seen. ArcFace embeddings, processed entirely on-device.</p></div>
+        <div class="feature"><div class="ico">🚗</div><h3>License plate reading</h3><p>Vehicle events carry OCRed plates. Filter history by plate, or alarm when a specific plate arrives.</p></div>
+        <div class="feature"><div class="ico">✨</div><h3>Natural-language search</h3><p>"Person in a dark coat", "blue car in the driveway" — CLIP-powered semantic search over your event history. No tags needed.</p></div>
+        <div class="feature"><div class="ico">🎯</div><h3>PTZ autotracking</h3><p>ONVIF pan/tilt cameras automatically follow detected people and vehicles to keep them centered in frame.</p></div>
+        <div class="feature"><div class="ico">🚨</div><h3>Alarm Manager</h3><p>If-this-then-that rules: when a known face or specific plate appears on a chosen camera, fire a webhook or MQTT message instantly.</p></div>
+        <div class="feature"><div class="ico">🎞️</div><h3>24/7 recording + timeline</h3><p>Lossless packet-copy recording with retention controls, a scrubbable timeline with event markers, clip export, and event-to-recording jumps.</p></div>
+        <div class="feature"><div class="ico">🏠</div><h3>Home Assistant ready</h3><p>MQTT events with availability topics, webhooks per event, and ONVIF camera auto-discovery — drop it into your existing smart home.</p></div>
+        <div class="feature"><div class="ico">🔒</div><h3>Private by design</h3><p>Everything — video, AI models, face data — stays on your machine. Optional LAN password. Zero cloud, zero telemetry, zero monthly fees.</p></div>
+      </div>
+      <div style="margin-top: 40px;" class="shot"><img src="assets/events.jpeg" alt="Event review with smart search and face tags" /></div>
+    </div>
+  </section>
+
+  <section id="pricing">
+    <div class="wrap">
+      <h2>One price. Forever.</h2>
+      <p class="lead">Run 1 camera or 100 — same license, every update included. Compare: Blue Iris $79.95 + yearly support, UniFi requires their hardware, cloud NVRs charge monthly per camera.</p>
+      <div class="pricing">
+        <div class="price-card">
+          <div class="beta-pill">FREE while in beta</div>
+          <div class="amount">$49 <small>one-time</small></div>
+          <ul>
+            <li>Unlimited cameras, all features</li>
+            <li>Windows, macOS &amp; Linux</li>
+            <li>All AI models bundled — works offline</li>
+            <li>Free updates, forever</li>
+            <li>The source is on GitHub</li>
+          </ul>
+          <button class="btn buy" id="buy-btn-2" style="width: 100%;">Buy with  Pay / card</button>
+          <p style="margin-top: 12px; font-size: 0.8rem; color: var(--muted);">Apple Pay &amp; Google Pay shown automatically at checkout on supported devices.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="download">
+    <div class="wrap">
+      <h2>Download</h2>
+      <p class="lead">Free during the beta. One installer, batteries included: AI models, camera engine, everything.</p>
+      <div class="cta-row">
+        <a class="btn buy" id="dl-win" href="https://github.com/410dood/ZoomyZoomyCamCam/releases/latest">⬇ Windows (x64) — latest release</a>
+        <a class="btn dl" href="https://github.com/410dood/ZoomyZoomyCamCam">🛠 Build from source (macOS / Linux)</a>
+      </div>
+      <div class="req" style="margin-top: 36px;">
+        <b>System requirements:</b> Windows 10/11 x64 · any DirectX 12 GPU recommended (Intel/AMD/Nvidia — CPU fallback works) ·
+        ~2 GB disk for the app + models, plus space for recordings · IP cameras that speak RTSP or ONVIF (virtually all of them).
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap">
+      <div style="margin-bottom: 8px;">
+        <a href="https://github.com/410dood/ZoomyZoomyCamCam">GitHub</a> ·
+        <a href="https://github.com/410dood/ZoomyZoomyCamCam/releases">Releases</a> ·
+        <a href="https://github.com/410dood/ZoomyZoomyCamCam/issues">Support</a>
+      </div>
+      © 2026 ZoomyZoomyCamCam · MIT / Apache-2.0 licensed · Your cameras, your data.
+    </div>
+  </footer>
+
+  <script src="config.js"></script>
+  <script>
+    // Buy buttons -> Stripe Payment Link (Apple Pay / Google Pay appear
+    // automatically at Stripe Checkout on supported devices once the domain
+    // is registered in the Stripe dashboard). Until a payment link is
+    // configured, fall back to the free beta download.
+    const link = window.STRIPE_PAYMENT_LINK;
+    for (const id of ["buy-btn", "buy-btn-2"]) {
+      const el = document.getElementById(id);
+      el.addEventListener("click", () => {
+        if (link && !link.includes("REPLACE")) {
+          window.location.href = link;
+        } else {
+          alert("Beta period: the app is free! Taking you to the download.");
+          window.location.href = "#download";
+        }
+      });
+    }
+  </script>
+</body>
+</html>

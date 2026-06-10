@@ -17,6 +17,7 @@ function TuneModal({
     min_score: camera.detect_config.min_score,
     motion_threshold: camera.detect_config.motion_threshold,
     ignore_zones: [...camera.detect_config.ignore_zones],
+    autotrack: camera.detect_config.autotrack ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -95,6 +96,14 @@ function TuneModal({
                   motion_threshold: e.target.value === "" ? null : Number(e.target.value),
                 })
               }
+            />
+          </label>
+          <label className="toggle field">
+            PTZ autotrack
+            <input
+              type="checkbox"
+              checked={dc.autotrack}
+              onChange={() => setDc({ ...dc, autotrack: !dc.autotrack })}
             />
           </label>
         </div>

@@ -40,6 +40,9 @@ pub fn run(
     let mut face_key = String::new();
     let mut clip: Option<crate::smart::ImageEmbedder> = None;
     let mut lpr: Option<crate::lpr::PlateEngine> = None;
+    // Autotrack state: PTZ capability cache + per-camera move cooldown.
+    let mut ptz_capable: HashMap<i64, bool> = HashMap::new();
+    let mut last_autotrack: HashMap<i64, Instant> = HashMap::new();
     // Throttle unknown-face crops: one per camera per 30s, or enrollment
     // would drown in near-duplicates.
     let mut last_unknown_save: HashMap<i64, i64> = HashMap::new();
@@ -343,6 +346,51 @@ pub fn run(
                         new_event_ids.push(id);
                     }
                     Err(e) => tracing::warn!("event insert failed: {e:#}"),
+                }
+            }
+
+            // PTZ autotracking: steer toward the strongest detection to keep
+            // it centered (Frigate-style). Runs on the raw detections so the
+            // camera follows even between cooldown-throttled events.
+            if cam.detect_config.autotrack {
+                let capable = *ptz_capable.entry(cam.id).or_insert_with(|| {
+                    crate::ptz::parse_source(&cam.source)
+                        .map(|t| crate::ptz::supports_ptz(&t))
+                        .unwrap_or(false)
+                });
+                let cooled = last_autotrack
+                    .get(&cam.id)
+                    .map(|t| t.elapsed() >= Duration::from_millis(1500))
+                    .unwrap_or(true);
+                if capable && cooled {
+                    if let Some(best) = wanted.iter().filter(|d| d.score >= 0.5).max_by(|a, b| {
+                        a.score
+                            .partial_cmp(&b.score)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    }) {
+                        // Offset of the object center from frame center, -1..1.
+                        let dx = ((best.x1 + best.x2) / 2.0 - fw / 2.0) / (fw / 2.0);
+                        let dy = ((best.y1 + best.y2) / 2.0 - fh / 2.0) / (fh / 2.0);
+                        if dx.abs() > 0.15 || dy.abs() > 0.15 {
+                            if let Some(target) = crate::ptz::parse_source(&cam.source) {
+                                last_autotrack.insert(cam.id, Instant::now());
+                                // Velocity proportional to offset; tilt axis is
+                                // inverted (positive tilt looks up).
+                                let pan = (dx * 0.6).clamp(-0.6, 0.6);
+                                let tilt = (-dy * 0.6).clamp(-0.6, 0.6);
+                                tracing::info!(
+                                    camera = %cam.name,
+                                    label = best.label,
+                                    pan = format!("{pan:.2}"),
+                                    tilt = format!("{tilt:.2}"),
+                                    "autotrack: centering object"
+                                );
+                                let _ = crate::ptz::continuous_move(&target, pan, tilt, 0.0);
+                                std::thread::sleep(Duration::from_millis(350));
+                                let _ = crate::ptz::stop(&target);
+                            }
+                        }
+                    }
                 }
             }
 

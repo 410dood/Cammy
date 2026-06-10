@@ -64,6 +64,9 @@ pub struct DetectConfig {
     /// Detections whose box center falls in any of these are dropped —
     /// e.g. a busy street at the edge of a driveway camera.
     pub ignore_zones: Vec<Zone>,
+    /// PTZ autotracking (Frigate-style): steer the camera to keep tracked
+    /// objects centered. Only effective on ONVIF PTZ-capable cameras.
+    pub autotrack: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -906,6 +909,7 @@ mod tests {
                 w: 0.5,
                 h: 0.5,
             }],
+            autotrack: true,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
