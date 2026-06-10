@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+﻿import { FormEvent, useEffect, useState } from "react";
 import { api, AlarmRule, Camera } from "../api";
 
 const LABELS = ["person", "car", "truck", "bus", "bicycle", "motorcycle", "dog", "cat"];
@@ -127,6 +127,7 @@ export default function Alarms({
         {rules.length === 0 ? (
           <p className="muted">No rules yet. Rules fire actions the moment a matching event is detected.</p>
         ) : (
+          <div className="table-scroll">
           <table>
             <thead>
               <tr>
@@ -173,6 +174,7 @@ export default function Alarms({
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </>

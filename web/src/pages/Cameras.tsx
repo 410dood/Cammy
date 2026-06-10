@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+﻿import { FormEvent, useEffect, useState } from "react";
 import { api, Camera, DetectConfig, StatusMap, Zone } from "../api";
 
 function TuneModal({
@@ -311,6 +311,7 @@ export default function Cameras({
         {cameras.length === 0 ? (
           <p className="muted">No cameras registered.</p>
         ) : (
+          <div className="table-scroll">
           <table>
             <thead>
               <tr>
@@ -365,6 +366,7 @@ export default function Cameras({
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

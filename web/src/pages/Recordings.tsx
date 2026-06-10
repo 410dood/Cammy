@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { api, CamEvent, Camera, fmtBytes, fmtTime, Segment, Stats } from "../api";
 import Timeline from "../Timeline";
 
@@ -124,6 +124,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
         </div>
       ) : (
         <div className="card">
+          <div className="table-scroll">
           <table>
             <thead>
               <tr>
@@ -150,6 +151,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 

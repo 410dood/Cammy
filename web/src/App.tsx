@@ -91,7 +91,8 @@ export default function App() {
               refresh();
             }}
           >
-            <span>{ICONS[p]}</span> {p}
+            <span className="nav-ico">{ICONS[p]}</span>
+            <span className="nav-label">{p}</span>
           </button>
         ))}
         <div className="foot">
