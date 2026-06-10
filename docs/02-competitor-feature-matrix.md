@@ -35,7 +35,7 @@ which of those features we adopt, in what order.*
 | 15 | MQTT broker integration (Home Assistant) | Frigate | ✅ shipped (verified against local broker) |
 | 16 | Auth + HTTPS for off-LAN exposure | all commercial | ✅ shipped (LAN password; argon2+HTTPS still needed for WAN) |
 | 17 | Natural-language smart search (CLIP) | UniFi AI Key | ✅ shipped (validated ranking on live events) |
-| 18 | PTZ autotracking | Frigate 0.13 | ✅ shipped (move path validated; closed loop pending daylight detections) |
+| 18 | PTZ autotracking | Frigate 0.13 | ✅ shipped (closed loop validated in daylight on the Amcrest: car detected below center → tilt-down burst → frame re-centered, 38% pixel shift; velocity floor 0.4 + offset-scaled burst added because the motor ignores small velocities over short bursts) |
 | 19 | Audio event classification (YAMNet) | Frigate, UniFi AI | ✅ shipped (validated live: tone -> alarm event @0.92 with snapshot) |
 | 20 | Enhanced Retention (re-encode aging footage) | UniFi Protect | ✅ shipped (validated: 16.4MB segment -> 2.5MB, playable) |
 | 21 | One-click network camera scan (WS-Discovery) | Blue Iris "Find", Synology camera search | ✅ shipped (validated: found 7 LAN cameras incl. both real ones; probes every local interface to survive WSL/Hyper-V multi-homing) |

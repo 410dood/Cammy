@@ -368,19 +368,42 @@ pub fn run(
                         if dx.abs() > 0.15 || dy.abs() > 0.15 {
                             if let Some(target) = crate::ptz::parse_source(&cam.source) {
                                 last_autotrack.insert(cam.id, Instant::now());
-                                // Velocity proportional to offset; tilt axis is
-                                // inverted (positive tilt looks up).
-                                let pan = (dx * 0.6).clamp(-0.6, 0.6);
-                                let tilt = (-dy * 0.6).clamp(-0.6, 0.6);
+                                // Velocity proportional to offset, but with a
+                                // floor: real PTZ motors ignore tiny velocities
+                                // over short bursts (validated on the Amcrest —
+                                // 0.23 for 350 ms produced zero movement). The
+                                // burst length scales with how far off-center
+                                // the object is. Tilt axis is inverted
+                                // (positive tilt looks up).
+                                let boost = |v: f32| {
+                                    if v == 0.0 {
+                                        0.0
+                                    } else {
+                                        v.signum() * v.abs().max(0.4)
+                                    }
+                                };
+                                let pan = if dx.abs() > 0.15 {
+                                    boost(dx * 0.6)
+                                } else {
+                                    0.0
+                                };
+                                let tilt = if dy.abs() > 0.15 {
+                                    boost(-dy * 0.6)
+                                } else {
+                                    0.0
+                                };
+                                let (pan, tilt) = (pan.clamp(-0.6, 0.6), tilt.clamp(-0.6, 0.6));
+                                let burst = 300 + (dx.abs().max(dy.abs()) * 500.0) as u64;
                                 tracing::info!(
                                     camera = %cam.name,
                                     label = best.label,
                                     pan = format!("{pan:.2}"),
                                     tilt = format!("{tilt:.2}"),
+                                    burst_ms = burst,
                                     "autotrack: centering object"
                                 );
                                 let _ = crate::ptz::continuous_move(&target, pan, tilt, 0.0);
-                                std::thread::sleep(Duration::from_millis(350));
+                                std::thread::sleep(Duration::from_millis(burst));
                                 let _ = crate::ptz::stop(&target);
                             }
                         }
