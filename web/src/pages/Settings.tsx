@@ -258,6 +258,52 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
+        <div className="card">
+          <h2>AI event captions (opt-in)</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Generate a short natural-language description of each event for review and search.
+            <b> Off by default.</b> With the default localhost Ollama URL nothing leaves this
+            machine; pointing it at a cloud endpoint sends snapshots there — that's a deliberate
+            choice you make here.
+          </p>
+          <div className="row">
+            <label className="toggle field">
+              enable captions
+              <input
+                type="checkbox"
+                checked={s.genai_enabled}
+                onChange={() => set({ genai_enabled: !s.genai_enabled })}
+              />
+            </label>
+            <label className="field" style={{ flex: 1, minWidth: 320 }}>
+              endpoint (Ollama-compatible /api/generate)
+              <input
+                type="text"
+                placeholder="http://localhost:11434/api/generate"
+                value={s.genai_url ?? ""}
+                onChange={(e) => set({ genai_url: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              vision model
+              <input
+                type="text"
+                placeholder="llava"
+                value={s.genai_model ?? ""}
+                onChange={(e) => set({ genai_model: e.target.value })}
+              />
+            </label>
+            <label className="field" style={{ minWidth: 220 }}>
+              API key (cloud only; blank for local)
+              <input
+                type="password"
+                value={s.genai_api_key ?? ""}
+                onChange={(e) => set({ genai_api_key: e.target.value })}
+              />
+            </label>
+          </div>
+        </div>
+
         <RemoteAccessCard onError={onError} />
 
         <div className="card">

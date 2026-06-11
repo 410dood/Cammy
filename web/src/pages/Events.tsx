@@ -302,6 +302,11 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                 )}
                 {ev.gesture && <span style={{ color: "var(--accent, #4f8cff)" }}> · ✋ {ev.gesture}</span>}
                 {ev.zone && <span className="muted"> · ▱ {ev.zone}</span>}
+                {ev.caption && (
+                  <div style={{ marginTop: 4, fontStyle: "italic", fontSize: "0.85rem" }}>
+                    “{ev.caption}”
+                  </div>
+                )}
                 <div className="muted">{fmtTime(ev.ts)}</div>
                 <div className="row" style={{ marginTop: 8 }}>
                   <button

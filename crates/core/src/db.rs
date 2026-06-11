@@ -189,6 +189,8 @@ pub struct Event {
     /// Name of the detection zone the object was in, when it fell inside a
     /// named polygon zone (used for review filtering).
     pub zone: Option<String>,
+    /// Natural-language description from the optional GenAI captioner.
+    pub caption: Option<String>,
 }
 
 /// Alarm Manager rule (UniFi style if-this-then-that): all set conditions
@@ -454,6 +456,16 @@ pub struct Settings {
     /// MediaPipe gesture-recognizer task bundle the browser loads. Defaults to
     /// Google's CDN; point it at a self-hosted copy for fully offline use.
     pub gesture_model_url: String,
+    /// Explicit opt-in for GenAI event captions. OFF by default — nothing is
+    /// ever sent to an LLM until this is enabled. With a localhost Ollama URL it
+    /// stays fully local; pointing it at a cloud endpoint sends snapshots there.
+    pub genai_enabled: bool,
+    /// Ollama-compatible generate endpoint (default local Ollama).
+    pub genai_url: String,
+    /// Vision model used for captioning (e.g. "llava", "llama3.2-vision").
+    pub genai_model: String,
+    /// Optional bearer token (for cloud/proxied endpoints). Empty for local Ollama.
+    pub genai_api_key: String,
 }
 
 impl Default for Settings {
@@ -529,6 +541,10 @@ impl Default for Settings {
             gesture_model_url: "https://storage.googleapis.com/mediapipe-models/\
                 gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task"
                 .into(),
+            genai_enabled: false,
+            genai_url: "http://localhost:11434/api/generate".into(),
+            genai_model: "llava".into(),
+            genai_api_key: String::new(),
         }
     }
 }
@@ -582,6 +598,7 @@ impl Db {
         let _ = conn.execute("ALTER TABLE events ADD COLUMN plate TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN gesture TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN zone TEXT", []);
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN caption TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
@@ -756,7 +773,7 @@ impl Db {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
-                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone
+                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -780,7 +797,7 @@ impl Db {
         let ev = conn
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
-                        e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone
+                        e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
@@ -923,6 +940,15 @@ impl Db {
     }
 
     // --- smart-search embeddings -------------------------------------------
+
+    /// Store a GenAI caption for an event (best-effort enrichment).
+    pub fn set_event_caption(&self, event_id: i64, caption: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE events SET caption = ?1 WHERE id = ?2",
+            params![caption, event_id],
+        )?;
+        Ok(())
+    }
 
     pub fn set_event_embedding(&self, event_id: i64, embedding: &[f32]) -> Result<()> {
         let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
@@ -1215,6 +1241,7 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         plate: r.get(12)?,
         gesture: r.get(13)?,
         zone: r.get(14)?,
+        caption: r.get(15)?,
     })
 }
 

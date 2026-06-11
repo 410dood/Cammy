@@ -60,6 +60,7 @@ export interface CamEvent {
   plate: string | null;
   gesture: string | null;
   zone: string | null;
+  caption: string | null;
 }
 
 export interface Segment {
@@ -110,6 +111,10 @@ export interface Settings {
   gesture_labels: string[];
   gesture_duress: string;
   gesture_model_url: string;
+  genai_enabled: boolean;
+  genai_url: string;
+  genai_model: string;
+  genai_api_key: string;
 }
 
 export interface CamStorage {

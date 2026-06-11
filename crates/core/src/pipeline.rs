@@ -34,6 +34,7 @@ pub fn run(
     status: StatusBoard,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
     throttle: crate::notify::AlarmThrottle,
+    genai_tx: std::sync::mpsc::Sender<crate::genai::CaptionJob>,
     shutdown: Arc<AtomicBool>,
 ) {
     // One detector session per (model, force_cpu, conf, iou) combination, so
@@ -413,6 +414,19 @@ pub fn run(
                         new_event_ids.push(id);
                     }
                     Err(e) => tracing::warn!("event insert failed: {e:#}"),
+                }
+            }
+
+            // GenAI captioning (opt-in): one job per event-frame, captioned
+            // off-thread so the LLM call never stalls detection.
+            if settings.genai_enabled {
+                if let Some(&first) = new_event_ids.first() {
+                    let _ = genai_tx.send(crate::genai::CaptionJob {
+                        event_id: first,
+                        snapshot_path: snap_abs.clone(),
+                        label: wanted[0].label.to_string(),
+                        camera: cam.name.clone(),
+                    });
                 }
             }
 

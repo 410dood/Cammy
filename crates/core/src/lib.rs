@@ -13,6 +13,7 @@ mod api;
 mod audio;
 mod auth;
 mod db;
+mod genai;
 mod go2rtc;
 mod health;
 pub mod lpr;
@@ -99,6 +100,8 @@ pub async fn run(
     let mqtt_tx_api = mqtt_tx.clone();
     // Shared per-rule cooldown clock across pipeline / audio / API dispatch.
     let alarm_throttle: notify::AlarmThrottle = Arc::new(std::sync::Mutex::new(Default::default()));
+    // GenAI caption worker channel (pipeline -> captioner).
+    let (genai_tx, genai_rx) = std::sync::mpsc::channel::<genai::CaptionJob>();
     let det_thread = std::thread::Builder::new().name("detector".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -108,7 +111,11 @@ pub async fn run(
         );
         let status = status_board.clone();
         let throttle = alarm_throttle.clone();
-        move || pipeline::run(db, go2rtc, dir, status, mqtt_tx, throttle, stop)
+        move || pipeline::run(db, go2rtc, dir, status, mqtt_tx, throttle, genai_tx, stop)
+    })?;
+    let genai_thread = std::thread::Builder::new().name("genai".into()).spawn({
+        let (db, stop) = (db.clone(), workers_stop.clone());
+        move || genai::run(db, genai_rx, stop)
     })?;
     let mqtt_thread = std::thread::Builder::new().name("mqtt".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
@@ -197,6 +204,7 @@ pub async fn run(
         let _ = audio_thread.join();
         let _ = mqtt_thread.join();
         let _ = health_thread.join();
+        let _ = genai_thread.join();
     })
     .await;
     go2rtc.stop();
