@@ -211,7 +211,11 @@ pub fn run(
 
             // --- face recognition on person detections -------------------
             let mut face_names: Vec<Option<String>> = vec![None; wanted.len()];
-            if settings.face_recognition && wanted.iter().any(|d| d.label == "person") {
+            let face_on = cam
+                .detect_config
+                .face_recognize
+                .unwrap_or(settings.face_recognition);
+            if face_on && wanted.iter().any(|d| d.label == "person") {
                 let fkey = format!(
                     "{}|{}|{}",
                     settings.face_det_model, settings.face_rec_model, settings.force_cpu

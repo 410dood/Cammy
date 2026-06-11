@@ -32,6 +32,7 @@ export interface DetectConfig {
   model: string | null;
   force_cpu: boolean | null;
   poll_ms: number | null;
+  face_recognize: boolean | null;
 }
 
 export interface Camera {
@@ -263,6 +264,8 @@ export const api = {
       body: JSON.stringify({ name, unknown_file }),
     }),
   deleteFace: (id: number) => req<void>(`/api/faces/${id}`, { method: "DELETE" }),
+  renameFace: (id: number, name: string) =>
+    req<void>(`/api/faces/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   ptzCaps: (id: number) => req<{ supported: boolean }>(`/api/cameras/${id}/ptz`),
   ptz: (id: number, cmd: { action: "move" | "stop"; pan?: number; tilt?: number; zoom?: number }) =>
     req<{ ok: boolean }>(`/api/cameras/${id}/ptz`, { method: "POST", body: JSON.stringify(cmd) }),

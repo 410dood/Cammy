@@ -160,6 +160,10 @@ pub struct DetectConfig {
     /// Per-camera sample interval cap in ms (resource governance / FPS cap);
     /// `None` uses the global poll interval. Only ever slows a camera down.
     pub poll_ms: Option<u64>,
+    /// Per-camera face-recognition opt-in: `Some(true/false)` overrides the
+    /// global switch, `None` inherits it. Lets you enable face matching only on
+    /// the cameras where it's wanted (e.g. the front door).
+    pub face_recognize: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -985,6 +989,13 @@ impl Db {
         Ok(())
     }
 
+    /// Rename an enrolled identity (relabel all its embeddings at once).
+    pub fn rename_face(&self, id: i64, name: &str) -> Result<()> {
+        self.conn()
+            .execute("UPDATE faces SET name=?1 WHERE id=?2", params![name, id])?;
+        Ok(())
+    }
+
     // --- segments --------------------------------------------------------
 
     pub fn upsert_segment(
@@ -1365,6 +1376,7 @@ mod tests {
             model: Some("yolov8s.onnx".into()),
             force_cpu: Some(true),
             poll_ms: Some(2000),
+            face_recognize: Some(true),
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();

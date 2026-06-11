@@ -62,7 +62,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(patch_alarm_api).delete(delete_alarm_api),
         )
         .route("/api/faces", get(faces_overview).post(enroll_face))
-        .route("/api/faces/{id}", axum::routing::delete(delete_face_api))
+        .route(
+            "/api/faces/{id}",
+            axum::routing::patch(rename_face_api).delete(delete_face_api),
+        )
         .route("/api/faces/unknown/{file}", get(unknown_face_img))
         .route("/api/snapshots/{file}", get(snapshot))
         .route("/api/recordings", get(list_recordings))
@@ -1019,6 +1022,24 @@ async fn enroll_face(
 
 async fn delete_face_api(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
     st.db.delete_face(id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct RenameReq {
+    name: String,
+}
+
+async fn rename_face_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<RenameReq>,
+) -> ApiResult<StatusCode> {
+    let name = req.name.trim();
+    if name.is_empty() || name.len() > 64 {
+        return Err(bad_request("name must be 1-64 characters"));
+    }
+    st.db.rename_face(id, name)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

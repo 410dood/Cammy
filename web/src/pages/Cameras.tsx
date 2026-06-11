@@ -29,6 +29,7 @@ function TuneModal({
     model: camera.detect_config.model ?? null,
     force_cpu: camera.detect_config.force_cpu ?? null,
     poll_ms: camera.detect_config.poll_ms ?? null,
+    face_recognize: camera.detect_config.face_recognize ?? null,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -188,6 +189,19 @@ function TuneModal({
               value={dc.poll_ms ?? ""}
               onChange={(e) => setDc({ ...dc, poll_ms: e.target.value === "" ? null : Number(e.target.value) })}
             />
+          </label>
+          <label className="field" title="Opt this camera into (or out of) face recognition. Inherit uses the global Settings switch.">
+            face recognition
+            <select
+              value={dc.face_recognize === null ? "" : dc.face_recognize ? "on" : "off"}
+              onChange={(e) =>
+                setDc({ ...dc, face_recognize: e.target.value === "" ? null : e.target.value === "on" })
+              }
+            >
+              <option value="">inherit</option>
+              <option value="on">on</option>
+              <option value="off">off</option>
+            </select>
           </label>
           <label
             className="toggle field"
