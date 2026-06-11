@@ -92,6 +92,7 @@ export interface Settings {
   face_det_model: string;
   face_rec_model: string;
   health_ntfy_url: string;
+  public_base_url: string;
   gesture_recognition: boolean;
   gesture_hold_secs: number;
   gesture_labels: string[];
@@ -140,6 +141,9 @@ export interface AlarmRule {
   days: number[];
   start_hhmm: string | null;
   end_hhmm: string | null;
+  cooldown_secs: number;
+  priority: number;
+  snooze_until: number;
   created_ts: number;
 }
 
@@ -214,8 +218,8 @@ export const api = {
   alarms: () => req<AlarmRule[]>("/api/alarms"),
   addAlarm: (r: Omit<AlarmRule, "id" | "created_ts">) =>
     req<{ id: number }>("/api/alarms", { method: "POST", body: JSON.stringify(r) }),
-  patchAlarm: (id: number, enabled: boolean) =>
-    req<void>(`/api/alarms/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
+  patchAlarm: (id: number, patch: { enabled?: boolean; snooze_secs?: number }) =>
+    req<void>(`/api/alarms/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteAlarm: (id: number) => req<void>(`/api/alarms/${id}`, { method: "DELETE" }),
   search: (q: string, limit = 24) =>
     req<{ results: { similarity: number; event: CamEvent }[] }>(

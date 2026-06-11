@@ -20,6 +20,8 @@ export default function Alarms({
   const [gestureLike, setGestureLike] = useState("");
   const [action, setAction] = useState<"webhook" | "mqtt" | "ntfy">("webhook");
   const [target, setTarget] = useState("");
+  const [cooldown, setCooldown] = useState(0);
+  const [priority, setPriority] = useState(0);
   const [days, setDays] = useState<number[]>([]);
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
@@ -50,12 +52,17 @@ export default function Alarms({
         days,
         start_hhmm: startTime || null,
         end_hhmm: endTime || null,
+        cooldown_secs: cooldown,
+        priority,
+        snooze_until: 0,
       });
       setName("");
       setTarget("");
       setFaceLike("");
       setPlateLike("");
       setGestureLike("");
+      setCooldown(0);
+      setPriority(0);
       setDays([]);
       setStartTime("");
       setEndTime("");
@@ -86,8 +93,16 @@ export default function Alarms({
       r.plate_like ? `plate ~ "${r.plate_like}"` : null,
       r.gesture_like ? `✋ ${r.gesture_like}` : null,
       sched ? `armed ${sched}` : null,
+      r.cooldown_secs > 0 ? `cooldown ${r.cooldown_secs}s` : null,
+      r.priority > 0 ? `priority ${r.priority}` : null,
     ].filter(Boolean);
     return conds.join(" · ");
+  };
+
+  const snoozeText = (r: AlarmRule) => {
+    const left = r.snooze_until - Math.floor(Date.now() / 1000);
+    if (left <= 0) return null;
+    return left > 3600 ? `${Math.round(left / 3600)}h` : `${Math.round(left / 60)}m`;
   };
 
   return (
@@ -186,6 +201,30 @@ export default function Alarms({
                     : "https://ntfy.sh/your-secret-topic (push to phone, snapshot attached)"
               }
             />
+          </div>
+          <div className="row" style={{ marginTop: 12 }}>
+            <span className="muted">…anti-fatigue:</span>
+            <label className="field">
+              cooldown (s)
+              <input
+                type="number" min="0" style={{ width: 90 }}
+                value={cooldown}
+                onChange={(e) => setCooldown(Math.max(0, Number(e.target.value) || 0))}
+                title="Minimum seconds between firings of this rule."
+              />
+            </label>
+            <label className="field">
+              push priority (ntfy)
+              <select value={priority} onChange={(e) => setPriority(Number(e.target.value))}>
+                <option value={0}>default</option>
+                <option value={1}>1 · min</option>
+                <option value={2}>2 · low</option>
+                <option value={3}>3 · normal</option>
+                <option value={4}>4 · high</option>
+                <option value={5}>5 · urgent</option>
+              </select>
+            </label>
+            <div className="spacer" />
             <button className="primary">Create rule</button>
           </div>
         </form>
@@ -225,16 +264,50 @@ export default function Alarms({
                     <span
                       className={`pill toggle ${r.enabled ? "on" : ""}`}
                       onClick={async () => {
-                        await api.patchAlarm(r.id, !r.enabled).catch((e) => onError(String(e)));
+                        await api
+                          .patchAlarm(r.id, { enabled: !r.enabled })
+                          .catch((e) => onError(String(e)));
                         load();
                       }}
                     >
                       {r.enabled ? "on" : "off"}
                     </span>
+                    {snoozeText(r) && (
+                      <span className="pill" style={{ marginLeft: 6 }} title="snoozed">
+                        💤 {snoozeText(r)}
+                      </span>
+                    )}
                   </td>
                   <td>
+                    {snoozeText(r) ? (
+                      <button
+                        className="ghost"
+                        onClick={async () => {
+                          await api
+                            .patchAlarm(r.id, { snooze_secs: 0 })
+                            .catch((e) => onError(String(e)));
+                          load();
+                        }}
+                      >
+                        wake
+                      </button>
+                    ) : (
+                      <button
+                        className="ghost"
+                        title="Suppress this rule for 1 hour"
+                        onClick={async () => {
+                          await api
+                            .patchAlarm(r.id, { snooze_secs: 3600 })
+                            .catch((e) => onError(String(e)));
+                          load();
+                        }}
+                      >
+                        snooze 1h
+                      </button>
+                    )}
                     <button
                       className="danger"
+                      style={{ marginLeft: 8 }}
                       onClick={async () => {
                         await api.deleteAlarm(r.id).catch((e) => onError(String(e)));
                         load();

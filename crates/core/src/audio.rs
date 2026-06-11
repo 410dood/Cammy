@@ -107,12 +107,14 @@ fn capture(ffmpeg: &std::path::Path, rtsp_url: &str) -> Result<Vec<f32>> {
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     db: Db,
     go2rtc: Arc<Go2Rtc>,
     ffmpeg_bin: Option<PathBuf>,
     snapshots_dir: PathBuf,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    throttle: crate::notify::AlarmThrottle,
     shutdown: Arc<AtomicBool>,
 ) {
     let Ok(ffmpeg) = recorder::locate_ffmpeg(ffmpeg_bin.as_deref()) else {
@@ -242,11 +244,12 @@ pub fn run(
                             face: None,
                             plate: None,
                             gesture: None,
+                            base_url: &settings.public_base_url,
                         };
-                        for rule in alarms
-                            .iter()
-                            .filter(|r| r.matches(cam.id, &label, score, None, None, None))
-                        {
+                        for rule in alarms.iter().filter(|r| {
+                            r.matches(cam.id, &label, score, None, None, None)
+                                && crate::notify::ready(r, &throttle, now)
+                        }) {
                             crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
                         }
                     }

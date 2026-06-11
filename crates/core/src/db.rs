@@ -210,6 +210,16 @@ pub struct AlarmRule {
     pub start_hhmm: Option<String>,
     #[serde(default)]
     pub end_hhmm: Option<String>,
+    /// Minimum seconds between firings of this rule — the per-rule anti-fatigue
+    /// throttle. 0 = no cooldown.
+    #[serde(default)]
+    pub cooldown_secs: i64,
+    /// ntfy priority 1 (min) .. 5 (max); 0 = leave at the ntfy default (3).
+    #[serde(default)]
+    pub priority: u8,
+    /// Suppress the rule until this unix timestamp (manual "snooze"). 0 = off.
+    #[serde(default)]
+    pub snooze_until: i64,
     #[serde(default)]
     pub created_ts: i64,
 }
@@ -387,6 +397,10 @@ pub struct Settings {
     /// ntfy topic URL for camera health pushes (offline / back online);
     /// empty = off.
     pub health_ntfy_url: String,
+    /// Public base URL this NVR is reachable at (e.g. "https://nvr.example.com").
+    /// When set, push notifications include tap-through links to the event clip
+    /// and snapshot. Empty = no links (the LAN default).
+    pub public_base_url: String,
     /// Master switch for the live hand-signal recognizer (the Signals page).
     pub gesture_recognition: bool,
     /// How long (seconds) a hand signal must be held before it fires an event —
@@ -456,6 +470,7 @@ impl Default for Settings {
             .to_vec(),
             audio_threshold: 0.4,
             health_ntfy_url: String::new(),
+            public_base_url: String::new(),
             gesture_recognition: true,
             gesture_hold_secs: 1.5,
             gesture_labels: ["open_palm", "victory", "thumb_up"]
@@ -548,6 +563,18 @@ impl Db {
         // Additive migration for pre-schedule alarms tables.
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN schedule_json TEXT", []);
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN gesture_like TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE alarms ADD COLUMN cooldown_secs INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE alarms ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE alarms ADD COLUMN snooze_until INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
@@ -715,8 +742,9 @@ impl Db {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO alarms (name, enabled, camera_id, label, face_like, plate_like,
-             gesture_like, min_score, action, target, schedule_json, created_ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             gesture_like, min_score, action, target, schedule_json, cooldown_secs, priority,
+             snooze_until, created_ts)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 r.name,
                 r.enabled,
@@ -729,6 +757,9 @@ impl Db {
                 r.action,
                 r.target,
                 schedule,
+                r.cooldown_secs,
+                r.priority,
+                r.snooze_until,
                 chrono::Local::now().timestamp()
             ],
         )?;
@@ -739,7 +770,8 @@ impl Db {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, enabled, camera_id, label, face_like, plate_like,
-                    min_score, action, target, created_ts, schedule_json, gesture_like
+                    min_score, action, target, created_ts, schedule_json, gesture_like,
+                    cooldown_secs, priority, snooze_until
              FROM alarms ORDER BY id",
         )?;
         let rows = stmt
@@ -772,6 +804,9 @@ impl Db {
                         .unwrap_or_default(),
                     start_hhmm: sched["start"].as_str().map(str::to_string),
                     end_hhmm: sched["end"].as_str().map(str::to_string),
+                    cooldown_secs: r.get(13)?,
+                    priority: r.get::<_, i64>(14)? as u8,
+                    snooze_until: r.get(15)?,
                     created_ts: r.get(10)?,
                 })
             })?
@@ -811,6 +846,15 @@ impl Db {
         self.conn().execute(
             "UPDATE alarms SET enabled=?1 WHERE id=?2",
             params![enabled, id],
+        )?;
+        Ok(())
+    }
+
+    /// Suppress a rule until `until` (unix seconds); 0 clears the snooze.
+    pub fn set_alarm_snooze(&self, id: i64, until: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE alarms SET snooze_until=?1 WHERE id=?2",
+            params![until, id],
         )?;
         Ok(())
     }
@@ -1294,6 +1338,9 @@ mod tests {
             days: vec![],
             start_hhmm: None,
             end_hhmm: None,
+            cooldown_secs: 0,
+            priority: 0,
+            snooze_until: 0,
             created_ts: 0,
         };
         assert!(rule.matches(3, "person", 0.8, None, None, None));
@@ -1354,6 +1401,9 @@ mod tests {
                 days: vec![1, 2, 3],
                 start_hhmm: Some("22:00".into()),
                 end_hhmm: Some("06:00".into()),
+                cooldown_secs: 30,
+                priority: 4,
+                snooze_until: 0,
                 created_ts: 0,
             })
             .unwrap();
@@ -1361,6 +1411,8 @@ mod tests {
         assert_eq!(back.days, vec![1, 2, 3]);
         assert_eq!(back.start_hhmm.as_deref(), Some("22:00"));
         assert_eq!(back.end_hhmm.as_deref(), Some("06:00"));
+        assert_eq!(back.cooldown_secs, 30);
+        assert_eq!(back.priority, 4);
         assert_eq!(db.list_alarms().unwrap().len(), 1);
         db.set_alarm_enabled(id, false).unwrap();
         assert!(!db.list_alarms().unwrap()[0].enabled);
@@ -1385,6 +1437,9 @@ mod tests {
             days: vec![],
             start_hhmm: None,
             end_hhmm: None,
+            cooldown_secs: 0,
+            priority: 0,
+            snooze_until: 0,
             created_ts: 0,
         };
         // No schedule = always armed.

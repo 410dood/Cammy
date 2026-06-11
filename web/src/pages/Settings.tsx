@@ -246,6 +246,15 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(e) => set({ health_ntfy_url: e.target.value })}
               />
             </label>
+            <label className="field" style={{ flex: 1, minWidth: 320 }}>
+              public base URL (adds tap-through clip/snapshot links to pushes)
+              <input
+                type="text"
+                placeholder="https://nvr.example.com"
+                value={s.public_base_url ?? ""}
+                onChange={(e) => set({ public_base_url: e.target.value })}
+              />
+            </label>
             <label className="field" style={{ minWidth: 240 }}>
               MQTT broker (empty = off)
               <input

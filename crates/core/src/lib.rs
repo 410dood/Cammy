@@ -97,6 +97,8 @@ pub async fn run(
     let (mqtt_tx, mqtt_rx) = std::sync::mpsc::channel::<mqtt::EventMsg>();
     let mqtt_tx2 = mqtt_tx.clone();
     let mqtt_tx_api = mqtt_tx.clone();
+    // Shared per-rule cooldown clock across pipeline / audio / API dispatch.
+    let alarm_throttle: notify::AlarmThrottle = Arc::new(std::sync::Mutex::new(Default::default()));
     let det_thread = std::thread::Builder::new().name("detector".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -105,7 +107,8 @@ pub async fn run(
             workers_stop.clone(),
         );
         let status = status_board.clone();
-        move || pipeline::run(db, go2rtc, dir, status, mqtt_tx, stop)
+        let throttle = alarm_throttle.clone();
+        move || pipeline::run(db, go2rtc, dir, status, mqtt_tx, throttle, stop)
     })?;
     let mqtt_thread = std::thread::Builder::new().name("mqtt".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
@@ -124,7 +127,8 @@ pub async fn run(
             workers_stop.clone(),
         );
         let (ffmpeg_bin, tx) = (cfg.ffmpeg_bin.clone(), mqtt_tx2);
-        move || audio::run(db, go2rtc, ffmpeg_bin, dir, tx, stop)
+        let throttle = alarm_throttle.clone();
+        move || audio::run(db, go2rtc, ffmpeg_bin, dir, tx, throttle, stop)
     })?;
 
     // go2rtc watchdog.
@@ -156,6 +160,7 @@ pub async fn run(
         status: status_board,
         sessions: auth::Sessions::default(),
         mqtt_tx: mqtt_tx_api,
+        alarm_throttle,
     };
     let ui =
         ServeDir::new(&cfg.ui_dir).not_found_service(ServeFile::new(cfg.ui_dir.join("index.html")));

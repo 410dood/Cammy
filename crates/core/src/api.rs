@@ -30,6 +30,9 @@ pub struct AppState {
     /// Lets request handlers (the hand-signal recognizer) publish events and
     /// fire alarm actions on the same channel the detection pipeline uses.
     pub mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    /// Shared per-rule cooldown clock, so API-fired alarms respect the same
+    /// throttle as pipeline/audio-fired ones.
+    pub alarm_throttle: crate::notify::AlarmThrottle,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -600,10 +603,14 @@ async fn record_gesture(
         .db
         .list_alarms()?
         .into_iter()
-        .filter(|r| r.matches(cam.id, "gesture", score, None, None, Some(canonical)))
+        .filter(|r| {
+            r.matches(cam.id, "gesture", score, None, None, Some(canonical))
+                && crate::notify::ready(r, &st.alarm_throttle, now)
+        })
         .collect();
     let mqtt_tx = st.mqtt_tx.clone();
     let webhook_url = settings.webhook_url.clone();
+    let base_url = settings.public_base_url.clone();
     let camera = cam.name.clone();
     let gesture_owned = canonical.to_string();
     let snap_path = snapshot.as_ref().map(|_| snap_abs.clone());
@@ -619,6 +626,7 @@ async fn record_gesture(
             face: None,
             plate: None,
             gesture: Some(&gesture_owned),
+            base_url: &base_url,
         };
         if !webhook_url.is_empty() {
             let payload = serde_json::json!({
@@ -779,6 +787,12 @@ async fn add_alarm_api(
     if rule.days.iter().any(|d| *d > 6) {
         return Err(bad_request("days must be 0 (Sunday) through 6 (Saturday)"));
     }
+    if rule.priority > 5 {
+        return Err(bad_request("priority must be 0 (default) through 5"));
+    }
+    if rule.cooldown_secs < 0 {
+        return Err(bad_request("cooldown must be ≥ 0 seconds"));
+    }
     for t in [&rule.start_hhmm, &rule.end_hhmm].into_iter().flatten() {
         let ok = t.split_once(':').is_some_and(|(h, m)| {
             h.parse::<u8>().is_ok_and(|h| h < 24) && m.parse::<u8>().is_ok_and(|m| m < 60)
@@ -793,7 +807,9 @@ async fn add_alarm_api(
 
 #[derive(Deserialize)]
 struct AlarmPatch {
-    enabled: bool,
+    enabled: Option<bool>,
+    /// Snooze the rule for this many seconds from now; 0 clears the snooze.
+    snooze_secs: Option<i64>,
 }
 
 async fn patch_alarm_api(
@@ -801,7 +817,17 @@ async fn patch_alarm_api(
     Path(id): Path<i64>,
     Json(p): Json<AlarmPatch>,
 ) -> ApiResult<StatusCode> {
-    st.db.set_alarm_enabled(id, p.enabled)?;
+    if let Some(enabled) = p.enabled {
+        st.db.set_alarm_enabled(id, enabled)?;
+    }
+    if let Some(secs) = p.snooze_secs {
+        let until = if secs <= 0 {
+            0
+        } else {
+            chrono::Local::now().timestamp() + secs
+        };
+        st.db.set_alarm_snooze(id, until)?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

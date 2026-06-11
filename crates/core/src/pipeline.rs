@@ -26,12 +26,14 @@ use crate::status::StatusBoard;
 /// Cap on a fetched JPEG frame (sanity guard, not a real limit).
 const MAX_FRAME_BYTES: u64 = 32 * 1024 * 1024;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     db: Db,
     go2rtc: Arc<Go2Rtc>,
     snapshots_dir: PathBuf,
     status: StatusBoard,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    throttle: crate::notify::AlarmThrottle,
     shutdown: Arc<AtomicBool>,
 ) {
     let mut detector: Option<Detector> = None;
@@ -327,6 +329,7 @@ pub fn run(
                             face: face_names[i].as_deref(),
                             plate: plates[i].as_deref(),
                             gesture: None,
+                            base_url: &settings.public_base_url,
                         };
                         for rule in alarms.iter().filter(|r| {
                             r.matches(
@@ -336,7 +339,7 @@ pub fn run(
                                 face_names[i].as_deref(),
                                 plates[i].as_deref(),
                                 None,
-                            )
+                            ) && crate::notify::ready(r, &throttle, now)
                         }) {
                             crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
                         }
