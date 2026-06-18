@@ -33,6 +33,7 @@ export interface DetectConfig {
   force_cpu: boolean | null;
   poll_ms: number | null;
   face_recognize: boolean | null;
+  two_way_audio: boolean;
 }
 
 export interface Camera {

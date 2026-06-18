@@ -169,6 +169,12 @@ pub struct DetectConfig {
     /// global switch, `None` inherits it. Lets you enable face matching only on
     /// the cameras where it's wanted (e.g. the front door).
     pub face_recognize: Option<bool>,
+    /// Two-way audio (push-to-talk): when true, the camera detail view offers a
+    /// hold-to-talk button that streams the browser mic to the camera over
+    /// WebRTC (go2rtc backchannel). Opt-in because it only works on cameras with
+    /// a speaker / ONVIF backchannel — purely a UI gate; the audio path is the
+    /// player's WebRTC mic track through the `/api/ws` proxy.
+    pub two_way_audio: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1414,6 +1420,7 @@ mod tests {
             force_cpu: Some(true),
             poll_ms: Some(2000),
             face_recognize: Some(true),
+            two_way_audio: true,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();

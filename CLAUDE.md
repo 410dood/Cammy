@@ -14,10 +14,25 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 42/42, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 43/43, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **remote live-view via an authenticated WebSocket reverse-proxy**
-(matrix #42). The live player's WebSocket now connects to zoomy's **own origin**
+Latest: **two-way audio / push-to-talk** (matrix #43). A per-camera opt-in
+`two_way_audio` (DetectConfig flag + tuning toggle) adds a **hold-to-talk**
+button to the camera detail view; holding it streams the browser mic to the
+camera over WebRTC (the go2rtc player adds a send-only audio track via
+`getUserMedia` → `addTransceiver(sendonly)`, riding the #42 `/api/ws` proxy).
+Forces WebRTC while talking. **Live-validated in Chrome with a real webcam mic**
+(sendonly transceiver negotiated, red "Talking…" over live video). **Mic-privacy
+GOTCHA the review caught:** go2rtc's `<video-rtc>` defers its own teardown — and
+the sender `track.stop()` — behind a 5 s `DISCONNECT_TIMEOUT`, so just removing
+the element leaves the mic hot ~5 s after release; `LiveVideo` cleanup now calls
+`sender.track.stop()` immediately (verified: mic ends ~100 ms after release) and
+CameraDetail adds a window pointer-up/blur release safety net. Speaker playout
+needs a camera with a backchannel (the webcam has none → unvalidated end).
+
+### Earlier this session: remote live-view via an authenticated WebSocket reverse-proxy (matrix #42)
+
+The live player's WebSocket now connects to zoomy's **own origin**
 `/api/ws?src=NAME` (`stream_ws`/`proxy_ws` in `api.rs`), which proxies to the
 loopback-only go2rtc — browser ⇄ zoomy ⇄ go2rtc. This makes **remote/LAN
 live-view work** (MSE/MJPEG media rides the proxied socket, so any viewer gets

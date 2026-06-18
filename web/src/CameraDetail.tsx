@@ -19,6 +19,21 @@ export default function CameraDetail({
   const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
+  const [talking, setTalking] = useState(false);
+  const twoWay = !!camera.detect_config.two_way_audio;
+
+  // Safety net: guarantee push-to-talk releases (mic off) on ANY pointer-up or
+  // window blur, even if the up/cancel misses the button (drag-off, alt-tab).
+  useEffect(() => {
+    if (!talking) return;
+    const release = () => setTalking(false);
+    window.addEventListener("pointerup", release);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("blur", release);
+    };
+  }, [talking]);
 
   useEffect(() => {
     api.settings().then((s) => setSegmentSecs(s.segment_seconds)).catch(() => {});
@@ -72,8 +87,24 @@ export default function CameraDetail({
       <div className="detail-body">
         <div className="detail-main">
           <div className="tile" style={{ aspectRatio: "16 / 9" }}>
-            <LiveVideo name={camera.name} mode={getStreamMode()} audio />
+            <LiveVideo name={camera.name} mode={getStreamMode()} audio mic={talking} />
             {ptz && <PtzInline cameraId={camera.id} />}
+            {twoWay && (
+              <button
+                className={`talk-btn ${talking ? "on" : ""}`}
+                title="Hold to talk through this camera's speaker"
+                aria-pressed={talking}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  setTalking(true);
+                }}
+                onPointerUp={() => setTalking(false)}
+                onPointerLeave={() => setTalking(false)}
+                onPointerCancel={() => setTalking(false)}
+              >
+                {talking ? "🎙️ Talking…" : "🎙️ Hold to talk"}
+              </button>
+            )}
           </div>
           <Timeline
             windowSecs={windowSecs}

@@ -30,6 +30,7 @@ function TuneModal({
     force_cpu: camera.detect_config.force_cpu ?? null,
     poll_ms: camera.detect_config.poll_ms ?? null,
     face_recognize: camera.detect_config.face_recognize ?? null,
+    two_way_audio: camera.detect_config.two_way_audio ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -146,6 +147,17 @@ function TuneModal({
               type="checkbox"
               checked={dc.audio_detect}
               onChange={() => setDc({ ...dc, audio_detect: !dc.audio_detect })}
+            />
+          </label>
+          <label
+            className="toggle field"
+            title="Show a hold-to-talk button in this camera's detail view (streams your mic to the camera over WebRTC). Only works on cameras with a speaker / ONVIF backchannel."
+          >
+            two-way audio (talk)
+            <input
+              type="checkbox"
+              checked={dc.two_way_audio}
+              onChange={() => setDc({ ...dc, two_way_audio: !dc.two_way_audio })}
             />
           </label>
           <label

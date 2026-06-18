@@ -44,16 +44,23 @@ type VideoStreamEl = HTMLElement & {
   media: string;
   background: boolean;
   src: string;
+  // go2rtc's VideoRTC exposes its RTCPeerConnection here.
+  pc?: RTCPeerConnection;
 };
 
 export default function LiveVideo({
   name,
   mode,
   audio = false,
+  mic = false,
 }: {
   name: string;
   mode: StreamMode;
   audio?: boolean;
+  /// Push-to-talk: stream the browser mic to the camera. Forces WebRTC (the
+  /// only transport that carries an outbound track) and asks the player for a
+  /// `microphone` media, which adds a send-only audio track to the connection.
+  mic?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
 
@@ -64,8 +71,9 @@ export default function LiveVideo({
       .then(() => {
         if (cancelled || !host.current) return;
         el = document.createElement("video-stream") as VideoStreamEl;
-        el.mode = MODE_FALLBACKS[mode];
-        el.media = audio ? "video,audio" : "video";
+        // Talking needs WebRTC; MSE/MJPEG can't carry the mic upstream.
+        el.mode = mic ? "webrtc" : MODE_FALLBACKS[mode];
+        el.media = mic ? "video,audio,microphone" : audio ? "video,audio" : "video";
         el.background = false; // stop streaming when the tab is hidden
         // Relative path → the player resolves it to ws://<this origin>/api/ws,
         // which zoomy reverse-proxies to the loopback-only go2rtc.
@@ -78,11 +86,16 @@ export default function LiveVideo({
       });
     return () => {
       cancelled = true;
-      // Removing the node fires the component's disconnectedCallback, which
-      // tears down the WebSocket / RTCPeerConnection.
-      if (el && el.parentNode) el.parentNode.removeChild(el);
+      if (el) {
+        // Stop any local capture (the push-to-talk mic) IMMEDIATELY. go2rtc's
+        // player defers its own teardown — and the sender track.stop() — behind
+        // a 5s timer, which for push-to-talk would leave the mic hot (OS
+        // indicator lit) for ~5s after release. Don't wait for it.
+        el.pc?.getSenders?.().forEach((s) => s.track && s.track.stop());
+        el.parentNode?.removeChild(el);
+      }
     };
-  }, [name, mode, audio]);
+  }, [name, mode, audio, mic]);
 
   return <div className="live-video-host" ref={host} />;
 }
