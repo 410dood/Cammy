@@ -64,6 +64,8 @@ export interface CamEvent {
   zone: string | null;
   caption: string | null;
   transcript: string | null;
+  flagged: boolean;
+  note: string | null;
 }
 
 export interface Segment {
@@ -235,6 +237,7 @@ export const api = {
       zone?: string;
       after?: number;
       before?: number;
+      flagged?: boolean;
       limit?: number;
     } = {}
   ) => {
@@ -245,9 +248,15 @@ export const api = {
     if (q.zone) p.set("zone", q.zone);
     if (q.after != null) p.set("after", String(q.after));
     if (q.before != null) p.set("before", String(q.before));
+    if (q.flagged) p.set("flagged", "true");
     if (q.limit) p.set("limit", String(q.limit));
     return req<CamEvent[]>(`/api/events?${p}`);
   },
+  bookmarkEvent: (id: number, flagged: boolean, note?: string | null) =>
+    req<{ id: number; flagged: boolean }>(`/api/events/${id}/bookmark`, {
+      method: "POST",
+      body: JSON.stringify({ flagged, note: note ?? null }),
+    }),
   recordGesture: (body: { camera?: string; gesture: string; score?: number }) =>
     req<{ recorded: boolean; event_id?: number; gesture?: string; reason?: string; duress?: boolean }>(
       "/api/gesture",

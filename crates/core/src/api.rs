@@ -61,6 +61,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cameras/{id}/ptz", get(ptz_caps).post(ptz_command))
         .route("/api/cameras/{id}/frame.jpg", get(camera_frame))
         .route("/api/events", get(list_events))
+        .route(
+            "/api/events/{id}/bookmark",
+            axum::routing::post(bookmark_event),
+        )
         .route("/api/gesture", axum::routing::post(record_gesture))
         .route("/api/events/{id}/clip", get(event_clip))
         .route("/api/search", get(smart_search))
@@ -879,6 +883,9 @@ struct EventQuery {
     zone: Option<String>,
     after: Option<i64>,
     before: Option<i64>,
+    /// When true, return only bookmarked (flagged) events.
+    #[serde(default)]
+    flagged: bool,
     #[serde(default = "default_limit")]
     limit: u32,
 }
@@ -898,8 +905,58 @@ async fn list_events(
         q.zone.as_deref(),
         q.after,
         q.before,
+        q.flagged,
         q.limit.min(1000),
     )?))
+}
+
+const NOTE_MAX_CHARS: usize = 500;
+
+/// Deserialize a *present* field (including an explicit JSON `null`) as
+/// `Some(_)`. Combined with `#[serde(default)]`, this lets an absent field
+/// (→ `None`) be told apart from `null` (→ `Some(None)`) — plain
+/// `Option<Option<T>>` collapses both to `None`.
+fn de_some<'de, T, D>(d: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(d).map(Some)
+}
+
+#[derive(Deserialize)]
+struct BookmarkReq {
+    flagged: bool,
+    /// Note handling: omit the field to leave the existing note unchanged; send
+    /// `null` or `""` to clear it; send a string (≤500 chars) to set it.
+    #[serde(default, deserialize_with = "de_some")]
+    note: Option<Option<String>>,
+}
+
+/// Bookmark / annotate an event (flag it to keep past retention + attach a note).
+async fn bookmark_event(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<BookmarkReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let existed = match req.note {
+        // Field omitted → only update the flag, leave the note as-is.
+        None => st.db.set_event_flag(id, req.flagged)?,
+        // Field present → set/clear the note alongside the flag.
+        Some(n) => {
+            if n.as_deref().map(|s| s.chars().count()).unwrap_or(0) > NOTE_MAX_CHARS {
+                return Err(bad_request("note too long (max 500 chars)"));
+            }
+            let note = n.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            st.db.set_event_bookmark(id, req.flagged, note)?
+        }
+    };
+    if !existed {
+        return Err(not_found());
+    }
+    Ok(Json(
+        serde_json::json!({ "id": id, "flagged": req.flagged }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1607,7 +1664,22 @@ async fn put_settings(
 
 #[cfg(test)]
 mod tests {
-    use super::{no_control, valid_group, valid_source};
+    use super::{no_control, valid_group, valid_source, BookmarkReq};
+
+    #[test]
+    fn bookmark_note_distinguishes_absent_null_and_value() {
+        // Absent note → outer None → preserve the stored note.
+        let r: BookmarkReq = serde_json::from_str(r#"{"flagged":true}"#).unwrap();
+        assert!(r.flagged);
+        assert!(r.note.is_none());
+        // Explicit null → Some(None) → clear the note.
+        let r: BookmarkReq = serde_json::from_str(r#"{"flagged":false,"note":null}"#).unwrap();
+        assert!(!r.flagged);
+        assert_eq!(r.note, Some(None));
+        // String → Some(Some(_)) → set the note.
+        let r: BookmarkReq = serde_json::from_str(r#"{"flagged":true,"note":"hi"}"#).unwrap();
+        assert_eq!(r.note, Some(Some("hi".to_string())));
+    }
 
     #[test]
     fn source_validation_blocks_yaml_injection_but_allows_real_sources() {

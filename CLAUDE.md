@@ -14,9 +14,24 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 46/46, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 47/47, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **spoken-keyword alarm** (matrix #46). A new Alarm Manager condition
+Latest: **event bookmarks** (matrix #47). A per-event `flagged` + free-text
+`note` (new columns), `POST /api/events/{id}/bookmark`, and a server-side
+`flagged` list filter. A bookmarked event is **exempt from the event-retention
+prune** — `db::prune_events_before` keeps flagged rows and their snapshots (the
+snapshot-delete query skips files still referenced by any flagged event), so a
+saved clip survives past retention. Events page gains a ★/☆ save toggle + 📝
+note per card and a "⭐ Saved" filter; un-saving a noted event confirms then
+drops the note (no orphaned notes). The endpoint distinguishes absent (preserve)
+/ null·"" (clear) / string (set, ≤500) via a custom serde deserializer
+(`de_some`) — plain `Option<Option<String>>` can't tell absent from null.
+Live-validated via the API; retention-protection + the serde semantics are
+unit-tested. Review caught the note-orphan-on-unflag bug + absent-note-wipe.
+
+### Earlier this session: spoken-keyword alarm (matrix #46)
+
+A new Alarm Manager condition
 `transcript_like` (case-insensitive substring on an event's speech-to-text
 transcript) fires a webhook/ntfy/MQTT action when a phrase is *said* near a
 camera — a spoken "safe word" (e.g. "help"/"fire"), the audio sibling of the #35

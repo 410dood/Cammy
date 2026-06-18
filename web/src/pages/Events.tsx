@@ -18,6 +18,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
   const [zoneFilter, setZoneFilter] = useState("");
   const [fromTime, setFromTime] = useState("");
   const [toTime, setToTime] = useState("");
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
 
   const runSearch = async () => {
     const q = query.trim();
@@ -75,6 +76,46 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
     }
   };
 
+  // Bookmarks: a flagged event is kept past retention; a note adds context.
+  const applyBookmark = (id: number, flagged: boolean, note: string | null) => {
+    const upd = (e: CamEvent) => (e.id === id ? { ...e, flagged, note } : e);
+    setEvents((prev) => prev.map(upd));
+    setSearchResults((prev) => (prev ? prev.map(upd) : prev));
+    setOpen((prev) => (prev && prev.id === id ? { ...prev, flagged, note } : prev));
+  };
+  const toggleFlag = async (ev: CamEvent) => {
+    // A note only lives on a saved event — un-saving discards it (so a note is
+    // never left orphaned, hidden from the Saved filter and lost at retention).
+    if (
+      ev.flagged &&
+      ev.note &&
+      !window.confirm("Remove this bookmark? Its note will be deleted.")
+    ) {
+      return;
+    }
+    const flagged = !ev.flagged;
+    const note = flagged ? ev.note : null;
+    try {
+      await api.bookmarkEvent(ev.id, flagged, note);
+      applyBookmark(ev.id, flagged, note);
+    } catch {
+      /* best-effort */
+    }
+  };
+  const editNote = async (ev: CamEvent) => {
+    const note = window.prompt("Note for this event:", ev.note ?? "");
+    if (note === null) return; // cancelled
+    const trimmed = note.trim();
+    // Adding a note implies keeping the event (flag it); clearing leaves the flag.
+    const flagged = trimmed ? true : ev.flagged;
+    try {
+      await api.bookmarkEvent(ev.id, flagged, trimmed || null);
+      applyBookmark(ev.id, flagged, trimmed || null);
+    } catch {
+      /* best-effort */
+    }
+  };
+
   const load = () => {
     const after = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
     const before = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
@@ -84,6 +125,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
         label: label || undefined,
         after,
         before,
+        flagged: flaggedOnly || undefined,
         limit: 200,
       })
       .then(setEvents)
@@ -115,7 +157,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
     const t = setInterval(load, 5000); // events appear as they happen
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cameraId, label, fromTime, toTime]);
+  }, [cameraId, label, fromTime, toTime, flaggedOnly]);
 
   const labels = [...new Set(events.map((e) => e.label))];
   const faces = [...new Set(events.map((e) => e.face).filter(Boolean))] as string[];
@@ -181,6 +223,13 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
           title={`alert labels: ${alertLabels.join(", ")}`}
         >
           🔔 Alerts
+        </button>
+        <button
+          className={flaggedOnly ? "primary" : "ghost"}
+          onClick={() => setFlaggedOnly((v) => !v)}
+          title="Show only bookmarked events (kept past retention)"
+        >
+          ⭐ Saved
         </button>
         <select value={cameraId} onChange={(e) => setCameraId(e.target.value === "" ? "" : Number(e.target.value))}>
           <option value="">all cameras</option>
@@ -312,8 +361,39 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                     🎙️ “{ev.transcript}”
                   </div>
                 )}
+                {ev.note && (
+                  <div style={{ marginTop: 4, fontSize: "0.85rem" }} title="Your note">
+                    📝 {ev.note}
+                  </div>
+                )}
                 <div className="muted">{fmtTime(ev.ts)}</div>
                 <div className="row" style={{ marginTop: 8 }}>
+                  <button
+                    className={ev.flagged ? "primary" : "ghost"}
+                    aria-pressed={ev.flagged}
+                    title={
+                      ev.flagged
+                        ? "Bookmarked — kept past retention. Click to remove."
+                        : "Bookmark this event (keep it past retention)"
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleFlag(ev);
+                    }}
+                  >
+                    {ev.flagged ? "★ saved" : "☆ save"}
+                  </button>
+                  <button
+                    className="ghost"
+                    aria-label={ev.note ? "Edit note" : "Add note"}
+                    title={ev.note ? "Edit note" : "Add a note"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      editNote(ev);
+                    }}
+                  >
+                    📝
+                  </button>
                   <button
                     className="ghost"
                     onClick={(e) => {

@@ -205,6 +205,13 @@ pub struct Event {
     /// Speech-to-text of the event's audio, from the optional (bundled, opt-in)
     /// transcriber — set for audio events when transcription finds speech.
     pub transcript: Option<String>,
+    /// User bookmark: a flagged event is kept in the Events review filter and is
+    /// exempt from the event-retention auto-prune (its clip is "protected").
+    #[serde(default)]
+    pub flagged: bool,
+    /// Free-text note the user attached to the event.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// One row of the smart-search corpus: an event's id, its searchable text
@@ -655,6 +662,11 @@ impl Db {
         let _ = conn.execute("ALTER TABLE events ADD COLUMN caption TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN transcript TEXT", []);
         let _ = conn.execute(
+            "ALTER TABLE events ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN note TEXT", []);
+        let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
         );
@@ -826,12 +838,14 @@ impl Db {
         zone: Option<&str>,
         after_ts: Option<i64>,
         before_ts: Option<i64>,
+        flagged_only: bool,
         limit: u32,
     ) -> Result<Vec<Event>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
-                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript
+                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
+                    e.flagged, e.note
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -839,11 +853,21 @@ impl Db {
                AND (?4 IS NULL OR e.zone = ?4)
                AND (?5 IS NULL OR e.ts >= ?5)
                AND (?6 IS NULL OR e.ts < ?6)
-             ORDER BY e.ts DESC, e.id DESC LIMIT ?7",
+               AND (?7 = 0 OR e.flagged = 1)
+             ORDER BY e.ts DESC, e.id DESC LIMIT ?8",
         )?;
         let rows = stmt
             .query_map(
-                params![camera_id, label, gesture, zone, after_ts, before_ts, limit],
+                params![
+                    camera_id,
+                    label,
+                    gesture,
+                    zone,
+                    after_ts,
+                    before_ts,
+                    flagged_only as i64,
+                    limit
+                ],
                 row_to_event,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -855,7 +879,8 @@ impl Db {
         let ev = conn
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
-                        e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript
+                        e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
+                        e.flagged, e.note
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
@@ -997,6 +1022,27 @@ impl Db {
         self.conn()
             .execute("DELETE FROM alarms WHERE id=?1", [id])?;
         Ok(())
+    }
+
+    /// Bookmark an event: set/clear the flag and replace its note. A flagged
+    /// event survives the event-retention prune. Returns whether the event
+    /// existed.
+    pub fn set_event_bookmark(&self, id: i64, flagged: bool, note: Option<&str>) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE events SET flagged = ?1, note = ?2 WHERE id = ?3",
+            params![flagged as i64, note, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Set/clear an event's bookmark flag, leaving any existing note untouched.
+    /// Returns whether the event existed.
+    pub fn set_event_flag(&self, id: i64, flagged: bool) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE events SET flagged = ?1 WHERE id = ?2",
+            params![flagged as i64, id],
+        )?;
+        Ok(n > 0)
     }
 
     // --- smart-search embeddings -------------------------------------------
@@ -1244,16 +1290,24 @@ impl Db {
     }
 
     /// Delete events older than `cutoff_ts`, returning their snapshot names
-    /// so the caller can remove the files. Embeddings cascade.
+    /// so the caller can remove the files. Embeddings cascade. Flagged
+    /// (bookmarked) events are protected — neither they nor their snapshots are
+    /// removed, even past retention.
     pub fn prune_events_before(&self, cutoff_ts: i64) -> Result<Vec<String>> {
         let conn = self.conn();
+        // Don't delete a snapshot still referenced by a kept (flagged) event.
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT snapshot FROM events WHERE ts < ?1 AND snapshot IS NOT NULL",
+            "SELECT DISTINCT snapshot FROM events
+             WHERE ts < ?1 AND flagged = 0 AND snapshot IS NOT NULL
+               AND snapshot NOT IN (SELECT snapshot FROM events WHERE flagged = 1)",
         )?;
         let snapshots = stmt
             .query_map([cutoff_ts], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        conn.execute("DELETE FROM events WHERE ts < ?1", [cutoff_ts])?;
+        conn.execute(
+            "DELETE FROM events WHERE ts < ?1 AND flagged = 0",
+            [cutoff_ts],
+        )?;
         Ok(snapshots)
     }
 
@@ -1328,6 +1382,8 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         zone: r.get(14)?,
         caption: r.get(15)?,
         transcript: r.get(16)?,
+        flagged: r.get::<_, i64>(17)? != 0,
+        note: r.get(18)?,
     })
 }
 
@@ -1414,46 +1470,132 @@ mod tests {
         .unwrap();
 
         let all = |db: &Db| {
-            db.list_events(None, None, None, None, None, None, 10)
+            db.list_events(None, None, None, None, None, None, false, 10)
                 .unwrap()
         };
         assert_eq!(all(&db).len(), 3);
         assert_eq!(
-            db.list_events(None, Some("person"), None, None, None, None, 10)
+            db.list_events(None, Some("person"), None, None, None, None, false, 10)
                 .unwrap()
                 .len(),
             1
         );
         assert_eq!(
-            db.list_events(None, None, Some("open_palm"), None, None, None, 10)
+            db.list_events(None, None, Some("open_palm"), None, None, None, false, 10)
                 .unwrap()
                 .len(),
             1
         );
         // Zone filter.
         assert_eq!(
-            db.list_events(None, None, None, Some("driveway"), None, None, 10)
+            db.list_events(None, None, None, Some("driveway"), None, None, false, 10)
                 .unwrap()
                 .len(),
             1
         );
         // before / after time bounds.
         assert_eq!(
-            db.list_events(None, None, None, None, None, Some(150), 10)
+            db.list_events(None, None, None, None, None, Some(150), false, 10)
                 .unwrap()
                 .len(),
             1
         );
         assert_eq!(
-            db.list_events(None, None, None, None, Some(250), None, 10)
+            db.list_events(None, None, None, None, Some(250), None, false, 10)
                 .unwrap()
                 .len(),
             1
         );
 
+        // Bookmark filter + retention protection: flag one event, prune
+        // everything (cutoff in the far future), and the flagged event + its
+        // snapshot survive while the rest are pruned.
+        let flagged_id = all(&db)[0].id;
+        assert!(db
+            .set_event_bookmark(flagged_id, true, Some("check this"))
+            .unwrap());
+        assert!(!db.set_event_bookmark(999_999, true, None).unwrap()); // missing id
+        let only_flagged = db
+            .list_events(None, None, None, None, None, None, true, 10)
+            .unwrap();
+        assert_eq!(only_flagged.len(), 1);
+        assert_eq!(only_flagged[0].id, flagged_id);
+        assert!(only_flagged[0].flagged);
+        assert_eq!(only_flagged[0].note.as_deref(), Some("check this"));
+        let removed = db.prune_events_before(i64::MAX).unwrap();
+        let kept = all(&db);
+        assert_eq!(kept.len(), 1, "flagged event survives prune");
+        assert_eq!(kept[0].id, flagged_id);
+        // Snapshots of pruned events are returned for file cleanup, never the
+        // flagged event's own snapshot.
+        assert!(!removed
+            .iter()
+            .any(|s| Some(s.as_str()) == kept[0].snapshot.as_deref()));
+
         // Deleting the camera cascades to its events.
         db.delete_camera(cam.id).unwrap();
         assert!(all(&db).is_empty());
+    }
+
+    #[test]
+    fn flagged_event_protects_shared_snapshot_from_prune() {
+        let db = mem_db();
+        let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
+        // Two events share one snapshot file; a third has a unique one.
+        let shared = "gate-shared.jpg";
+        db.add_event(
+            cam.id,
+            100,
+            "person",
+            0.9,
+            [0.0; 4],
+            Some(shared),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let keep = db
+            .add_event(
+                cam.id,
+                200,
+                "person",
+                0.9,
+                [0.0; 4],
+                Some(shared),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        db.add_event(
+            cam.id,
+            150,
+            "car",
+            0.8,
+            [0.0; 4],
+            Some("gate-lone.jpg"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // Flag the newer shared-snapshot event, then prune everything older.
+        assert!(db.set_event_flag(keep, true).unwrap());
+        let removed = db.prune_events_before(1000).unwrap();
+        // Only the flagged event survives (it was ts=200, well under the cutoff).
+        assert_eq!(db.count_events().unwrap(), 1);
+        assert!(db.get_event(keep).unwrap().is_some());
+        // The unshared snapshot of a pruned event is returned for file cleanup…
+        assert!(removed.iter().any(|s| s == "gate-lone.jpg"));
+        // …but the snapshot shared with the kept (flagged) event is protected.
+        assert!(
+            !removed.iter().any(|s| s == shared),
+            "shared snapshot must not be deleted out from under the kept event"
+        );
     }
 
     #[test]
