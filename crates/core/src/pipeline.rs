@@ -568,14 +568,29 @@ fn run_faces(
         };
 
         let (fcx, fcy) = ((face.x1 + face.x2) / 2.0, (face.y1 + face.y2) / 2.0);
+        let in_person = |d: &detector::Detection| {
+            d.label == "person" && fcx >= d.x1 && fcx <= d.x2 && fcy >= d.y1 && fcy <= d.y2
+        };
         if let Some(name) = &name {
             for (i, d) in wanted.iter().enumerate() {
-                if d.label == "person" && fcx >= d.x1 && fcx <= d.x2 && fcy >= d.y1 && fcy <= d.y2 {
+                if in_person(d) {
                     face_names[i] = Some(name.clone());
                 }
             }
         } else if face.score >= 0.6 {
-            // Save for enrollment, at most one crop per camera per 30s.
+            // A confident face that matched no enrolled identity → mark the
+            // containing person as a "stranger" (unless already recognized by
+            // another face in the same box — a real identity wins). Only when
+            // at least one identity is enrolled: with none, *everyone* would be
+            // "unknown", which is noise, not a stranger alert.
+            if !enrolled.is_empty() {
+                for (i, d) in wanted.iter().enumerate() {
+                    if in_person(d) && face_names[i].is_none() {
+                        face_names[i] = Some(crate::db::UNKNOWN_FACE.to_string());
+                    }
+                }
+            }
+            // Also save the crop for enrollment, at most one per camera per 30s.
             let due = last_unknown_save
                 .get(&cam.id)
                 .map(|t| now - t >= 30)

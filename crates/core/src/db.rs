@@ -234,6 +234,12 @@ pub struct ApiToken {
     pub last_used_ts: Option<i64>,
 }
 
+/// Sentinel stored in an event's `face` when a face was detected on a person
+/// but matched no enrolled identity — a "stranger". Distinguishes that from
+/// "no face detected" (`None`); kept short and reserved so it can't be confused
+/// with a real enrolled name.
+pub const UNKNOWN_FACE: &str = "?";
+
 /// Alarm Manager rule (UniFi style if-this-then-that): all set conditions
 /// must match an event; `None` conditions match anything.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -259,6 +265,11 @@ pub struct AlarmRule {
     /// safe word "help"/"fire". Evaluated only for transcribed audio events.
     #[serde(default)]
     pub transcript_like: Option<String>,
+    /// Fire only when a person is seen whose face was detected but did NOT match
+    /// any enrolled identity — a "stranger"/unfamiliar-face alert (the event's
+    /// face is the `UNKNOWN_FACE` sentinel). Mutually exclusive with `face_like`.
+    #[serde(default)]
+    pub face_unknown: bool,
     #[serde(default)]
     pub min_score: f32,
     /// "webhook" (POST event JSON to target URL), "mqtt" (publish to
@@ -356,6 +367,10 @@ impl AlarmRule {
             if !hit {
                 return false;
             }
+        }
+        // Stranger condition: only an unrecognized-face event (face sentinel).
+        if self.face_unknown && face != Some(UNKNOWN_FACE) {
+            return false;
         }
         if let Some(p) = self.plate_like.as_deref() {
             let hit = plate
@@ -718,6 +733,10 @@ impl Db {
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN gesture_like TEXT", []);
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN transcript_like TEXT", []);
         let _ = conn.execute(
+            "ALTER TABLE alarms ADD COLUMN face_unknown INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
             "ALTER TABLE alarms ADD COLUMN cooldown_secs INTEGER NOT NULL DEFAULT 0",
             [],
         );
@@ -918,8 +937,8 @@ impl Db {
         conn.execute(
             "INSERT INTO alarms (name, enabled, camera_id, label, face_like, plate_like,
              gesture_like, min_score, action, target, schedule_json, cooldown_secs, priority,
-             snooze_until, created_ts, transcript_like)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             snooze_until, created_ts, transcript_like, face_unknown)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 r.name,
                 r.enabled,
@@ -936,7 +955,8 @@ impl Db {
                 r.priority,
                 r.snooze_until,
                 chrono::Local::now().timestamp(),
-                r.transcript_like
+                r.transcript_like,
+                r.face_unknown as i64
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -947,7 +967,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT id, name, enabled, camera_id, label, face_like, plate_like,
                     min_score, action, target, created_ts, schedule_json, gesture_like,
-                    cooldown_secs, priority, snooze_until, transcript_like
+                    cooldown_secs, priority, snooze_until, transcript_like, face_unknown
              FROM alarms ORDER BY id",
         )?;
         let rows = stmt
@@ -984,6 +1004,7 @@ impl Db {
                     priority: r.get::<_, i64>(14)? as u8,
                     snooze_until: r.get(15)?,
                     transcript_like: r.get(16)?,
+                    face_unknown: r.get::<_, i64>(17)? != 0,
                     created_ts: r.get(10)?,
                 })
             })?
@@ -1790,6 +1811,7 @@ mod tests {
             plate_like: None,
             gesture_like: None,
             transcript_like: None,
+            face_unknown: false,
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
@@ -1851,6 +1873,18 @@ mod tests {
         // No transcript present → a transcript rule can't match (e.g. on a
         // detection event), so it never double-fires on non-audio sources.
         assert!(!spoken_rule.matches(3, "speech", 1.0, None, None, None, None));
+
+        // Stranger rule: fires only on a person with an unrecognized face
+        // (the UNKNOWN_FACE sentinel), not on a recognized face or no face.
+        let stranger_rule = AlarmRule {
+            label: Some("person".into()),
+            gesture_like: None,
+            face_unknown: true,
+            ..rule.clone()
+        };
+        assert!(stranger_rule.matches(3, "person", 1.0, Some(UNKNOWN_FACE), None, None, None));
+        assert!(!stranger_rule.matches(3, "person", 1.0, Some("Alice"), None, None, None));
+        assert!(!stranger_rule.matches(3, "person", 1.0, None, None, None, None));
     }
 
     #[test]
@@ -1867,6 +1901,7 @@ mod tests {
                 plate_like: None,
                 gesture_like: None,
                 transcript_like: Some("help".into()),
+                face_unknown: true,
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
@@ -1886,6 +1921,7 @@ mod tests {
         assert_eq!(back.cooldown_secs, 30);
         assert_eq!(back.priority, 4);
         assert_eq!(back.transcript_like.as_deref(), Some("help"));
+        assert!(back.face_unknown);
         assert_eq!(db.list_alarms().unwrap().len(), 1);
         db.set_alarm_enabled(id, false).unwrap();
         assert!(!db.list_alarms().unwrap()[0].enabled);
@@ -1905,6 +1941,7 @@ mod tests {
             plate_like: None,
             gesture_like: None,
             transcript_like: None,
+            face_unknown: false,
             min_score: 0.0,
             action: "webhook".into(),
             target: "http://x".into(),

@@ -265,7 +265,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
           <option value="">anyone</option>
           {faces.map((f) => (
             <option key={f} value={f}>
-              👤 {f}
+              {f === "?" ? "🚶 stranger" : `👤 ${f}`}
             </option>
           ))}
         </select>
@@ -368,7 +368,11 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
               )}
               <div className="meta">
                 <b>{ev.label}</b> {(ev.score * 100).toFixed(0)}% · {ev.camera}
-                {ev.face && <span style={{ color: "var(--ok)" }}> · 👤 {ev.face}</span>}
+                {ev.face === "?" ? (
+                  <span style={{ color: "var(--warn)" }} title="A face was seen but matched nobody enrolled"> · 🚶 stranger</span>
+                ) : ev.face ? (
+                  <span style={{ color: "var(--ok)" }}> · 👤 {ev.face}</span>
+                ) : null}
                 {ev.plate && (
                   <span style={{ color: "var(--warn)" }}>
                     {" "}· 🚗 {ev.plate}

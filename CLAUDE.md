@@ -14,9 +14,24 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 50/50, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 51/51, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **event CSV export** (matrix #50). `GET /api/events/export.csv` downloads
+Latest: **stranger / unfamiliar-face detection** (matrix #51) — the marquee
+smart-NVR feature (UniFi "unfamiliar face"). A person whose face is detected but
+matches **no enrolled identity** is tagged with the reserved `db::UNKNOWN_FACE`
+("?") sentinel on the event, and a new `AlarmRule.face_unknown` condition fires
+a webhook/ntfy/MQTT action on it. `pipeline::run_faces` marks an unmatched
+confident face on its person box only if not already recognized (a real name
+wins) **and only when ≥1 identity is enrolled** (with none, everyone is
+"unknown" = noise — a review-driven guard against a first-run flood; crops are
+still saved for enrollment). Enroll/rename reject the reserved name. Alarms page
+"unknown face (stranger)" condition (exclusive with face-name match, enroll-first
+hint); Events shows "🚶 stranger". **Live-validated E2E on a USB webcam: un-enrolled
+face → person event face="?" → face_unknown webhook fired**; also validated on
+real IP cameras (Dahua + Amcrest over ONVIF→RTSP, DirectML). Review drove the
+zero-enrolled guard + reserved-name rejection + face_like exclusivity.
+
+### Earlier this session: event CSV export (matrix #50) `GET /api/events/export.csv` downloads
 matching events as RFC 4180 CSV (same filters as the events list, up to a
 generous cap, with a `Content-Disposition` attachment). Columns: id, local time,
 camera, label, score, face, plate, gesture, zone, flagged, note, caption,

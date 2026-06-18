@@ -19,6 +19,7 @@ export default function Alarms({
   const [plateLike, setPlateLike] = useState("");
   const [gestureLike, setGestureLike] = useState("");
   const [transcriptLike, setTranscriptLike] = useState("");
+  const [faceUnknown, setFaceUnknown] = useState(false);
   const [action, setAction] = useState<"webhook" | "mqtt" | "ntfy">("webhook");
   const [target, setTarget] = useState("");
   const [cooldown, setCooldown] = useState(0);
@@ -44,10 +45,13 @@ export default function Alarms({
         enabled: true,
         camera_id: cameraId === "" ? null : cameraId,
         label: label || null,
-        face_like: faceLike.trim() || null,
+        // face_unknown and face_like are mutually exclusive (both set = a rule
+        // that can never fire), so don't submit a stale face_like alongside it.
+        face_like: faceUnknown ? null : faceLike.trim() || null,
         plate_like: plateLike.trim() || null,
         gesture_like: gestureLike || null,
         transcript_like: transcriptLike.trim() || null,
+        face_unknown: faceUnknown,
         min_score: 0,
         action,
         target: target.trim(),
@@ -64,6 +68,7 @@ export default function Alarms({
       setPlateLike("");
       setGestureLike("");
       setTranscriptLike("");
+      setFaceUnknown(false);
       setCooldown(0);
       setPriority(0);
       setDays([]);
@@ -93,6 +98,7 @@ export default function Alarms({
         : "any camera",
       r.label ?? "any object",
       r.face_like ? `face ~ "${r.face_like}"` : null,
+      r.face_unknown ? `🚶 unknown face` : null,
       r.plate_like ? `plate ~ "${r.plate_like}"` : null,
       r.gesture_like ? `✋ ${r.gesture_like}` : null,
       r.transcript_like ? `🎙️ said "${r.transcript_like}"` : null,
@@ -145,7 +151,32 @@ export default function Alarms({
             </label>
             <label className="field">
               face contains (optional)
-              <input type="text" value={faceLike} onChange={(e) => setFaceLike(e.target.value)} placeholder="any face name" />
+              <input
+                type="text"
+                value={faceLike}
+                onChange={(e) => setFaceLike(e.target.value)}
+                placeholder="any face name"
+                disabled={faceUnknown}
+              />
+            </label>
+            <label
+              className="field"
+              title="Fire when a person's face is detected but matches nobody you've enrolled — a stranger / unfamiliar-face alert. Needs face recognition on the camera, and at least one enrolled identity (enroll known faces on the Faces page) so only true unknowns alert."
+            >
+              <span>
+                <input
+                  type="checkbox"
+                  checked={faceUnknown}
+                  onChange={(e) => setFaceUnknown(e.target.checked)}
+                />{" "}
+                🚶 unknown face (stranger)
+              </span>
+              {faceUnknown && (
+                <small className="muted">
+                  Enroll known faces (Faces page) first — strangers are detected only
+                  relative to enrolled identities.
+                </small>
+              )}
             </label>
             <label className="field">
               plate contains (optional)

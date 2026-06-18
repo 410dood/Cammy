@@ -246,6 +246,7 @@ mod tests {
             plate_like: None,
             gesture_like: None,
             transcript_like: None,
+            face_unknown: false,
             min_score: 0.0,
             action: "ntfy".into(),
             target: "t".into(),

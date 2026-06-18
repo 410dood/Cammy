@@ -1577,6 +1577,9 @@ async fn enroll_face(
     if name.is_empty() || name.len() > 64 {
         return Err(bad_request("name must be 1-64 characters"));
     }
+    if name == crate::db::UNKNOWN_FACE {
+        return Err(bad_request("that name is reserved"));
+    }
     if !safe_file(&req.unknown_file) {
         return Err(bad_request("bad file name"));
     }
@@ -1613,6 +1616,9 @@ async fn rename_face_api(
     let name = req.name.trim();
     if name.is_empty() || name.len() > 64 {
         return Err(bad_request("name must be 1-64 characters"));
+    }
+    if name == crate::db::UNKNOWN_FACE {
+        return Err(bad_request("that name is reserved"));
     }
     st.db.rename_face(id, name)?;
     Ok(StatusCode::NO_CONTENT)
