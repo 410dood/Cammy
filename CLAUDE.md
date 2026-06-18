@@ -16,13 +16,29 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.3 — competitor matrix 52/52, WAN-hardened auth/TLS, 2026-06-18
 
-### This session (later): roadmap feature batch — 14 net-new features from docs/04
+### This session (later): roadmap feature batch — ALL 16 net-new features from docs/04
 
-Built and validated **14 of the 16 net-new features** proposed in
-`docs/04-ux-ui-redesign-and-roadmap.md`. **All Rust is `cargo check` + `clippy
--D warnings` + `cargo test` green (48 tests)**; the web builds clean; the new
-backend was run headless and the endpoints + UI were **live-validated in Chrome**
-against real data.
+Built and validated **all 16 net-new features** proposed in
+`docs/04-ux-ui-redesign-and-roadmap.md` (A1-A6, B1-B4, C1-C6). **All Rust is
+`cargo check` + `clippy -D warnings` + `cargo test` green (50 tests)**; the web
+builds clean; the new backend was run headless and the endpoints + UI were
+**live-validated in Chrome** against real data. Shipped on branch
+**`ux-redesign-and-roadmap-features`** → **PR #2** (two commits: `985d6ae`
+redesign+14 features, `f2b72a2` C5 roles + B4 redaction).
+
+**C5 multi-user roles** (backward compatible: legacy single-password + loopback
+stay full-admin, so you can't lock yourself out locally; auth activates when a
+password OR any user exists). Roles Viewer<Operator<Admin gate `/api/*` by
+method+path. Was **hardened by a 3-lens adversarial security-review workflow that
+found 2 real HIGHs** (fail-OPEN auth gate on a DB-count error; self-demotion +
+last-admin TOCTOU → remote zero-admin lockout) plus a Viewer-reads-camera-creds
+MED (`GET /api/backup`); all fixed (fail-closed, atomic guarded last-admin checks,
+self-demote block, backup/restore→Admin, per-user session invalidation, audited
+user changes). Live-tested with `--trusted-proxy`+XFF: viewer 200 read / 403
+mutate / 403 users / 403 backup; no-auth 401; loopback 200; last-admin + self-
+demote 400; Bearer token works but blocked from user/password mgmt. **B4 privacy
+redaction**: per-camera privacy masks now render as a BLURRED overlay on live
+tiles (Live/CameraDetail/Wall) — frontend-only.
 
 Backend (new, in `crates/core`): a `notifications` table + `digests` table +
 `events.anomaly_score` column (idempotent migrations), with bounded self-trim
