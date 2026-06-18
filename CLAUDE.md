@@ -14,9 +14,26 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 39/39, WAN-hardened auth/TLS, 2026-06-17
+## Current status: v0.3 — competitor matrix 40/40, WAN-hardened auth/TLS, 2026-06-17
 
-Latest: **camera groups + Wall view** (matrix #39). An optional per-camera
+Latest: **config backup & restore** (matrix #40). `GET /api/backup` downloads a
+JSON snapshot of the configuration (cameras + settings + alarm rules; not
+recordings/events/faces) with a `Content-Disposition` header; `POST /api/restore`
+imports it. Restore is additive (settings replaced; a camera/alarm whose name
+already exists is kept) and **re-points per-camera alarm scopes by camera name**
+so they hit the right camera on the new box. Settings page gains a Backup &
+restore card. The adversarial review caught a **real high-severity bug**: camera
+`source`/`detect_source` flow verbatim into go2rtc's generated YAML, so a newline
+in a source (e.g. from a malicious imported backup) could inject an `exec:` stream
+→ RCE on go2rtc restart. Fixed by rejecting control characters in source/sub-stream
+at **every** entry point (`add_camera`/`patch_camera`/`restore`) — `exec:`/`ffmpeg:`
+schemes still allowed — plus a defensive control-char strip in the go2rtc config
+writer. Unit-tested + live-validated end-to-end across two instances (round-trip,
+idempotent re-restore, alarm remap-by-name with shifted ids, injection rejected).
+
+### Earlier this session: camera groups + Wall view (matrix #39)
+
+Latest before backup/restore: **camera groups + Wall view** (matrix #39). An optional per-camera
 `group` tag (nullable `group_name` column) lets the Live grid filter into group
 tabs (All / each group / Ungrouped, persisted in localStorage); the Cameras page
 gains an inline group editor + `<datalist>` autocomplete + an add-form field.

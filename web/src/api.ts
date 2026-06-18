@@ -215,6 +215,13 @@ export const api = {
   patchCamera: (id: number, patch: Partial<Camera>) =>
     req<Camera>(`/api/cameras/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteCamera: (id: number) => req<void>(`/api/cameras/${id}`, { method: "DELETE" }),
+  restore: (backup: unknown) =>
+    req<{
+      settings_applied: boolean;
+      cameras_added: number;
+      cameras_skipped: number;
+      alarms_added: number;
+    }>("/api/restore", { method: "POST", body: JSON.stringify(backup) }),
   events: (
     q: {
       camera_id?: number;

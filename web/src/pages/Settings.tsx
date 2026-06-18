@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { api, Settings as S } from "../api";
 
 function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
@@ -44,6 +44,69 @@ function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
             Clear
           </button>
         )}
+        {msg && <span style={{ color: "var(--ok)" }}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+function BackupCard({ onError }: { onError: (e: string) => void }) {
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const onFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the user re-pick the same file later
+    if (!file) return;
+    if (
+      !window.confirm(
+        "Restore configuration from this file? Settings are replaced; cameras and alarms whose names already exist are kept as-is.",
+      )
+    )
+      return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const backup = JSON.parse(await file.text());
+      const r = await api.restore(backup);
+      setMsg(
+        `Restored — ${r.cameras_added} camera(s) added, ${r.cameras_skipped} skipped, ${r.alarms_added} alarm(s) added, settings applied. Reload to see changes.`,
+      );
+    } catch (err) {
+      onError(`restore failed: ${err}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Backup &amp; restore</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Export your configuration — cameras, settings and alarm rules — to a JSON file to move to
+        another machine. Recordings, events and enrolled faces are <b>not</b> included. The file can
+        contain camera credentials, so keep it private. Restore is additive: settings are replaced,
+        but a camera/alarm whose name already exists is left untouched.
+      </p>
+      <div className="row" style={{ alignItems: "center" }}>
+        <a
+          className="pill"
+          href="/api/backup"
+          download="zoomy-backup.json"
+          style={{ textDecoration: "none" }}
+        >
+          ⬇ Download backup
+        </a>
+        <label className="pill" style={{ cursor: busy ? "wait" : "pointer" }}>
+          ⬆ Restore from file…
+          <input
+            type="file"
+            accept="application/json,.json"
+            style={{ display: "none" }}
+            disabled={busy}
+            onChange={onFile}
+          />
+        </label>
         {msg && <span style={{ color: "var(--ok)" }}>{msg}</span>}
       </div>
     </div>
@@ -305,6 +368,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <RemoteAccessCard onError={onError} />
+
+        <BackupCard onError={onError} />
 
         <div className="card">
           <h2>Notifications</h2>

@@ -97,12 +97,16 @@ impl Go2Rtc {
              streams:\n",
             self.api_port
         );
+        // Defense in depth: strip control chars from interpolated values so a
+        // source can never break out of its line and inject an extra stream key
+        // (the API layer also rejects such input, but legacy rows predate it).
+        let clean = |s: &str| -> String { s.chars().filter(|c| !c.is_control()).collect() };
         for cam in cameras.iter().filter(|c| c.enabled) {
-            yaml.push_str(&format!("  {}:\n    - {}\n", cam.name, cam.source));
+            yaml.push_str(&format!("  {}:\n    - {}\n", cam.name, clean(&cam.source)));
             // Low-res detect stream gets its own go2rtc key (Frigate's
             // "detect role"): the pipeline decodes this instead of the 4K main.
             if let Some(sub) = cam.detect_source.as_deref().filter(|s| !s.is_empty()) {
-                yaml.push_str(&format!("  {}_sub:\n    - {}\n", cam.name, sub));
+                yaml.push_str(&format!("  {}_sub:\n    - {}\n", cam.name, clean(sub)));
             }
         }
         let mut f = std::fs::File::create(&self.config_path)

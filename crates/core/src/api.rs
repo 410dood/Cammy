@@ -81,6 +81,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/recordings/{id}/video", get(segment_video))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/stats", get(stats))
+        .route("/api/backup", get(backup))
+        .route("/api/restore", axum::routing::post(restore))
         .with_state(state)
 }
 
@@ -342,6 +344,21 @@ fn valid_group(group: &str) -> bool {
     group.len() <= 64
 }
 
+/// True if `s` carries no control characters. A go2rtc source/sub-stream is
+/// interpolated verbatim into the generated go2rtc YAML, so a newline (or other
+/// control char) could inject an extra stream key — including an `exec:` source
+/// that runs a command. Rejecting control chars closes that injection while
+/// still allowing the legitimate `exec:`/`ffmpeg:`/`rtsp:` sources we document.
+fn no_control(s: &str) -> bool {
+    !s.chars().any(char::is_control)
+}
+
+/// A primary camera source: non-empty after trimming and control-char free.
+fn valid_source(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty() && no_control(s)
+}
+
 async fn add_camera(
     State(st): State<AppState>,
     Json(body): Json<NewCamera>,
@@ -351,14 +368,21 @@ async fn add_camera(
             "camera name must be 1-32 chars of a-z, 0-9, '-', '_'",
         ));
     }
-    if body.source.trim().is_empty() {
-        return Err(bad_request("source must not be empty"));
+    if !valid_source(&body.source) {
+        return Err(bad_request(
+            "source must be non-empty and free of control characters",
+        ));
     }
     let detect_source = body
         .detect_source
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    if detect_source.is_some_and(|s| !no_control(s)) {
+        return Err(bad_request(
+            "sub-stream source must be free of control characters",
+        ));
+    }
     let mut cam = st
         .db
         .add_camera(
@@ -419,10 +443,20 @@ async fn patch_camera(
         cam.name = name;
     }
     if let Some(source) = patch.source {
-        cam.source = source;
+        if !valid_source(&source) {
+            return Err(bad_request(
+                "source must be non-empty and free of control characters",
+            ));
+        }
+        cam.source = source.trim().to_string();
     }
     if let Some(ds) = patch.detect_source {
         let ds = ds.trim();
+        if !no_control(ds) {
+            return Err(bad_request(
+                "sub-stream source must be free of control characters",
+            ));
+        }
         cam.detect_source = (!ds.is_empty()).then(|| ds.to_string());
     }
     cam.enabled = patch.enabled.unwrap_or(cam.enabled);
@@ -478,6 +512,138 @@ async fn delete_camera(State(st): State<AppState>, Path(id): Path<i64>) -> ApiRe
     st.db.delete_camera(id)?;
     st.go2rtc.restart_with(&st.db)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// --- config backup / restore -----------------------------------------------
+
+/// A portable snapshot of the *configuration* (not recordings/events/faces):
+/// cameras, the global settings blob, and alarm rules. Lets a self-hoster move
+/// to a new machine without re-entering everything. NOTE: camera sources and
+/// settings can contain credentials — treat the file as a secret.
+#[derive(serde::Serialize, Deserialize)]
+struct Backup {
+    version: u32,
+    exported_ts: i64,
+    settings: Settings,
+    cameras: Vec<Camera>,
+    alarms: Vec<crate::db::AlarmRule>,
+}
+
+const BACKUP_VERSION: u32 = 1;
+
+async fn backup(State(st): State<AppState>) -> ApiResult<Response> {
+    let snapshot = Backup {
+        version: BACKUP_VERSION,
+        exported_ts: chrono::Local::now().timestamp(),
+        settings: st.db.settings(),
+        cameras: st.db.list_cameras()?,
+        alarms: st.db.list_alarms()?,
+    };
+    let body = serde_json::to_string_pretty(&snapshot).map_err(anyhow::Error::from)?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "application/json"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"zoomy-backup.json\"",
+            ),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// Restore is *additive and non-destructive*: settings are replaced wholesale,
+/// but a camera/alarm whose name already exists is left untouched (so importing
+/// into a populated instance can't clobber it). Designed for a fresh machine.
+async fn restore(
+    State(st): State<AppState>,
+    Json(b): Json<Backup>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if b.version > BACKUP_VERSION {
+        return Err(bad_request(format!(
+            "backup version {} is newer than this build supports ({BACKUP_VERSION})",
+            b.version
+        )));
+    }
+    st.db.save_settings(&b.settings)?;
+
+    // Map the source instance's camera ids -> names up front, so per-camera
+    // alarm scopes can be re-pointed at this instance's (new) ids by name.
+    let backup_id_to_name: std::collections::HashMap<i64, String> =
+        b.cameras.iter().map(|c| (c.id, c.name.clone())).collect();
+
+    // Names already present (in the DB or added earlier this pass) are skipped,
+    // so a duplicate *within* the file can't hit the UNIQUE constraint mid-loop.
+    let mut seen_cams: std::collections::HashSet<String> =
+        st.db.list_cameras()?.into_iter().map(|c| c.name).collect();
+    let (mut cams_added, mut cams_skipped) = (0u32, 0u32);
+    for cam in b.cameras {
+        let ok = !seen_cams.contains(&cam.name)
+            && valid_name(&cam.name)
+            && valid_source(&cam.source)
+            && cam.group.as_deref().is_none_or(valid_group)
+            && cam.detect_source.as_deref().is_none_or(no_control);
+        if !ok {
+            cams_skipped += 1;
+            continue;
+        }
+        let detect_source = cam
+            .detect_source
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let mut created = st.db.add_camera(
+            &cam.name,
+            cam.source.trim(),
+            detect_source,
+            cam.detect,
+            cam.record,
+        )?;
+        // add_camera defaults enabled=true and an empty config; carry over the rest.
+        created.enabled = cam.enabled;
+        created.detect_config = cam.detect_config;
+        created.group = cam.group;
+        st.db.update_camera(&created)?;
+        seen_cams.insert(cam.name);
+        cams_added += 1;
+    }
+
+    // Resolve names -> this instance's camera ids (including the ones just added)
+    // for alarm re-pointing.
+    let name_to_id: std::collections::HashMap<String, i64> = st
+        .db
+        .list_cameras()?
+        .into_iter()
+        .map(|c| (c.name, c.id))
+        .collect();
+    let existing_alarms: std::collections::HashSet<String> =
+        st.db.list_alarms()?.into_iter().map(|a| a.name).collect();
+    let mut alarms_added = 0u32;
+    for mut rule in b.alarms {
+        if existing_alarms.contains(&rule.name) {
+            continue;
+        }
+        // Re-point a per-camera scope by NAME (the backup's camera_id is an id
+        // from the *other* instance); drop the scope if that camera isn't here.
+        if let Some(old_id) = rule.camera_id {
+            rule.camera_id = backup_id_to_name
+                .get(&old_id)
+                .and_then(|name| name_to_id.get(name))
+                .copied();
+        }
+        st.db.add_alarm(&rule)?;
+        alarms_added += 1;
+    }
+
+    // Cameras changed → regenerate go2rtc config once.
+    st.go2rtc.restart_with(&st.db)?;
+    Ok(Json(serde_json::json!({
+        "settings_applied": true,
+        "cameras_added": cams_added,
+        "cameras_skipped": cams_skipped,
+        "alarms_added": alarms_added,
+    })))
 }
 
 // --- PTZ --------------------------------------------------------------------
@@ -1258,4 +1424,37 @@ async fn put_settings(
     }
     st.db.save_settings(&s)?;
     Ok(Json(st.db.settings()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{no_control, valid_group, valid_source};
+
+    #[test]
+    fn source_validation_blocks_yaml_injection_but_allows_real_sources() {
+        // Legitimate go2rtc sources — all accepted.
+        assert!(valid_source("rtsp://user:pass@192.168.1.50:554/stream1"));
+        assert!(valid_source(
+            "exec:ffmpeg -re -stream_loop -1 -i a.mp4 -f rtsp {output}"
+        ));
+        assert!(valid_source("ffmpeg:device?video=0"));
+        assert!(valid_source("  onvif://admin:pw@cam  ")); // trimmed
+
+        // Empty / whitespace-only — rejected.
+        assert!(!valid_source(""));
+        assert!(!valid_source("   "));
+
+        // Newline/CR injection (the RCE vector) — rejected.
+        assert!(!valid_source("rtsp://x\n  pwn:\n    - exec:calc"));
+        assert!(!valid_source("rtsp://x\r\n  pwn:"));
+        assert!(!no_control("a\tb"));
+        assert!(no_control("rtsp://ok/stream"));
+    }
+
+    #[test]
+    fn group_length_capped() {
+        assert!(valid_group(""));
+        assert!(valid_group(&"a".repeat(64)));
+        assert!(!valid_group(&"a".repeat(65)));
+    }
 }
