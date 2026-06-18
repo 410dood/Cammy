@@ -14,9 +14,41 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 28/28, 2026-06-10
+## Current status: v0.3 — competitor matrix 38/38, WAN-hardened auth/TLS, 2026-06-17
 
-Latest: **hand-signal recognition** (#28) — a `Signals` page tracks the 21-point
+Latest: **WAN-ready security** (matrix #16 closed). Password storage moved from
+salted SHA-256 to **argon2id** (legacy hashes still verify and are transparently
+re-hashed on the next successful login). Added a **per-IP login brute-force
+throttle** (8 wrong tries in 5 min → HTTP 429 + Retry-After lockout; loopback
+exempt so the local box can never lock itself out; the map is swept + capped at
+4096 IPs so address rotation can't grow it unbounded). Added **native HTTPS** via
+rustls/axum-server: `--tls-self-signed` mints a reusable self-signed cert under
+`<data_dir>/tls` (key `0600`/dir `0700` on Unix) for one-flag TLS, or pass
+`--tls-cert`/`--tls-key` (and matching `ZOOMY_TLS_*` env vars) for a real
+certificate; session cookies gain `Secure` when serving over TLS. Opt-in
+`--trusted-proxy` makes auth + throttle key off the right-most `X-Forwarded-For`
+hop so a same-host reverse proxy's loopback connection can't inherit the
+local-access exemption (and a spoofed `XFF: 127.0.0.1` can't either — a proxied
+request is never treated as loopback). **TLS is pinned to the `ring` crypto
+provider** (`rustls`/`axum-server` with `default-features=false`), which is
+already in-tree via ureq/rumqttc/rcgen — so HTTPS adds **no new C/assembly dep**
+(notably no `aws-lc-sys`, which would pull CMake + NASM on Windows CI); confirmed
+`aws-lc-sys` is absent from the binary's `cargo tree`. Build/clippy/test green and
+**live-validated over HTTPS** (ring handshake, argon2 login, Secure cookie, 401 on
+wrong password, plain HTTP to the TLS port refused; with `--trusted-proxy`:
+proxied client forced to auth, spoofed-loopback rejected, XFF-keyed lockout fires
+on the 9th attempt). New `crates/core/src/tls.rs` holds the self-signed cert
+helper; `crates/core/src/auth.rs` gained argon2 + `LoginThrottle` + the
+`client_ip` proxy resolver (all unit-tested). A 3-lens adversarial review
+workflow (security/correctness/portability) drove the ring switch, key-perms,
+throttle-bounding, and trusted-proxy hardening. The matrix rows #29–#38 (zones, anti-fatigue push,
+HA discovery, event review, restream fan-out, per-camera detectors, gestures,
+LPR/face/GenAI) all shipped earlier on this branch.
+
+### Earlier: hand-signal recognition (#28), 2026-06-10
+
+Latest before the roadmap batch: **hand-signal recognition** (#28) — a `Signals`
+page tracks the 21-point
 hand-landmark mesh live in the browser (MediaPipe Tasks Vision, GPU, loaded from
 a configurable CDN so it stays portable/offline-capable), classifies hand signals
 (open-palm/fist/victory/point/thumb-up·down/I-love-you), and on a *held* armed

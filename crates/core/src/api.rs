@@ -27,6 +27,14 @@ pub struct AppState {
     pub ffmpeg_bin: Option<PathBuf>,
     pub status: StatusBoard,
     pub sessions: crate::auth::Sessions,
+    /// Per-IP login brute-force throttle (off-LAN hardening).
+    pub login_throttle: crate::auth::LoginThrottle,
+    /// True when the server is reachable over HTTPS, so session cookies get the
+    /// `Secure` attribute.
+    pub tls: bool,
+    /// Trust `X-Forwarded-For` from a same-host reverse proxy for client-IP
+    /// identification (auth exemption + throttle keying).
+    pub behind_proxy: bool,
     /// Lets request handlers (the hand-signal recognizer) publish events and
     /// fire alarm actions on the same channel the detection pipeline uses.
     pub mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
@@ -174,21 +182,52 @@ async fn set_password(
     Ok(Json(serde_json::json!({ "enabled": !pw.is_empty() })))
 }
 
-async fn login(State(st): State<AppState>, Json(req): Json<PasswordReq>) -> ApiResult<Response> {
+async fn login(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<PasswordReq>,
+) -> ApiResult<Response> {
     let Some(stored) = st.db.get_kv(crate::auth::KV_PASSWORD) else {
         return Ok(
             Json(serde_json::json!({ "ok": true, "note": "auth disabled" })).into_response(),
         );
     };
+    // Identify the peer the same way the auth middleware does, so the throttle
+    // keys on the real client even behind a trusted reverse proxy.
+    let (peer_ip, _) = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy);
+    // Brute-force lockout (loopback is exempt inside the throttle).
+    if let Some(remaining) = st.login_throttle.locked_for(peer_ip) {
+        let secs = remaining.as_secs().max(1);
+        let mut resp = (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "error": "too many attempts; try again later" })),
+        )
+            .into_response();
+        resp.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            secs.to_string().parse().expect("numeric retry-after"),
+        );
+        return Ok(resp);
+    }
     if !crate::auth::verify_password(&stored, &req.password) {
+        st.login_throttle.record_failure(peer_ip);
         return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong password".into()));
+    }
+    st.login_throttle.record_success(peer_ip);
+    // Upgrade legacy SHA-256 records to argon2id now that we have the plaintext.
+    if crate::auth::needs_rehash(&stored) {
+        let _ = st.db.set_kv(
+            crate::auth::KV_PASSWORD,
+            &crate::auth::hash_password(&req.password),
+        );
     }
     let token = crate::auth::new_token();
     st.sessions.insert(token.clone());
     let mut resp = Json(serde_json::json!({ "ok": true })).into_response();
     resp.headers_mut().insert(
         axum::http::header::SET_COOKIE,
-        crate::auth::session_cookie(&token)
+        crate::auth::session_cookie(&token, st.tls)
             .parse()
             .expect("valid cookie header"),
     );

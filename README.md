@@ -98,6 +98,35 @@ Open **http://localhost:8080**, go to *Cameras*, and add your camera's RTSP URL
 No camera handy? Make a fake one (a panning video on loop) and add it with source
 `exec:ffmpeg -re -stream_loop -1 -i driveway.mp4 -c copy -rtsp_transport tcp -f rtsp {output}`.
 
+## Remote access & HTTPS
+
+On a trusted LAN you can run plain HTTP. Before exposing the NVR off-LAN:
+
+- **Set a password** in *Settings* — it gates all non-loopback API access (the
+  local box stays exempt, so you can't lock yourself out). Stored as **argon2id**;
+  repeated wrong logins from one IP get throttled (lockout after 8 tries in 5 min).
+- **Serve HTTPS** so the session cookie and traffic aren't in the clear:
+
+  ```bash
+  # one-flag TLS with an auto-generated, reused self-signed cert (<data>/tls)
+  cargo run -p zoomy -- --tls-self-signed --port 8443
+  # …or bring your own certificate
+  cargo run -p zoomy -- --tls-cert fullchain.pem --tls-key privkey.pem
+  ```
+
+  Self-signed certs trip a browser warning (expected); for a clean padlock use a
+  real certificate or front the NVR with a reverse proxy (Caddy/nginx/Traefik).
+
+- **Behind a reverse proxy?** A same-host proxy reaches the NVR over `127.0.0.1`,
+  which would otherwise inherit the local-access exemption and bypass the
+  password. Pass **`--trusted-proxy`** so auth and the brute-force throttle key
+  off the proxy's `X-Forwarded-For` header instead — and make sure the NVR is
+  reachable *only* through the proxy (bind it to loopback), since that flag tells
+  it to trust the header.
+
+The TLS stack is pure-Rust (rustls + the `ring` provider already in-tree) — no
+OpenSSL, no extra build tooling.
+
 ## Layout
 
 ```

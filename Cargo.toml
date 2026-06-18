@@ -48,6 +48,16 @@ tokenizers = { version = "0.21", default-features = false, features = ["fancy-re
 base64 = "0.22"
 rand = "0.9"
 fs2 = "0.4"
+argon2 = "0.5"
+# Native HTTPS for off-LAN exposure. We pin rustls to the *ring* crypto
+# provider, which is already in-tree (ureq, rumqttc, rcgen all pull it) — so TLS
+# adds no new C/assembly dependency (notably no aws-lc-sys, which would drag in
+# CMake + NASM on Windows CI). axum-server's `-no-provider` feature lets us own
+# the provider choice; rcgen mints self-signed certs so `--tls-self-signed`
+# works with zero setup. All pure-Rust, no OpenSSL — 3-OS CI stays green.
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 
 [workspace.package]
 edition = "2021"

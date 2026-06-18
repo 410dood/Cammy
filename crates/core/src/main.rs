@@ -30,6 +30,28 @@ struct Args {
     /// Path to the ffmpeg binary. Falls back to ./bin, then PATH.
     #[arg(long, env = "FFMPEG_BIN")]
     ffmpeg_bin: Option<PathBuf>,
+
+    /// Serve HTTPS using this PEM certificate (requires --tls-key).
+    #[arg(long, env = "ZOOMY_TLS_CERT")]
+    tls_cert: Option<PathBuf>,
+
+    /// PEM private key paired with --tls-cert.
+    #[arg(long, env = "ZOOMY_TLS_KEY")]
+    tls_key: Option<PathBuf>,
+
+    /// Serve HTTPS with an auto-generated self-signed certificate stored under
+    /// <data_dir>/tls (reused across runs). Ignored if both --tls-cert and
+    /// --tls-key are given.
+    #[arg(long)]
+    tls_self_signed: bool,
+
+    /// Trust X-Forwarded-For from a same-host reverse proxy (nginx/Caddy/etc.)
+    /// for client-IP identification. Enable ONLY when the NVR is reachable
+    /// solely through your proxy — otherwise a forged header could spoof the
+    /// client address. Without this, a same-host proxy's loopback connection
+    /// would inherit the local-access exemption and bypass the password.
+    #[arg(long)]
+    trusted_proxy: bool,
 }
 
 #[tokio::main]
@@ -42,10 +64,28 @@ async fn main() -> Result<()> {
         .init();
     let args = Args::parse();
 
+    // Resolve TLS: explicit cert+key win; otherwise --tls-self-signed mints a
+    // reusable self-signed pair under <data_dir>/tls.
+    let (tls_cert, tls_key) = match (&args.tls_cert, &args.tls_key) {
+        (Some(c), Some(k)) => (Some(c.clone()), Some(k.clone())),
+        (Some(_), None) | (None, Some(_)) => {
+            anyhow::bail!("--tls-cert and --tls-key must be given together");
+        }
+        (None, None) if args.tls_self_signed => {
+            let (c, k) = zoomy::tls::ensure_self_signed(&args.data_dir)?;
+            (Some(c), Some(k))
+        }
+        (None, None) => (None, None),
+    };
+    let scheme = if tls_cert.is_some() { "https" } else { "http" };
+
     println!();
     println!("  ZoomyZoomyCamCam is starting");
-    println!("      Web UI:   http://localhost:{}/", args.port);
-    println!("      API:      http://localhost:{}/api/health", args.port);
+    println!("      Web UI:   {scheme}://localhost:{}/", args.port);
+    println!(
+        "      API:      {scheme}://localhost:{}/api/health",
+        args.port
+    );
     println!("  Press Ctrl+C to stop.");
     println!();
 
@@ -62,6 +102,9 @@ async fn main() -> Result<()> {
             ui_dir: args.ui_dir,
             go2rtc_bin: args.go2rtc_bin,
             ffmpeg_bin: args.ffmpeg_bin,
+            tls_cert,
+            tls_key,
+            behind_proxy: args.trusted_proxy,
         },
         shutdown_rx,
     )

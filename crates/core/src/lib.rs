@@ -24,6 +24,7 @@ mod ptz;
 mod record;
 mod smart;
 mod status;
+pub mod tls;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -45,6 +46,16 @@ pub struct ServerConfig {
     pub go2rtc_bin: Option<PathBuf>,
     /// Explicit ffmpeg binary; `None` = ./bin, then PATH.
     pub ffmpeg_bin: Option<PathBuf>,
+    /// PEM certificate to serve HTTPS with. With `tls_key`, the server speaks
+    /// TLS instead of plain HTTP. `None` = HTTP (the LAN/reverse-proxy default).
+    pub tls_cert: Option<PathBuf>,
+    /// PEM private key paired with `tls_cert`.
+    pub tls_key: Option<PathBuf>,
+    /// Trust a same-host reverse proxy: derive the client IP from the
+    /// `X-Forwarded-For` header for auth + throttle decisions, instead of the
+    /// (loopback) transport peer. Only enable when the NVR is reachable *only*
+    /// through your proxy — see `auth::client_ip`.
+    pub behind_proxy: bool,
 }
 
 impl Default for ServerConfig {
@@ -55,6 +66,9 @@ impl Default for ServerConfig {
             ui_dir: "web/dist".into(),
             go2rtc_bin: None,
             ffmpeg_bin: None,
+            tls_cert: None,
+            tls_key: None,
+            behind_proxy: false,
         }
     }
 }
@@ -155,6 +169,8 @@ pub async fn run(
         }
     });
 
+    let tls_enabled = cfg.tls_cert.is_some() && cfg.tls_key.is_some();
+
     // API + static web UI (SPA fallback to index.html).
     let state = api::AppState {
         db: db.clone(),
@@ -166,6 +182,9 @@ pub async fn run(
         ffmpeg_bin: cfg.ffmpeg_bin.clone(),
         status: status_board,
         sessions: auth::Sessions::default(),
+        login_throttle: auth::LoginThrottle::default(),
+        tls: tls_enabled,
+        behind_proxy: cfg.behind_proxy,
         mqtt_tx: mqtt_tx_api,
         alarm_throttle,
     };
@@ -176,25 +195,52 @@ pub async fn run(
     );
 
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.port));
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("binding {addr}"))?;
-
+    let make = app.into_make_service_with_connect_info::<SocketAddr>();
+    let scheme = if tls_enabled { "https" } else { "http" };
     tracing::info!(
-        ui = format!("http://localhost:{}/", cfg.port),
+        ui = format!("{scheme}://localhost:{}/", cfg.port),
         go2rtc = format!("{}/", go2rtc.api_base()),
         "ZoomyZoomyCamCam is running"
     );
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        let _ = shutdown_rx.changed().await;
-        tracing::info!("shutting down");
-    })
-    .await?;
+    if let (Some(cert), Some(key)) = (&cfg.tls_cert, &cfg.tls_key) {
+        // Pin the rustls crypto provider so the config builder never panics on
+        // an ambiguous default when multiple providers are linked in-tree.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let rustls_cfg = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
+            .await
+            .with_context(|| {
+                format!(
+                    "loading TLS cert {} / key {}",
+                    cert.display(),
+                    key.display()
+                )
+            })?;
+        let handle = axum_server::Handle::new();
+        tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                let _ = shutdown_rx.changed().await;
+                tracing::info!("shutting down");
+                handle.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
+            }
+        });
+        axum_server::bind_rustls(addr, rustls_cfg)
+            .handle(handle)
+            .serve(make)
+            .await
+            .with_context(|| format!("serving HTTPS on {addr}"))?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("binding {addr}"))?;
+        axum::serve(listener, make)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.changed().await;
+                tracing::info!("shutting down");
+            })
+            .await?;
+    }
 
     // Orderly teardown: stop workers (they finalize ffmpeg segments), then go2rtc.
     workers_stop.store(true, Ordering::Relaxed);
