@@ -1,13 +1,18 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { api, ApiToken, AuditEntry, fmtTime, Settings as S } from "../api";
+import { useToast, useDialog } from "../ui";
+import {
+  IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
+  IconDownload, IconUpload, IconCheck,
+} from "../icons";
 
-const AUDIT_LABELS: Record<string, string> = {
-  login_success: "✅ login",
-  login_failed: "⛔ failed login",
-  password_set: "🔑 password set",
-  password_cleared: "🔓 password cleared",
-  token_created: "🎫 token created",
-  token_revoked: "🗑️ token revoked",
+const AUDIT_META: Record<string, { label: string; Icon: (p: IconProps) => JSX.Element; cls: string }> = {
+  login_success: { label: "login", Icon: IconLogIn, cls: "ok" },
+  login_failed: { label: "failed login", Icon: IconBan, cls: "danger" },
+  password_set: { label: "password set", Icon: IconKey, cls: "" },
+  password_cleared: { label: "password cleared", Icon: IconLock, cls: "warn" },
+  token_created: { label: "token created", Icon: IconTicket, cls: "" },
+  token_revoked: { label: "token revoked", Icon: IconTrash, cls: "warn" },
 };
 
 function AuditCard() {
@@ -25,14 +30,25 @@ function AuditCard() {
       </p>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td>{AUDIT_LABELS[r.action] ?? r.action}</td>
-              <td className="muted">{fmtTime(r.ts)}</td>
-              <td className="muted">{r.ip ?? ""}</td>
-              <td className="muted">{r.detail ?? ""}</td>
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const m = AUDIT_META[r.action];
+            return (
+              <tr key={r.id}>
+                <td>
+                  {m ? (
+                    <span className={`badge ${m.cls}`}>
+                      <m.Icon size={13} /> {m.label}
+                    </span>
+                  ) : (
+                    r.action
+                  )}
+                </td>
+                <td className="muted clock">{fmtTime(r.ts)}</td>
+                <td className="muted">{r.ip ?? ""}</td>
+                <td className="muted">{r.detail ?? ""}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -89,6 +105,8 @@ function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
 }
 
 function TokensCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const dialog = useDialog();
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [name, setName] = useState("");
   const [fresh, setFresh] = useState<{ name: string; token: string } | null>(null);
@@ -111,9 +129,16 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
     }
   };
   const remove = async (id: number) => {
-    if (!window.confirm("Revoke this token? Anything using it will lose access.")) return;
+    const ok = await dialog.confirm({
+      title: "Revoke this token?",
+      body: "Anything using it (scripts, Home Assistant, integrations) will immediately lose access.",
+      confirmLabel: "Revoke",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api.deleteToken(id);
+      toast.success("Token revoked");
       load();
     } catch (e) {
       onError(String(e));
@@ -181,6 +206,8 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
 }
 
 function BackupCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const dialog = useDialog();
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -188,17 +215,18 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
     const file = e.target.files?.[0];
     e.target.value = ""; // let the user re-pick the same file later
     if (!file) return;
-    if (
-      !window.confirm(
-        "Restore configuration from this file? Settings are replaced; cameras and alarms whose names already exist are kept as-is.",
-      )
-    )
-      return;
+    const ok = await dialog.confirm({
+      title: "Restore configuration?",
+      body: "Settings are replaced. Cameras and alarms whose names already exist are kept as-is.",
+      confirmLabel: "Restore",
+    });
+    if (!ok) return;
     setBusy(true);
     setMsg("");
     try {
       const backup = JSON.parse(await file.text());
       const r = await api.restore(backup);
+      toast.success("Configuration restored — reload to see changes");
       setMsg(
         `Restored — ${r.cameras_added} camera(s) added, ${r.cameras_skipped} skipped, ${r.alarms_added} alarm(s) added, settings applied. Reload to see changes.`,
       );
@@ -219,16 +247,11 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
         but a camera/alarm whose name already exists is left untouched.
       </p>
       <div className="row" style={{ alignItems: "center" }}>
-        <a
-          className="pill"
-          href="/api/backup"
-          download="zoomy-backup.json"
-          style={{ textDecoration: "none" }}
-        >
-          ⬇ Download backup
+        <a className="btn btn-ghost" href="/api/backup" download="zoomy-backup.json">
+          <IconDownload size={15} /> Download backup
         </a>
-        <label className="pill" style={{ cursor: busy ? "wait" : "pointer" }}>
-          ⬆ Restore from file…
+        <label className="btn btn-ghost" style={{ cursor: busy ? "wait" : "pointer" }}>
+          <IconUpload size={15} /> Restore from file…
           <input
             type="file"
             accept="application/json,.json"
@@ -244,6 +267,7 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
 }
 
 export default function Settings({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
   const [s, setS] = useState<S | null>(null);
   const [saved, setSaved] = useState(false);
 
@@ -263,6 +287,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
     try {
       setS(await api.saveSettings(s));
       setSaved(true);
+      toast.success("Settings saved");
     } catch (err) {
       onError(String(err));
     }
@@ -389,7 +414,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <div className="card">
-          <h2>Hand signals ✋</h2>
+          <h2>Hand signals</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             The Signals page tracks hand landmarks live in the browser. A held, armed signal logs
             an event and fires any Alarm with a matching <b>gesture</b> condition.
@@ -498,7 +523,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <div className="card">
-          <h2>Audio transcription 🎙️</h2>
+          <h2>Audio transcription</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Speech-to-text for audio events, using a <b>bundled, in-process</b> whisper.cpp engine —
             audio never leaves this machine and there's no separate software to run.{" "}
@@ -524,6 +549,46 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(e) => set({ transcription_model: e.target.value })}
               />
             </label>
+          </div>
+        </div>
+
+        <div className="card">
+          <h2>AI insights</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Opt-in background analysis of your own event history — fully local, nothing leaves this
+            machine. Both surface in Notifications and on the Overview page.
+          </p>
+          <div className="row">
+            <label className="toggle field" title="Flag activity that is unusual for a camera at this time of day.">
+              anomaly detection
+              <input
+                type="checkbox"
+                checked={!!s.anomaly_detection}
+                onChange={() => set({ anomaly_detection: !s.anomaly_detection })}
+              />
+            </label>
+            <label className="toggle field" title="Post a plain-language recap of the day each morning.">
+              daily digest
+              <input
+                type="checkbox"
+                checked={!!s.digest_enabled}
+                onChange={() => set({ digest_enabled: !s.digest_enabled })}
+              />
+            </label>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={async () => {
+                try {
+                  await api.runDigest();
+                  toast.success("Digest generated — see the Overview page");
+                } catch (e) {
+                  onError(String(e));
+                }
+              }}
+            >
+              Generate digest now
+            </button>
           </div>
         </div>
 
@@ -707,9 +772,11 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
-        <div className="row">
-          <button className="primary">Save</button>
-          {saved && <span style={{ color: "var(--ok)" }}>Saved ✓</span>}
+        <div className="row save-bar">
+          <button className="btn btn-primary">Save</button>
+          {saved && (
+            <span className="save-ok"><IconCheck size={15} /> Saved</span>
+          )}
           <span className="muted">Changes apply within a few seconds — no restart needed.</span>
         </div>
       </form>

@@ -40,7 +40,7 @@ pub fn run(db: Db, status: StatusBoard, shutdown: Arc<AtomicBool>) {
             let online = if cam.detect { fresh } else { h.recording };
 
             match last_state.insert(cam.id, online) {
-                Some(prev) if prev != online && !url.is_empty() => {
+                Some(prev) if prev != online => {
                     let (title, msg, tags) = if online {
                         (
                             "Camera back online",
@@ -62,7 +62,18 @@ pub fn run(db: Db, status: StatusBoard, shutdown: Arc<AtomicBool>) {
                         )
                     };
                     tracing::info!(camera = %cam.name, online, "camera health changed");
-                    crate::notify::ntfy_text(&url, title, &msg, tags);
+                    // A4: in-app notification on every transition; the ntfy phone
+                    // push fires only when a topic URL is configured.
+                    let _ = db.add_notification(
+                        now,
+                        if online { "camera_online" } else { "camera_offline" },
+                        title,
+                        Some(&msg),
+                        None,
+                    );
+                    if !url.is_empty() {
+                        crate::notify::ntfy_text(&url, title, &msg, tags);
+                    }
                 }
                 _ => {}
             }

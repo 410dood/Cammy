@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { api, CamEvent, Camera, Segment, fmtTime, getStreamMode } from "./api";
 import Timeline from "./Timeline";
 import LiveVideo from "./LiveVideo";
+import {
+  IconX, IconMic, IconUser, IconCar,
+  IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight, IconPlus, IconMinus,
+} from "./icons";
 
 /// UniFi Protect-style camera view: large live player with the camera's own
 /// timeline underneath and its recent detections alongside. Esc closes.
@@ -79,8 +83,8 @@ export default function CameraDetail({
             {w.label}
           </button>
         ))}
-        <button className="ghost" onClick={onClose}>
-          ✕ close
+        <button className="btn btn-ghost" onClick={onClose}>
+          <IconX size={15} /> Close
         </button>
       </div>
 
@@ -102,7 +106,7 @@ export default function CameraDetail({
                 onPointerLeave={() => setTalking(false)}
                 onPointerCancel={() => setTalking(false)}
               >
-                {talking ? "🎙️ Talking…" : "🎙️ Hold to talk"}
+                <IconMic size={15} /> {talking ? "Talking…" : "Hold to talk"}
               </button>
             )}
           </div>
@@ -125,10 +129,18 @@ export default function CameraDetail({
               {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}`} alt={ev.label} loading="lazy" />}
               <div>
                 <b style={{ textTransform: "capitalize" }}>{ev.label}</b>{" "}
-                {(ev.score * 100).toFixed(0)}%
-                {ev.face && <span style={{ color: "var(--ok)" }}> 👤 {ev.face}</span>}
-                {ev.plate && <span style={{ color: "var(--warn)" }}> 🚗 {ev.plate}</span>}
-                <div className="muted" style={{ fontSize: "0.75rem" }}>{fmtTime(ev.ts)}</div>
+                <span className="score">{(ev.score * 100).toFixed(0)}%</span>
+                {ev.face && (
+                  <span className="badge ok" style={{ marginLeft: 6 }}>
+                    <IconUser size={12} /> {ev.face}
+                  </span>
+                )}
+                {ev.plate && (
+                  <span className="badge warn" style={{ marginLeft: 6 }}>
+                    <IconCar size={12} /> {ev.plate}
+                  </span>
+                )}
+                <div className="muted clock" style={{ fontSize: "0.75rem" }}>{fmtTime(ev.ts)}</div>
               </div>
             </div>
           ))}
@@ -158,9 +170,11 @@ function PtzInline({ cameraId }: { cameraId: number }) {
   const move = (pan: number, tilt: number, zoom: number) =>
     api.ptz(cameraId, { action: "move", pan, tilt, zoom }).catch(() => {});
   const stop = () => api.ptz(cameraId, { action: "stop" }).catch(() => {});
-  const btn = (label: string, p: number, t: number, z: number) => (
+  const btn = (icon: ReactNode, label: string, p: number, t: number, z: number) => (
     <button
       className="ptz-btn"
+      aria-label={label}
+      title={label}
       onPointerDown={(e) => {
         e.preventDefault();
         move(p, t, z);
@@ -168,20 +182,20 @@ function PtzInline({ cameraId }: { cameraId: number }) {
       onPointerUp={stop}
       onPointerLeave={stop}
     >
-      {label}
+      {icon}
     </button>
   );
   return (
     <div className="ptz-pad">
       <span />
-      {btn("▲", 0, 0.5, 0)}
+      {btn(<IconArrowUp size={17} />, "Tilt up", 0, 0.5, 0)}
       <span />
-      {btn("◀", -0.5, 0, 0)}
-      {btn("▼", 0, -0.5, 0)}
-      {btn("▶", 0.5, 0, 0)}
-      {btn("+", 0, 0, 0.5)}
+      {btn(<IconArrowLeft size={17} />, "Pan left", -0.5, 0, 0)}
+      {btn(<IconArrowDown size={17} />, "Tilt down", 0, -0.5, 0)}
+      {btn(<IconArrowRight size={17} />, "Pan right", 0.5, 0, 0)}
+      {btn(<IconPlus size={17} />, "Zoom in", 0, 0, 0.5)}
       <span />
-      {btn("−", 0, 0, -0.5)}
+      {btn(<IconMinus size={17} />, "Zoom out", 0, 0, -0.5)}
     </div>
   );
 }

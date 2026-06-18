@@ -8,6 +8,18 @@
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <title>ZoomyZoomyCamCam</title>
+    <script>
+      // Apply the saved/preferred theme before first paint (no flash of wrong theme).
+      try {
+        var t = localStorage.getItem("zoomy-theme");
+        if (!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        if (t === "light") {
+          document.documentElement.dataset.theme = "light";
+          var m = document.querySelector('meta[name="theme-color"]');
+          if (m) m.setAttribute("content", "#f7f8fa");
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,0 +1,148 @@
+// C3 — first-run onboarding wizard. Appears once when no cameras are configured:
+// welcome, optionally secure the box, then point the user at adding a camera.
+// Self-contained over existing endpoints; the real add lives on the Cameras page.
+
+import { useState } from "react";
+import { api, DiscoveredCam } from "./api";
+import { useToast } from "./ui";
+import { IconShield, IconRadar, IconVideo, IconCheck, IconLock } from "./icons";
+
+const SEEN_KEY = "zoomy-onboarded";
+
+export function markOnboarded() {
+  localStorage.setItem(SEEN_KEY, "1");
+}
+export function shouldOnboard(): boolean {
+  return localStorage.getItem(SEEN_KEY) !== "1";
+}
+
+export default function Onboarding({
+  onAddCamera,
+  onClose,
+}: {
+  onAddCamera: () => void;
+  onClose: () => void;
+}) {
+  const toast = useToast();
+  const [step, setStep] = useState(0);
+  const [pw, setPw] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const [found, setFound] = useState<DiscoveredCam[] | null>(null);
+
+  const finish = () => {
+    markOnboarded();
+    onClose();
+  };
+
+  const setPassword = async () => {
+    try {
+      await api.setPassword(pw);
+      toast.success("Password set — other devices will need it");
+      setStep(2);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  const scan = async () => {
+    setScanning(true);
+    try {
+      const r = await api.scanNetwork();
+      setFound(r.cameras);
+    } catch {
+      setFound([]);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  return (
+    <div className="modal-bg">
+      <div className="onb" role="dialog" aria-modal="true" aria-label="Welcome to ZoomyZoomyCamCam">
+        <div className="onb-steps">
+          {["Welcome", "Secure", "Cameras"].map((s, i) => (
+            <span key={s} className={`onb-step ${i === step ? "active" : ""} ${i < step ? "done" : ""}`}>
+              <span className="onb-dot">{i < step ? <IconCheck size={12} /> : i + 1}</span>
+              {s}
+            </span>
+          ))}
+        </div>
+
+        {step === 0 && (
+          <div className="onb-body">
+            <span className="onb-hero"><IconVideo size={26} /></span>
+            <h2>Welcome to ZoomyZoomyCamCam</h2>
+            <p className="muted">
+              Your self-hosted, private NVR with on-device AI. Nothing leaves this machine. Let's
+              get your first camera streaming in a minute.
+            </p>
+            <div className="onb-actions">
+              <button className="btn btn-ghost" onClick={finish}>Skip setup</button>
+              <button className="btn btn-primary" onClick={() => setStep(1)}>Get started</button>
+            </div>
+          </div>
+        )}
+
+        {step === 1 && (
+          <div className="onb-body">
+            <span className="onb-hero"><IconShield size={26} /></span>
+            <h2>Secure remote access</h2>
+            <p className="muted">
+              Set a password so other devices on your network must log in. This computer is always
+              exempt. You can skip and do this later in Settings.
+            </p>
+            <div className="row" style={{ width: "100%" }}>
+              <span className="onb-ico"><IconLock size={16} /></span>
+              <input
+                type="password"
+                placeholder="new password (min 6 chars)"
+                value={pw}
+                onChange={(e) => setPw(e.target.value)}
+                style={{ flex: 1 }}
+              />
+            </div>
+            <div className="onb-actions">
+              <button className="btn btn-ghost" onClick={() => setStep(2)}>Skip</button>
+              <button className="btn btn-primary" disabled={pw.trim().length < 6} onClick={setPassword}>
+                Set password
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="onb-body">
+            <span className="onb-hero"><IconRadar size={26} /></span>
+            <h2>Add your first camera</h2>
+            <p className="muted">
+              Scan your network for ONVIF cameras, or add one by hand. You'll finish adding it on the
+              Cameras page, where you can enter credentials and pick what to record.
+            </p>
+            <button className="btn btn-secondary" disabled={scanning} onClick={scan}>
+              <IconRadar size={15} /> {scanning ? "Scanning…" : "Scan network"}
+            </button>
+            {found && (
+              <p className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                {found.length === 0
+                  ? "No ONVIF cameras responded — you can still add one by IP on the Cameras page."
+                  : `Found ${found.length} camera${found.length === 1 ? "" : "s"}: ${found.map((c) => c.host).join(", ")}`}
+              </p>
+            )}
+            <div className="onb-actions">
+              <button className="btn btn-ghost" onClick={finish}>I'll do it later</button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  markOnboarded();
+                  onAddCamera();
+                }}
+              >
+                Add a camera
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

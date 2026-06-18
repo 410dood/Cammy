@@ -1,6 +1,7 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
 import { api, Camera, DetectConfig, DiscoveredCam, StatusMap, Zone } from "../api";
 import ZoneEditor from "../ZoneEditor";
+import { IconRadar, IconSearch, IconCheck } from "../icons";
 
 function TuneModal({
   camera,
@@ -498,8 +499,8 @@ export default function Cameras({
       <div className="card">
         <h2>Add camera</h2>
         <div className="row" style={{ marginBottom: 10 }}>
-          <button type="button" className="ghost" disabled={scanning} onClick={scan}>
-            {scanning ? "Scanning…" : "📡 Scan network for cameras"}
+          <button type="button" className="btn btn-ghost" disabled={scanning} onClick={scan}>
+            {scanning ? "Scanning…" : (<><IconRadar size={15} /> Scan network for cameras</>)}
           </button>
           {scanned !== null && scanned.length === 0 && (
             <span className="muted">no ONVIF cameras responded</span>
@@ -529,10 +530,12 @@ export default function Cameras({
             password
             <input type="text" value={pass} onChange={(e) => setPass(e.target.value)} />
           </label>
-          <button type="button" className="ghost" disabled={busy || !ip.trim()} onClick={resolve}>
-            🔍 Resolve via ONVIF
+          <button type="button" className="btn btn-ghost" disabled={busy || !ip.trim()} onClick={resolve}>
+            <IconSearch size={15} /> Resolve via ONVIF
           </button>
-          {found && <span style={{ color: "var(--ok)" }}>✓ {found} (form filled below)</span>}
+          {found && (
+            <span className="save-ok"><IconCheck size={14} /> {found} (form filled below)</span>
+          )}
         </div>
         <form onSubmit={add} className="row">
           <label className="field">

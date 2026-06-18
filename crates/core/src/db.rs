@@ -212,6 +212,9 @@ pub struct Event {
     /// Free-text note the user attached to the event.
     #[serde(default)]
     pub note: Option<String>,
+    /// Anomaly score (0..1) from the anomaly-detection worker; None = unscored.
+    #[serde(default)]
+    pub anomaly_score: Option<f32>,
 }
 
 /// One row of the smart-search corpus: an event's id, its searchable text
@@ -243,6 +246,37 @@ pub struct AuditEntry {
     pub ip: Option<String>,
     pub action: String,
     pub detail: Option<String>,
+}
+
+/// One in-app notification (A4 notifications center): a security/activity event
+/// surfaced in the rail bell + notifications panel. Self-trimmed so it stays
+/// bounded. `event_id` deep-links to the originating event when there is one.
+#[derive(Clone, Debug, Serialize)]
+pub struct Notification {
+    pub id: i64,
+    pub ts: i64,
+    /// "stranger" | "camera_offline" | "camera_online" | "digest" | "anomaly" | ...
+    pub kind: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub event_id: Option<i64>,
+    pub read: bool,
+}
+
+/// One AI daily digest (B1): a natural-language recap of a period's activity.
+#[derive(Clone, Debug, Serialize)]
+pub struct Digest {
+    pub id: i64,
+    pub ts: i64,
+    pub text: String,
+}
+
+/// A saved named camera layout (A6 Liveviews), persisted in `Settings`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Liveview {
+    pub name: String,
+    #[serde(default)]
+    pub cameras: Vec<String>,
 }
 
 /// Sentinel stored in an event's `face` when a face was detected on a person
@@ -560,6 +594,18 @@ pub struct Settings {
     /// Path to the whisper GGML model (downloaded, not committed), e.g.
     /// `ggml-tiny.en.bin` (~75 MB) or `ggml-base.en.bin`.
     pub transcription_model: String,
+    /// B3: master switch for the anomaly-detection worker (opt-in).
+    #[serde(default)]
+    pub anomaly_detection: bool,
+    /// B1: master switch for the daily AI digest worker (opt-in).
+    #[serde(default)]
+    pub digest_enabled: bool,
+    /// A6: saved named camera layouts ("Liveviews") for the Live wall.
+    #[serde(default)]
+    pub liveviews: Vec<Liveview>,
+    /// C6: floor-plan camera map as JSON ({ image, pins:[{camera,x,y}] }); empty = none.
+    #[serde(default)]
+    pub floorplan: String,
 }
 
 impl Default for Settings {
@@ -641,6 +687,10 @@ impl Default for Settings {
             genai_api_key: String::new(),
             transcription_enabled: false,
             transcription_model: "ggml-tiny.en.bin".into(),
+            anomaly_detection: false,
+            digest_enabled: false,
+            liveviews: Vec::new(),
+            floorplan: String::new(),
         }
     }
 }
@@ -703,6 +753,8 @@ impl Db {
             [],
         );
         let _ = conn.execute("ALTER TABLE events ADD COLUMN note TEXT", []);
+        // B3: anomaly score (0..1) written by the anomaly-detection worker.
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN anomaly_score REAL", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
@@ -744,6 +796,21 @@ impl Db {
                  ip     TEXT,
                  action TEXT NOT NULL,
                  detail TEXT
+             );
+             CREATE TABLE IF NOT EXISTS notifications (
+                 id       INTEGER PRIMARY KEY,
+                 ts       INTEGER NOT NULL,
+                 kind     TEXT NOT NULL,
+                 title    TEXT NOT NULL,
+                 body     TEXT,
+                 event_id INTEGER REFERENCES events(id) ON DELETE SET NULL,
+                 read     INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX IF NOT EXISTS notifications_id ON notifications(id DESC);
+             CREATE TABLE IF NOT EXISTS digests (
+                 id   INTEGER PRIMARY KEY,
+                 ts   INTEGER NOT NULL,
+                 text TEXT NOT NULL
              );",
         )?;
         // Additive migration for pre-schedule alarms tables.
@@ -900,7 +967,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note
+                    e.flagged, e.note, e.anomaly_score
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -935,7 +1002,7 @@ impl Db {
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                         e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                        e.flagged, e.note
+                        e.flagged, e.note, e.anomaly_score
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
@@ -1176,6 +1243,124 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    // --- notifications (A4) --------------------------------------------------
+
+    const NOTIF_KEEP: i64 = 2000;
+
+    /// Insert a notification; returns its row id. Self-trims read rows beyond
+    /// NOTIF_KEEP so the table stays bounded.
+    pub fn add_notification(
+        &self,
+        ts: i64,
+        kind: &str,
+        title: &str,
+        body: Option<&str>,
+        event_id: Option<i64>,
+    ) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO notifications (ts, kind, title, body, event_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![ts, kind, title, body, event_id],
+        )?;
+        let id = conn.last_insert_rowid();
+        let _ = conn.execute(
+            "DELETE FROM notifications WHERE read = 1 AND id <= \
+             (SELECT MAX(id) FROM notifications) - ?1",
+            [Self::NOTIF_KEEP],
+        );
+        Ok(id)
+    }
+
+    /// Newest-first notifications; when `unread_only`, only rows with read = 0.
+    pub fn list_notifications(&self, unread_only: bool, limit: u32) -> Result<Vec<Notification>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, kind, title, body, event_id, read FROM notifications
+             WHERE (?1 = 0 OR read = 0) ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![unread_only as i64, limit], |r| {
+                Ok(Notification {
+                    id: r.get(0)?,
+                    ts: r.get(1)?,
+                    kind: r.get(2)?,
+                    title: r.get(3)?,
+                    body: r.get(4)?,
+                    event_id: r.get(5)?,
+                    read: r.get::<_, i64>(6)? != 0,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn count_unread_notifications(&self) -> Result<i64> {
+        Ok(self.conn().query_row(
+            "SELECT COUNT(*) FROM notifications WHERE read = 0",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Mark one notification read; returns whether it existed.
+    pub fn mark_notification_read(&self, id: i64) -> Result<bool> {
+        let n = self
+            .conn()
+            .execute("UPDATE notifications SET read = 1 WHERE id = ?1", [id])?;
+        Ok(n > 0)
+    }
+
+    /// Mark all notifications read; returns how many rows changed.
+    pub fn mark_all_notifications_read(&self) -> Result<usize> {
+        Ok(self
+            .conn()
+            .execute("UPDATE notifications SET read = 1 WHERE read = 0", [])?)
+    }
+
+    // --- digests (B1) --------------------------------------------------------
+
+    const DIGEST_KEEP: i64 = 365;
+
+    /// Insert a digest; returns its row id. Self-trims to DIGEST_KEEP rows.
+    pub fn add_digest(&self, ts: i64, text: &str) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO digests (ts, text) VALUES (?1, ?2)",
+            params![ts, text],
+        )?;
+        let id = conn.last_insert_rowid();
+        let _ = conn.execute(
+            "DELETE FROM digests WHERE id <= (SELECT MAX(id) FROM digests) - ?1",
+            [Self::DIGEST_KEEP],
+        );
+        Ok(id)
+    }
+
+    pub fn list_digests(&self, limit: u32) -> Result<Vec<Digest>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id, ts, text FROM digests ORDER BY id DESC LIMIT ?1")?;
+        let rows = stmt
+            .query_map([limit], |r| {
+                Ok(Digest {
+                    id: r.get(0)?,
+                    ts: r.get(1)?,
+                    text: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Store an anomaly score for an event (best-effort enrichment).
+    pub fn set_event_anomaly(&self, event_id: i64, score: f32) -> Result<()> {
+        self.conn().execute(
+            "UPDATE events SET anomaly_score = ?1 WHERE id = ?2",
+            params![score, event_id],
+        )?;
+        Ok(())
     }
 
     pub fn delete_alarm(&self, id: i64) -> Result<()> {
@@ -1544,6 +1729,7 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         transcript: r.get(16)?,
         flagged: r.get::<_, i64>(17)? != 0,
         note: r.get(18)?,
+        anomaly_score: r.get(19)?,
     })
 }
 

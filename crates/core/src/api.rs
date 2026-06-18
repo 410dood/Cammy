@@ -90,6 +90,18 @@ pub fn router(state: AppState) -> Router {
         .route("/api/recordings/{id}/video", get(segment_video))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/stats", get(stats))
+        .route("/api/overview", get(overview))
+        .route("/api/notifications", get(list_notifications_api))
+        .route(
+            "/api/notifications/read-all",
+            axum::routing::post(mark_all_notifications_read_api),
+        )
+        .route(
+            "/api/notifications/{id}/read",
+            axum::routing::post(mark_notification_read_api),
+        )
+        .route("/api/digests", get(list_digests_api))
+        .route("/api/digests/run", axum::routing::post(run_digest_api))
         .route("/api/metrics", get(metrics))
         .route("/api/backup", get(backup))
         .route("/api/restore", axum::routing::post(restore))
@@ -1749,6 +1761,130 @@ async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>>
     })))
 }
 
+// --- A1 overview / A4 notifications / B1 digests -----------------------------
+
+/// Home dashboard aggregator: camera health, today's counts by label, storage,
+/// and the unread-notification count — everything the Overview page needs in one
+/// round-trip. The online rule mirrors `camera_status` / `metrics`.
+async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let cameras = st.db.list_cameras()?;
+    let board = st.status.snapshot();
+    let settings = st.db.settings();
+    let now_dt = chrono::Local::now();
+    let now = now_dt.timestamp();
+    let window = ((settings.poll_ms as i64).saturating_mul(3) / 1000 + 5).max(20);
+
+    let mut online = 0u32;
+    let mut recording = 0u32;
+    for cam in &cameras {
+        if !cam.enabled {
+            continue;
+        }
+        let h = board.get(&cam.id).cloned().unwrap_or_default();
+        let fresh = h.last_frame_ts.map(|t| now - t <= window).unwrap_or(false);
+        if if cam.detect { fresh } else { h.recording } {
+            online += 1;
+        }
+        if h.recording {
+            recording += 1;
+        }
+    }
+    let enabled = cameras.iter().filter(|c| c.enabled).count() as u32;
+
+    let today_start = {
+        use chrono::Timelike;
+        now - now_dt.num_seconds_from_midnight() as i64
+    };
+    let today =
+        st.db
+            .list_events(None, None, None, None, Some(today_start), None, false, 20_000)?;
+    let mut by_label: std::collections::BTreeMap<String, u32> = Default::default();
+    for e in &today {
+        *by_label.entry(e.label.clone()).or_default() += 1;
+    }
+    let mut today_by_label: Vec<(String, u32)> = by_label.into_iter().collect();
+    today_by_label.sort_by_key(|x| std::cmp::Reverse(x.1));
+
+    let storage = st.db.storage_stats()?;
+    let total_bytes: u64 = storage.iter().map(|c| c.bytes).sum();
+    let rec_root = if settings.recordings_dir.trim().is_empty() {
+        st.recordings_dir_default.clone()
+    } else {
+        PathBuf::from(settings.recordings_dir.trim())
+    };
+    let disk_free = fs2::available_space(&rec_root)
+        .or_else(|_| fs2::available_space(std::path::Path::new(".")))
+        .unwrap_or(0);
+
+    Ok(Json(serde_json::json!({
+        "cameras_total": enabled,
+        "cameras_online": online,
+        "recording": recording,
+        "events_total": st.db.count_events()?,
+        "events_today": today.len(),
+        "disk_free_bytes": disk_free,
+        "total_bytes": total_bytes,
+        "today_by_label": today_by_label,
+        "unread_notifications": st.db.count_unread_notifications()?,
+    })))
+}
+
+#[derive(Deserialize)]
+struct NotificationsQuery {
+    #[serde(default)]
+    unread: bool,
+    #[serde(default = "default_limit")]
+    limit: u32,
+}
+
+async fn list_notifications_api(
+    State(st): State<AppState>,
+    Query(q): Query<NotificationsQuery>,
+) -> ApiResult<Json<Vec<crate::db::Notification>>> {
+    Ok(Json(st.db.list_notifications(q.unread, q.limit.min(1000))?))
+}
+
+async fn mark_notification_read_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !st.db.mark_notification_read(id)? {
+        return Err(not_found());
+    }
+    Ok(Json(serde_json::json!({ "id": id, "read": true })))
+}
+
+async fn mark_all_notifications_read_api(
+    State(st): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let updated = st.db.mark_all_notifications_read()?;
+    Ok(Json(serde_json::json!({ "updated": updated })))
+}
+
+#[derive(Deserialize)]
+struct DigestsQuery {
+    #[serde(default = "default_limit")]
+    limit: u32,
+}
+
+async fn list_digests_api(
+    State(st): State<AppState>,
+    Query(q): Query<DigestsQuery>,
+) -> ApiResult<Json<Vec<crate::db::Digest>>> {
+    Ok(Json(st.db.list_digests(q.limit.min(366))?))
+}
+
+/// Generate a digest for the last 24 hours immediately (manual "run now").
+async fn run_digest_api(State(st): State<AppState>) -> ApiResult<Json<crate::db::Digest>> {
+    let now = chrono::Local::now().timestamp();
+    let events =
+        st.db
+            .list_events(None, None, None, None, Some(now - 86_400), None, false, 20_000)?;
+    let text = crate::digest::summarize(&events);
+    let id = st.db.add_digest(now, &text)?;
+    Ok(Json(crate::db::Digest { id, ts: now, text }))
+}
+
 // --- Prometheus metrics ------------------------------------------------------
 
 /// Per-camera figures the metrics endpoint exposes (gathered from the DB +
@@ -2087,6 +2223,7 @@ mod tests {
             transcript: Some("help, fire".into()), // comma → must be quoted
             flagged: true,
             note: None,
+            anomaly_score: None,
         };
         let csv = events_to_csv(std::slice::from_ref(&ev));
         let mut lines = csv.lines();

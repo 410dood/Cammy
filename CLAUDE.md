@@ -16,6 +16,81 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.3 — competitor matrix 52/52, WAN-hardened auth/TLS, 2026-06-18
 
+### This session (later): roadmap feature batch — 14 net-new features from docs/04
+
+Built and validated **14 of the 16 net-new features** proposed in
+`docs/04-ux-ui-redesign-and-roadmap.md`. **All Rust is `cargo check` + `clippy
+-D warnings` + `cargo test` green (48 tests)**; the web builds clean; the new
+backend was run headless and the endpoints + UI were **live-validated in Chrome**
+against real data.
+
+Backend (new, in `crates/core`): a `notifications` table + `digests` table +
+`events.anomaly_score` column (idempotent migrations), with bounded self-trim
+helpers; `Settings` gained `anomaly_detection`, `digest_enabled`, `liveviews`
+(`Vec<Liveview>`), `floorplan` (no migration — JSON blob). Two new opt-in workers
+spawned/joined in `lib.rs`: **`digest.rs`** (B1, daily plain-language recap →
+digest row + notification) and **`anomaly.rs`** (B3, scores events by how unusual
+the camera/label/hour is vs 30-day history, writes `anomaly_score`, notifies on
+high score). `health.rs` now also writes an in-app notification on camera
+offline/online. New endpoints: `GET /api/overview` (A1 dashboard aggregator),
+`GET /api/notifications` + `POST /api/notifications/{id}/read` + `.../read-all`
+(A4), `GET /api/digests` + `POST /api/digests/run` (B1).
+
+Frontend (new files under `web/src`): `pages/Home.tsx` (A1 Overview, now the
+default page), `Notifications.tsx` (A4 bell + slide-in panel), `CommandPalette.tsx`
+(C1, ⌘/Ctrl-K), `Onboarding.tsx` (C3 first-run wizard), `Wall.tsx` (C4 kiosk/wall
++ Wake Lock), `CrossTimeline.tsx` (A2 synchronized multi-camera timeline on
+Recordings), `pages/FloorPlan.tsx` (C6 "Map" page, client-resized image + camera
+pins via `Settings.floorplan`), `theme.ts` (C2 light theme). Events gained A3
+detection grouping (the **Group** toggle) and B2 natural-language search (parses
+time/camera/object/identity out of the query); People page (was Faces) gained A5
+identity rollups (sightings/last-seen/cameras) + a vehicles section; Live gained A6
+**Liveviews** (saved camera layouts) + the **Wall** button. PWA: `public/sw.js`
+offline app-shell (bypasses `/api`), registered in `main.tsx`.
+
+**Not done (the 2 invasive ones), deliberately scoped out to protect the no-bug
+bar on security-critical code:** C5 multi-user roles (needs auth surgery —
+`Sessions: HashSet<String>` → identity map, middleware role gating, login flow)
+and B4 redaction (role-gated, depends on C5). The exact path is in
+`docs/04` + the backend integration map; do these as a focused, separately-tested
+pass. **GOTCHA: building `crates/core` on Windows needs `libclang`** (whisper-rs
+bindgen) — none was installed; `pip install --user libclang` puts a usable DLL at
+`%APPDATA%\Python\Python311\site-packages\clang\native`, set `LIBCLANG_PATH` to it.
+
+### This session: high-end UX/UI redesign pass (UniFi-Protect-grade)
+
+A design-system overhaul of the web UI, driven by an industry/competitor study and a
+six-surface audit captured in **`docs/04-ux-ui-redesign-and-roadmap.md`** (the single
+source of truth for the visual direction + a sequenced net-new feature backlog).
+Shipped in one pass, no new runtime deps:
+- **Design tokens** (`web/src/styles.css` `:root`): a 12-step OKLCH cool-tinted dark
+  ramp (hex fallback behind `@supports`), three-tier elevation, semantic
+  surface/text/accent/status tokens, a 4px space scale, tightened radii, motion
+  tokens. All legacy var names (`--bg --panel --accent` …) kept as aliases so nothing
+  broke. Optional `[data-theme="light"]` block. Global recipes: tabular-nums on data,
+  one `:focus-visible` ring (fixes a WCAG strip), **`color-scheme: dark` + themed
+  native date/time/select** (kills the light-OS-widget tell), `prefers-reduced-motion`.
+- **Iconography** (`web/src/icons.tsx`, NEW): ~60 hand-rolled inline-SVG stroke icons
+  (Lucide-style, `currentColor`, no dep). **Every emoji-as-icon removed** across all
+  pages (nav, Events, Live/PTZ/REC, Settings audit log, Alarms, Cameras, Faces,
+  Signals, Recordings, ZoneEditor).
+- **Primitives** (`web/src/ui.tsx`, NEW): accessible Toast + promise-based
+  Confirm/Prompt Dialog + Modal lightbox, wired via providers in `main.tsx`. Replaced
+  all `window.alert/confirm/prompt` and inline "Saved ✓" spans.
+- **Typography**: self-hosted **Inter Variable** (`web/public/fonts/`, latin subset,
+  `font-display: swap`, system fallback) — local-first, no runtime network.
+- Shell polish: darker rail (correct UniFi depth), accent active state via inset
+  box-shadow marker (dropped the banned `border-left` side-stripe), sentence-case page
+  titles (fixed the brand/`<h1>` collision), sticky Settings save bar, accent (not
+  green) filter chips, blinking REC pip, themed event-card chips/actions.
+
+**Live-validated in Chrome via the Vite dev server** (real cameras/events): Live,
+Events (incl. the new note Dialog), Settings (incl. the Save toast). **GOTCHA: the
+running desktop app serves a frozen `web/dist`** — `npm run build` on disk does NOT
+reach it; preview web changes with `npm run dev` (temporarily point the `/api` proxy
+at the desktop's :18080, revert to :8080 after). Lenses consulted: ui-ux-pro-max,
+impeccable, frontend-design, gpt-taste.
+
 Latest: **security audit log** (matrix #52). A bounded `audit_log` table records
 security events — `login_success`/`login_failed` (with client IP via
 `client_ip`, correct behind a trusted proxy), `password_set`/`password_cleared`,

@@ -122,6 +122,10 @@ export interface Settings {
   genai_api_key: string;
   transcription_enabled: boolean;
   transcription_model: string;
+  anomaly_detection: boolean;
+  digest_enabled: boolean;
+  liveviews: Liveview[];
+  floorplan: string;
 }
 
 export interface CamStorage {
@@ -200,6 +204,44 @@ export interface CamStatus {
 }
 
 export type StatusMap = Record<string, CamStatus>;
+
+export interface Notification {
+  id: number;
+  ts: number;
+  kind: string; // "stranger" | "camera_offline" | "digest" | "anomaly" | ...
+  title: string;
+  body: string | null;
+  event_id: number | null;
+  read: boolean;
+}
+
+export interface Digest {
+  id: number;
+  ts: number;
+  text: string;
+}
+
+export interface Overview {
+  cameras_total: number;
+  cameras_online: number;
+  recording: number;
+  events_total: number;
+  events_today: number;
+  disk_free_bytes: number;
+  total_bytes: number;
+  today_by_label: [string, number][];
+  unread_notifications: number;
+}
+
+export interface Liveview {
+  name: string;
+  cameras: string[];
+}
+
+export interface FloorPlan {
+  image: string; // data URL or /api path
+  pins: { camera: string; x: number; y: number }[];
+}
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, {
@@ -339,6 +381,19 @@ export const api = {
   settings: () => req<Settings>("/api/settings"),
   saveSettings: (s: Settings) =>
     req<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
+  overview: () => req<Overview>("/api/overview"),
+  notifications: (q: { unread?: boolean; limit?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (q.unread) p.set("unread", "true");
+    if (q.limit) p.set("limit", String(q.limit));
+    return req<Notification[]>(`/api/notifications?${p}`);
+  },
+  markNotificationRead: (id: number) =>
+    req<{ id: number; read: boolean }>(`/api/notifications/${id}/read`, { method: "POST" }),
+  markAllNotificationsRead: () =>
+    req<{ updated: number }>("/api/notifications/read-all", { method: "POST" }),
+  digests: (limit = 14) => req<Digest[]>(`/api/digests?limit=${limit}`),
+  runDigest: () => req<Digest>("/api/digests/run", { method: "POST" }),
 };
 
 // Live-view transport. go2rtc restreams a single upstream camera connection to

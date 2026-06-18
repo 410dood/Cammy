@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, Camera, Settings } from "../api";
 import { loadPlayer } from "../LiveVideo";
+import { IconPlay, IconStop, IconSiren } from "../icons";
 
 // MediaPipe Tasks Vision is loaded at runtime from a CDN (configurable), so the
 // 21-point hand-landmark model runs GPU-accelerated in the browser on any OS —
@@ -35,16 +36,16 @@ const CANON: Record<string, string> = {
 const canon = (name: string) => CANON[name] ?? name.toLowerCase();
 
 const PRETTY: Record<string, string> = {
-  open_palm: "✋ Open palm",
-  fist: "✊ Fist",
-  victory: "✌️ Victory",
-  point: "☝️ Pointing",
-  thumb_up: "👍 Thumb up",
-  thumb_down: "👎 Thumb down",
-  love: "🤟 I-love-you",
-  call_me: "🤙 Call me",
-  ok: "👌 OK",
-  hand: "🖐️ Hand",
+  open_palm: "Open palm",
+  fist: "Fist",
+  victory: "Victory",
+  point: "Pointing",
+  thumb_up: "Thumb up",
+  thumb_down: "Thumb down",
+  love: "I-love-you",
+  call_me: "Call me",
+  ok: "OK",
+  hand: "Hand",
 };
 const pretty = (g: string) => PRETTY[g] ?? g;
 
@@ -195,7 +196,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
       const r = await api.recordGesture({ gesture: g, camera: isWebcam ? undefined : camera });
       if (r.duress) {
         setDuressFlash(true);
-        setToast(`🚨 DURESS — ${pretty(g)} — high-priority alert sent`);
+        setToast(`DURESS — ${pretty(g)} — high-priority alert sent`);
         setTimeout(() => setDuressFlash(false), 6000);
         setTimeout(() => setToast(""), 6000);
       } else if (r.recorded) {
@@ -292,7 +293,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
 
   return (
     <>
-      <h1>Hand Signals ✋</h1>
+      <h1>Hand Signals</h1>
       <p className="muted" style={{ marginTop: -8 }}>
         Real-time hand-landmark tracking in your browser — from this device's webcam{" "}
         <b>or any camera's live stream</b>. Hold an armed signal for {holdSecs.toFixed(1)}s to log
@@ -302,21 +303,21 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
       <div className="card">
         <div className="row" style={{ marginBottom: 12 }}>
           {!running ? (
-            <button className="primary" onClick={start}>
-              ▶ Start camera
+            <button className="btn btn-primary" onClick={start}>
+              <IconPlay size={14} /> Start camera
             </button>
           ) : (
-            <button className="danger" onClick={stop}>
-              ■ Stop
+            <button className="btn btn-danger-solid" onClick={stop}>
+              <IconStop size={14} /> Stop
             </button>
           )}
           <label className="field" title="Run hand-signal detection on your device's webcam, or on one of your cameras' live streams.">
             read hand signals from
             <select value={camera} onChange={(e) => setCamera(e.target.value)} disabled={running}>
-              <option value="webcam">📷 This device's webcam</option>
+              <option value="webcam">This device's webcam</option>
               {cameras.map((c) => (
                 <option key={c.id} value={c.name}>
-                  🎥 {c.name}
+                  {c.name}
                 </option>
               ))}
             </select>
@@ -341,7 +342,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
               marginBottom: 10,
             }}
           >
-            🚨 DURESS signal sent — a high-priority alert went out.
+            <IconSiren size={15} style={{ verticalAlign: "-2px", marginRight: 6 }} /> DURESS signal sent — a high-priority alert went out.
           </div>
         )}
 
