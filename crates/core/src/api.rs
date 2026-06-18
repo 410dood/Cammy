@@ -87,6 +87,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/recordings/{id}/video", get(segment_video))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/stats", get(stats))
+        .route("/api/metrics", get(metrics))
         .route("/api/backup", get(backup))
         .route("/api/restore", axum::routing::post(restore))
         .route("/api/player/{file}", get(go2rtc_player))
@@ -1629,6 +1630,199 @@ async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>>
     })))
 }
 
+// --- Prometheus metrics ------------------------------------------------------
+
+/// Per-camera figures the metrics endpoint exposes (gathered from the DB +
+/// status board, then rendered by the pure `render_metrics`).
+struct CamMetric {
+    name: String,
+    online: bool,
+    recording: bool,
+    inference_ms: Option<f32>,
+    last_frame_age: Option<i64>,
+    bytes: u64,
+    segments: i64,
+}
+
+/// Escape a Prometheus label value (backslash, double-quote, newline).
+fn esc_label(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+/// Render the metrics exposition text (Prometheus 0.0.4). Pure so it's unit-
+/// testable without a server.
+fn render_metrics(version: &str, events: i64, disk_free: u64, cams: &[CamMetric]) -> String {
+    let online = cams.iter().filter(|c| c.online).count();
+    let mut out = String::new();
+    let family = |out: &mut String, name: &str, help: &str, kind: &str| {
+        out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} {kind}\n"));
+    };
+    family(&mut out, "zoomy_build_info", "Build information.", "gauge");
+    out.push_str(&format!(
+        "zoomy_build_info{{version=\"{}\"}} 1\n",
+        esc_label(version)
+    ));
+    family(&mut out, "zoomy_cameras", "Configured cameras.", "gauge");
+    out.push_str(&format!("zoomy_cameras {}\n", cams.len()));
+    family(
+        &mut out,
+        "zoomy_cameras_online",
+        "Cameras currently online.",
+        "gauge",
+    );
+    out.push_str(&format!("zoomy_cameras_online {online}\n"));
+    family(
+        &mut out,
+        "zoomy_events",
+        "Events currently stored.",
+        "gauge",
+    );
+    out.push_str(&format!("zoomy_events {events}\n"));
+    family(
+        &mut out,
+        "zoomy_disk_free_bytes",
+        "Free space on the recordings volume.",
+        "gauge",
+    );
+    out.push_str(&format!("zoomy_disk_free_bytes {disk_free}\n"));
+
+    family(
+        &mut out,
+        "zoomy_camera_online",
+        "Camera online (1) or offline (0).",
+        "gauge",
+    );
+    for c in cams {
+        out.push_str(&format!(
+            "zoomy_camera_online{{camera=\"{}\"}} {}\n",
+            esc_label(&c.name),
+            c.online as u8
+        ));
+    }
+    family(
+        &mut out,
+        "zoomy_camera_recording",
+        "Recorder process alive (1/0).",
+        "gauge",
+    );
+    for c in cams {
+        out.push_str(&format!(
+            "zoomy_camera_recording{{camera=\"{}\"}} {}\n",
+            esc_label(&c.name),
+            c.recording as u8
+        ));
+    }
+    family(
+        &mut out,
+        "zoomy_camera_storage_bytes",
+        "Recorded bytes on disk per camera.",
+        "gauge",
+    );
+    for c in cams {
+        out.push_str(&format!(
+            "zoomy_camera_storage_bytes{{camera=\"{}\"}} {}\n",
+            esc_label(&c.name),
+            c.bytes
+        ));
+    }
+    family(
+        &mut out,
+        "zoomy_camera_segments",
+        "Recorded segments per camera.",
+        "gauge",
+    );
+    for c in cams {
+        out.push_str(&format!(
+            "zoomy_camera_segments{{camera=\"{}\"}} {}\n",
+            esc_label(&c.name),
+            c.segments
+        ));
+    }
+    family(
+        &mut out,
+        "zoomy_camera_inference_ms",
+        "Last detector inference latency (ms).",
+        "gauge",
+    );
+    for c in cams {
+        if let Some(ms) = c.inference_ms {
+            out.push_str(&format!(
+                "zoomy_camera_inference_ms{{camera=\"{}\"}} {ms:.1}\n",
+                esc_label(&c.name)
+            ));
+        }
+    }
+    family(
+        &mut out,
+        "zoomy_camera_last_frame_age_seconds",
+        "Seconds since the last decoded frame.",
+        "gauge",
+    );
+    for c in cams {
+        if let Some(age) = c.last_frame_age {
+            out.push_str(&format!(
+                "zoomy_camera_last_frame_age_seconds{{camera=\"{}\"}} {age}\n",
+                esc_label(&c.name)
+            ));
+        }
+    }
+    out
+}
+
+/// Prometheus metrics exposition. Gated by the same auth as the rest of `/api`,
+/// so a scraper authenticates with a Bearer token (or runs on the loopback box).
+async fn metrics(State(st): State<AppState>) -> ApiResult<impl IntoResponse> {
+    let now = chrono::Local::now().timestamp();
+    let settings = st.db.settings();
+    // saturating so an absurd operator-set poll_ms can't overflow in debug.
+    let window = (settings.poll_ms as i64).saturating_mul(3) / 1000 + 5;
+    let cameras = st.db.list_cameras()?;
+    let storage = st.db.storage_stats()?;
+    let health = st.status.snapshot();
+    let store: std::collections::HashMap<i64, &crate::db::CamStorage> =
+        storage.iter().map(|s| (s.camera_id, s)).collect();
+    let cams: Vec<CamMetric> = cameras
+        .iter()
+        .map(|cam| {
+            let h = health.get(&cam.id).cloned().unwrap_or_default();
+            let fresh = h.last_frame_ts.map(|t| now - t <= window).unwrap_or(false);
+            let s = store.get(&cam.id);
+            CamMetric {
+                name: cam.name.clone(),
+                online: cam.enabled && if cam.detect { fresh } else { h.recording },
+                recording: h.recording,
+                inference_ms: h.inference_ms,
+                last_frame_age: h.last_frame_ts.map(|t| (now - t).max(0)),
+                bytes: s.map(|s| s.bytes).unwrap_or(0),
+                segments: s.map(|s| s.segments).unwrap_or(0),
+            }
+        })
+        .collect();
+    let rec_root = if settings.recordings_dir.trim().is_empty() {
+        st.recordings_dir_default.clone()
+    } else {
+        PathBuf::from(settings.recordings_dir.trim())
+    };
+    let disk_free = fs2::available_space(&rec_root)
+        .or_else(|_| fs2::available_space(std::path::Path::new(".")))
+        .unwrap_or(0);
+    let body = render_metrics(
+        env!("CARGO_PKG_VERSION"),
+        st.db.count_events()?,
+        disk_free,
+        &cams,
+    );
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    ))
+}
+
 // --- API tokens --------------------------------------------------------------
 
 async fn list_tokens(State(st): State<AppState>) -> ApiResult<Json<Vec<crate::db::ApiToken>>> {
@@ -1711,7 +1905,49 @@ async fn put_settings(
 
 #[cfg(test)]
 mod tests {
-    use super::{no_control, valid_group, valid_source, BookmarkReq};
+    use super::{no_control, render_metrics, valid_group, valid_source, BookmarkReq, CamMetric};
+
+    #[test]
+    fn metrics_render_format_and_label_escaping() {
+        let cams = vec![
+            CamMetric {
+                name: "porch".into(),
+                online: true,
+                recording: true,
+                inference_ms: Some(8.74),
+                last_frame_age: Some(2),
+                bytes: 1024,
+                segments: 5,
+            },
+            // A name with characters that must be escaped in a Prometheus label.
+            CamMetric {
+                name: "a\"b\\c".into(),
+                online: false,
+                recording: false,
+                inference_ms: None,
+                last_frame_age: None,
+                bytes: 0,
+                segments: 0,
+            },
+        ];
+        let m = render_metrics("0.1.0", 42, 9999, &cams);
+        // Global gauges.
+        assert!(m.contains("zoomy_build_info{version=\"0.1.0\"} 1\n"));
+        assert!(m.contains("\nzoomy_cameras 2\n"));
+        assert!(m.contains("\nzoomy_cameras_online 1\n"));
+        assert!(m.contains("\nzoomy_events 42\n"));
+        assert!(m.contains("\nzoomy_disk_free_bytes 9999\n"));
+        // Per-camera, with HELP/TYPE headers and escaped labels.
+        assert!(m.contains("# TYPE zoomy_camera_online gauge\n"));
+        assert!(m.contains("zoomy_camera_online{camera=\"porch\"} 1\n"));
+        assert!(m.contains("zoomy_camera_storage_bytes{camera=\"porch\"} 1024\n"));
+        assert!(m.contains("zoomy_camera_inference_ms{camera=\"porch\"} 8.7\n"));
+        assert!(m.contains("zoomy_camera_last_frame_age_seconds{camera=\"porch\"} 2\n"));
+        // Escaped name: " -> \" and \ -> \\.
+        assert!(m.contains("zoomy_camera_online{camera=\"a\\\"b\\\\c\"} 0\n"));
+        // The offline camera has no inference/last-frame lines (None skipped).
+        assert!(!m.contains("zoomy_camera_inference_ms{camera=\"a\\\"b\\\\c\"}"));
+    }
 
     #[test]
     fn bookmark_note_distinguishes_absent_null_and_value() {

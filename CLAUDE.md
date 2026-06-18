@@ -14,9 +14,23 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 48/48, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 49/49, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **API access tokens** (matrix #48). Bearer tokens let scripts /
+Latest: **Prometheus metrics** (matrix #49). `GET /api/metrics` returns
+Prometheus 0.0.4 text exposition — `zoomy_build_info`, `zoomy_cameras`/`_online`,
+`zoomy_events`, `zoomy_disk_free_bytes`, plus per-camera gauges
+(`zoomy_camera_online`/`_recording`/`_storage_bytes`/`_segments`/`_inference_ms`/
+`_last_frame_age_seconds`, labelled by camera). Hand-rendered from the segment
+index + status board + event count (no new dep); the pure `render_metrics` is
+unit-tested incl. label escaping. Gated by the same `/api` auth, so a scraper
+uses an API token (#48) via `Authorization: Bearer` or runs on loopback.
+Live-validated (valid exposition, `text/plain; version=0.0.4`, per-camera series,
+401 when scraped remotely without auth). Review: 0 defects above a pre-existing
+low (`poll_ms*3` overflow, hardened with `saturating_mul` in the new code).
+
+### Earlier this session: API access tokens (matrix #48)
+
+Bearer tokens let scripts /
 integrations (Home Assistant, MQTT automations) call the JSON API from another
 host without the session cookie. `POST /api/tokens` mints a `zoomy_<64-hex>`
 (256-bit) token, returns it **once**, stores only its SHA-256 hash; `GET
