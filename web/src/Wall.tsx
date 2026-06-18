@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { Camera, StreamMode } from "./api";
 import LiveVideo from "./LiveVideo";
+import PrivacyOverlay from "./PrivacyOverlay";
 import { IconX } from "./icons";
 
 function gridCols(n: number): number {
@@ -80,6 +81,7 @@ export default function Wall({
           {cameras.map((c) => (
             <div className="wall-tile" key={c.id}>
               <LiveVideo name={c.name} mode={mode} />
+              <PrivacyOverlay masks={c.detect_config.privacy_masks} />
               <span className="wall-name">{c.name}</span>
             </div>
           ))}

@@ -1,9 +1,9 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, AuditEntry, fmtTime, Settings as S } from "../api";
+import { api, ApiToken, AuditEntry, fmtTime, Me, Role, Settings as S, User } from "../api";
 import { useToast, useDialog } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
-  IconDownload, IconUpload, IconCheck,
+  IconDownload, IconUpload, IconCheck, IconUser,
 } from "../icons";
 
 const AUDIT_META: Record<string, { label: string; Icon: (p: IconProps) => JSX.Element; cls: string }> = {
@@ -13,6 +13,10 @@ const AUDIT_META: Record<string, { label: string; Icon: (p: IconProps) => JSX.El
   password_cleared: { label: "password cleared", Icon: IconLock, cls: "warn" },
   token_created: { label: "token created", Icon: IconTicket, cls: "" },
   token_revoked: { label: "token revoked", Icon: IconTrash, cls: "warn" },
+  user_created: { label: "user created", Icon: IconUser, cls: "" },
+  user_deleted: { label: "user deleted", Icon: IconTrash, cls: "warn" },
+  user_role_changed: { label: "role changed", Icon: IconUser, cls: "warn" },
+  user_password_changed: { label: "user password reset", Icon: IconKey, cls: "" },
 };
 
 function AuditCard() {
@@ -262,6 +266,148 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
         </label>
         {msg && <span style={{ color: "var(--ok)" }}>{msg}</span>}
       </div>
+    </div>
+  );
+}
+
+function UsersCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const dialog = useDialog();
+  const [me, setMe] = useState<Me | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
+  const [name, setName] = useState("");
+  const [pw, setPw] = useState("");
+  const [role, setRole] = useState<Role>("viewer");
+
+  const load = () => {
+    api.me().then(setMe).catch(() => {});
+    api.users().then(setUsers).catch(() => {});
+  };
+  useEffect(load, []);
+
+  // Only admins manage users (the backend gates it too).
+  if (!me || me.role !== "admin") return null;
+
+  const create = async () => {
+    if (!name.trim() || pw.length < 6) return;
+    try {
+      await api.createUser({ username: name.trim(), password: pw, role });
+      setName("");
+      setPw("");
+      setRole("viewer");
+      toast.success("User created");
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const changeRole = async (u: User, r: Role) => {
+    try {
+      await api.patchUser(u.id, { role: r });
+      toast.success(`${u.username} is now ${r}`);
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const resetPw = async (u: User) => {
+    const np = await dialog.prompt({
+      title: `Reset password for ${u.username}`,
+      label: "New password (min 6 chars)",
+    });
+    if (np === null) return;
+    if (np.length < 6) {
+      toast.error("Password must be at least 6 characters");
+      return;
+    }
+    try {
+      await api.patchUser(u.id, { password: np });
+      toast.success("Password reset — all sessions logged out");
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const remove = async (u: User) => {
+    if (!(await dialog.confirm({ title: `Delete ${u.username}?`, confirmLabel: "Delete", danger: true })))
+      return;
+    try {
+      await api.deleteUser(u.id);
+      toast.success("User deleted");
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  const RoleOptions = () => (
+    <>
+      <option value="viewer">viewer</option>
+      <option value="operator">operator</option>
+      <option value="admin">admin</option>
+    </>
+  );
+
+  return (
+    <div className="card">
+      <h2>Users &amp; roles</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Named accounts, each with a role: <b>admin</b> (full control, incl. users),{" "}
+        <b>operator</b> (manage cameras, settings, alarms), <b>viewer</b> (read-only + live).
+        This computer (localhost) and the legacy single password always have admin, so you can
+        never lock yourself out locally.
+      </p>
+      <div className="row">
+        <input type="text" placeholder="username" value={name} onChange={(e) => setName(e.target.value)} />
+        <input
+          type="password"
+          placeholder="password (min 6)"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+        />
+        <select value={role} onChange={(e) => setRole(e.target.value as Role)} aria-label="Role">
+          <RoleOptions />
+        </select>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!name.trim() || pw.length < 6}
+          onClick={create}
+        >
+          Add user
+        </button>
+      </div>
+      {users.length > 0 && (
+        <table style={{ marginTop: 12, width: "100%", borderCollapse: "collapse" }}>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id}>
+                <td>
+                  <b>{u.username}</b>
+                  {me.username === u.username && <span className="muted"> (you)</span>}
+                </td>
+                <td>
+                  <select
+                    value={u.role}
+                    onChange={(e) => changeRole(u, e.target.value as Role)}
+                    aria-label={`Role for ${u.username}`}
+                  >
+                    <RoleOptions />
+                  </select>
+                </td>
+                <td className="muted">created {fmtTime(u.created_ts)}</td>
+                <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  <button type="button" className="btn btn-ghost ev-act" onClick={() => resetPw(u)}>
+                    Reset password
+                  </button>
+                  <button type="button" className="btn btn-danger ev-act" onClick={() => remove(u)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -593,6 +739,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <RemoteAccessCard onError={onError} />
+
+        <UsersCard onError={onError} />
 
         <TokensCard onError={onError} />
 

@@ -78,6 +78,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tokens", get(list_tokens).post(create_token))
         .route("/api/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/audit", get(list_audit))
+        .route("/api/me", get(me))
+        .route("/api/users", get(list_users_api).post(create_user_api))
+        .route(
+            "/api/users/{id}",
+            axum::routing::patch(patch_user_api).delete(delete_user_api),
+        )
         .route("/api/faces", get(faces_overview).post(enroll_face))
         .route(
             "/api/faces/{id}",
@@ -180,7 +186,11 @@ async fn camera_status(State(st): State<AppState>) -> ApiResult<Json<serde_json:
 // --- auth -------------------------------------------------------------------
 
 async fn auth_status(State(st): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "enabled": st.db.get_kv(crate::auth::KV_PASSWORD).is_some() }))
+    let users = st.db.count_users().unwrap_or(0);
+    Json(serde_json::json!({
+        "enabled": st.db.get_kv(crate::auth::KV_PASSWORD).is_some() || users > 0,
+        "users": users,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -221,17 +231,27 @@ async fn set_password(
     Ok(Json(serde_json::json!({ "enabled": !pw.is_empty() })))
 }
 
+#[derive(Deserialize)]
+struct LoginReq {
+    /// Optional for the legacy single-password mode; required for named users.
+    #[serde(default)]
+    username: Option<String>,
+    password: String,
+}
+
 async fn login(
     State(st): State<AppState>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
-    Json(req): Json<PasswordReq>,
+    Json(req): Json<LoginReq>,
 ) -> ApiResult<Response> {
-    let Some(stored) = st.db.get_kv(crate::auth::KV_PASSWORD) else {
+    let users_exist = st.db.count_users().unwrap_or(0) > 0;
+    let kv_password = st.db.get_kv(crate::auth::KV_PASSWORD);
+    if !users_exist && kv_password.is_none() {
         return Ok(
             Json(serde_json::json!({ "ok": true, "note": "auth disabled" })).into_response(),
         );
-    };
+    }
     // Identify the peer the same way the auth middleware does, so the throttle
     // keys on the real client even behind a trusted reverse proxy.
     let (peer_ip, _) = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy);
@@ -251,22 +271,63 @@ async fn login(
     }
     let now = chrono::Local::now().timestamp();
     let ip = peer_ip.to_string();
-    if !crate::auth::verify_password(&stored, &req.password) {
+
+    // Resolve the credentials into a principal: a named user (C5) when a username
+    // is supplied, otherwise the legacy single-password admin.
+    let username = req
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let principal: Option<crate::auth::Principal> = if let Some(uname) = username {
+        match st.db.user_by_name(uname)? {
+            Some((id, hash, role)) if crate::auth::verify_password(&hash, &req.password) => {
+                if crate::auth::needs_rehash(&hash) {
+                    let _ = st
+                        .db
+                        .set_user_password(id, &crate::auth::hash_password(&req.password));
+                }
+                Some(crate::auth::Principal {
+                    user_id: Some(id),
+                    username: Some(uname.to_string()),
+                    role: crate::auth::Role::parse(&role),
+                })
+            }
+            _ => None,
+        }
+    } else if let Some(stored) = &kv_password {
+        if crate::auth::verify_password(stored, &req.password) {
+            if crate::auth::needs_rehash(stored) {
+                let _ = st.db.set_kv(
+                    crate::auth::KV_PASSWORD,
+                    &crate::auth::hash_password(&req.password),
+                );
+            }
+            Some(crate::auth::Principal::admin())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let Some(principal) = principal else {
         st.login_throttle.record_failure(peer_ip);
-        st.db.add_audit(now, Some(&ip), "login_failed", None);
-        return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong password".into()));
-    }
+        // The username is attacker-controlled on the reject path; cap it so a
+        // multi-megabyte value can't bloat or spam the audit log.
+        let uname_audit = username.map(|u| u.chars().take(64).collect::<String>());
+        st.db
+            .add_audit(now, Some(&ip), "login_failed", uname_audit.as_deref());
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "wrong username or password".into(),
+        ));
+    };
     st.login_throttle.record_success(peer_ip);
-    st.db.add_audit(now, Some(&ip), "login_success", None);
-    // Upgrade legacy SHA-256 records to argon2id now that we have the plaintext.
-    if crate::auth::needs_rehash(&stored) {
-        let _ = st.db.set_kv(
-            crate::auth::KV_PASSWORD,
-            &crate::auth::hash_password(&req.password),
-        );
-    }
+    st.db
+        .add_audit(now, Some(&ip), "login_success", principal.username.as_deref());
     let token = crate::auth::new_token();
-    st.sessions.insert(token.clone());
+    st.sessions.insert(token.clone(), principal);
     let mut resp = Json(serde_json::json!({ "ok": true })).into_response();
     resp.headers_mut().insert(
         axum::http::header::SET_COOKIE,
@@ -275,6 +336,148 @@ async fn login(
             .expect("valid cookie header"),
     );
     Ok(resp)
+}
+
+// --- C5: current user + user/role management ---------------------------------
+
+/// Who the caller is (role + username), for the frontend to gate UI. Reachable
+/// only once authenticated; the middleware injects the principal.
+async fn me(axum::Extension(p): axum::Extension<crate::auth::Principal>) -> Json<serde_json::Value> {
+    // Reaching this handler means the caller already passed auth (a session, the
+    // local box, an API token, or open mode), so they are authenticated. `named`
+    // distinguishes a real user account from the legacy/loopback/token admin.
+    Json(serde_json::json!({
+        "authenticated": true,
+        "named": p.user_id.is_some(),
+        "username": p.username,
+        "role": p.role,
+    }))
+}
+
+fn valid_username(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().count() <= 64
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+async fn list_users_api(State(st): State<AppState>) -> ApiResult<Json<Vec<crate::db::UserRow>>> {
+    Ok(Json(st.db.list_users()?))
+}
+
+#[derive(Deserialize)]
+struct NewUserReq {
+    username: String,
+    password: String,
+    #[serde(default)]
+    role: Option<String>,
+}
+
+async fn create_user_api(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<NewUserReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let username = req.username.trim();
+    if !valid_username(username) {
+        return Err(bad_request(
+            "username must be 1-64 chars of a-z, 0-9, '.', '_', '-'",
+        ));
+    }
+    if req.password.len() < 6 {
+        return Err(bad_request("password must be at least 6 characters"));
+    }
+    let role = crate::auth::Role::parse(req.role.as_deref().unwrap_or("viewer")).as_str();
+    let now = chrono::Local::now().timestamp();
+    let id = st
+        .db
+        .add_user(username, &crate::auth::hash_password(&req.password), role, now)
+        .map_err(|_| bad_request("could not add user (is the username already taken?)"))?;
+    let (ip, _) = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy);
+    st.db
+        .add_audit(now, Some(&ip.to_string()), "user_created", Some(username));
+    Ok(Json(serde_json::json!({ "id": id, "username": username, "role": role })))
+}
+
+#[derive(Deserialize)]
+struct PatchUserReq {
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+}
+
+async fn patch_user_api(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<i64>,
+    axum::Extension(me): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<PatchUserReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy).0.to_string();
+    let now = chrono::Local::now().timestamp();
+    let mut changed = false;
+
+    if let Some(role) = &req.role {
+        let role = crate::auth::Role::parse(role).as_str();
+        // An admin can't demote their own account (a self-lockout the delete
+        // guard already prevents); the last-admin check is atomic in the DB.
+        if me.user_id == Some(id) && role != "admin" {
+            return Err(bad_request("you can't change your own role"));
+        }
+        match st.db.set_user_role_guarded(id, role)? {
+            crate::db::SetRole::Ok => {}
+            crate::db::SetRole::NotFound => return Err(not_found()),
+            crate::db::SetRole::LastAdmin => return Err(bad_request("can't demote the last admin")),
+        }
+        st.sessions.clear_user(id); // the new role takes effect on next request
+        st.db
+            .add_audit(now, Some(&ip), "user_role_changed", Some(&format!("#{id} -> {role}")));
+        changed = true;
+    }
+    if let Some(pw) = &req.password {
+        if pw.len() < 6 {
+            return Err(bad_request("password must be at least 6 characters"));
+        }
+        if !st.db.set_user_password(id, &crate::auth::hash_password(pw))? {
+            return Err(not_found());
+        }
+        st.sessions.clear_user(id); // force just that user to re-login
+        st.db
+            .add_audit(now, Some(&ip), "user_password_changed", Some(&format!("#{id}")));
+        changed = true;
+    }
+    if !changed {
+        return Err(bad_request("nothing to update"));
+    }
+    Ok(Json(serde_json::json!({ "id": id })))
+}
+
+async fn delete_user_api(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<i64>,
+    axum::Extension(me): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<StatusCode> {
+    if me.user_id == Some(id) {
+        return Err(bad_request("you can't delete your own account"));
+    }
+    match st.db.delete_user_guarded(id)? {
+        crate::db::DeleteUser::Deleted => {}
+        crate::db::DeleteUser::NotFound => return Err(not_found()),
+        crate::db::DeleteUser::LastAdmin => return Err(bad_request("can't delete the last admin")),
+    }
+    st.sessions.clear_user(id); // invalidate the deleted user's sessions
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy).0.to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "user_deleted",
+        Some(&format!("#{id}")),
+    );
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

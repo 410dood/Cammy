@@ -243,6 +243,21 @@ export interface FloorPlan {
   pins: { camera: string; x: number; y: number }[];
 }
 
+export type Role = "viewer" | "operator" | "admin";
+
+export interface User {
+  id: number;
+  username: string;
+  role: Role;
+  created_ts: number;
+}
+
+export interface Me {
+  authenticated: boolean;
+  username: string | null;
+  role: Role;
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, {
     headers: { "Content-Type": "application/json" },
@@ -363,9 +378,19 @@ export const api = {
     }),
   deleteToken: (id: number) => req<void>(`/api/tokens/${id}`, { method: "DELETE" }),
   audit: (limit = 100) => req<AuditEntry[]>(`/api/audit?limit=${limit}`),
-  authStatus: () => req<{ enabled: boolean }>("/api/auth"),
-  login: (password: string) =>
-    req<{ ok: boolean }>("/api/login", { method: "POST", body: JSON.stringify({ password }) }),
+  authStatus: () => req<{ enabled: boolean; users: number }>("/api/auth"),
+  login: (password: string, username?: string) =>
+    req<{ ok: boolean }>("/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: username || undefined, password }),
+    }),
+  me: () => req<Me>("/api/me"),
+  users: () => req<User[]>("/api/users"),
+  createUser: (body: { username: string; password: string; role: Role }) =>
+    req<{ id: number }>("/api/users", { method: "POST", body: JSON.stringify(body) }),
+  patchUser: (id: number, patch: { role?: Role; password?: string }) =>
+    req<{ id: number }>(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteUser: (id: number) => req<void>(`/api/users/${id}`, { method: "DELETE" }),
   setPassword: (password: string) =>
     req<{ enabled: boolean }>("/api/auth/password", {
       method: "POST",

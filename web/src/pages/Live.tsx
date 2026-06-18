@@ -6,6 +6,7 @@ import {
 import CameraDetail from "../CameraDetail";
 import LiveVideo from "../LiveVideo";
 import Wall from "../Wall";
+import PrivacyOverlay from "../PrivacyOverlay";
 import { useToast, useDialog } from "../ui";
 import {
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight,
@@ -280,6 +281,7 @@ export default function Live({
                 )}
               </div>
               <LiveVideo name={cam.name} mode={mode} />
+              <PrivacyOverlay masks={cam.detect_config.privacy_masks} />
               <button
                 className="expand"
                 title="Open camera view"

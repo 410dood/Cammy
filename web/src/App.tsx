@@ -50,15 +50,22 @@ const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
 };
 
 function LoginOverlay() {
+  const [user, setUser] = useState("");
   const [pw, setPw] = useState("");
   const [err, setErr] = useState("");
+  const [hasUsers, setHasUsers] = useState(false);
+
+  useEffect(() => {
+    api.authStatus().then((a) => setHasUsers(a.users > 0)).catch(() => {});
+  }, []);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await api.login(pw);
+      await api.login(pw, user.trim() || undefined);
       window.location.reload();
     } catch {
-      setErr("wrong password");
+      setErr(hasUsers ? "wrong username or password" : "wrong password");
     }
   };
   return (
@@ -67,17 +74,29 @@ function LoginOverlay() {
         <h2 className="login-title">
           <IconLock size={18} /> ZoomyZoomyCamCam
         </h2>
-        <p className="muted">This NVR is password-protected for remote access.</p>
+        <p className="muted">Log in to access this NVR remotely.</p>
+        {hasUsers && (
+          <input
+            type="text"
+            placeholder="username"
+            value={user}
+            autoFocus
+            autoComplete="username"
+            onChange={(e) => setUser(e.target.value)}
+            style={{ width: "100%", marginBottom: 8 }}
+          />
+        )}
         <div className="row">
           <input
             type="password"
             placeholder="password"
             value={pw}
-            autoFocus
+            autoFocus={!hasUsers}
+            autoComplete="current-password"
             onChange={(e) => setPw(e.target.value)}
             style={{ flex: 1 }}
           />
-          <button className="primary">Unlock</button>
+          <button className="btn btn-primary">Unlock</button>
         </div>
         {err && <p style={{ color: "var(--danger)" }}>{err}</p>}
       </form>

@@ -2,6 +2,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { api, CamEvent, Camera, Segment, fmtTime, getStreamMode } from "./api";
 import Timeline from "./Timeline";
 import LiveVideo from "./LiveVideo";
+import PrivacyOverlay from "./PrivacyOverlay";
 import {
   IconX, IconMic, IconUser, IconCar,
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight, IconPlus, IconMinus,
@@ -92,6 +93,7 @@ export default function CameraDetail({
         <div className="detail-main">
           <div className="tile" style={{ aspectRatio: "16 / 9" }}>
             <LiveVideo name={camera.name} mode={getStreamMode()} audio mic={talking} />
+            <PrivacyOverlay masks={camera.detect_config.privacy_masks} />
             {ptz && <PtzInline cameraId={camera.id} />}
             {twoWay && (
               <button

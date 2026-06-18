@@ -271,6 +271,30 @@ pub struct Digest {
     pub text: String,
 }
 
+/// A named user account (C5 multi-user roles). The password hash is never
+/// serialized out of the API.
+#[derive(Clone, Debug, Serialize)]
+pub struct UserRow {
+    pub id: i64,
+    pub username: String,
+    pub role: String,
+    pub created_ts: i64,
+}
+
+/// Outcome of a guarded role change (keeps the last-admin check + update atomic).
+pub enum SetRole {
+    Ok,
+    NotFound,
+    LastAdmin,
+}
+
+/// Outcome of a guarded user delete.
+pub enum DeleteUser {
+    Deleted,
+    NotFound,
+    LastAdmin,
+}
+
 /// A saved named camera layout (A6 Liveviews), persisted in `Settings`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Liveview {
@@ -811,6 +835,13 @@ impl Db {
                  id   INTEGER PRIMARY KEY,
                  ts   INTEGER NOT NULL,
                  text TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS users (
+                 id            INTEGER PRIMARY KEY,
+                 username      TEXT NOT NULL UNIQUE,
+                 password_hash TEXT NOT NULL,
+                 role          TEXT NOT NULL DEFAULT 'viewer',
+                 created_ts    INTEGER NOT NULL
              );",
         )?;
         // Additive migration for pre-schedule alarms tables.
@@ -1361,6 +1392,108 @@ impl Db {
             params![score, event_id],
         )?;
         Ok(())
+    }
+
+    // --- users / roles (C5) --------------------------------------------------
+
+    pub fn count_users(&self) -> Result<i64> {
+        Ok(self
+            .conn()
+            .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?)
+    }
+
+    pub fn add_user(&self, username: &str, password_hash: &str, role: &str, now: i64) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, created_ts) VALUES (?1, ?2, ?3, ?4)",
+            params![username, password_hash, role, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// `(id, password_hash, role)` for a username, if it exists.
+    pub fn user_by_name(&self, username: &str) -> Result<Option<(i64, String, String)>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT id, password_hash, role FROM users WHERE username = ?1",
+                [username],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn list_users(&self) -> Result<Vec<UserRow>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id, username, role, created_ts FROM users ORDER BY username")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(UserRow {
+                    id: r.get(0)?,
+                    username: r.get(1)?,
+                    role: r.get(2)?,
+                    created_ts: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn set_user_password(&self, id: i64, password_hash: &str) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            params![password_hash, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Set a user's role, refusing to strip the last admin. The role read, the
+    /// admin count, and the update all run while the single DB lock is held, so
+    /// two concurrent demotions can never both win and leave zero admins.
+    pub fn set_user_role_guarded(&self, id: i64, role: &str) -> Result<SetRole> {
+        let conn = self.conn();
+        let cur: Option<String> = conn
+            .query_row("SELECT role FROM users WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        let Some(cur) = cur else {
+            return Ok(SetRole::NotFound);
+        };
+        if cur == "admin" && role != "admin" {
+            let admins: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin'",
+                [],
+                |r| r.get(0),
+            )?;
+            if admins <= 1 {
+                return Ok(SetRole::LastAdmin);
+            }
+        }
+        conn.execute("UPDATE users SET role = ?1 WHERE id = ?2", params![role, id])?;
+        Ok(SetRole::Ok)
+    }
+
+    /// Delete a user, refusing to delete the last admin (atomic under one lock).
+    pub fn delete_user_guarded(&self, id: i64) -> Result<DeleteUser> {
+        let conn = self.conn();
+        let cur: Option<String> = conn
+            .query_row("SELECT role FROM users WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        let Some(cur) = cur else {
+            return Ok(DeleteUser::NotFound);
+        };
+        if cur == "admin" {
+            let admins: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin'",
+                [],
+                |r| r.get(0),
+            )?;
+            if admins <= 1 {
+                return Ok(DeleteUser::LastAdmin);
+            }
+        }
+        conn.execute("DELETE FROM users WHERE id = ?1", [id])?;
+        Ok(DeleteUser::Deleted)
     }
 
     pub fn delete_alarm(&self, id: i64) -> Result<()> {
