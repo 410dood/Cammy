@@ -1,5 +1,43 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, fmtTime, Settings as S } from "../api";
+import { api, ApiToken, AuditEntry, fmtTime, Settings as S } from "../api";
+
+const AUDIT_LABELS: Record<string, string> = {
+  login_success: "✅ login",
+  login_failed: "⛔ failed login",
+  password_set: "🔑 password set",
+  password_cleared: "🔓 password cleared",
+  token_created: "🎫 token created",
+  token_revoked: "🗑️ token revoked",
+};
+
+function AuditCard() {
+  const [rows, setRows] = useState<AuditEntry[]>([]);
+  useEffect(() => {
+    api.audit(100).then(setRows).catch(() => {});
+  }, []);
+  if (rows.length === 0) return null;
+  return (
+    <div className="card">
+      <h2>Recent security activity</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Logins, password changes, and API-token changes — most recent first. Useful for
+        spotting unexpected access on a WAN-exposed server.
+      </p>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td>{AUDIT_LABELS[r.action] ?? r.action}</td>
+              <td className="muted">{fmtTime(r.ts)}</td>
+              <td className="muted">{r.ip ?? ""}</td>
+              <td className="muted">{r.detail ?? ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
   const [enabled, setEnabled] = useState(false);
@@ -492,6 +530,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <RemoteAccessCard onError={onError} />
 
         <TokensCard onError={onError} />
+
+        <AuditCard />
 
         <BackupCard onError={onError} />
 

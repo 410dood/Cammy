@@ -209,14 +209,17 @@ fn bearer_token(req: &Request) -> Option<String> {
     (!token.is_empty()).then(|| token.to_string())
 }
 
-/// Endpoints a Bearer-token caller must NOT reach: token management and the
-/// password change. This keeps a *leaked* token from escalating to persistence
-/// (minting sibling tokens that survive revoking the original) or locking out
-/// the owner (rotating/clearing the password) — those require an interactive
-/// session (or loopback). Read-only `GET /api/tokens` stays allowed.
+/// Endpoints a Bearer-token caller must NOT reach: token management, the
+/// password change, and the security audit log. This keeps a *leaked* token
+/// from escalating to persistence (minting sibling tokens that survive revoking
+/// the original), locking out the owner (rotating/clearing the password), or
+/// reconnoitering (reading login source IPs + which other tokens exist) —
+/// those require an interactive session (or loopback). Read-only
+/// `GET /api/tokens` stays allowed.
 fn token_forbidden(method: &axum::http::Method, path: &str) -> bool {
     use axum::http::Method;
     path == "/api/auth/password"
+        || path == "/api/audit"
         || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
 }
 
@@ -371,6 +374,8 @@ mod tests {
         assert!(token_forbidden(&Method::POST, "/api/auth/password"));
         assert!(token_forbidden(&Method::POST, "/api/tokens"));
         assert!(token_forbidden(&Method::DELETE, "/api/tokens/5"));
+        // The security audit log is session-only (no token recon of login IPs).
+        assert!(token_forbidden(&Method::GET, "/api/audit"));
         // …but read-only token listing and ordinary API calls are fine.
         assert!(!token_forbidden(&Method::GET, "/api/tokens"));
         assert!(!token_forbidden(&Method::GET, "/api/cameras"));

@@ -76,6 +76,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/tokens", get(list_tokens).post(create_token))
         .route("/api/tokens/{id}", axum::routing::delete(delete_token))
+        .route("/api/audit", get(list_audit))
         .route("/api/faces", get(faces_overview).post(enroll_face))
         .route(
             "/api/faces/{id}",
@@ -178,6 +179,8 @@ struct PasswordReq {
 /// sessions are invalidated either way.
 async fn set_password(
     State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<PasswordReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let pw = req.password.trim();
@@ -191,6 +194,17 @@ async fn set_password(
             .set_kv(crate::auth::KV_PASSWORD, &crate::auth::hash_password(pw))?;
     }
     st.sessions.clear();
+    let (ip, _) = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy);
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip.to_string()),
+        if pw.is_empty() {
+            "password_cleared"
+        } else {
+            "password_set"
+        },
+        None,
+    );
     Ok(Json(serde_json::json!({ "enabled": !pw.is_empty() })))
 }
 
@@ -222,11 +236,15 @@ async fn login(
         );
         return Ok(resp);
     }
+    let now = chrono::Local::now().timestamp();
+    let ip = peer_ip.to_string();
     if !crate::auth::verify_password(&stored, &req.password) {
         st.login_throttle.record_failure(peer_ip);
+        st.db.add_audit(now, Some(&ip), "login_failed", None);
         return Err(ApiError(StatusCode::UNAUTHORIZED, "wrong password".into()));
     }
     st.login_throttle.record_success(peer_ip);
+    st.db.add_audit(now, Some(&ip), "login_success", None);
     // Upgrade legacy SHA-256 records to argon2id now that we have the plaintext.
     if crate::auth::needs_rehash(&stored) {
         let _ = st.db.set_kv(
@@ -1929,6 +1947,24 @@ async fn list_tokens(State(st): State<AppState>) -> ApiResult<Json<Vec<crate::db
 }
 
 #[derive(Deserialize)]
+struct AuditQuery {
+    #[serde(default = "default_audit_limit")]
+    limit: u32,
+}
+fn default_audit_limit() -> u32 {
+    200
+}
+
+/// Recent security-audit entries (logins, password changes, token changes),
+/// newest first. Gated like the rest of `/api`.
+async fn list_audit(
+    State(st): State<AppState>,
+    Query(q): Query<AuditQuery>,
+) -> ApiResult<Json<Vec<crate::db::AuditEntry>>> {
+    Ok(Json(st.db.list_audit(q.limit.min(1000))?))
+}
+
+#[derive(Deserialize)]
 struct NewTokenReq {
     name: String,
 }
@@ -1952,6 +1988,7 @@ async fn create_token(
     let id = st
         .db
         .add_api_token(name, &crate::auth::token_hash(&raw), now)?;
+    st.db.add_audit(now, None, "token_created", Some(name));
     Ok(Json(
         serde_json::json!({ "id": id, "name": name, "token": raw }),
     ))
@@ -1964,6 +2001,12 @@ async fn delete_token(
     if !st.db.delete_api_token(id)? {
         return Err(not_found());
     }
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        None,
+        "token_revoked",
+        Some(&format!("id {id}")),
+    );
     Ok(Json(serde_json::json!({ "deleted": id })))
 }
 

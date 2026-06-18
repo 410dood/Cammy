@@ -14,9 +14,20 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 51/51, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 52/52, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **stranger / unfamiliar-face detection** (matrix #51) — the marquee
+Latest: **security audit log** (matrix #52). A bounded `audit_log` table records
+security events — `login_success`/`login_failed` (with client IP via
+`client_ip`, correct behind a trusted proxy), `password_set`/`password_cleared`,
+`token_created`/`token_revoked` — surfaced newest-first at `GET /api/audit` and
+in a Settings "Recent security activity" card. **No secrets logged** (action +
+token name only). The table self-trims to the most recent 2000 rows
+(`db::add_audit`, best-effort so it never blocks the audited action). The audit
+log is **session-only** — `token_forbidden` blocks a Bearer token from reading
+it so a leaked token can't recon login IPs / other tokens. Live-validated
+(set-password, wrong+correct login, token create → correct action/IP/detail).
+
+### Earlier this session: stranger / unfamiliar-face detection (matrix #51) — the marquee
 smart-NVR feature (UniFi "unfamiliar face"). A person whose face is detected but
 matches **no enrolled identity** is tagged with the reserved `db::UNKNOWN_FACE`
 ("?") sentinel on the event, and a new `AlarmRule.face_unknown` condition fires

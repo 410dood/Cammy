@@ -181,6 +181,14 @@ export interface ApiToken {
   last_used_ts: number | null;
 }
 
+export interface AuditEntry {
+  id: number;
+  ts: number;
+  ip: string | null;
+  action: string;
+  detail: string | null;
+}
+
 export interface CamStatus {
   online: boolean;
   recording: boolean;
@@ -312,6 +320,7 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
   deleteToken: (id: number) => req<void>(`/api/tokens/${id}`, { method: "DELETE" }),
+  audit: (limit = 100) => req<AuditEntry[]>(`/api/audit?limit=${limit}`),
   authStatus: () => req<{ enabled: boolean }>("/api/auth"),
   login: (password: string) =>
     req<{ ok: boolean }>("/api/login", { method: "POST", body: JSON.stringify({ password }) }),

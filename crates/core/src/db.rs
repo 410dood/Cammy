@@ -234,6 +234,17 @@ pub struct ApiToken {
     pub last_used_ts: Option<i64>,
 }
 
+/// One security-audit entry: a notable security event (login, password change,
+/// token create/revoke) with when, the client IP, and a short detail.
+#[derive(Clone, Debug, Serialize)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub ts: i64,
+    pub ip: Option<String>,
+    pub action: String,
+    pub detail: Option<String>,
+}
+
 /// Sentinel stored in an event's `face` when a face was detected on a person
 /// but matched no enrolled identity — a "stranger". Distinguishes that from
 /// "no face detected" (`None`); kept short and reserved so it can't be confused
@@ -726,6 +737,13 @@ impl Db {
                  token_hash   TEXT NOT NULL UNIQUE,
                  created_ts   INTEGER NOT NULL,
                  last_used_ts INTEGER
+             );
+             CREATE TABLE IF NOT EXISTS audit_log (
+                 id     INTEGER PRIMARY KEY,
+                 ts     INTEGER NOT NULL,
+                 ip     TEXT,
+                 action TEXT NOT NULL,
+                 detail TEXT
              );",
         )?;
         // Additive migration for pre-schedule alarms tables.
@@ -1114,6 +1132,50 @@ impl Db {
             .conn()
             .execute("DELETE FROM api_tokens WHERE id=?1", [id])?;
         Ok(n > 0)
+    }
+
+    // --- security audit log ------------------------------------------------
+
+    /// Cap on retained audit rows — bounded so a flood of (throttled) failed
+    /// logins can't grow the table without limit.
+    const AUDIT_KEEP: i64 = 2000;
+
+    /// Record a security event. Best-effort: callers ignore the result so a
+    /// logging failure never blocks the action being audited.
+    pub fn add_audit(&self, ts: i64, ip: Option<&str>, action: &str, detail: Option<&str>) {
+        let conn = self.conn();
+        if conn
+            .execute(
+                "INSERT INTO audit_log (ts, ip, action, detail) VALUES (?1, ?2, ?3, ?4)",
+                params![ts, ip, action, detail],
+            )
+            .is_ok()
+        {
+            // Trim to the most recent AUDIT_KEEP rows.
+            let _ = conn.execute(
+                "DELETE FROM audit_log WHERE id <= (SELECT MAX(id) FROM audit_log) - ?1",
+                [Self::AUDIT_KEEP],
+            );
+        }
+    }
+
+    pub fn list_audit(&self, limit: u32) -> Result<Vec<AuditEntry>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, ip, action, detail FROM audit_log ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map([limit], |r| {
+                Ok(AuditEntry {
+                    id: r.get(0)?,
+                    ts: r.get(1)?,
+                    ip: r.get(2)?,
+                    action: r.get(3)?,
+                    detail: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn delete_alarm(&self, id: i64) -> Result<()> {
@@ -1717,6 +1779,32 @@ mod tests {
         assert!(db.delete_api_token(id).unwrap());
         assert!(!db.delete_api_token(id).unwrap());
         assert!(db.list_api_tokens().unwrap().is_empty());
+    }
+
+    #[test]
+    fn audit_log_records_and_caps() {
+        let db = mem_db();
+        db.add_audit(100, Some("203.0.113.7"), "login_failed", None);
+        db.add_audit(200, None, "token_created", Some("home-assistant"));
+        let rows = db.list_audit(10).unwrap();
+        assert_eq!(rows.len(), 2);
+        // Newest first.
+        assert_eq!(rows[0].action, "token_created");
+        assert_eq!(rows[0].detail.as_deref(), Some("home-assistant"));
+        assert_eq!(rows[1].action, "login_failed");
+        assert_eq!(rows[1].ip.as_deref(), Some("203.0.113.7"));
+        // Retention cap: after many inserts, the table stays bounded to AUDIT_KEEP.
+        for i in 0..(Db::AUDIT_KEEP + 50) {
+            db.add_audit(1000 + i, None, "login_failed", None);
+        }
+        let total: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            total <= Db::AUDIT_KEEP,
+            "audit table must stay bounded, got {total}"
+        );
     }
 
     #[test]
