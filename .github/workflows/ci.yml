@@ -29,6 +29,8 @@ jobs:
       #  - Linux: use the crate's shipped Linux bindings, so no libclang needed.
       #  - Windows: point bindgen at the runner's preinstalled LLVM.
       #  - macOS: bindgen finds libclang in the Xcode toolchain by default.
+      # (CMAKE_POLICY_VERSION_MINIMUM is set in .cargo/config.toml so every build
+      # host gets it; here we only handle the per-runner bindgen/libclang setup.)
       - name: Configure whisper.cpp build deps
         shell: bash
         run: |
