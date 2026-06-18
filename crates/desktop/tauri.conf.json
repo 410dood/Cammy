@@ -31,7 +31,10 @@
       "../../clip_tokenizer.json": "clip_tokenizer.json",
       "../../plate_det.onnx": "plate_det.onnx",
       "../../plate_rec.onnx": "plate_rec.onnx",
-      "../../plate_dict.txt": "plate_dict.txt"
+      "../../plate_dict.txt": "plate_dict.txt",
+      "../../yamnet.onnx": "yamnet.onnx",
+      "../../yamnet_class_map.csv": "yamnet_class_map.csv",
+      "../../ggml-tiny.en.bin": "ggml-tiny.en.bin"
     }
   }
 }

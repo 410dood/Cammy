@@ -14,7 +14,7 @@ import { StreamMode } from "./api";
 
 // Imported once per page; the module calls customElements.define('video-stream').
 let playerLoad: Promise<unknown> | null = null;
-function loadPlayer(): Promise<unknown> {
+export function loadPlayer(): Promise<unknown> {
   if (!playerLoad) {
     // A variable specifier keeps both TS and Vite from trying to resolve this
     // runtime-only, server-proxied module at build time.

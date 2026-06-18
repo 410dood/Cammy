@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, Camera, Settings } from "../api";
+import { loadPlayer } from "../LiveVideo";
 
 // MediaPipe Tasks Vision is loaded at runtime from a CDN (configurable), so the
 // 21-point hand-landmark model runs GPU-accelerated in the browser on any OS —
@@ -53,6 +54,12 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
   const rafRef = useRef<number>(0);
   const recognizerRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // For an IP-camera source, MediaPipe runs on the go2rtc `<video-stream>`'s own
+  // <video> (the same player the Live grid uses) rather than the device webcam.
+  const streamHostRef = useRef<HTMLDivElement>(null);
+  const streamElRef = useRef<any>(null);
+  // Mirror of the selected source for the rAF loop, which captures at start.
+  const sourceRef = useRef<string>("webcam");
   // Hold-to-fire state, kept in a ref so the rAF loop reads fresh values.
   const holdRef = useRef<{ gesture: string; since: number; fired: boolean }>({
     gesture: "",
@@ -79,15 +86,16 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
     api.settings().then(setSettings).catch(() => {});
   }, []);
   useEffect(() => {
-    if (!camera && cameras.length) setCamera(cameras[0].name);
-  }, [cameras, camera]);
+    if (!camera) setCamera("webcam");
+  }, [camera]);
 
   const armed = settings?.gesture_labels ?? [];
   const holdSecs = settings?.gesture_hold_secs ?? 1.5;
   const duress = settings?.gesture_duress ?? "";
   // The duress signal always fires, even when not in the armed list.
   const isArmed = (g: string) => g === duress || armed.length === 0 || armed.includes(g);
-  const camId = cameras.find((c) => c.name === camera)?.id;
+  const isWebcam = camera === "webcam" || camera === "";
+  const camId = isWebcam ? undefined : cameras.find((c) => c.name === camera)?.id;
 
   useEffect(() => {
     touchlessRef.current = touchless;
@@ -98,6 +106,9 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
   useEffect(() => {
     camIdRef.current = camId;
   }, [camId]);
+  useEffect(() => {
+    sourceRef.current = isWebcam ? "webcam" : camera;
+  }, [camera, isWebcam]);
 
   // Does the attributed camera answer PTZ? (gates touchless steering)
   useEffect(() => {
@@ -114,6 +125,16 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
+    // Tear down the go2rtc stream element, if one was attached.
+    if (streamElRef.current) {
+      try {
+        streamElRef.current.pc?.getSenders?.().forEach((s: any) => s.track && s.track.stop());
+      } catch {
+        /* best-effort */
+      }
+      streamElRef.current.parentNode?.removeChild(streamElRef.current);
+      streamElRef.current = null;
+    }
     setRunning(false);
     setCurrent(null);
     setStatus("Stopped.");
@@ -138,11 +159,26 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
         numHands: 2,
       });
 
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-      streamRef.current = stream;
-      const video = videoRef.current!;
-      video.srcObject = stream;
-      await video.play();
+      if (isWebcam) {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+        streamRef.current = stream;
+        const video = videoRef.current!;
+        video.srcObject = stream;
+        await video.play();
+      } else {
+        // Read from the selected IP camera's go2rtc stream (the same player the
+        // Live grid uses). MediaPipe runs on its <video> once frames arrive.
+        await loadPlayer();
+        const el: any = document.createElement("video-stream");
+        el.mode = "webrtc,mse,mjpeg";
+        el.media = "video";
+        el.background = false;
+        el.src = `/api/ws?src=${encodeURIComponent(camera)}`;
+        el.style.width = "100%";
+        el.style.height = "100%";
+        streamHostRef.current?.replaceChildren(el);
+        streamElRef.current = el;
+      }
       setRunning(true);
       setStatus("Reading hand signals…");
       loop();
@@ -156,7 +192,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
 
   const fire = async (g: string) => {
     try {
-      const r = await api.recordGesture({ gesture: g, camera: camera || undefined });
+      const r = await api.recordGesture({ gesture: g, camera: isWebcam ? undefined : camera });
       if (r.duress) {
         setDuressFlash(true);
         setToast(`🚨 DURESS — ${pretty(g)} — high-priority alert sent`);
@@ -173,7 +209,14 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
   };
 
   const loop = () => {
-    const video = videoRef.current;
+    // Resolve the active source <video> each frame: the device webcam, or the
+    // go2rtc stream element's own <video> (which appears once it connects).
+    const video =
+      sourceRef.current === "webcam"
+        ? videoRef.current
+        : ((streamElRef.current?.video as HTMLVideoElement) ||
+            (streamElRef.current?.querySelector?.("video") as HTMLVideoElement) ||
+            null);
     const canvas = canvasRef.current;
     const recognizer = recognizerRef.current;
     if (!video || !canvas || !recognizer || video.readyState < 2) {
@@ -251,9 +294,9 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
     <>
       <h1>Hand Signals ✋</h1>
       <p className="muted" style={{ marginTop: -8 }}>
-        Real-time hand-landmark tracking in your browser. Hold an armed signal for{" "}
-        {holdSecs.toFixed(1)}s to log an event and trigger any matching alarm — a silent
-        hand-signal "panic button" for your NVR.
+        Real-time hand-landmark tracking in your browser — from this device's webcam{" "}
+        <b>or any camera's live stream</b>. Hold an armed signal for {holdSecs.toFixed(1)}s to log
+        an event and trigger any matching alarm — a silent hand-signal "panic button" for your NVR.
       </p>
 
       <div className="card">
@@ -267,13 +310,13 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
               ■ Stop
             </button>
           )}
-          <label className="field">
-            log signals to camera
-            <select value={camera} onChange={(e) => setCamera(e.target.value)}>
-              {cameras.length === 0 && <option value="">(no cameras registered)</option>}
+          <label className="field" title="Run hand-signal detection on your device's webcam, or on one of your cameras' live streams.">
+            read hand signals from
+            <select value={camera} onChange={(e) => setCamera(e.target.value)} disabled={running}>
+              <option value="webcam">📷 This device's webcam</option>
               {cameras.map((c) => (
                 <option key={c.id} value={c.name}>
-                  {c.name}
+                  🎥 {c.name}
                 </option>
               ))}
             </select>
@@ -311,14 +354,32 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
             background: "#000",
             borderRadius: 12,
             overflow: "hidden",
-            transform: "scaleX(-1)", // selfie mirror; canvas rides along
+            // Selfie-mirror the device webcam only; IP camera streams aren't mirrored.
+            transform: isWebcam ? "scaleX(-1)" : "none",
           }}
         >
           <video
             ref={videoRef}
             playsInline
             muted
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              display: isWebcam ? "block" : "none",
+            }}
+          />
+          <div
+            ref={streamHostRef}
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              display: isWebcam ? "none" : "block",
+            }}
           />
           <canvas
             ref={canvasRef}
@@ -330,7 +391,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
                 position: "absolute",
                 top: 12,
                 left: 12,
-                transform: "scaleX(-1)", // un-mirror the label
+                transform: isWebcam ? "scaleX(-1)" : "none", // un-mirror the label (webcam only)
                 background: "rgba(0,0,0,0.6)",
                 color: "#fff",
                 padding: "6px 12px",

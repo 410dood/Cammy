@@ -27,7 +27,31 @@ export default function ZoneEditor({
   onChange: (zones: PolyZone[], masks: Mask[]) => void;
 }) {
   const [draw, setDraw] = useState<Draw>(null);
-  const [imgOk, setImgOk] = useState(true);
+  // Frame loading is resilient: go2rtc may be mid-restart or waiting for a
+  // keyframe when the modal opens, so a single failed load shouldn't strand the
+  // editor on "No live frame" forever. Retry a few times (cache-busting each
+  // time), show the message only after that, and offer a manual retry.
+  const [bust, setBust] = useState(0);
+  const [autoTries, setAutoTries] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const MAX_AUTO = 8;
+  const onErr = () => {
+    if (autoTries < MAX_AUTO) {
+      setAutoTries((a) => a + 1);
+      setTimeout(() => setBust((b) => b + 1), 900);
+    } else {
+      setFailed(true);
+    }
+  };
+  const onOk = () => {
+    setFailed(false);
+    setAutoTries(0);
+  };
+  const retry = () => {
+    setFailed(false);
+    setAutoTries(0);
+    setBust((b) => b + 1);
+  };
 
   const addPoint = (e: React.MouseEvent) => {
     if (!draw) return;
@@ -74,12 +98,13 @@ export default function ZoneEditor({
         }}
       >
         <img
-          src={`/api/cameras/${camera.id}/frame.jpg`}
+          src={`/api/cameras/${camera.id}/frame.jpg?t=${bust}`}
           alt={camera.name}
-          onError={() => setImgOk(false)}
+          onError={onErr}
+          onLoad={onOk}
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" }}
         />
-        {!imgOk && (
+        {failed && (
           <div
             style={{
               position: "absolute",
@@ -92,8 +117,22 @@ export default function ZoneEditor({
               textAlign: "center",
             }}
           >
-            No live frame — the camera must be enabled and streaming to draw on it. You can still
-            edit zones numerically after saving.
+            <div>
+              No live frame — the camera must be enabled and streaming to draw on it. You can
+              still edit zones numerically after saving.
+              <div style={{ marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    retry();
+                  }}
+                >
+                  ↻ retry
+                </button>
+              </div>
+            </div>
           </div>
         )}
         <svg
