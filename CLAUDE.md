@@ -14,24 +14,36 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 41/41, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 42/42, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **native live-view player** (matrix #41). The Live grid + camera detail
+Latest: **remote live-view via an authenticated WebSocket reverse-proxy**
+(matrix #42). The live player's WebSocket now connects to zoomy's **own origin**
+`/api/ws?src=NAME` (`stream_ws`/`proxy_ws` in `api.rs`), which proxies to the
+loopback-only go2rtc — browser ⇄ zoomy ⇄ go2rtc. This makes **remote/LAN
+live-view work** (MSE/MJPEG media rides the proxied socket, so any viewer gets
+video — not just one on the server box), lets us **drop `origin: "*"`** (go2rtc
+keeps default same-origin protection — closes the localhost-CSRF the #41 review
+flagged), and routes live streams through zoomy's **auth middleware** (a password
+now gates live view too; loopback exempt). The proxy builds the upstream URL from
+the fixed loopback base + only the urlencoded `src` (no SSRF), pumps both ways
+with `tokio::select!`, times out the upstream connect (8s), rejects empty `src`,
+and sends a clean Close on failure. Deps: tokio-tungstenite 0.29 (deduped to
+axum's) + futures-util, axum `ws` feature — all pure-Rust, no TLS/C.
+**Live-validated in Chrome with a real USB webcam: WebRTC + MSE both play 640×480
+over `ws://localhost:8080/api/ws` (same origin), go2rtc.yaml has no `origin`.**
+Adversarial review: SSRF closed, no leak, 0 real defects above nit. `LiveVideo`
+now uses a relative `/api/ws` src; dead `base`/`config` props removed.
+
+### Earlier this session: native live-view player (matrix #41)
+
+The Live grid + camera detail
 embed go2rtc's `<video-stream>` web component (a real `<video>` with WebRTC +
 MSE/MJPEG fallback) instead of an `<iframe>` onto go2rtc's stream.html — the
 long-standing CLAUDE next-step #2. A thin same-origin `GET /api/player/{file}`
 proxy (allowlisted) serves go2rtc's player JS (it has no CORS). go2rtc's API is
-now bound to **127.0.0.1** (was `0.0.0.0` — off the LAN, a net exposure
-reduction) with `origin: "*"` so the same-machine UI can open the player
-WebSocket cross-origin. **Live-validated in Chrome against a real USB webcam:
-WebRTC + MSE play live 640×480, clean console** (MJPEG declined by go2rtc for an
-H.264-only source). The player module caches only on success so a go2rtc restart
-can't permanently black out tiles (adversarial review caught that). **GOTCHA /
-known limit:** live-view is **local-browser only** — `go2rtc.rs api_base()` is
-hardcoded `127.0.0.1`, so remote/LAN viewers get a dead tile; the proper fix is a
-**WS reverse-proxy** of `/api/ws` (+ webrtc) through zoomy's authed origin, which
-would also let us drop `origin: "*"` and its residual localhost-origin CSRF.
-That proxy is the clear next step. New `web/src/LiveVideo.tsx`.
+bound to **127.0.0.1** (was `0.0.0.0` — off the LAN). The player module caches
+only on success so a go2rtc restart can't permanently black out tiles
+(adversarial review caught that). New `web/src/LiveVideo.tsx`.
 
 ### Earlier this session: config backup & restore (matrix #40)
 

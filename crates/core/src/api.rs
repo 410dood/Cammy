@@ -84,6 +84,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/backup", get(backup))
         .route("/api/restore", axum::routing::post(restore))
         .route("/api/player/{file}", get(go2rtc_player))
+        .route("/api/ws", get(stream_ws))
         .with_state(state)
 }
 
@@ -682,6 +683,107 @@ async fn go2rtc_player(
         js,
     )
         .into_response())
+}
+
+/// Reverse-proxy the live-stream WebSocket (player signaling + MSE/MJPEG media)
+/// browser ⇄ zoomy ⇄ go2rtc. The browser only ever talks to our own origin, so
+/// (a) go2rtc stays loopback-only with its default same-origin protection
+/// intact (no `origin: "*"` needed), (b) live streams ride our auth middleware
+/// like every other `/api/*` route, and (c) MSE/MJPEG work for remote viewers
+/// since that media flows over this proxied socket.
+async fn stream_ws(
+    State(st): State<AppState>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    // Only forward the stream selector; build the upstream URL ourselves so a
+    // client can't redirect us elsewhere.
+    let src = q.get("src").cloned().unwrap_or_default();
+    if src.trim().is_empty() {
+        return bad_request("a stream name (?src=) is required").into_response();
+    }
+    let upstream = format!(
+        "{}/api/ws?src={}",
+        st.go2rtc.api_base().replacen("http", "ws", 1),
+        urlencode(&src)
+    );
+    ws.on_upgrade(move |client| proxy_ws(client, upstream))
+}
+
+/// Pump messages both directions until either side closes or errors.
+async fn proxy_ws(mut client: axum::extract::ws::WebSocket, upstream_url: String) {
+    use futures_util::{SinkExt, StreamExt};
+
+    // Bound the upstream connect so a wedged go2rtc can't pile up hung tasks.
+    let connect = tokio_tungstenite::connect_async(&upstream_url);
+    let upstream = match tokio::time::timeout(std::time::Duration::from_secs(8), connect).await {
+        Ok(Ok((stream, _resp))) => stream,
+        Ok(Err(e)) => {
+            tracing::warn!("live-stream upstream connect failed: {e}");
+            let _ = client.send(axum::extract::ws::Message::Close(None)).await;
+            return;
+        }
+        Err(_) => {
+            tracing::warn!("live-stream upstream connect timed out: {upstream_url}");
+            let _ = client.send(axum::extract::ws::Message::Close(None)).await;
+            return;
+        }
+    };
+    let (mut up_tx, mut up_rx) = upstream.split();
+    let (mut cl_tx, mut cl_rx) = client.split();
+
+    // browser -> go2rtc
+    let to_upstream = async {
+        while let Some(Ok(msg)) = cl_rx.next().await {
+            if up_tx.send(axum_to_tungstenite(msg)).await.is_err() {
+                break;
+            }
+        }
+        let _ = up_tx.close().await;
+    };
+    // go2rtc -> browser
+    let to_client = async {
+        while let Some(Ok(msg)) = up_rx.next().await {
+            if let Some(m) = tungstenite_to_axum(msg) {
+                if cl_tx.send(m).await.is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = cl_tx.close().await;
+    };
+    tokio::select! {
+        _ = to_upstream => {}
+        _ = to_client => {}
+    }
+}
+
+fn axum_to_tungstenite(m: axum::extract::ws::Message) -> tokio_tungstenite::tungstenite::Message {
+    use axum::extract::ws::Message as A;
+    use tokio_tungstenite::tungstenite::Message as T;
+    match m {
+        A::Text(t) => T::Text(t.as_str().into()),
+        A::Binary(b) => T::Binary(b),
+        A::Ping(b) => T::Ping(b),
+        A::Pong(b) => T::Pong(b),
+        A::Close(_) => T::Close(None),
+    }
+}
+
+fn tungstenite_to_axum(
+    m: tokio_tungstenite::tungstenite::Message,
+) -> Option<axum::extract::ws::Message> {
+    use axum::extract::ws::Message as A;
+    use tokio_tungstenite::tungstenite::Message as T;
+    Some(match m {
+        T::Text(t) => A::Text(t.as_str().into()),
+        T::Binary(b) => A::Binary(b),
+        T::Ping(b) => A::Ping(b),
+        T::Pong(b) => A::Pong(b),
+        T::Close(_) => A::Close(None),
+        // Raw frames are an internal tungstenite detail; nothing to forward.
+        T::Frame(_) => return None,
+    })
 }
 
 // --- PTZ --------------------------------------------------------------------

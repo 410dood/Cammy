@@ -158,7 +158,7 @@ export default function Live({
                 <span className={`dot ${s ? (s.online ? "on" : "off") : ""}`} /> {cam.name}
                 {s?.recording && <span className="rec">● REC</span>}
               </div>
-              <LiveVideo base={config.go2rtc_base} name={cam.name} mode={mode} />
+              <LiveVideo name={cam.name} mode={mode} />
               <button className="expand" title="Open camera view" onClick={() => setDetail(cam)}>
                 ⤢
               </button>
@@ -172,7 +172,6 @@ export default function Live({
       {detail && (
         <CameraDetail
           camera={detail}
-          config={config}
           ptz={!!ptz[detail.id]}
           onClose={() => setDetail(null)}
         />

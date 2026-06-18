@@ -38,6 +38,8 @@ argon2.workspace = true
 axum-server.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
 
 detector = { path = "../detector" }
 facerec = { path = "../facerec" }

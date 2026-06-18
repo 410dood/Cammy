@@ -6,10 +6,11 @@ import { StreamMode } from "./api";
 /// iframe onto go2rtc's stream.html. Lower overhead, proper sizing, and no
 /// nested-page chrome.
 ///
-/// go2rtc serves the player JS without CORS headers, so we load it through our
-/// own origin (`/api/player/*`, a thin proxy) to satisfy the ES-module
-/// same-origin rule. The streaming WebSocket is not CORS-restricted and still
-/// connects directly to go2rtc.
+/// Everything is same-origin to zoomy: the player JS loads via the `/api/player`
+/// proxy (go2rtc serves it without CORS), and the streaming WebSocket connects
+/// to zoomy's `/api/ws`, which reverse-proxies to the loopback-only go2rtc. So
+/// go2rtc never needs to accept a cross-origin browser connection, and live
+/// streams ride zoomy's auth like every other API route.
 
 // Imported once per page; the module calls customElements.define('video-stream').
 let playerLoad: Promise<unknown> | null = null;
@@ -46,12 +47,10 @@ type VideoStreamEl = HTMLElement & {
 };
 
 export default function LiveVideo({
-  base,
   name,
   mode,
   audio = false,
 }: {
-  base: string;
   name: string;
   mode: StreamMode;
   audio?: boolean;
@@ -68,8 +67,9 @@ export default function LiveVideo({
         el.mode = MODE_FALLBACKS[mode];
         el.media = audio ? "video,audio" : "video";
         el.background = false; // stop streaming when the tab is hidden
-        // `src` accepts an http URL and converts it to ws:// internally.
-        el.src = `${base}/api/ws?src=${encodeURIComponent(name)}`;
+        // Relative path → the player resolves it to ws://<this origin>/api/ws,
+        // which zoomy reverse-proxies to the loopback-only go2rtc.
+        el.src = `/api/ws?src=${encodeURIComponent(name)}`;
         el.className = "live-video";
         host.current.appendChild(el);
       })
@@ -82,7 +82,7 @@ export default function LiveVideo({
       // tears down the WebSocket / RTCPeerConnection.
       if (el && el.parentNode) el.parentNode.removeChild(el);
     };
-  }, [base, name, mode, audio]);
+  }, [name, mode, audio]);
 
   return <div className="live-video-host" ref={host} />;
 }
