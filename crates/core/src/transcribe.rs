@@ -89,11 +89,12 @@ fn transcribe(ctx: &WhisperContext, audio: &[f32]) -> Option<String> {
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     state.full(params, audio).ok()?;
-    let n = state.full_n_segments().ok()?;
     let mut text = String::new();
-    for i in 0..n {
-        if let Ok(seg) = state.full_get_segment_text(i) {
-            text.push_str(&seg);
+    for i in 0..state.full_n_segments() {
+        if let Some(seg) = state.get_segment(i) {
+            if let Ok(s) = seg.to_str_lossy() {
+                text.push_str(&s);
+            }
         }
     }
     clean_transcript(&text)
