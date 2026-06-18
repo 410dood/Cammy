@@ -148,7 +148,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
         <span>✨</span>
         <input
           type="text"
-          placeholder='Smart search — describe what you are looking for ("person in a dark coat", "blue car")'
+          placeholder='Smart search — what you saw or heard ("person in a dark coat", "someone yelling help")'
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);

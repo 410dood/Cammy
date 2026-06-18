@@ -207,6 +207,15 @@ pub struct Event {
     pub transcript: Option<String>,
 }
 
+/// One row of the smart-search corpus: an event's id, its searchable text
+/// (transcript + caption) and its optional CLIP snapshot embedding.
+pub struct SearchRow {
+    pub id: i64,
+    pub transcript: Option<String>,
+    pub caption: Option<String>,
+    pub embedding: Option<Vec<f32>>,
+}
+
 /// Alarm Manager rule (UniFi style if-this-then-that): all set conditions
 /// must match an event; `None` conditions match anything.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -995,19 +1004,35 @@ impl Db {
         Ok(())
     }
 
-    pub fn all_event_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>> {
+    /// Every event with its searchable text + (when `with_embeddings`) its CLIP
+    /// snapshot embedding, newest first, for hybrid smart search (visual
+    /// similarity + speech/caption text). No row cap — the corpus is the full
+    /// (retention-bounded) event history, so search recall isn't truncated.
+    /// The embedding column (and JOIN) is skipped entirely in text-only mode.
+    pub fn search_corpus(&self, with_embeddings: bool) -> Result<Vec<SearchRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT event_id, embedding FROM event_embeddings")?;
+        let sql = if with_embeddings {
+            "SELECT e.id, e.transcript, e.caption, em.embedding
+             FROM events e LEFT JOIN event_embeddings em ON em.event_id = e.id
+             ORDER BY e.ts DESC, e.id DESC"
+        } else {
+            "SELECT e.id, e.transcript, e.caption, NULL
+             FROM events e ORDER BY e.ts DESC, e.id DESC"
+        };
+        let mut stmt = conn.prepare(sql)?;
         let rows = stmt
             .query_map([], |r| {
-                let bytes: Vec<u8> = r.get(1)?;
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    bytes
-                        .chunks_exact(4)
-                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect(),
-                ))
+                let emb: Option<Vec<u8>> = r.get(3)?;
+                Ok(SearchRow {
+                    id: r.get(0)?,
+                    transcript: r.get(1)?,
+                    caption: r.get(2)?,
+                    embedding: emb.map(|b| {
+                        b.chunks_exact(4)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect()
+                    }),
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)

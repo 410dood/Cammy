@@ -1313,35 +1313,73 @@ async fn smart_search(
     State(st): State<AppState>,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    if !crate::smart::models_present() {
-        return Err(bad_request(
-            "smart search models not installed (see README: clip_vision.onnx, \
-             clip_text.onnx, clip_tokenizer.json)",
-        ));
-    }
     let query = q.q.trim().to_string();
     if query.is_empty() {
         return Err(bad_request("empty query"));
     }
-    let qe = tokio::task::spawn_blocking(move || crate::smart::embed_text(&query))
-        .await
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    // Hybrid search: CLIP visual similarity on the snapshot (when the models are
+    // present) PLUS a text match on the event's transcript + caption — so you
+    // can search what was *said* / described, not only what was seen. With no
+    // CLIP models it degrades to a pure transcript/caption text search.
+    let clip = crate::smart::models_present();
+    let qe: Option<Vec<f32>> = if clip {
+        let query = query.clone();
+        Some(
+            tokio::task::spawn_blocking(move || crate::smart::embed_text(&query))
+                .await
+                .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??,
+        )
+    } else {
+        None
+    };
 
-    let mut scored: Vec<(f32, i64)> = st
+    let mut scored: Vec<(f32, bool, i64)> = st
         .db
-        .all_event_embeddings()?
+        .search_corpus(clip)?
         .into_iter()
-        .map(|(id, emb)| (crate::smart::cosine(&qe, &emb), id))
+        .map(|row| {
+            // cosine of L2-normalized vectors ∈ [-1,1]; clamp to ≥0 (also keeps
+            // the sort NaN-free).
+            let visual = match (&qe, &row.embedding) {
+                (Some(qe), Some(emb)) => crate::smart::cosine(qe, emb).max(0.0),
+                _ => 0.0,
+            };
+            let blob = format!(
+                "{} {}",
+                row.transcript.as_deref().unwrap_or(""),
+                row.caption.as_deref().unwrap_or("")
+            );
+            let text = crate::smart::text_match_score(&query, &blob);
+            // A text hit always ranks above a pure-visual match; visual orders
+            // within each band.
+            let combined = if text > 0.0 {
+                1.0 + text + visual * 0.1
+            } else {
+                visual
+            };
+            (combined, text > 0.0, row.id)
+        })
         .collect();
+    // Only return events with an actual signal — a text hit or non-zero visual
+    // similarity — so events that match neither (e.g. audio events with no
+    // snapshot embedding) aren't padded in as bogus "visual" results.
+    scored.retain(|(score, is_text, _)| *is_text || *score > 0.0);
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut results = Vec::new();
-    for (sim, id) in scored.into_iter().take(q.limit.min(100)) {
+    for (score, is_text, id) in scored.into_iter().take(q.limit.min(100)) {
         if let Some(ev) = st.db.get_event(id)? {
-            results.push(serde_json::json!({ "similarity": sim, "event": ev }));
+            results.push(serde_json::json!({
+                "similarity": score,
+                "match": if is_text { "speech" } else { "visual" },
+                "event": ev,
+            }));
         }
     }
-    Ok(Json(serde_json::json!({ "results": results })))
+    Ok(Json(serde_json::json!({
+        "results": results,
+        "mode": if clip { "hybrid" } else { "text" },
+    })))
 }
 
 // --- faces -------------------------------------------------------------------

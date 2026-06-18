@@ -14,9 +14,22 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 44/44, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 45/45, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **bundled audio transcription** (matrix #44). Opt-in, off by default,
+Latest: **transcript-aware smart search** (matrix #45). The ✨ Events search is
+now hybrid — CLIP visual similarity **plus** a whole-word text match on each
+event's transcript + caption (`smart::text_match_score`), so you can search what
+was *said*, and a speech/caption hit outranks a pure-visual one. It also works
+**without** the CLIP models now (text-only mode instead of erroring).
+`db::search_corpus(with_embeddings)` joins event text + optional embedding in one
+query over the full (retention-bounded) history (no recall cap; embedding column
+skipped in text-only mode). Live-validated (search "americans" → the jfk
+transcript event on top, `match=speech`). Review drove uncapping recall, the
+text-only embedding skip, signal-only filtering, and whole-word matching.
+
+### Earlier this session: bundled audio transcription (matrix #44)
+
+Opt-in, off by default,
 fully local: **whisper.cpp is compiled into the binary** (whisper-rs) — no
 separate server. A YAMNet audio event triggers `crates/core/src/transcribe.rs`
 (its own worker; model loaded once), which captures a short clip from the
