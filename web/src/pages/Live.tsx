@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { api, AppConfig, Camera, StatusMap, StreamMode, getStreamMode, setStreamMode, streamUrl } from "../api";
+import { api, AppConfig, Camera, StatusMap, StreamMode, getStreamMode, setStreamMode } from "../api";
 import CameraDetail from "../CameraDetail";
+import LiveVideo from "../LiveVideo";
 
 /// Hold-to-move PTZ pad, shown only on cameras that answer ONVIF PTZ.
 function PtzPad({ cameraId }: { cameraId: number }) {
@@ -157,12 +158,7 @@ export default function Live({
                 <span className={`dot ${s ? (s.online ? "on" : "off") : ""}`} /> {cam.name}
                 {s?.recording && <span className="rec">● REC</span>}
               </div>
-              <iframe
-                title={cam.name}
-                key={mode}
-                src={streamUrl(config.go2rtc_base, cam.name, mode)}
-                allow="autoplay"
-              />
+              <LiveVideo base={config.go2rtc_base} name={cam.name} mode={mode} />
               <button className="expand" title="Open camera view" onClick={() => setDetail(cam)}>
                 ⤢
               </button>

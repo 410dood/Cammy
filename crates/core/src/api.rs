@@ -83,6 +83,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stats", get(stats))
         .route("/api/backup", get(backup))
         .route("/api/restore", axum::routing::post(restore))
+        .route("/api/player/{file}", get(go2rtc_player))
         .with_state(state)
 }
 
@@ -644,6 +645,43 @@ async fn restore(
         "cameras_skipped": cams_skipped,
         "alarms_added": alarms_added,
     })))
+}
+
+/// Same-origin proxy for go2rtc's embeddable player JS (`video-stream.js` +
+/// its `video-rtc.js` import). go2rtc serves these without CORS headers, so a
+/// cross-origin ES-module import from our UI would be blocked; proxying them
+/// through our own origin sidesteps that while staying version-matched to the
+/// running go2rtc. The streaming WebSocket itself is not CORS-restricted and
+/// still connects straight to go2rtc.
+async fn go2rtc_player(
+    State(st): State<AppState>,
+    Path(file): Path<String>,
+) -> ApiResult<Response> {
+    if !matches!(file.as_str(), "video-stream.js" | "video-rtc.js") {
+        return Err(not_found());
+    }
+    let url = format!("{}/{}", st.go2rtc.api_base(), file);
+    let js: anyhow::Result<String> = tokio::task::spawn_blocking(move || {
+        let body = ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(10))
+            .call()?
+            .into_string()?;
+        Ok(body)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("player fetch task: {e}"))?;
+    let js = js.map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("go2rtc player: {e}")))?;
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=300"),
+        ],
+        js,
+    )
+        .into_response())
 }
 
 // --- PTZ --------------------------------------------------------------------

@@ -140,6 +140,12 @@ body {
   box-shadow: 0 0 0 1px var(--accent), 0 8px 28px rgba(0, 0, 0, 0.5);
 }
 .tile iframe { width: 100%; height: 100%; border: 0; display: block; }
+/* Native go2rtc player embed (replaces the per-camera iframe). */
+.live-video-host { width: 100%; height: 100%; }
+video-stream.live-video { display: block; width: 100%; height: 100%; position: relative; }
+video-stream.live-video video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
+/* The component's status/mode overlay text. */
+video-stream.live-video .info { font-size: 0.72rem; opacity: 0.85; }
 .tile::after {
   content: "";
   position: absolute;

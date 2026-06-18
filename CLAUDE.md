@@ -14,9 +14,28 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 40/40, WAN-hardened auth/TLS, 2026-06-17
+## Current status: v0.3 — competitor matrix 41/41, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **config backup & restore** (matrix #40). `GET /api/backup` downloads a
+Latest: **native live-view player** (matrix #41). The Live grid + camera detail
+embed go2rtc's `<video-stream>` web component (a real `<video>` with WebRTC +
+MSE/MJPEG fallback) instead of an `<iframe>` onto go2rtc's stream.html — the
+long-standing CLAUDE next-step #2. A thin same-origin `GET /api/player/{file}`
+proxy (allowlisted) serves go2rtc's player JS (it has no CORS). go2rtc's API is
+now bound to **127.0.0.1** (was `0.0.0.0` — off the LAN, a net exposure
+reduction) with `origin: "*"` so the same-machine UI can open the player
+WebSocket cross-origin. **Live-validated in Chrome against a real USB webcam:
+WebRTC + MSE play live 640×480, clean console** (MJPEG declined by go2rtc for an
+H.264-only source). The player module caches only on success so a go2rtc restart
+can't permanently black out tiles (adversarial review caught that). **GOTCHA /
+known limit:** live-view is **local-browser only** — `go2rtc.rs api_base()` is
+hardcoded `127.0.0.1`, so remote/LAN viewers get a dead tile; the proper fix is a
+**WS reverse-proxy** of `/api/ws` (+ webrtc) through zoomy's authed origin, which
+would also let us drop `origin: "*"` and its residual localhost-origin CSRF.
+That proxy is the clear next step. New `web/src/LiveVideo.tsx`.
+
+### Earlier this session: config backup & restore (matrix #40)
+
+`GET /api/backup` downloads a
 JSON snapshot of the configuration (cameras + settings + alarm rules; not
 recordings/events/faces) with a `Content-Disposition` header; `POST /api/restore`
 imports it. Restore is additive (settings replaced; a camera/alarm whose name
