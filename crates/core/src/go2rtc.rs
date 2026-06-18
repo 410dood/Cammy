@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use anyhow::{bail, Context, Result};
 
 use crate::db::{Camera, Db};
+use crate::proc::NoConsole as _;
 
 pub struct Go2Rtc {
     binary: PathBuf,
@@ -50,6 +51,7 @@ impl Go2Rtc {
         let child = Command::new(&self.binary)
             .arg("-config")
             .arg(&self.config_path)
+            .no_console()
             .spawn()
             .with_context(|| format!("spawning {}", self.binary.display()))?;
         tracing::info!(

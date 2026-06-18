@@ -18,6 +18,7 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 use crate::db::Db;
 use crate::go2rtc::Go2Rtc;
+use crate::proc::NoConsole as _;
 
 const SAMPLE_RATE: u32 = 16_000;
 /// Seconds of audio to capture (forward from the event) to transcribe.
@@ -43,6 +44,7 @@ fn capture(ffmpeg: &Path, rtsp_url: &str, secs: u32) -> Option<Vec<f32>> {
         .args(["-ar", &SAMPLE_RATE.to_string(), "-f", "f32le", "-"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .no_console()
         .spawn()
         .ok()?;
     let mut stdout = child.stdout.take()?;

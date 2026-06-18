@@ -14,6 +14,7 @@ use tower_http::services::ServeFile;
 
 use crate::db::{Camera, Db, Settings};
 use crate::go2rtc::Go2Rtc;
+use crate::proc::NoConsole as _;
 use crate::status::StatusBoard;
 
 #[derive(Clone)]
@@ -1314,6 +1315,7 @@ async fn event_clip(
                 .args(["-t", &duration.to_string(), "-c", "copy"])
                 .args(["-movflags", "+faststart", "-y"])
                 .arg(&out)
+                .no_console()
                 .status()
         })
         .await

@@ -21,6 +21,7 @@ use detector::ort::value::Tensor;
 
 use crate::db::Db;
 use crate::go2rtc::Go2Rtc;
+use crate::proc::NoConsole as _;
 
 pub const MODEL: &str = "yamnet.onnx";
 pub const CLASS_MAP: &str = "yamnet_class_map.csv";
@@ -91,6 +92,7 @@ fn capture(ffmpeg: &std::path::Path, rtsp_url: &str) -> Result<Vec<f32>> {
         .args(["-ar", &SAMPLE_RATE.to_string(), "-f", "f32le", "-"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .no_console()
         .spawn()
         .context("spawning ffmpeg audio capture")?;
     let mut bytes = Vec::new();

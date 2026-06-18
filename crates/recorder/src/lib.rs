@@ -18,6 +18,24 @@ use chrono::{Local, NaiveDateTime, TimeZone};
 /// start time survives without a database.
 const SEGMENT_PATTERN: &str = "%Y%m%d-%H%M%S.mp4";
 
+/// Keep spawned ffmpeg children from popping a console window on Windows (the
+/// packaged desktop app is a GUI process with no console of its own). No-op
+/// elsewhere.
+trait NoConsole {
+    fn no_console(&mut self) -> &mut Self;
+}
+impl NoConsole for Command {
+    #[cfg(windows)]
+    fn no_console(&mut self) -> &mut Self {
+        use std::os::windows::process::CommandExt;
+        self.creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+    }
+    #[cfg(not(windows))]
+    fn no_console(&mut self) -> &mut Self {
+        self
+    }
+}
+
 /// A completed recording segment discovered on disk.
 #[derive(Clone, Debug)]
 pub struct Segment {
@@ -69,6 +87,7 @@ impl Recording {
             .stdin(Stdio::piped()) // lets us send 'q' for a clean finalize
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
+            .no_console()
             .spawn()
             .with_context(|| format!("spawning ffmpeg for camera {camera}"))?;
 
@@ -197,6 +216,7 @@ fn run_reencode(ffmpeg: &Path, path: &Path, tmp: &Path, hwaccel: &str) -> bool {
         .args(codec_args(hwaccel))
         .args(["-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart"])
         .arg(tmp)
+        .no_console()
         .status();
     matches!(status, Ok(s) if s.success())
 }

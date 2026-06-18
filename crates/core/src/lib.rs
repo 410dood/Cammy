@@ -20,6 +20,7 @@ pub mod lpr;
 mod mqtt;
 mod notify;
 mod pipeline;
+mod proc;
 mod ptz;
 mod record;
 mod smart;
