@@ -30,6 +30,9 @@ pub struct AlarmEvent<'a> {
     pub face: Option<&'a str>,
     pub plate: Option<&'a str>,
     pub gesture: Option<&'a str>,
+    /// Speech-to-text transcript (for spoken-keyword alarms) — carried in the
+    /// webhook payload and shown in the push so the receiver sees what was said.
+    pub transcript: Option<&'a str>,
     /// Public base URL (e.g. "https://nvr.example.com"); when set, pushes carry
     /// tap-through "View clip" / "Snapshot" action links. Empty = no links.
     pub base_url: &'a str,
@@ -50,6 +53,7 @@ fn json_escape(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
             c => out.push(c),
         }
     }
@@ -59,7 +63,7 @@ fn json_escape(s: &str) -> String {
 /// Render a webhook body template, substituting `{{key}}` placeholders with the
 /// event's fields (JSON-escaped). Unknown placeholders are left untouched.
 pub fn render_template(tpl: &str, ev: &AlarmEvent) -> String {
-    let fields: [(&str, String); 9] = [
+    let fields: [(&str, String); 10] = [
         ("event_id", ev.event_id.to_string()),
         ("camera", json_escape(ev.camera)),
         ("label", json_escape(ev.label)),
@@ -69,6 +73,7 @@ pub fn render_template(tpl: &str, ev: &AlarmEvent) -> String {
         ("face", json_escape(ev.face.unwrap_or(""))),
         ("plate", json_escape(ev.plate.unwrap_or(""))),
         ("gesture", json_escape(ev.gesture.unwrap_or(""))),
+        ("transcript", json_escape(ev.transcript.unwrap_or(""))),
     ];
     let mut out = tpl.to_string();
     for (k, v) in &fields {
@@ -143,6 +148,7 @@ fn webhook(url: &str, ev: &AlarmEvent) {
             "face": ev.face,
             "plate": ev.plate,
             "gesture": ev.gesture,
+            "transcript": ev.transcript,
         });
         ureq::post(url)
             .timeout(Duration::from_secs(3))
@@ -173,6 +179,9 @@ fn ntfy(url: &str, rule_name: &str, priority: u8, ev: &AlarmEvent) {
     }
     if let Some(g) = ev.gesture {
         detail.push_str(&format!(" — ✋ {g}"));
+    }
+    if let Some(t) = ev.transcript {
+        detail.push_str(&format!(" — 🎙️ \"{t}\""));
     }
 
     // Tap-through actions when we can build absolute links.
@@ -236,6 +245,7 @@ mod tests {
             face_like: None,
             plate_like: None,
             gesture_like: None,
+            transcript_like: None,
             min_score: 0.0,
             action: "ntfy".into(),
             target: "t".into(),
@@ -287,20 +297,23 @@ mod tests {
             face: Some("Bob \"the\" Builder"),
             plate: None,
             gesture: None,
+            // Embeds a control char (vertical tab) to prove it's \u-escaped.
+            transcript: Some("help\u{000b}me"),
             base_url: "",
             webhook_template: "",
             duress: false,
         };
         let out = render_template(
-            r#"{"cam":"{{camera}}","obj":"{{label}}","who":"{{face}}","p":{{score}},"miss":"{{nope}}"}"#,
+            r#"{"cam":"{{camera}}","obj":"{{label}}","who":"{{face}}","p":{{score}},"said":"{{transcript}}","miss":"{{nope}}"}"#,
             &ev,
         );
-        // Valid JSON after substitution (quotes in the face name are escaped).
+        // Valid JSON after substitution (quotes + control chars are escaped).
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["cam"], "front-door");
         assert_eq!(v["obj"], "person");
         assert_eq!(v["who"], "Bob \"the\" Builder");
         assert_eq!(v["p"], 0.912);
+        assert_eq!(v["said"], "help\u{000b}me");
         // Unknown placeholder is left as-is.
         assert_eq!(v["miss"], "{{nope}}");
     }

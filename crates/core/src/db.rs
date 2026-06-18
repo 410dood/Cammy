@@ -236,6 +236,11 @@ pub struct AlarmRule {
     /// a silent "panic" hand signal at the door, for instance.
     #[serde(default)]
     pub gesture_like: Option<String>,
+    /// Substring match (case-insensitive) on an event's speech-to-text
+    /// transcript — fire when a phrase is *said* near the camera, e.g. a spoken
+    /// safe word "help"/"fire". Evaluated only for transcribed audio events.
+    #[serde(default)]
+    pub transcript_like: Option<String>,
     #[serde(default)]
     pub min_score: f32,
     /// "webhook" (POST event JSON to target URL), "mqtt" (publish to
@@ -312,6 +317,7 @@ impl AlarmRule {
         face: Option<&str>,
         plate: Option<&str>,
         gesture: Option<&str>,
+        transcript: Option<&str>,
     ) -> bool {
         if !self.enabled || score < self.min_score {
             return false;
@@ -345,6 +351,21 @@ impl AlarmRule {
             let want = g.to_lowercase();
             let hit = gesture
                 .map(|v| v.eq_ignore_ascii_case(&want))
+                .unwrap_or(false);
+            if !hit {
+                return false;
+            }
+        }
+        // An empty/whitespace phrase is treated as no condition (it would
+        // otherwise substring-match every transcript).
+        if let Some(phrase) = self
+            .transcript_like
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            let hit = transcript
+                .map(|v| v.to_lowercase().contains(&phrase.to_lowercase()))
                 .unwrap_or(false);
             if !hit {
                 return false;
@@ -665,6 +686,7 @@ impl Db {
         // Additive migration for pre-schedule alarms tables.
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN schedule_json TEXT", []);
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN gesture_like TEXT", []);
+        let _ = conn.execute("ALTER TABLE alarms ADD COLUMN transcript_like TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE alarms ADD COLUMN cooldown_secs INTEGER NOT NULL DEFAULT 0",
             [],
@@ -853,8 +875,8 @@ impl Db {
         conn.execute(
             "INSERT INTO alarms (name, enabled, camera_id, label, face_like, plate_like,
              gesture_like, min_score, action, target, schedule_json, cooldown_secs, priority,
-             snooze_until, created_ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             snooze_until, created_ts, transcript_like)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 r.name,
                 r.enabled,
@@ -870,7 +892,8 @@ impl Db {
                 r.cooldown_secs,
                 r.priority,
                 r.snooze_until,
-                chrono::Local::now().timestamp()
+                chrono::Local::now().timestamp(),
+                r.transcript_like
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -881,7 +904,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT id, name, enabled, camera_id, label, face_like, plate_like,
                     min_score, action, target, created_ts, schedule_json, gesture_like,
-                    cooldown_secs, priority, snooze_until
+                    cooldown_secs, priority, snooze_until, transcript_like
              FROM alarms ORDER BY id",
         )?;
         let rows = stmt
@@ -917,6 +940,7 @@ impl Db {
                     cooldown_secs: r.get(13)?,
                     priority: r.get::<_, i64>(14)? as u8,
                     snooze_until: r.get(15)?,
+                    transcript_like: r.get(16)?,
                     created_ts: r.get(10)?,
                 })
             })?
@@ -1523,6 +1547,7 @@ mod tests {
             face_like: None,
             plate_like: None,
             gesture_like: None,
+            transcript_like: None,
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
@@ -1534,10 +1559,10 @@ mod tests {
             snooze_until: 0,
             created_ts: 0,
         };
-        assert!(rule.matches(3, "person", 0.8, None, None, None));
-        assert!(!rule.matches(2, "person", 0.8, None, None, None)); // wrong camera
-        assert!(!rule.matches(3, "car", 0.8, None, None, None)); // wrong label
-        assert!(!rule.matches(3, "person", 0.3, None, None, None)); // below score
+        assert!(rule.matches(3, "person", 0.8, None, None, None, None));
+        assert!(!rule.matches(2, "person", 0.8, None, None, None, None)); // wrong camera
+        assert!(!rule.matches(3, "car", 0.8, None, None, None, None)); // wrong label
+        assert!(!rule.matches(3, "person", 0.3, None, None, None, None)); // below score
 
         let face_rule = AlarmRule {
             camera_id: None,
@@ -1546,20 +1571,20 @@ mod tests {
             min_score: 0.0,
             ..rule.clone()
         };
-        assert!(face_rule.matches(1, "person", 0.9, Some("dark-COAT-guy"), None, None));
-        assert!(!face_rule.matches(1, "person", 0.9, None, None, None));
+        assert!(face_rule.matches(1, "person", 0.9, Some("dark-COAT-guy"), None, None, None));
+        assert!(!face_rule.matches(1, "person", 0.9, None, None, None, None));
 
         let plate_rule = AlarmRule {
             face_like: None,
             plate_like: Some("au77".into()),
             ..face_rule
         };
-        assert!(plate_rule.matches(1, "car", 0.9, None, Some("B8AU77"), None));
-        assert!(!plate_rule.matches(1, "car", 0.9, None, Some("XYZ123"), None));
+        assert!(plate_rule.matches(1, "car", 0.9, None, Some("B8AU77"), None, None));
+        assert!(!plate_rule.matches(1, "car", 0.9, None, Some("XYZ123"), None, None));
 
         let mut disabled = plate_rule.clone();
         disabled.enabled = false;
-        assert!(!disabled.matches(1, "car", 0.9, None, Some("B8AU77"), None));
+        assert!(!disabled.matches(1, "car", 0.9, None, Some("B8AU77"), None, None));
 
         // Gesture rule: a held hand signal arms the action.
         let gesture_rule = AlarmRule {
@@ -1568,9 +1593,22 @@ mod tests {
             gesture_like: Some("open_palm".into()),
             ..rule.clone()
         };
-        assert!(gesture_rule.matches(3, "gesture", 1.0, None, None, Some("open_palm")));
-        assert!(!gesture_rule.matches(3, "gesture", 1.0, None, None, Some("victory")));
-        assert!(!gesture_rule.matches(3, "gesture", 1.0, None, None, None));
+        assert!(gesture_rule.matches(3, "gesture", 1.0, None, None, Some("open_palm"), None));
+        assert!(!gesture_rule.matches(3, "gesture", 1.0, None, None, Some("victory"), None));
+        assert!(!gesture_rule.matches(3, "gesture", 1.0, None, None, None, None));
+
+        // Spoken-keyword rule: fires only when the transcript contains the phrase.
+        let spoken_rule = AlarmRule {
+            label: None,
+            gesture_like: None,
+            transcript_like: Some("help".into()),
+            ..rule.clone()
+        };
+        assert!(spoken_rule.matches(3, "speech", 1.0, None, None, None, Some("please HELP me")));
+        assert!(!spoken_rule.matches(3, "speech", 1.0, None, None, None, Some("good morning")));
+        // No transcript present → a transcript rule can't match (e.g. on a
+        // detection event), so it never double-fires on non-audio sources.
+        assert!(!spoken_rule.matches(3, "speech", 1.0, None, None, None, None));
     }
 
     #[test]
@@ -1586,6 +1624,7 @@ mod tests {
                 face_like: None,
                 plate_like: None,
                 gesture_like: None,
+                transcript_like: Some("help".into()),
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
@@ -1604,6 +1643,7 @@ mod tests {
         assert_eq!(back.end_hhmm.as_deref(), Some("06:00"));
         assert_eq!(back.cooldown_secs, 30);
         assert_eq!(back.priority, 4);
+        assert_eq!(back.transcript_like.as_deref(), Some("help"));
         assert_eq!(db.list_alarms().unwrap().len(), 1);
         db.set_alarm_enabled(id, false).unwrap();
         assert!(!db.list_alarms().unwrap()[0].enabled);
@@ -1622,6 +1662,7 @@ mod tests {
             face_like: None,
             plate_like: None,
             gesture_like: None,
+            transcript_like: None,
             min_score: 0.0,
             action: "webhook".into(),
             target: "http://x".into(),

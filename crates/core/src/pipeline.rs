@@ -395,6 +395,7 @@ pub fn run(
                             face: face_names[i].as_deref(),
                             plate: plates[i].as_deref(),
                             gesture: None,
+                            transcript: None,
                             base_url: &settings.public_base_url,
                             webhook_template: &settings.webhook_template,
                             duress: false,
@@ -406,6 +407,7 @@ pub fn run(
                                 d.score,
                                 face_names[i].as_deref(),
                                 plates[i].as_deref(),
+                                None,
                                 None,
                             ) && crate::notify::ready(r, &throttle, now)
                         }) {
@@ -662,6 +664,7 @@ fn post_webhook(
             face: None,
             plate: None,
             gesture: None,
+            transcript: None,
             base_url: "",
             webhook_template: template,
             duress: false,

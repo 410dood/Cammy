@@ -158,6 +158,7 @@ export interface AlarmRule {
   face_like: string | null;
   plate_like: string | null;
   gesture_like: string | null;
+  transcript_like: string | null;
   min_score: number;
   action: string;
   target: string;

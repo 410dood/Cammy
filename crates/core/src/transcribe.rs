@@ -124,10 +124,14 @@ fn clean_transcript(raw: &str) -> Option<String> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     db: Db,
     go2rtc: Arc<Go2Rtc>,
     ffmpeg_bin: Option<PathBuf>,
+    snapshots_dir: PathBuf,
+    mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    throttle: crate::notify::AlarmThrottle,
     rx: Receiver<TranscribeJob>,
     shutdown: Arc<AtomicBool>,
 ) {
@@ -194,10 +198,77 @@ pub fn run(
                         "transcript saved"
                     );
                     tracing::debug!(event = job.event_id, "transcript: {text}");
+                    fire_transcript_alarms(
+                        &db,
+                        &snapshots_dir,
+                        &mqtt_tx,
+                        &throttle,
+                        job.event_id,
+                        &text,
+                    );
                 }
             }
             None => tracing::debug!(event = job.event_id, "no speech transcribed"),
         }
+    }
+}
+
+/// Fire alarm rules whose `transcript_like` phrase the transcript matched. Only
+/// transcript rules fire here — others already evaluated when the event was
+/// created (with no transcript), so this never double-fires non-spoken rules.
+fn fire_transcript_alarms(
+    db: &Db,
+    snapshots_dir: &Path,
+    mqtt_tx: &std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    throttle: &crate::notify::AlarmThrottle,
+    event_id: i64,
+    transcript: &str,
+) {
+    let Ok(Some(ev)) = db.get_event(event_id) else {
+        return;
+    };
+    let s = db.settings();
+    let now = chrono::Local::now().timestamp();
+    let snap_url = ev
+        .snapshot
+        .as_deref()
+        .map(|f| format!("/api/snapshots/{f}"))
+        .unwrap_or_default();
+    let snap_abs = ev.snapshot.as_deref().map(|f| snapshots_dir.join(f));
+    let alarm_ev = crate::notify::AlarmEvent {
+        event_id: ev.id,
+        camera: &ev.camera,
+        label: &ev.label,
+        score: ev.score,
+        ts: ev.ts,
+        snapshot_url: &snap_url,
+        snapshot_path: snap_abs.as_deref(),
+        face: ev.face.as_deref(),
+        plate: ev.plate.as_deref(),
+        gesture: ev.gesture.as_deref(),
+        transcript: Some(transcript),
+        base_url: &s.public_base_url,
+        webhook_template: &s.webhook_template,
+        duress: false,
+    };
+    for rule in db.list_alarms().unwrap_or_default().iter().filter(|r| {
+        // Only transcript rules fire here; an empty phrase is not a transcript
+        // rule (it would otherwise match every transcript).
+        r.transcript_like
+            .as_deref()
+            .is_some_and(|p| !p.trim().is_empty())
+            && r.matches(
+                ev.camera_id,
+                &ev.label,
+                ev.score,
+                ev.face.as_deref(),
+                ev.plate.as_deref(),
+                ev.gesture.as_deref(),
+                Some(transcript),
+            )
+            && crate::notify::ready(r, throttle, now)
+    }) {
+        crate::notify::fire(rule, &alarm_ev, mqtt_tx);
     }
 }
 

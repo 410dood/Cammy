@@ -18,6 +18,7 @@ export default function Alarms({
   const [faceLike, setFaceLike] = useState("");
   const [plateLike, setPlateLike] = useState("");
   const [gestureLike, setGestureLike] = useState("");
+  const [transcriptLike, setTranscriptLike] = useState("");
   const [action, setAction] = useState<"webhook" | "mqtt" | "ntfy">("webhook");
   const [target, setTarget] = useState("");
   const [cooldown, setCooldown] = useState(0);
@@ -46,6 +47,7 @@ export default function Alarms({
         face_like: faceLike.trim() || null,
         plate_like: plateLike.trim() || null,
         gesture_like: gestureLike || null,
+        transcript_like: transcriptLike.trim() || null,
         min_score: 0,
         action,
         target: target.trim(),
@@ -61,6 +63,7 @@ export default function Alarms({
       setFaceLike("");
       setPlateLike("");
       setGestureLike("");
+      setTranscriptLike("");
       setCooldown(0);
       setPriority(0);
       setDays([]);
@@ -92,6 +95,7 @@ export default function Alarms({
       r.face_like ? `face ~ "${r.face_like}"` : null,
       r.plate_like ? `plate ~ "${r.plate_like}"` : null,
       r.gesture_like ? `✋ ${r.gesture_like}` : null,
+      r.transcript_like ? `🎙️ said "${r.transcript_like}"` : null,
       sched ? `armed ${sched}` : null,
       r.cooldown_secs > 0 ? `cooldown ${r.cooldown_secs}s` : null,
       r.priority > 0 ? `priority ${r.priority}` : null,
@@ -157,6 +161,15 @@ export default function Alarms({
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="field" title="Fire when this phrase is spoken near the camera (needs audio transcription enabled). A spoken safe word, e.g. 'help'.">
+              spoken phrase (optional)
+              <input
+                type="text"
+                value={transcriptLike}
+                onChange={(e) => setTranscriptLike(e.target.value)}
+                placeholder='🎙️ e.g. "help"'
+              />
             </label>
           </div>
           <div className="row" style={{ marginBottom: 12 }}>

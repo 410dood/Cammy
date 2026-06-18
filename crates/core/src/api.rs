@@ -1002,7 +1002,7 @@ async fn record_gesture(
         .list_alarms()?
         .into_iter()
         .filter(|r| {
-            r.matches(cam.id, "gesture", score, None, None, Some(canonical))
+            r.matches(cam.id, "gesture", score, None, None, Some(canonical), None)
                 && crate::notify::ready(r, &st.alarm_throttle, now)
         })
         .collect();
@@ -1026,6 +1026,7 @@ async fn record_gesture(
             face: None,
             plate: None,
             gesture: Some(&gesture_owned),
+            transcript: None,
             base_url: &base_url,
             webhook_template: &webhook_template,
             duress: is_duress,

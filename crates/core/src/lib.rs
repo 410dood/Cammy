@@ -112,6 +112,7 @@ pub async fn run(
     })?;
     let (mqtt_tx, mqtt_rx) = std::sync::mpsc::channel::<mqtt::EventMsg>();
     let mqtt_tx2 = mqtt_tx.clone();
+    let mqtt_tx_tr = mqtt_tx.clone();
     let mqtt_tx_api = mqtt_tx.clone();
     // Shared per-rule cooldown clock across pipeline / audio / API dispatch.
     let alarm_throttle: notify::AlarmThrottle = Arc::new(std::sync::Mutex::new(Default::default()));
@@ -139,7 +140,20 @@ pub async fn run(
         .spawn({
             let (db, go2rtc, stop) = (db.clone(), go2rtc.clone(), workers_stop.clone());
             let ffmpeg_bin = cfg.ffmpeg_bin.clone();
-            move || transcribe::run(db, go2rtc, ffmpeg_bin, transcribe_rx, stop)
+            let snaps = snapshots_dir.clone();
+            let throttle = alarm_throttle.clone();
+            move || {
+                transcribe::run(
+                    db,
+                    go2rtc,
+                    ffmpeg_bin,
+                    snaps,
+                    mqtt_tx_tr,
+                    throttle,
+                    transcribe_rx,
+                    stop,
+                )
+            }
         })?;
     let mqtt_thread = std::thread::Builder::new().name("mqtt".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());

@@ -14,18 +14,33 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 45/45, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 46/46, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **transcript-aware smart search** (matrix #45). The ✨ Events search is
-now hybrid — CLIP visual similarity **plus** a whole-word text match on each
-event's transcript + caption (`smart::text_match_score`), so you can search what
-was *said*, and a speech/caption hit outranks a pure-visual one. It also works
-**without** the CLIP models now (text-only mode instead of erroring).
-`db::search_corpus(with_embeddings)` joins event text + optional embedding in one
-query over the full (retention-bounded) history (no recall cap; embedding column
-skipped in text-only mode). Live-validated (search "americans" → the jfk
-transcript event on top, `match=speech`). Review drove uncapping recall, the
-text-only embedding skip, signal-only filtering, and whole-word matching.
+Latest: **spoken-keyword alarm** (matrix #46). A new Alarm Manager condition
+`transcript_like` (case-insensitive substring on an event's speech-to-text
+transcript) fires a webhook/ntfy/MQTT action when a phrase is *said* near a
+camera — a spoken "safe word" (e.g. "help"/"fire"), the audio sibling of the #35
+duress gesture. `AlarmRule::matches` gained a 7th `transcript` arg; the condition
+is evaluated **only** in the transcribe worker after whisper writes the transcript
+(`transcribe::fire_transcript_alarms`), guarded by a non-empty `transcript_like`
+so it never double-fires against the audio-event dispatch (which passes
+`transcript: None`). The matched transcript now rides into the webhook JSON /
+ntfy push / template `{{transcript}}` placeholder. Alarms page gains a "spoken
+phrase" field. Live-validated end-to-end (spoken "americans" → rule fired once →
+webhook carried the transcript). Review fixed a redundant clippy attribute,
+empty-phrase handling, and `\u`-escaping of control chars in webhook templates.
+
+### Earlier this session: transcript-aware smart search (matrix #45)
+
+The ✨ Events search is now hybrid — CLIP visual similarity **plus** a whole-word
+text match on each event's transcript + caption (`smart::text_match_score`), so
+you can search what was *said*, and a speech/caption hit outranks a pure-visual
+one. It also works **without** the CLIP models now (text-only mode instead of
+erroring). `db::search_corpus(with_embeddings)` joins event text + optional
+embedding in one query over the full (retention-bounded) history (no recall cap;
+embedding column skipped in text-only mode). Live-validated (search "americans" →
+the jfk transcript event on top, `match=speech`). Review drove uncapping recall,
+the text-only embedding skip, signal-only filtering, and whole-word matching.
 
 ### Earlier this session: bundled audio transcription (matrix #44)
 
