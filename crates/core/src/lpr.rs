@@ -24,6 +24,52 @@ pub fn models_present() -> bool {
         .all(|p| std::path::Path::new(p).exists())
 }
 
+/// Where a read plate sits relative to the watch lists. Deny wins over allow.
+/// Matching is case-insensitive substring (handles partial/uncertain OCR).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlateStatus {
+    /// On the deny list — a "vehicle of interest".
+    Deny,
+    /// On the allow list — known/expected.
+    Allow,
+    /// Not on any list.
+    Unlisted,
+}
+
+pub fn plate_status(plate: &str, allow: &[String], deny: &[String]) -> PlateStatus {
+    let p = plate.to_uppercase();
+    let hit = |list: &[String]| {
+        list.iter()
+            .any(|e| !e.trim().is_empty() && p.contains(e.trim().to_uppercase().as_str()))
+    };
+    if hit(deny) {
+        PlateStatus::Deny
+    } else if hit(allow) {
+        PlateStatus::Allow
+    } else {
+        PlateStatus::Unlisted
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn deny_beats_allow_and_substring_matches() {
+        let allow = vec!["ABC123".to_string()];
+        let deny = vec!["xyz".to_string()];
+        assert_eq!(plate_status("8XYZ99", &allow, &deny), PlateStatus::Deny);
+        assert_eq!(plate_status("abc123", &allow, &deny), PlateStatus::Allow);
+        assert_eq!(plate_status("QQQ000", &allow, &deny), PlateStatus::Unlisted);
+        // Deny wins even if also on allow.
+        assert_eq!(
+            plate_status("ABC123", &["ABC123".to_string()], &["ABC".to_string()]),
+            PlateStatus::Deny
+        );
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Plate {
     /// Absolute pixel box in the analyzed image.

@@ -33,6 +33,11 @@ pub struct Camera {
     /// Per-camera detection tuning; unset fields inherit global settings.
     #[serde(default)]
     pub detect_config: DetectConfig,
+    /// Optional organizational group (e.g. "downstairs", "outdoor") used to
+    /// filter the live grid into camera groups / video walls. Pure metadata —
+    /// it does not affect go2rtc, recording, or detection.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// A rectangle in frame-fraction coordinates (0..1), so it survives resolution
@@ -51,6 +56,66 @@ impl Zone {
     }
 }
 
+/// What a polygon zone does to detections whose anchor point falls inside it.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ZoneKind {
+    /// Drop matching detections inside the zone (e.g. a public sidewalk).
+    #[default]
+    Ignore,
+    /// Only keep matching detections that fall inside *some* required zone
+    /// (e.g. only alert on people actually on the driveway).
+    Required,
+}
+
+/// An arbitrary polygon zone in frame-fraction coordinates (0..1), so it
+/// survives resolution changes and sub-stream switches. Rectangles are just a
+/// 4-point special case — this supersedes [`Zone`] for new cameras while old
+/// rectangle `ignore_zones` keep working.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PolyZone {
+    pub name: String,
+    /// Polygon vertices as [x, y] fractions, in order. Needs ≥3 to have area.
+    pub points: Vec<[f32; 2]>,
+    pub kind: ZoneKind,
+    /// Object labels this zone applies to; empty = every object.
+    pub labels: Vec<String>,
+}
+
+impl PolyZone {
+    /// Even-odd ray-casting point-in-polygon test (point in frame fractions).
+    pub fn contains(&self, fx: f32, fy: f32) -> bool {
+        point_in_polygon(&self.points, fx, fy)
+    }
+
+    /// Does this zone govern detections of `label`? (Empty `labels` = all.)
+    pub fn applies_to(&self, label: &str) -> bool {
+        self.labels.is_empty() || self.labels.iter().any(|l| l == label)
+    }
+}
+
+/// Even-odd ray-casting point-in-polygon. Returns false for degenerate
+/// polygons (< 3 vertices).
+pub fn point_in_polygon(poly: &[[f32; 2]], x: f32, y: f32) -> bool {
+    if poly.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let (xi, yi) = (poly[i][0], poly[i][1]);
+        let (xj, yj) = (poly[j][0], poly[j][1]);
+        let intersects =
+            ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi + f32::EPSILON) + xi);
+        if intersects {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct DetectConfig {
@@ -62,8 +127,22 @@ pub struct DetectConfig {
     /// Override of the global motion threshold; `None` inherits.
     pub motion_threshold: Option<f32>,
     /// Detections whose box center falls in any of these are dropped —
-    /// e.g. a busy street at the edge of a driveway camera.
+    /// e.g. a busy street at the edge of a driveway camera. Legacy rectangles;
+    /// new cameras use `zones` (polygons). Both are honored.
     pub ignore_zones: Vec<Zone>,
+    /// Polygon zones (required / ignore), the richer successor to
+    /// `ignore_zones`. A `Required` zone makes detections valid only when their
+    /// anchor lands inside one; `Ignore` zones drop them.
+    pub zones: Vec<PolyZone>,
+    /// Polygon privacy masks: these regions are blacked out of the frame before
+    /// motion, detection and snapshots — nothing inside is analyzed or stored.
+    /// (Continuous recordings are packet-copied and are not masked.)
+    pub privacy_masks: Vec<Vec<[f32; 2]>>,
+    /// Object-size gate as a fraction of frame area (0..1). Detections smaller
+    /// than `min_area` or larger than `max_area` are dropped — kills tiny
+    /// far-field blips and whole-frame lighting flips. `None` = no bound.
+    pub min_area: Option<f32>,
+    pub max_area: Option<f32>,
     /// PTZ autotracking (Frigate-style): steer the camera to keep tracked
     /// objects centered. Only effective on ONVIF PTZ-capable cameras.
     pub autotrack: bool,
@@ -76,6 +155,26 @@ pub struct DetectConfig {
     /// Offer the live hand-signal overlay for this camera (the Signals page can
     /// attribute recognized gestures to it). Detection itself runs client-side.
     pub gesture_detect: bool,
+    /// Per-camera model override (e.g. a specialized .onnx); `None` inherits the
+    /// global model. Lets different cameras run different detectors.
+    pub model: Option<String>,
+    /// Per-camera accelerator assignment: force this camera's detector onto CPU
+    /// (`Some(true)`) or the GPU (`Some(false)`); `None` inherits the global
+    /// setting. Useful to keep a low-priority camera off a busy GPU.
+    pub force_cpu: Option<bool>,
+    /// Per-camera sample interval cap in ms (resource governance / FPS cap);
+    /// `None` uses the global poll interval. Only ever slows a camera down.
+    pub poll_ms: Option<u64>,
+    /// Per-camera face-recognition opt-in: `Some(true/false)` overrides the
+    /// global switch, `None` inherits it. Lets you enable face matching only on
+    /// the cameras where it's wanted (e.g. the front door).
+    pub face_recognize: Option<bool>,
+    /// Two-way audio (push-to-talk): when true, the camera detail view offers a
+    /// hold-to-talk button that streams the browser mic to the camera over
+    /// WebRTC (go2rtc backchannel). Opt-in because it only works on cameras with
+    /// a speaker / ONVIF backchannel — purely a UI gate; the audio path is the
+    /// player's WebRTC mic track through the `/api/ws` proxy.
+    pub two_way_audio: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -98,7 +197,59 @@ pub struct Event {
     /// Recognized hand signal (e.g. "open_palm", "victory"), when the event
     /// came from the hand-signal recognizer.
     pub gesture: Option<String>,
+    /// Name of the detection zone the object was in, when it fell inside a
+    /// named polygon zone (used for review filtering).
+    pub zone: Option<String>,
+    /// Natural-language description from the optional GenAI captioner.
+    pub caption: Option<String>,
+    /// Speech-to-text of the event's audio, from the optional (bundled, opt-in)
+    /// transcriber — set for audio events when transcription finds speech.
+    pub transcript: Option<String>,
+    /// User bookmark: a flagged event is kept in the Events review filter and is
+    /// exempt from the event-retention auto-prune (its clip is "protected").
+    #[serde(default)]
+    pub flagged: bool,
+    /// Free-text note the user attached to the event.
+    #[serde(default)]
+    pub note: Option<String>,
 }
+
+/// One row of the smart-search corpus: an event's id, its searchable text
+/// (transcript + caption) and its optional CLIP snapshot embedding.
+pub struct SearchRow {
+    pub id: i64,
+    pub transcript: Option<String>,
+    pub caption: Option<String>,
+    pub embedding: Option<Vec<f32>>,
+}
+
+/// A named API access token for headless/automation callers. The raw token is
+/// only ever shown once at creation; only its hash is stored, so this struct
+/// never carries the secret.
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiToken {
+    pub id: i64,
+    pub name: String,
+    pub created_ts: i64,
+    pub last_used_ts: Option<i64>,
+}
+
+/// One security-audit entry: a notable security event (login, password change,
+/// token create/revoke) with when, the client IP, and a short detail.
+#[derive(Clone, Debug, Serialize)]
+pub struct AuditEntry {
+    pub id: i64,
+    pub ts: i64,
+    pub ip: Option<String>,
+    pub action: String,
+    pub detail: Option<String>,
+}
+
+/// Sentinel stored in an event's `face` when a face was detected on a person
+/// but matched no enrolled identity — a "stranger". Distinguishes that from
+/// "no face detected" (`None`); kept short and reserved so it can't be confused
+/// with a real enrolled name.
+pub const UNKNOWN_FACE: &str = "?";
 
 /// Alarm Manager rule (UniFi style if-this-then-that): all set conditions
 /// must match an event; `None` conditions match anything.
@@ -120,6 +271,16 @@ pub struct AlarmRule {
     /// a silent "panic" hand signal at the door, for instance.
     #[serde(default)]
     pub gesture_like: Option<String>,
+    /// Substring match (case-insensitive) on an event's speech-to-text
+    /// transcript — fire when a phrase is *said* near the camera, e.g. a spoken
+    /// safe word "help"/"fire". Evaluated only for transcribed audio events.
+    #[serde(default)]
+    pub transcript_like: Option<String>,
+    /// Fire only when a person is seen whose face was detected but did NOT match
+    /// any enrolled identity — a "stranger"/unfamiliar-face alert (the event's
+    /// face is the `UNKNOWN_FACE` sentinel). Mutually exclusive with `face_like`.
+    #[serde(default)]
+    pub face_unknown: bool,
     #[serde(default)]
     pub min_score: f32,
     /// "webhook" (POST event JSON to target URL), "mqtt" (publish to
@@ -136,6 +297,16 @@ pub struct AlarmRule {
     pub start_hhmm: Option<String>,
     #[serde(default)]
     pub end_hhmm: Option<String>,
+    /// Minimum seconds between firings of this rule — the per-rule anti-fatigue
+    /// throttle. 0 = no cooldown.
+    #[serde(default)]
+    pub cooldown_secs: i64,
+    /// ntfy priority 1 (min) .. 5 (max); 0 = leave at the ntfy default (3).
+    #[serde(default)]
+    pub priority: u8,
+    /// Suppress the rule until this unix timestamp (manual "snooze"). 0 = off.
+    #[serde(default)]
+    pub snooze_until: i64,
     #[serde(default)]
     pub created_ts: i64,
 }
@@ -186,6 +357,7 @@ impl AlarmRule {
         face: Option<&str>,
         plate: Option<&str>,
         gesture: Option<&str>,
+        transcript: Option<&str>,
     ) -> bool {
         if !self.enabled || score < self.min_score {
             return false;
@@ -207,6 +379,10 @@ impl AlarmRule {
                 return false;
             }
         }
+        // Stranger condition: only an unrecognized-face event (face sentinel).
+        if self.face_unknown && face != Some(UNKNOWN_FACE) {
+            return false;
+        }
         if let Some(p) = self.plate_like.as_deref() {
             let hit = plate
                 .map(|v| v.to_uppercase().contains(&p.to_uppercase()))
@@ -219,6 +395,21 @@ impl AlarmRule {
             let want = g.to_lowercase();
             let hit = gesture
                 .map(|v| v.eq_ignore_ascii_case(&want))
+                .unwrap_or(false);
+            if !hit {
+                return false;
+            }
+        }
+        // An empty/whitespace phrase is treated as no condition (it would
+        // otherwise substring-match every transcript).
+        if let Some(phrase) = self
+            .transcript_like
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            let hit = transcript
+                .map(|v| v.to_lowercase().contains(&phrase.to_lowercase()))
                 .unwrap_or(false);
             if !hit {
                 return false;
@@ -279,6 +470,10 @@ pub struct Settings {
     /// Enhanced retention (UniFi-style): segments older than this many days
     /// are re-encoded to space-saving quality. 0 = off.
     pub enhanced_retention_days: u32,
+    /// Hardware video encoder for the enhanced-retention re-encode: "" / "cpu"
+    /// (libx264), "nvenc" (NVIDIA), "qsv" (Intel QuickSync), or "videotoolbox"
+    /// (Apple). Falls back to CPU automatically if the HW encoder fails.
+    pub hwaccel: String,
     /// Where new recordings go (any drive or UNC share); empty = the default
     /// data/recordings. Existing segments keep playing from where they are.
     pub recordings_dir: String,
@@ -298,6 +493,18 @@ pub struct Settings {
     pub mqtt_url: String,
     /// Topic prefix for MQTT publishes.
     pub mqtt_prefix: String,
+    /// Publish Home Assistant MQTT-discovery configs so HA auto-creates a
+    /// binary_sensor per (camera, object) and a last-detection sensor per camera.
+    pub mqtt_ha_discovery: bool,
+    /// HA discovery topic prefix (HA's default is "homeassistant").
+    pub mqtt_ha_prefix: String,
+    /// Seconds a discovery binary_sensor stays "ON" after a detection before it
+    /// is auto-cleared to "OFF".
+    pub mqtt_state_timeout_secs: u64,
+    /// Optional webhook body template. Empty = the default detection JSON.
+    /// Placeholders: {{event_id}} {{camera}} {{label}} {{score}} {{ts}}
+    /// {{snapshot}} {{face}} {{plate}} {{gesture}} (unknowns render empty).
+    pub webhook_template: String,
     /// Run face recognition on person detections (needs the two face models
     /// on disk; silently inactive when they are missing).
     pub face_recognition: bool,
@@ -306,6 +513,11 @@ pub struct Settings {
     pub face_match_threshold: f32,
     pub face_det_model: String,
     pub face_rec_model: String,
+    /// License plates of interest (substring match, case-insensitive). A read
+    /// that matches fires a guaranteed high-priority "vehicle of interest" push.
+    pub plate_denylist: Vec<String>,
+    /// Known/expected plates (substring match) — surfaced as "known" in review.
+    pub plate_allowlist: Vec<String>,
     /// AudioSet display names (yamnet_class_map.csv) that produce events.
     pub audio_labels: Vec<String>,
     /// Mean YAMNet score required to fire an audio event.
@@ -313,6 +525,10 @@ pub struct Settings {
     /// ntfy topic URL for camera health pushes (offline / back online);
     /// empty = off.
     pub health_ntfy_url: String,
+    /// Public base URL this NVR is reachable at (e.g. "https://nvr.example.com").
+    /// When set, push notifications include tap-through links to the event clip
+    /// and snapshot. Empty = no links (the LAN default).
+    pub public_base_url: String,
     /// Master switch for the live hand-signal recognizer (the Signals page).
     pub gesture_recognition: bool,
     /// How long (seconds) a hand signal must be held before it fires an event —
@@ -321,9 +537,29 @@ pub struct Settings {
     /// Canonical gesture names that produce events (see the `gesture` crate's
     /// taxonomy). Empty = every recognized signal.
     pub gesture_labels: Vec<String>,
+    /// A "duress"/help hand signal. When this signal is recognized, the gesture
+    /// event is flagged high-priority and pushes go out at max urgency with a
+    /// distinct tag — a silent panic button. Empty = no duress signal.
+    pub gesture_duress: String,
     /// MediaPipe gesture-recognizer task bundle the browser loads. Defaults to
     /// Google's CDN; point it at a self-hosted copy for fully offline use.
     pub gesture_model_url: String,
+    /// Explicit opt-in for GenAI event captions. OFF by default — nothing is
+    /// ever sent to an LLM until this is enabled. With a localhost Ollama URL it
+    /// stays fully local; pointing it at a cloud endpoint sends snapshots there.
+    pub genai_enabled: bool,
+    /// Ollama-compatible generate endpoint (default local Ollama).
+    pub genai_url: String,
+    /// Vision model used for captioning (e.g. "llava", "llama3.2-vision").
+    pub genai_model: String,
+    /// Optional bearer token (for cloud/proxied endpoints). Empty for local Ollama.
+    pub genai_api_key: String,
+    /// Opt-in speech-to-text of audio events, using the bundled (compiled-in)
+    /// whisper.cpp engine — nothing leaves the machine. Off by default.
+    pub transcription_enabled: bool,
+    /// Path to the whisper GGML model (downloaded, not committed), e.g.
+    /// `ggml-tiny.en.bin` (~75 MB) or `ggml-base.en.bin`.
+    pub transcription_model: String,
 }
 
 impl Default for Settings {
@@ -351,6 +587,7 @@ impl Default for Settings {
             retention_gb: 50,
             event_retention_days: 30,
             enhanced_retention_days: 0,
+            hwaccel: String::new(),
             recordings_dir: String::new(),
             model_path: "yolov8n.onnx".into(),
             force_cpu: false,
@@ -360,6 +597,10 @@ impl Default for Settings {
             alert_labels: ["person"].map(String::from).to_vec(),
             mqtt_url: String::new(),
             mqtt_prefix: "zoomy".into(),
+            mqtt_ha_discovery: true,
+            mqtt_ha_prefix: "homeassistant".into(),
+            mqtt_state_timeout_secs: 30,
+            webhook_template: String::new(),
             face_recognition: true,
             face_match_threshold: 0.4,
             face_det_model: "det_10g.onnx".into(),
@@ -381,15 +622,25 @@ impl Default for Settings {
             .map(String::from)
             .to_vec(),
             audio_threshold: 0.4,
+            plate_denylist: Vec::new(),
+            plate_allowlist: Vec::new(),
             health_ntfy_url: String::new(),
+            public_base_url: String::new(),
             gesture_recognition: true,
             gesture_hold_secs: 1.5,
             gesture_labels: ["open_palm", "victory", "thumb_up"]
                 .map(String::from)
                 .to_vec(),
+            gesture_duress: String::new(),
             gesture_model_url: "https://storage.googleapis.com/mediapipe-models/\
                 gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task"
                 .into(),
+            genai_enabled: false,
+            genai_url: "http://localhost:11434/api/generate".into(),
+            genai_model: "llava".into(),
+            genai_api_key: String::new(),
+            transcription_enabled: false,
+            transcription_model: "ggml-tiny.en.bin".into(),
         }
     }
 }
@@ -439,9 +690,19 @@ impl Db {
         // Additive migrations; "duplicate column" on rerun is expected.
         let _ = conn.execute("ALTER TABLE cameras ADD COLUMN detect_json TEXT", []);
         let _ = conn.execute("ALTER TABLE cameras ADD COLUMN detect_source TEXT", []);
+        // `group` is a SQL reserved word, so the column is `group_name`.
+        let _ = conn.execute("ALTER TABLE cameras ADD COLUMN group_name TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN face TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN plate TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN gesture TEXT", []);
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN zone TEXT", []);
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN caption TEXT", []);
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN transcript TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE events ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN note TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
@@ -469,11 +730,42 @@ impl Db {
                  action     TEXT NOT NULL,
                  target     TEXT NOT NULL,
                  created_ts INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS api_tokens (
+                 id           INTEGER PRIMARY KEY,
+                 name         TEXT NOT NULL,
+                 token_hash   TEXT NOT NULL UNIQUE,
+                 created_ts   INTEGER NOT NULL,
+                 last_used_ts INTEGER
+             );
+             CREATE TABLE IF NOT EXISTS audit_log (
+                 id     INTEGER PRIMARY KEY,
+                 ts     INTEGER NOT NULL,
+                 ip     TEXT,
+                 action TEXT NOT NULL,
+                 detail TEXT
              );",
         )?;
         // Additive migration for pre-schedule alarms tables.
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN schedule_json TEXT", []);
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN gesture_like TEXT", []);
+        let _ = conn.execute("ALTER TABLE alarms ADD COLUMN transcript_like TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE alarms ADD COLUMN face_unknown INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE alarms ADD COLUMN cooldown_secs INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE alarms ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE alarms ADD COLUMN snooze_until INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
@@ -486,7 +778,7 @@ impl Db {
     pub fn list_cameras(&self) -> Result<Vec<Camera>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, source, enabled, detect, record, created_ts, detect_json, detect_source
+            "SELECT id, name, source, enabled, detect, record, created_ts, detect_json, detect_source, group_name
              FROM cameras ORDER BY id",
         )?;
         let rows = stmt
@@ -499,7 +791,7 @@ impl Db {
         let conn = self.conn();
         let cam = conn
             .query_row(
-                "SELECT id, name, source, enabled, detect, record, created_ts, detect_json, detect_source
+                "SELECT id, name, source, enabled, detect, record, created_ts, detect_json, detect_source, group_name
                  FROM cameras WHERE id = ?1",
                 [id],
                 row_to_camera,
@@ -534,6 +826,7 @@ impl Db {
             record,
             created_ts: now,
             detect_config: DetectConfig::default(),
+            group: None,
         })
     }
 
@@ -541,7 +834,7 @@ impl Db {
         let detect_json = serde_json::to_string(&cam.detect_config)?;
         self.conn().execute(
             "UPDATE cameras SET name=?1, source=?2, enabled=?3, detect=?4, record=?5,
-             detect_json=?6, detect_source=?7 WHERE id=?8",
+             detect_json=?6, detect_source=?7, group_name=?8 WHERE id=?9",
             params![
                 cam.name,
                 cam.source,
@@ -550,6 +843,7 @@ impl Db {
                 cam.record,
                 detect_json,
                 cam.detect_source,
+                cam.group,
                 cam.id
             ],
         )?;
@@ -576,41 +870,59 @@ impl Db {
         face: Option<&str>,
         plate: Option<&str>,
         gesture: Option<&str>,
+        zone: Option<&str>,
     ) -> Result<i64> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face, plate, gesture)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face, plate, gesture, zone)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 camera_id, ts, label, score, bbox[0], bbox[1], bbox[2], bbox[3], snapshot, face,
-                plate, gesture
+                plate, gesture, zone
             ],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn list_events(
         &self,
         camera_id: Option<i64>,
         label: Option<&str>,
         gesture: Option<&str>,
+        zone: Option<&str>,
+        after_ts: Option<i64>,
         before_ts: Option<i64>,
+        flagged_only: bool,
         limit: u32,
     ) -> Result<Vec<Event>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
-                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture
+                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
+                    e.flagged, e.note
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
                AND (?3 IS NULL OR e.gesture = ?3)
-               AND (?4 IS NULL OR e.ts < ?4)
-             ORDER BY e.ts DESC, e.id DESC LIMIT ?5",
+               AND (?4 IS NULL OR e.zone = ?4)
+               AND (?5 IS NULL OR e.ts >= ?5)
+               AND (?6 IS NULL OR e.ts < ?6)
+               AND (?7 = 0 OR e.flagged = 1)
+             ORDER BY e.ts DESC, e.id DESC LIMIT ?8",
         )?;
         let rows = stmt
             .query_map(
-                params![camera_id, label, gesture, before_ts, limit],
+                params![
+                    camera_id,
+                    label,
+                    gesture,
+                    zone,
+                    after_ts,
+                    before_ts,
+                    flagged_only as i64,
+                    limit
+                ],
                 row_to_event,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -622,7 +934,8 @@ impl Db {
         let ev = conn
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
-                        e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture
+                        e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
+                        e.flagged, e.note
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
@@ -641,8 +954,9 @@ impl Db {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO alarms (name, enabled, camera_id, label, face_like, plate_like,
-             gesture_like, min_score, action, target, schedule_json, created_ts)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             gesture_like, min_score, action, target, schedule_json, cooldown_secs, priority,
+             snooze_until, created_ts, transcript_like, face_unknown)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 r.name,
                 r.enabled,
@@ -655,7 +969,12 @@ impl Db {
                 r.action,
                 r.target,
                 schedule,
-                chrono::Local::now().timestamp()
+                r.cooldown_secs,
+                r.priority,
+                r.snooze_until,
+                chrono::Local::now().timestamp(),
+                r.transcript_like,
+                r.face_unknown as i64
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -665,7 +984,8 @@ impl Db {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, enabled, camera_id, label, face_like, plate_like,
-                    min_score, action, target, created_ts, schedule_json, gesture_like
+                    min_score, action, target, created_ts, schedule_json, gesture_like,
+                    cooldown_secs, priority, snooze_until, transcript_like, face_unknown
              FROM alarms ORDER BY id",
         )?;
         let rows = stmt
@@ -698,6 +1018,11 @@ impl Db {
                         .unwrap_or_default(),
                     start_hhmm: sched["start"].as_str().map(str::to_string),
                     end_hhmm: sched["end"].as_str().map(str::to_string),
+                    cooldown_secs: r.get(13)?,
+                    priority: r.get::<_, i64>(14)? as u8,
+                    snooze_until: r.get(15)?,
+                    transcript_like: r.get(16)?,
+                    face_unknown: r.get::<_, i64>(17)? != 0,
                     created_ts: r.get(10)?,
                 })
             })?
@@ -741,13 +1066,164 @@ impl Db {
         Ok(())
     }
 
+    /// Suppress a rule until `until` (unix seconds); 0 clears the snooze.
+    pub fn set_alarm_snooze(&self, id: i64, until: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE alarms SET snooze_until=?1 WHERE id=?2",
+            params![until, id],
+        )?;
+        Ok(())
+    }
+
+    // --- API tokens --------------------------------------------------------
+
+    /// Store a new API token (only its hash) and return its row id.
+    pub fn add_api_token(&self, name: &str, token_hash: &str, now: i64) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO api_tokens (name, token_hash, created_ts) VALUES (?1, ?2, ?3)",
+            params![name, token_hash, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// List tokens (metadata only — never the hash or the secret).
+    pub fn list_api_tokens(&self) -> Result<Vec<ApiToken>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id, name, created_ts, last_used_ts FROM api_tokens ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(ApiToken {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    created_ts: r.get(2)?,
+                    last_used_ts: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Look up a token by its hash, returning `(id, last_used_ts)` if it exists.
+    /// The middleware uses this to authenticate a Bearer token per request.
+    pub fn api_token_by_hash(&self, token_hash: &str) -> Result<Option<(i64, Option<i64>)>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT id, last_used_ts FROM api_tokens WHERE token_hash = ?1",
+                [token_hash],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Stamp a token's last-used time (the caller throttles how often).
+    pub fn touch_api_token(&self, id: i64, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE api_tokens SET last_used_ts = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_api_token(&self, id: i64) -> Result<bool> {
+        let n = self
+            .conn()
+            .execute("DELETE FROM api_tokens WHERE id=?1", [id])?;
+        Ok(n > 0)
+    }
+
+    // --- security audit log ------------------------------------------------
+
+    /// Cap on retained audit rows — bounded so a flood of (throttled) failed
+    /// logins can't grow the table without limit.
+    const AUDIT_KEEP: i64 = 2000;
+
+    /// Record a security event. Best-effort: callers ignore the result so a
+    /// logging failure never blocks the action being audited.
+    pub fn add_audit(&self, ts: i64, ip: Option<&str>, action: &str, detail: Option<&str>) {
+        let conn = self.conn();
+        if conn
+            .execute(
+                "INSERT INTO audit_log (ts, ip, action, detail) VALUES (?1, ?2, ?3, ?4)",
+                params![ts, ip, action, detail],
+            )
+            .is_ok()
+        {
+            // Trim to the most recent AUDIT_KEEP rows.
+            let _ = conn.execute(
+                "DELETE FROM audit_log WHERE id <= (SELECT MAX(id) FROM audit_log) - ?1",
+                [Self::AUDIT_KEEP],
+            );
+        }
+    }
+
+    pub fn list_audit(&self, limit: u32) -> Result<Vec<AuditEntry>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, ip, action, detail FROM audit_log ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map([limit], |r| {
+                Ok(AuditEntry {
+                    id: r.get(0)?,
+                    ts: r.get(1)?,
+                    ip: r.get(2)?,
+                    action: r.get(3)?,
+                    detail: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn delete_alarm(&self, id: i64) -> Result<()> {
         self.conn()
             .execute("DELETE FROM alarms WHERE id=?1", [id])?;
         Ok(())
     }
 
+    /// Bookmark an event: set/clear the flag and replace its note. A flagged
+    /// event survives the event-retention prune. Returns whether the event
+    /// existed.
+    pub fn set_event_bookmark(&self, id: i64, flagged: bool, note: Option<&str>) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE events SET flagged = ?1, note = ?2 WHERE id = ?3",
+            params![flagged as i64, note, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Set/clear an event's bookmark flag, leaving any existing note untouched.
+    /// Returns whether the event existed.
+    pub fn set_event_flag(&self, id: i64, flagged: bool) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE events SET flagged = ?1 WHERE id = ?2",
+            params![flagged as i64, id],
+        )?;
+        Ok(n > 0)
+    }
+
     // --- smart-search embeddings -------------------------------------------
+
+    /// Store a GenAI caption for an event (best-effort enrichment).
+    pub fn set_event_caption(&self, event_id: i64, caption: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE events SET caption = ?1 WHERE id = ?2",
+            params![caption, event_id],
+        )?;
+        Ok(())
+    }
+
+    /// Store a speech-to-text transcript for an event (best-effort enrichment).
+    pub fn set_event_transcript(&self, event_id: i64, transcript: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE events SET transcript = ?1 WHERE id = ?2",
+            params![transcript, event_id],
+        )?;
+        Ok(())
+    }
 
     pub fn set_event_embedding(&self, event_id: i64, embedding: &[f32]) -> Result<()> {
         let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
@@ -758,19 +1234,35 @@ impl Db {
         Ok(())
     }
 
-    pub fn all_event_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>> {
+    /// Every event with its searchable text + (when `with_embeddings`) its CLIP
+    /// snapshot embedding, newest first, for hybrid smart search (visual
+    /// similarity + speech/caption text). No row cap — the corpus is the full
+    /// (retention-bounded) event history, so search recall isn't truncated.
+    /// The embedding column (and JOIN) is skipped entirely in text-only mode.
+    pub fn search_corpus(&self, with_embeddings: bool) -> Result<Vec<SearchRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT event_id, embedding FROM event_embeddings")?;
+        let sql = if with_embeddings {
+            "SELECT e.id, e.transcript, e.caption, em.embedding
+             FROM events e LEFT JOIN event_embeddings em ON em.event_id = e.id
+             ORDER BY e.ts DESC, e.id DESC"
+        } else {
+            "SELECT e.id, e.transcript, e.caption, NULL
+             FROM events e ORDER BY e.ts DESC, e.id DESC"
+        };
+        let mut stmt = conn.prepare(sql)?;
         let rows = stmt
             .query_map([], |r| {
-                let bytes: Vec<u8> = r.get(1)?;
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    bytes
-                        .chunks_exact(4)
-                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect(),
-                ))
+                let emb: Option<Vec<u8>> = r.get(3)?;
+                Ok(SearchRow {
+                    id: r.get(0)?,
+                    transcript: r.get(1)?,
+                    caption: r.get(2)?,
+                    embedding: emb.map(|b| {
+                        b.chunks_exact(4)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect()
+                    }),
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -811,6 +1303,13 @@ impl Db {
 
     pub fn delete_face(&self, id: i64) -> Result<()> {
         self.conn().execute("DELETE FROM faces WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    /// Rename an enrolled identity (relabel all its embeddings at once).
+    pub fn rename_face(&self, id: i64, name: &str) -> Result<()> {
+        self.conn()
+            .execute("UPDATE faces SET name=?1 WHERE id=?2", params![name, id])?;
         Ok(())
     }
 
@@ -951,16 +1450,24 @@ impl Db {
     }
 
     /// Delete events older than `cutoff_ts`, returning their snapshot names
-    /// so the caller can remove the files. Embeddings cascade.
+    /// so the caller can remove the files. Embeddings cascade. Flagged
+    /// (bookmarked) events are protected — neither they nor their snapshots are
+    /// removed, even past retention.
     pub fn prune_events_before(&self, cutoff_ts: i64) -> Result<Vec<String>> {
         let conn = self.conn();
+        // Don't delete a snapshot still referenced by a kept (flagged) event.
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT snapshot FROM events WHERE ts < ?1 AND snapshot IS NOT NULL",
+            "SELECT DISTINCT snapshot FROM events
+             WHERE ts < ?1 AND flagged = 0 AND snapshot IS NOT NULL
+               AND snapshot NOT IN (SELECT snapshot FROM events WHERE flagged = 1)",
         )?;
         let snapshots = stmt
             .query_map([cutoff_ts], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        conn.execute("DELETE FROM events WHERE ts < ?1", [cutoff_ts])?;
+        conn.execute(
+            "DELETE FROM events WHERE ts < ?1 AND flagged = 0",
+            [cutoff_ts],
+        )?;
         Ok(snapshots)
     }
 
@@ -1032,6 +1539,11 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         face: r.get(11)?,
         plate: r.get(12)?,
         gesture: r.get(13)?,
+        zone: r.get(14)?,
+        caption: r.get(15)?,
+        transcript: r.get(16)?,
+        flagged: r.get::<_, i64>(17)? != 0,
+        note: r.get(18)?,
     })
 }
 
@@ -1049,6 +1561,7 @@ fn row_to_camera(r: &rusqlite::Row<'_>) -> rusqlite::Result<Camera> {
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default(),
         detect_source: r.get(8)?,
+        group: r.get(9)?,
     })
 }
 
@@ -1095,10 +1608,13 @@ mod tests {
             None,
             None,
             None,
+            Some("driveway"),
         )
         .unwrap();
-        db.add_event(cam.id, 200, "car", 0.8, [0.0; 4], None, None, None, None)
-            .unwrap();
+        db.add_event(
+            cam.id, 200, "car", 0.8, [0.0; 4], None, None, None, None, None,
+        )
+        .unwrap();
         db.add_event(
             cam.id,
             300,
@@ -1109,35 +1625,186 @@ mod tests {
             None,
             None,
             Some("open_palm"),
+            None,
         )
         .unwrap();
 
-        assert_eq!(db.list_events(None, None, None, None, 10).unwrap().len(), 3);
+        let all = |db: &Db| {
+            db.list_events(None, None, None, None, None, None, false, 10)
+                .unwrap()
+        };
+        assert_eq!(all(&db).len(), 3);
         assert_eq!(
-            db.list_events(None, Some("person"), None, None, 10)
+            db.list_events(None, Some("person"), None, None, None, None, false, 10)
                 .unwrap()
                 .len(),
             1
         );
         assert_eq!(
-            db.list_events(None, None, Some("open_palm"), None, 10)
+            db.list_events(None, None, Some("open_palm"), None, None, None, false, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        // Zone filter.
+        assert_eq!(
+            db.list_events(None, None, None, Some("driveway"), None, None, false, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        // before / after time bounds.
+        assert_eq!(
+            db.list_events(None, None, None, None, None, Some(150), false, 10)
                 .unwrap()
                 .len(),
             1
         );
         assert_eq!(
-            db.list_events(None, None, None, Some(150), 10)
+            db.list_events(None, None, None, None, Some(250), None, false, 10)
                 .unwrap()
                 .len(),
             1
         );
 
+        // Bookmark filter + retention protection: flag one event, prune
+        // everything (cutoff in the far future), and the flagged event + its
+        // snapshot survive while the rest are pruned.
+        let flagged_id = all(&db)[0].id;
+        assert!(db
+            .set_event_bookmark(flagged_id, true, Some("check this"))
+            .unwrap());
+        assert!(!db.set_event_bookmark(999_999, true, None).unwrap()); // missing id
+        let only_flagged = db
+            .list_events(None, None, None, None, None, None, true, 10)
+            .unwrap();
+        assert_eq!(only_flagged.len(), 1);
+        assert_eq!(only_flagged[0].id, flagged_id);
+        assert!(only_flagged[0].flagged);
+        assert_eq!(only_flagged[0].note.as_deref(), Some("check this"));
+        let removed = db.prune_events_before(i64::MAX).unwrap();
+        let kept = all(&db);
+        assert_eq!(kept.len(), 1, "flagged event survives prune");
+        assert_eq!(kept[0].id, flagged_id);
+        // Snapshots of pruned events are returned for file cleanup, never the
+        // flagged event's own snapshot.
+        assert!(!removed
+            .iter()
+            .any(|s| Some(s.as_str()) == kept[0].snapshot.as_deref()));
+
         // Deleting the camera cascades to its events.
         db.delete_camera(cam.id).unwrap();
-        assert!(db
-            .list_events(None, None, None, None, 10)
-            .unwrap()
-            .is_empty());
+        assert!(all(&db).is_empty());
+    }
+
+    #[test]
+    fn flagged_event_protects_shared_snapshot_from_prune() {
+        let db = mem_db();
+        let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
+        // Two events share one snapshot file; a third has a unique one.
+        let shared = "gate-shared.jpg";
+        db.add_event(
+            cam.id,
+            100,
+            "person",
+            0.9,
+            [0.0; 4],
+            Some(shared),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let keep = db
+            .add_event(
+                cam.id,
+                200,
+                "person",
+                0.9,
+                [0.0; 4],
+                Some(shared),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        db.add_event(
+            cam.id,
+            150,
+            "car",
+            0.8,
+            [0.0; 4],
+            Some("gate-lone.jpg"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // Flag the newer shared-snapshot event, then prune everything older.
+        assert!(db.set_event_flag(keep, true).unwrap());
+        let removed = db.prune_events_before(1000).unwrap();
+        // Only the flagged event survives (it was ts=200, well under the cutoff).
+        assert_eq!(db.count_events().unwrap(), 1);
+        assert!(db.get_event(keep).unwrap().is_some());
+        // The unshared snapshot of a pruned event is returned for file cleanup…
+        assert!(removed.iter().any(|s| s == "gate-lone.jpg"));
+        // …but the snapshot shared with the kept (flagged) event is protected.
+        assert!(
+            !removed.iter().any(|s| s == shared),
+            "shared snapshot must not be deleted out from under the kept event"
+        );
+    }
+
+    #[test]
+    fn api_token_crud_and_lookup() {
+        let db = mem_db();
+        let id = db.add_api_token("home-assistant", "hash_abc", 100).unwrap();
+        let list = db.list_api_tokens().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "home-assistant");
+        assert!(list[0].last_used_ts.is_none());
+        // Lookup by hash returns (id, last_used); unknown hash → None.
+        assert_eq!(db.api_token_by_hash("hash_abc").unwrap(), Some((id, None)));
+        assert_eq!(db.api_token_by_hash("nope").unwrap(), None);
+        // Touch records last-used; relisting reflects it.
+        db.touch_api_token(id, 200).unwrap();
+        assert_eq!(
+            db.api_token_by_hash("hash_abc").unwrap(),
+            Some((id, Some(200)))
+        );
+        // Delete is idempotent on a hit and reports a miss.
+        assert!(db.delete_api_token(id).unwrap());
+        assert!(!db.delete_api_token(id).unwrap());
+        assert!(db.list_api_tokens().unwrap().is_empty());
+    }
+
+    #[test]
+    fn audit_log_records_and_caps() {
+        let db = mem_db();
+        db.add_audit(100, Some("203.0.113.7"), "login_failed", None);
+        db.add_audit(200, None, "token_created", Some("home-assistant"));
+        let rows = db.list_audit(10).unwrap();
+        assert_eq!(rows.len(), 2);
+        // Newest first.
+        assert_eq!(rows[0].action, "token_created");
+        assert_eq!(rows[0].detail.as_deref(), Some("home-assistant"));
+        assert_eq!(rows[1].action, "login_failed");
+        assert_eq!(rows[1].ip.as_deref(), Some("203.0.113.7"));
+        // Retention cap: after many inserts, the table stays bounded to AUDIT_KEEP.
+        for i in 0..(Db::AUDIT_KEEP + 50) {
+            db.add_audit(1000 + i, None, "login_failed", None);
+        }
+        let total: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            total <= Db::AUDIT_KEEP,
+            "audit table must stay bounded, got {total}"
+        );
     }
 
     #[test]
@@ -1158,10 +1825,24 @@ mod tests {
                 w: 0.5,
                 h: 0.5,
             }],
+            zones: vec![PolyZone {
+                name: "driveway".into(),
+                points: vec![[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+                kind: ZoneKind::Required,
+                labels: vec!["person".into()],
+            }],
+            privacy_masks: vec![vec![[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]]],
+            min_area: Some(0.001),
+            max_area: Some(0.8),
             autotrack: true,
             audio_detect: false,
             event_only_recording: false,
             gesture_detect: true,
+            model: Some("yolov8s.onnx".into()),
+            force_cpu: Some(true),
+            poll_ms: Some(2000),
+            face_recognize: Some(true),
+            two_way_audio: true,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
@@ -1170,6 +1851,40 @@ mod tests {
         let z = back.detect_config.ignore_zones[0];
         assert!(z.contains(0.25, 0.25));
         assert!(!z.contains(0.75, 0.25));
+
+        let pz = &back.detect_config.zones[0];
+        assert_eq!(pz.kind, ZoneKind::Required);
+        assert!(pz.applies_to("person"));
+        assert!(!pz.applies_to("car"));
+
+        // Group is persisted, defaults to None, and can be set + cleared.
+        assert_eq!(back.group, None);
+        cam.group = Some("outdoor".into());
+        db.update_camera(&cam).unwrap();
+        assert_eq!(
+            db.get_camera(cam.id).unwrap().unwrap().group.as_deref(),
+            Some("outdoor")
+        );
+        cam.group = None;
+        db.update_camera(&cam).unwrap();
+        assert_eq!(db.get_camera(cam.id).unwrap().unwrap().group, None);
+    }
+
+    #[test]
+    fn point_in_polygon_math() {
+        // Unit square.
+        let sq = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        assert!(point_in_polygon(&sq, 0.5, 0.5));
+        assert!(!point_in_polygon(&sq, 1.5, 0.5));
+        assert!(!point_in_polygon(&sq, -0.1, 0.5));
+
+        // Concave arrow / chevron: a point in the notch must read as outside.
+        let chevron = [[0.0, 0.0], [0.5, 0.4], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        assert!(point_in_polygon(&chevron, 0.5, 0.8)); // body
+        assert!(!point_in_polygon(&chevron, 0.5, 0.1)); // inside the V notch
+
+        // Degenerate polygons never contain anything.
+        assert!(!point_in_polygon(&[[0.0, 0.0], [1.0, 1.0]], 0.5, 0.5));
     }
 
     #[test]
@@ -1183,18 +1898,23 @@ mod tests {
             face_like: None,
             plate_like: None,
             gesture_like: None,
+            transcript_like: None,
+            face_unknown: false,
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
             days: vec![],
             start_hhmm: None,
             end_hhmm: None,
+            cooldown_secs: 0,
+            priority: 0,
+            snooze_until: 0,
             created_ts: 0,
         };
-        assert!(rule.matches(3, "person", 0.8, None, None, None));
-        assert!(!rule.matches(2, "person", 0.8, None, None, None)); // wrong camera
-        assert!(!rule.matches(3, "car", 0.8, None, None, None)); // wrong label
-        assert!(!rule.matches(3, "person", 0.3, None, None, None)); // below score
+        assert!(rule.matches(3, "person", 0.8, None, None, None, None));
+        assert!(!rule.matches(2, "person", 0.8, None, None, None, None)); // wrong camera
+        assert!(!rule.matches(3, "car", 0.8, None, None, None, None)); // wrong label
+        assert!(!rule.matches(3, "person", 0.3, None, None, None, None)); // below score
 
         let face_rule = AlarmRule {
             camera_id: None,
@@ -1203,20 +1923,20 @@ mod tests {
             min_score: 0.0,
             ..rule.clone()
         };
-        assert!(face_rule.matches(1, "person", 0.9, Some("dark-COAT-guy"), None, None));
-        assert!(!face_rule.matches(1, "person", 0.9, None, None, None));
+        assert!(face_rule.matches(1, "person", 0.9, Some("dark-COAT-guy"), None, None, None));
+        assert!(!face_rule.matches(1, "person", 0.9, None, None, None, None));
 
         let plate_rule = AlarmRule {
             face_like: None,
             plate_like: Some("au77".into()),
             ..face_rule
         };
-        assert!(plate_rule.matches(1, "car", 0.9, None, Some("B8AU77"), None));
-        assert!(!plate_rule.matches(1, "car", 0.9, None, Some("XYZ123"), None));
+        assert!(plate_rule.matches(1, "car", 0.9, None, Some("B8AU77"), None, None));
+        assert!(!plate_rule.matches(1, "car", 0.9, None, Some("XYZ123"), None, None));
 
         let mut disabled = plate_rule.clone();
         disabled.enabled = false;
-        assert!(!disabled.matches(1, "car", 0.9, None, Some("B8AU77"), None));
+        assert!(!disabled.matches(1, "car", 0.9, None, Some("B8AU77"), None, None));
 
         // Gesture rule: a held hand signal arms the action.
         let gesture_rule = AlarmRule {
@@ -1225,9 +1945,34 @@ mod tests {
             gesture_like: Some("open_palm".into()),
             ..rule.clone()
         };
-        assert!(gesture_rule.matches(3, "gesture", 1.0, None, None, Some("open_palm")));
-        assert!(!gesture_rule.matches(3, "gesture", 1.0, None, None, Some("victory")));
-        assert!(!gesture_rule.matches(3, "gesture", 1.0, None, None, None));
+        assert!(gesture_rule.matches(3, "gesture", 1.0, None, None, Some("open_palm"), None));
+        assert!(!gesture_rule.matches(3, "gesture", 1.0, None, None, Some("victory"), None));
+        assert!(!gesture_rule.matches(3, "gesture", 1.0, None, None, None, None));
+
+        // Spoken-keyword rule: fires only when the transcript contains the phrase.
+        let spoken_rule = AlarmRule {
+            label: None,
+            gesture_like: None,
+            transcript_like: Some("help".into()),
+            ..rule.clone()
+        };
+        assert!(spoken_rule.matches(3, "speech", 1.0, None, None, None, Some("please HELP me")));
+        assert!(!spoken_rule.matches(3, "speech", 1.0, None, None, None, Some("good morning")));
+        // No transcript present → a transcript rule can't match (e.g. on a
+        // detection event), so it never double-fires on non-audio sources.
+        assert!(!spoken_rule.matches(3, "speech", 1.0, None, None, None, None));
+
+        // Stranger rule: fires only on a person with an unrecognized face
+        // (the UNKNOWN_FACE sentinel), not on a recognized face or no face.
+        let stranger_rule = AlarmRule {
+            label: Some("person".into()),
+            gesture_like: None,
+            face_unknown: true,
+            ..rule.clone()
+        };
+        assert!(stranger_rule.matches(3, "person", 1.0, Some(UNKNOWN_FACE), None, None, None));
+        assert!(!stranger_rule.matches(3, "person", 1.0, Some("Alice"), None, None, None));
+        assert!(!stranger_rule.matches(3, "person", 1.0, None, None, None, None));
     }
 
     #[test]
@@ -1243,12 +1988,17 @@ mod tests {
                 face_like: None,
                 plate_like: None,
                 gesture_like: None,
+                transcript_like: Some("help".into()),
+                face_unknown: true,
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
                 days: vec![1, 2, 3],
                 start_hhmm: Some("22:00".into()),
                 end_hhmm: Some("06:00".into()),
+                cooldown_secs: 30,
+                priority: 4,
+                snooze_until: 0,
                 created_ts: 0,
             })
             .unwrap();
@@ -1256,6 +2006,10 @@ mod tests {
         assert_eq!(back.days, vec![1, 2, 3]);
         assert_eq!(back.start_hhmm.as_deref(), Some("22:00"));
         assert_eq!(back.end_hhmm.as_deref(), Some("06:00"));
+        assert_eq!(back.cooldown_secs, 30);
+        assert_eq!(back.priority, 4);
+        assert_eq!(back.transcript_like.as_deref(), Some("help"));
+        assert!(back.face_unknown);
         assert_eq!(db.list_alarms().unwrap().len(), 1);
         db.set_alarm_enabled(id, false).unwrap();
         assert!(!db.list_alarms().unwrap()[0].enabled);
@@ -1274,12 +2028,17 @@ mod tests {
             face_like: None,
             plate_like: None,
             gesture_like: None,
+            transcript_like: None,
+            face_unknown: false,
             min_score: 0.0,
             action: "webhook".into(),
             target: "http://x".into(),
             days: vec![],
             start_hhmm: None,
             end_hhmm: None,
+            cooldown_secs: 0,
+            priority: 0,
+            snooze_until: 0,
             created_ts: 0,
         };
         // No schedule = always armed.
@@ -1337,7 +2096,7 @@ mod tests {
                 .unwrap();
         }
         db.add_event(
-            cam.id, 2030, "person", 0.9, [0.0; 4], None, None, None, None,
+            cam.id, 2030, "person", 0.9, [0.0; 4], None, None, None, None, None,
         )
         .unwrap();
         let mut doomed = db.eventless_segments(cam.id, 5000, 60, 15).unwrap();

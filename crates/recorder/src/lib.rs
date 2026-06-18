@@ -18,6 +18,24 @@ use chrono::{Local, NaiveDateTime, TimeZone};
 /// start time survives without a database.
 const SEGMENT_PATTERN: &str = "%Y%m%d-%H%M%S.mp4";
 
+/// Keep spawned ffmpeg children from popping a console window on Windows (the
+/// packaged desktop app is a GUI process with no console of its own). No-op
+/// elsewhere.
+trait NoConsole {
+    fn no_console(&mut self) -> &mut Self;
+}
+impl NoConsole for Command {
+    #[cfg(windows)]
+    fn no_console(&mut self) -> &mut Self {
+        use std::os::windows::process::CommandExt;
+        self.creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+    }
+    #[cfg(not(windows))]
+    fn no_console(&mut self) -> &mut Self {
+        self
+    }
+}
+
 /// A completed recording segment discovered on disk.
 #[derive(Clone, Debug)]
 pub struct Segment {
@@ -69,6 +87,7 @@ impl Recording {
             .stdin(Stdio::piped()) // lets us send 'q' for a clean finalize
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
+            .no_console()
             .spawn()
             .with_context(|| format!("spawning ffmpeg for camera {camera}"))?;
 
@@ -177,31 +196,41 @@ fn parse_segment_start(file_name: &str) -> Option<i64> {
 /// and atomically replace the original. Returns the new size in bytes.
 /// UniFi-style "enhanced retention": old footage keeps existing at a fraction
 /// of the storage cost.
-pub fn reencode_segment(ffmpeg: &Path, path: &Path) -> Result<u64> {
-    let tmp = path.with_extension("tmp.mp4");
+/// Video-codec args for the chosen encoder. Unknown names fall back to CPU.
+fn codec_args(hwaccel: &str) -> &'static [&'static str] {
+    match hwaccel {
+        "nvenc" => &["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "30"],
+        "qsv" => &["-c:v", "h264_qsv", "-global_quality", "30"],
+        "videotoolbox" => &["-c:v", "h264_videotoolbox", "-q:v", "55"],
+        _ => &["-c:v", "libx264", "-preset", "veryfast", "-crf", "30"],
+    }
+}
+
+/// Run one re-encode attempt with the given encoder. Returns whether it
+/// succeeded (a clean exit producing the temp file).
+fn run_reencode(ffmpeg: &Path, path: &Path, tmp: &Path, hwaccel: &str) -> bool {
     let status = Command::new(ffmpeg)
         .args(["-loglevel", "error", "-y", "-i"])
         .arg(path)
-        .args([
-            "-vf",
-            "scale='min(1280,iw)':-2",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "30",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "64k",
-            "-movflags",
-            "+faststart",
-        ])
-        .arg(&tmp)
-        .status()
-        .context("running ffmpeg re-encode")?;
-    if !status.success() {
+        .args(["-vf", "scale='min(1280,iw)':-2"])
+        .args(codec_args(hwaccel))
+        .args(["-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart"])
+        .arg(tmp)
+        .no_console()
+        .status();
+    matches!(status, Ok(s) if s.success())
+}
+
+pub fn reencode_segment(ffmpeg: &Path, path: &Path, hwaccel: &str) -> Result<u64> {
+    let tmp = path.with_extension("tmp.mp4");
+    // Try the requested hardware encoder, then fall back to libx264 so a
+    // misconfigured accelerator never silently stops enhanced retention.
+    let mut ok = run_reencode(ffmpeg, path, &tmp, hwaccel);
+    if !ok && !matches!(hwaccel, "" | "cpu" | "libx264") {
+        tracing::warn!("hwaccel '{hwaccel}' re-encode failed; falling back to CPU (libx264)");
+        ok = run_reencode(ffmpeg, path, &tmp, "cpu");
+    }
+    if !ok {
         let _ = std::fs::remove_file(&tmp);
         anyhow::bail!("re-encode failed for {}", path.display());
     }

@@ -1,5 +1,6 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
 import { api, Camera, DetectConfig, DiscoveredCam, StatusMap, Zone } from "../api";
+import ZoneEditor from "../ZoneEditor";
 
 function TuneModal({
   camera,
@@ -17,10 +18,19 @@ function TuneModal({
     min_score: camera.detect_config.min_score,
     motion_threshold: camera.detect_config.motion_threshold,
     ignore_zones: [...camera.detect_config.ignore_zones],
+    zones: camera.detect_config.zones ? [...camera.detect_config.zones] : [],
+    privacy_masks: camera.detect_config.privacy_masks ? [...camera.detect_config.privacy_masks] : [],
+    min_area: camera.detect_config.min_area ?? null,
+    max_area: camera.detect_config.max_area ?? null,
     autotrack: camera.detect_config.autotrack ?? false,
     audio_detect: camera.detect_config.audio_detect ?? false,
     event_only_recording: camera.detect_config.event_only_recording ?? false,
     gesture_detect: camera.detect_config.gesture_detect ?? false,
+    model: camera.detect_config.model ?? null,
+    force_cpu: camera.detect_config.force_cpu ?? null,
+    poll_ms: camera.detect_config.poll_ms ?? null,
+    face_recognize: camera.detect_config.face_recognize ?? null,
+    two_way_audio: camera.detect_config.two_way_audio ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -101,6 +111,28 @@ function TuneModal({
               }
             />
           </label>
+          <label className="field" title="Drop detections smaller than this fraction of the frame area (kills far-field blips).">
+            min object size (0-1)
+            <input
+              type="number" step="0.005" min="0" max="1"
+              value={dc.min_area ?? ""}
+              placeholder="none"
+              onChange={(e) =>
+                setDc({ ...dc, min_area: e.target.value === "" ? null : Number(e.target.value) })
+              }
+            />
+          </label>
+          <label className="field" title="Drop detections larger than this fraction of the frame area (kills whole-frame lighting flips).">
+            max object size (0-1)
+            <input
+              type="number" step="0.05" min="0" max="1"
+              value={dc.max_area ?? ""}
+              placeholder="none"
+              onChange={(e) =>
+                setDc({ ...dc, max_area: e.target.value === "" ? null : Number(e.target.value) })
+              }
+            />
+          </label>
           <label className="toggle field">
             PTZ autotrack
             <input
@@ -119,6 +151,17 @@ function TuneModal({
           </label>
           <label
             className="toggle field"
+            title="Show a hold-to-talk button in this camera's detail view (streams your mic to the camera over WebRTC). Only works on cameras with a speaker / ONVIF backchannel."
+          >
+            two-way audio (talk)
+            <input
+              type="checkbox"
+              checked={dc.two_way_audio}
+              onChange={() => setDc({ ...dc, two_way_audio: !dc.two_way_audio })}
+            />
+          </label>
+          <label
+            className="toggle field"
             title="Offer the live hand-signal overlay (Signals page) for this camera."
           >
             hand signals
@@ -127,6 +170,50 @@ function TuneModal({
               checked={dc.gesture_detect}
               onChange={() => setDc({ ...dc, gesture_detect: !dc.gesture_detect })}
             />
+          </label>
+          <label className="field" title="Per-camera model override (e.g. a specialized .onnx). Empty inherits the global model.">
+            model override
+            <input
+              type="text"
+              placeholder="inherit global"
+              value={dc.model ?? ""}
+              onChange={(e) => setDc({ ...dc, model: e.target.value.trim() || null })}
+            />
+          </label>
+          <label className="field" title="Accelerator assignment for this camera's detector.">
+            accelerator
+            <select
+              value={dc.force_cpu === null ? "" : dc.force_cpu ? "cpu" : "gpu"}
+              onChange={(e) =>
+                setDc({ ...dc, force_cpu: e.target.value === "" ? null : e.target.value === "cpu" })
+              }
+            >
+              <option value="">inherit</option>
+              <option value="gpu">GPU</option>
+              <option value="cpu">CPU</option>
+            </select>
+          </label>
+          <label className="field" title="Per-camera sample-interval cap (resource governance). Only slows this camera down.">
+            FPS cap — sample every (ms)
+            <input
+              type="number" step="100" min="0"
+              placeholder="inherit"
+              value={dc.poll_ms ?? ""}
+              onChange={(e) => setDc({ ...dc, poll_ms: e.target.value === "" ? null : Number(e.target.value) })}
+            />
+          </label>
+          <label className="field" title="Opt this camera into (or out of) face recognition. Inherit uses the global Settings switch.">
+            face recognition
+            <select
+              value={dc.face_recognize === null ? "" : dc.face_recognize ? "on" : "off"}
+              onChange={(e) =>
+                setDc({ ...dc, face_recognize: e.target.value === "" ? null : e.target.value === "on" })
+              }
+            >
+              <option value="">inherit</option>
+              <option value="on">on</option>
+              <option value="off">off</option>
+            </select>
           </label>
           <label
             className="toggle field"
@@ -141,10 +228,24 @@ function TuneModal({
           </label>
         </div>
 
-        <h2 style={{ marginTop: 18 }}>Ignore zones</h2>
+        <h2 style={{ marginTop: 18 }}>Zones &amp; privacy masks</h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          Detections whose center falls inside a zone are dropped. Coordinates are fractions of
-          the frame (0–1) from the top-left.
+          Draw polygons on the live frame. <b style={{ color: "#36d399" }}>Required</b> zones keep
+          only objects inside them; <b style={{ color: "#f87272" }}>ignore</b> zones drop objects
+          inside; <b style={{ color: "#a3a3a3" }}>privacy masks</b> are blacked out before any
+          analysis or snapshot (continuous recordings are not masked).
+        </p>
+        <ZoneEditor
+          camera={camera}
+          zones={dc.zones}
+          masks={dc.privacy_masks}
+          onChange={(zones, masks) => setDc({ ...dc, zones, privacy_masks: masks })}
+        />
+
+        <h2 style={{ marginTop: 18 }}>Ignore zones (legacy rectangles)</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Detections whose center falls inside a rectangle are dropped. Coordinates are fractions of
+          the frame (0–1) from the top-left. Prefer the polygon zones above for new setups.
         </p>
         {dc.ignore_zones.map((z, i) => (
           <div className="row" key={i} style={{ marginBottom: 8 }}>
@@ -188,6 +289,94 @@ function TuneModal({
   );
 }
 
+/// Inline camera-name editor: commits on blur/Enter. Renaming restarts go2rtc
+/// (a brief live-stream blip) since the stream name changes. Names are
+/// lowercase letters/digits/_/- (≤32); the server rejects others and we revert.
+function NameCell({
+  cam,
+  onChange,
+  onError,
+}: {
+  cam: Camera;
+  onChange: () => void;
+  onError: (e: string) => void;
+}) {
+  const [val, setVal] = useState(cam.name);
+  useEffect(() => {
+    setVal(cam.name);
+  }, [cam.name]);
+  const commit = async () => {
+    const next = val.trim();
+    if (next === cam.name) return;
+    if (!next) {
+      setVal(cam.name); // a name can't be empty
+      return;
+    }
+    try {
+      await api.patchCamera(cam.id, { name: next } as Partial<Camera>);
+      onChange();
+    } catch (e) {
+      setVal(cam.name); // revert on rejection (e.g. invalid chars)
+      onError(String(e));
+    }
+  };
+  return (
+    <input
+      className="field"
+      style={{ width: 130, fontWeight: 600 }}
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+      title="Rename (lowercase/digits/_/-; restarts the stream briefly)"
+    />
+  );
+}
+
+/// Inline group editor: commits on blur/Enter; empty string clears the group.
+/// Patching only `group` is metadata-only, so the server skips the go2rtc
+/// restart and live streams keep playing.
+function GroupCell({
+  cam,
+  onChange,
+  onError,
+}: {
+  cam: Camera;
+  onChange: () => void;
+  onError: (e: string) => void;
+}) {
+  const [val, setVal] = useState(cam.group ?? "");
+  useEffect(() => {
+    setVal(cam.group ?? "");
+  }, [cam.group]);
+  const commit = async () => {
+    const next = val.trim();
+    if (next === (cam.group ?? "")) return;
+    try {
+      await api.patchCamera(cam.id, { group: next } as Partial<Camera>);
+      onChange();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  return (
+    <input
+      className="field"
+      list="cam-groups"
+      placeholder="—"
+      style={{ width: 110 }}
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+    />
+  );
+}
+
 export default function Cameras({
   cameras,
   onChange,
@@ -209,6 +398,7 @@ export default function Cameras({
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
   const [detectSource, setDetectSource] = useState("");
+  const [group, setGroup] = useState("");
   const [detect, setDetect] = useState(true);
   const [record, setRecord] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -256,12 +446,14 @@ export default function Cameras({
         name: name.trim(),
         source: source.trim(),
         detect_source: detectSource.trim() || undefined,
+        group: group.trim() || undefined,
         detect,
         record,
       });
       setName("");
       setSource("");
       setDetectSource("");
+      setGroup("");
       setFound(null);
       onChange();
     } catch (err) {
@@ -290,9 +482,18 @@ export default function Cameras({
     }
   };
 
+  const groups = Array.from(
+    new Set(cameras.map((c) => c.group).filter((g): g is string => !!g)),
+  ).sort();
+
   return (
     <>
       <h1>Cameras</h1>
+      <datalist id="cam-groups">
+        {groups.map((g) => (
+          <option key={g} value={g} />
+        ))}
+      </datalist>
 
       <div className="card">
         <h2>Add camera</h2>
@@ -365,6 +566,16 @@ export default function Cameras({
               style={{ width: "100%" }}
             />
           </label>
+          <label className="field" style={{ minWidth: 130 }} title="Optional: group cameras for the Live view (e.g. 'outdoor', 'downstairs').">
+            group (optional)
+            <input
+              type="text"
+              list="cam-groups"
+              placeholder="e.g. outdoor"
+              value={group}
+              onChange={(e) => setGroup(e.target.value)}
+            />
+          </label>
           <label className="toggle">
             <input type="checkbox" checked={detect} onChange={() => setDetect(!detect)} /> detect
           </label>
@@ -396,6 +607,8 @@ export default function Cameras({
                 <th>Enabled</th>
                 <th>Detect</th>
                 <th>Record</th>
+                <th>Group</th>
+                <th>Perf</th>
                 <th></th>
               </tr>
             </thead>
@@ -417,7 +630,7 @@ export default function Cameras({
                     </span>
                   </td>
                   <td>
-                    <b>{cam.name}</b>
+                    <NameCell cam={cam} onChange={onChange} onError={onError} />
                   </td>
                   <td className="muted" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {cam.source}
@@ -429,6 +642,16 @@ export default function Cameras({
                       </span>
                     </td>
                   ))}
+                  <td>
+                    <GroupCell cam={cam} onChange={onChange} onError={onError} />
+                  </td>
+                  <td className="muted" style={{ whiteSpace: "nowrap" }}>
+                    {(() => {
+                      const s = status[String(cam.id)];
+                      if (!s?.accelerator) return "—";
+                      return `${s.inference_ms != null ? s.inference_ms.toFixed(1) + "ms · " : ""}${s.accelerator}`;
+                    })()}
+                  </td>
                   <td>
                     <button className="ghost" onClick={() => setTuning(cam)} style={{ marginRight: 8 }}>
                       Tune

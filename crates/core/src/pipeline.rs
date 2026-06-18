@@ -26,16 +26,23 @@ use crate::status::StatusBoard;
 /// Cap on a fetched JPEG frame (sanity guard, not a real limit).
 const MAX_FRAME_BYTES: u64 = 32 * 1024 * 1024;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     db: Db,
     go2rtc: Arc<Go2Rtc>,
     snapshots_dir: PathBuf,
     status: StatusBoard,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    throttle: crate::notify::AlarmThrottle,
+    genai_tx: std::sync::mpsc::Sender<crate::genai::CaptionJob>,
     shutdown: Arc<AtomicBool>,
 ) {
-    let mut detector: Option<Detector> = None;
-    let mut detector_key = String::new();
+    // One detector session per (model, force_cpu, conf, iou) combination, so
+    // cameras can be assigned different models or accelerators.
+    let mut detectors: HashMap<String, Detector> = HashMap::new();
+    let mut global_detect_key = String::new();
+    // Per-camera sample-interval cap (FPS governance).
+    let mut last_poll: HashMap<i64, Instant> = HashMap::new();
     let mut face_engine: Option<facerec::FaceEngine> = None;
     let mut face_key = String::new();
     let mut clip: Option<crate::smart::ImageEmbedder> = None;
@@ -55,29 +62,15 @@ pub fn run(
         let tick = Instant::now();
         let settings = db.settings();
 
-        // Rebuild the ONNX session if model/EP/thresholds changed.
-        let key = format!(
+        // Drop cached sessions when global model/EP/threshold settings change
+        // (per-camera overrides get their own cache keys below).
+        let gkey = format!(
             "{}|{}|{}|{}",
             settings.model_path, settings.force_cpu, settings.confidence, settings.nms_iou
         );
-        if detector.is_none() || key != detector_key {
-            match Detector::new(
-                &settings.model_path,
-                settings.force_cpu,
-                settings.confidence,
-                settings.nms_iou,
-            ) {
-                Ok(d) => {
-                    tracing::info!(model = %settings.model_path, "detector ready");
-                    detector = Some(d);
-                    detector_key = key;
-                }
-                Err(e) => {
-                    tracing::error!("detector unavailable (retrying in 30s): {e:#}");
-                    sleep_responsive(Duration::from_secs(30), &shutdown);
-                    continue;
-                }
-            }
+        if gkey != global_detect_key {
+            detectors.clear();
+            global_detect_key = gkey;
         }
 
         let cameras = db.list_cameras().unwrap_or_default();
@@ -86,12 +79,50 @@ pub fn run(
             if shutdown.load(Ordering::Relaxed) {
                 break;
             }
+            // Per-camera FPS cap: skip until this camera's interval elapses.
+            if let Some(ms) = cam.detect_config.poll_ms {
+                if last_poll
+                    .get(&cam.id)
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(ms))
+                {
+                    continue;
+                }
+                last_poll.insert(cam.id, Instant::now());
+            }
+
+            // Resolve this camera's model + accelerator (per-camera override or
+            // global), and build/fetch the matching detector session.
+            let model = cam
+                .detect_config
+                .model
+                .clone()
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| settings.model_path.clone());
+            let force_cpu = cam.detect_config.force_cpu.unwrap_or(settings.force_cpu);
+            let dkey = format!(
+                "{model}|{force_cpu}|{}|{}",
+                settings.confidence, settings.nms_iou
+            );
+            if !detectors.contains_key(&dkey) {
+                match Detector::new(&model, force_cpu, settings.confidence, settings.nms_iou) {
+                    Ok(d) => {
+                        tracing::info!(camera = %cam.name, model = %model, force_cpu, "detector ready");
+                        detectors.insert(dkey.clone(), d);
+                    }
+                    Err(e) => {
+                        tracing::debug!(camera = %cam.name, "detector unavailable: {e:#}");
+                        continue;
+                    }
+                }
+            }
+            let accelerator = accel_label(force_cpu);
+
             // Sample the low-res sub-stream when one is configured.
             let stream_key = match cam.detect_source.as_deref().filter(|s| !s.is_empty()) {
                 Some(_) => format!("{}_sub", cam.name),
                 None => cam.name.clone(),
             };
-            let frame = match fetch_frame(&go2rtc.api_base(), &stream_key) {
+            let mut frame = match fetch_frame(&go2rtc.api_base(), &stream_key) {
                 Ok(f) => {
                     status.frame_ok(cam.id, chrono::Local::now().timestamp());
                     f
@@ -102,6 +133,12 @@ pub fn run(
                     continue;
                 }
             };
+
+            // Privacy masks: black out the polygons before anything looks at the
+            // frame — motion gate, detector and snapshot all see the masked view.
+            if !cam.detect_config.privacy_masks.is_empty() {
+                apply_privacy_masks(&mut frame, &cam.detect_config.privacy_masks);
+            }
 
             let threshold = cam
                 .detect_config
@@ -123,8 +160,9 @@ pub fn run(
             }
             tracing::debug!(camera = %cam.name, ?verdict, "motion -> running detector");
 
-            let dets = match detector
-                .as_mut()
+            let infer_start = Instant::now();
+            let dets = match detectors
+                .get_mut(&dkey)
                 .expect("detector built above")
                 .detect(&frame)
             {
@@ -134,6 +172,12 @@ pub fn run(
                     continue;
                 }
             };
+            status.infer(
+                cam.id,
+                infer_start.elapsed().as_secs_f32() * 1000.0,
+                accelerator,
+                &model,
+            );
 
             let now = chrono::Local::now().timestamp();
             let labels = cam
@@ -147,13 +191,7 @@ pub fn run(
                 .iter()
                 .filter(|d| labels.is_empty() || labels.iter().any(|l| l == d.label))
                 .filter(|d| d.score >= min_score)
-                .filter(|d| {
-                    !in_ignore_zone(
-                        &cam.detect_config.ignore_zones,
-                        (d.x1 + d.x2) / 2.0 / fw,
-                        (d.y1 + d.y2) / 2.0 / fh,
-                    )
-                })
+                .filter(|d| passes_zones_and_size(d, &cam.detect_config, fw, fh))
                 .filter(|d| {
                     last_event
                         .get(&(cam.id, d.label))
@@ -174,7 +212,11 @@ pub fn run(
 
             // --- face recognition on person detections -------------------
             let mut face_names: Vec<Option<String>> = vec![None; wanted.len()];
-            if settings.face_recognition && wanted.iter().any(|d| d.label == "person") {
+            let face_on = cam
+                .detect_config
+                .face_recognize
+                .unwrap_or(settings.face_recognition);
+            if face_on && wanted.iter().any(|d| d.label == "person") {
                 let fkey = format!(
                     "{}|{}|{}",
                     settings.face_det_model, settings.face_rec_model, settings.force_cpu
@@ -273,6 +315,23 @@ pub fn run(
                             })
                         });
                         if let Some(text) = read.filter(|t| t.len() >= 3) {
+                            // Vehicle of interest: a deny-listed plate gets a
+                            // guaranteed high-priority push (independent of any
+                            // alarm rule).
+                            if crate::lpr::plate_status(
+                                &text,
+                                &settings.plate_allowlist,
+                                &settings.plate_denylist,
+                            ) == crate::lpr::PlateStatus::Deny
+                                && !settings.health_ntfy_url.is_empty()
+                            {
+                                crate::notify::ntfy_text(
+                                    &settings.health_ntfy_url,
+                                    &format!("🚗 Vehicle of interest on {}", cam.name),
+                                    &format!("Plate {text} (deny-list) seen on {}", cam.name),
+                                    "warning,oncoming_automobile",
+                                );
+                            }
                             plates[i] = Some(text);
                         }
                     }
@@ -292,6 +351,7 @@ pub fn run(
                     face_names[i].as_deref(),
                     plates[i].as_deref(),
                     None,
+                    zone_for(d, &cam.detect_config, fw, fh).as_deref(),
                 ) {
                     Ok(id) => {
                         tracing::info!(
@@ -304,7 +364,15 @@ pub fn run(
                             "event recorded"
                         );
                         if !settings.webhook_url.is_empty() {
-                            post_webhook(&settings.webhook_url, &cam.name, id, d, now, &snap_rel);
+                            post_webhook(
+                                &settings.webhook_url,
+                                &settings.webhook_template,
+                                &cam.name,
+                                id,
+                                d,
+                                now,
+                                &snap_rel,
+                            );
                         }
                         let _ = mqtt_tx.send(crate::mqtt::EventMsg {
                             event_id: id,
@@ -327,6 +395,10 @@ pub fn run(
                             face: face_names[i].as_deref(),
                             plate: plates[i].as_deref(),
                             gesture: None,
+                            transcript: None,
+                            base_url: &settings.public_base_url,
+                            webhook_template: &settings.webhook_template,
+                            duress: false,
                         };
                         for rule in alarms.iter().filter(|r| {
                             r.matches(
@@ -336,13 +408,27 @@ pub fn run(
                                 face_names[i].as_deref(),
                                 plates[i].as_deref(),
                                 None,
-                            )
+                                None,
+                            ) && crate::notify::ready(r, &throttle, now)
                         }) {
                             crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
                         }
                         new_event_ids.push(id);
                     }
                     Err(e) => tracing::warn!("event insert failed: {e:#}"),
+                }
+            }
+
+            // GenAI captioning (opt-in): one job per event-frame, captioned
+            // off-thread so the LLM call never stalls detection.
+            if settings.genai_enabled {
+                if let Some(&first) = new_event_ids.first() {
+                    let _ = genai_tx.send(crate::genai::CaptionJob {
+                        event_id: first,
+                        snapshot_path: snap_abs.clone(),
+                        label: wanted[0].label.to_string(),
+                        camera: cam.name.clone(),
+                    });
                 }
             }
 
@@ -482,14 +568,29 @@ fn run_faces(
         };
 
         let (fcx, fcy) = ((face.x1 + face.x2) / 2.0, (face.y1 + face.y2) / 2.0);
+        let in_person = |d: &detector::Detection| {
+            d.label == "person" && fcx >= d.x1 && fcx <= d.x2 && fcy >= d.y1 && fcy <= d.y2
+        };
         if let Some(name) = &name {
             for (i, d) in wanted.iter().enumerate() {
-                if d.label == "person" && fcx >= d.x1 && fcx <= d.x2 && fcy >= d.y1 && fcy <= d.y2 {
+                if in_person(d) {
                     face_names[i] = Some(name.clone());
                 }
             }
         } else if face.score >= 0.6 {
-            // Save for enrollment, at most one crop per camera per 30s.
+            // A confident face that matched no enrolled identity → mark the
+            // containing person as a "stranger" (unless already recognized by
+            // another face in the same box — a real identity wins). Only when
+            // at least one identity is enrolled: with none, *everyone* would be
+            // "unknown", which is noise, not a stranger alert.
+            if !enrolled.is_empty() {
+                for (i, d) in wanted.iter().enumerate() {
+                    if in_person(d) && face_names[i].is_none() {
+                        face_names[i] = Some(crate::db::UNKNOWN_FACE.to_string());
+                    }
+                }
+            }
+            // Also save the crop for enrollment, at most one per camera per 30s.
             let due = last_unknown_save
                 .get(&cam.id)
                 .map(|t| now - t >= 30)
@@ -541,36 +642,174 @@ fn save_unknown_face(
 /// Fire-and-forget event notification (Blue Iris alarm-server style). Runs on
 /// the pipeline thread with a short timeout; a dead listener must never stall
 /// detection, so failures are logged at debug and dropped.
+#[allow(clippy::too_many_arguments)]
 fn post_webhook(
     url: &str,
+    template: &str,
     camera: &str,
     event_id: i64,
     d: &detector::Detection,
     ts: i64,
     snapshot: &str,
 ) {
-    let payload = serde_json::json!({
-        "type": "detection",
-        "event_id": event_id,
-        "camera": camera,
-        "label": d.label,
-        "score": d.score,
-        "box": [d.x1, d.y1, d.x2, d.y2],
-        "ts": ts,
-        "snapshot": format!("/api/snapshots/{snapshot}"),
-    });
-    if let Err(e) = ureq::post(url)
-        .timeout(Duration::from_secs(3))
-        .send_json(payload)
-    {
+    let snapshot_url = format!("/api/snapshots/{snapshot}");
+    let result = if template.is_empty() {
+        let payload = serde_json::json!({
+            "type": "detection",
+            "event_id": event_id,
+            "camera": camera,
+            "label": d.label,
+            "score": d.score,
+            "box": [d.x1, d.y1, d.x2, d.y2],
+            "ts": ts,
+            "snapshot": snapshot_url,
+        });
+        ureq::post(url)
+            .timeout(Duration::from_secs(3))
+            .send_json(payload)
+    } else {
+        let ev = crate::notify::AlarmEvent {
+            event_id,
+            camera,
+            label: d.label,
+            score: d.score,
+            ts,
+            snapshot_url: &snapshot_url,
+            snapshot_path: None,
+            face: None,
+            plate: None,
+            gesture: None,
+            transcript: None,
+            base_url: "",
+            webhook_template: template,
+            duress: false,
+        };
+        ureq::post(url)
+            .timeout(Duration::from_secs(3))
+            .set("Content-Type", "application/json")
+            .send_string(&crate::notify::render_template(template, &ev))
+    };
+    if let Err(e) = result {
         tracing::debug!("webhook delivery failed: {e}");
     }
 }
 
-/// True when a detection's box center (frame fractions) lands inside any
-/// ignore zone — e.g. the busy street at the edge of a driveway camera.
-fn in_ignore_zone(zones: &[crate::db::Zone], cx: f32, cy: f32) -> bool {
-    zones.iter().any(|z| z.contains(cx, cy))
+/// Apply per-camera zone and object-size gating to one detection. Returns true
+/// to keep it. The anchor is the box-center in frame fractions, matching the
+/// long-standing ignore-zone semantics.
+///
+/// Order: object-size bounds, legacy rectangle ignore zones, then polygon zones
+/// — a polygon `Ignore` zone drops the detection, and if any `Required` zone
+/// applies to its label the anchor must fall inside one of them.
+fn passes_zones_and_size(
+    d: &detector::Detection,
+    cfg: &crate::db::DetectConfig,
+    fw: f32,
+    fh: f32,
+) -> bool {
+    let cx = (d.x1 + d.x2) / 2.0 / fw;
+    let cy = (d.y1 + d.y2) / 2.0 / fh;
+
+    // Object-size gate (fraction of frame area).
+    if cfg.min_area.is_some() || cfg.max_area.is_some() {
+        let area = ((d.x2 - d.x1).max(0.0) * (d.y2 - d.y1).max(0.0)) / (fw * fh).max(1.0);
+        if cfg.min_area.is_some_and(|m| area < m) || cfg.max_area.is_some_and(|m| area > m) {
+            return false;
+        }
+    }
+
+    // Legacy rectangle ignore zones.
+    if cfg.ignore_zones.iter().any(|z| z.contains(cx, cy)) {
+        return false;
+    }
+
+    // Polygon ignore zones that apply to this label.
+    if cfg
+        .zones
+        .iter()
+        .filter(|z| z.kind == crate::db::ZoneKind::Required)
+        .any(|z| z.applies_to(d.label))
+    {
+        // Required zones exist for this label → the anchor must be in one.
+        let inside_required = cfg
+            .zones
+            .iter()
+            .filter(|z| z.kind == crate::db::ZoneKind::Required && z.applies_to(d.label))
+            .any(|z| z.contains(cx, cy));
+        if !inside_required {
+            return false;
+        }
+    }
+    if cfg.zones.iter().any(|z| {
+        z.kind == crate::db::ZoneKind::Ignore && z.applies_to(d.label) && z.contains(cx, cy)
+    }) {
+        return false;
+    }
+    true
+}
+
+/// Human label for the execution provider a detector is using on this OS.
+fn accel_label(force_cpu: bool) -> &'static str {
+    if force_cpu {
+        "CPU"
+    } else if cfg!(target_os = "windows") {
+        "DirectML"
+    } else if cfg!(target_os = "macos") {
+        "CoreML"
+    } else if cfg!(target_os = "linux") {
+        "CUDA"
+    } else {
+        "GPU"
+    }
+}
+
+/// The name of the (required) zone a detection's anchor falls in, for tagging
+/// the event so review can filter by zone. `None` when not in a named zone.
+fn zone_for(
+    d: &detector::Detection,
+    cfg: &crate::db::DetectConfig,
+    fw: f32,
+    fh: f32,
+) -> Option<String> {
+    let cx = (d.x1 + d.x2) / 2.0 / fw;
+    let cy = (d.y1 + d.y2) / 2.0 / fh;
+    cfg.zones
+        .iter()
+        .find(|z| {
+            z.kind == crate::db::ZoneKind::Required && z.applies_to(d.label) && z.contains(cx, cy)
+        })
+        .map(|z| z.name.clone())
+}
+
+/// Black out the privacy-mask polygons (frame-fraction coordinates) in place.
+fn apply_privacy_masks(frame: &mut DynamicImage, masks: &[Vec<[f32; 2]>]) {
+    let mut img = frame.to_rgb8();
+    let (w, h) = (img.width(), img.height());
+    for mask in masks {
+        if mask.len() < 3 {
+            continue;
+        }
+        // Only scan each polygon's bounding box.
+        let xs = mask.iter().map(|p| p[0]);
+        let ys = mask.iter().map(|p| p[1]);
+        let x0 = (xs.clone().fold(1.0f32, f32::min) * w as f32)
+            .floor()
+            .max(0.0) as u32;
+        let x1 = (xs.fold(0.0f32, f32::max) * w as f32).ceil().min(w as f32) as u32;
+        let y0 = (ys.clone().fold(1.0f32, f32::min) * h as f32)
+            .floor()
+            .max(0.0) as u32;
+        let y1 = (ys.fold(0.0f32, f32::max) * h as f32).ceil().min(h as f32) as u32;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+                if crate::db::point_in_polygon(mask, fx, fy) {
+                    img.put_pixel(x, y, Rgb([0, 0, 0]));
+                }
+            }
+        }
+    }
+    *frame = DynamicImage::ImageRgb8(img);
 }
 
 fn sleep_responsive(total: Duration, shutdown: &AtomicBool) {
@@ -636,19 +875,139 @@ fn draw_rect(img: &mut image::RgbImage, x1: i64, y1: i64, x2: i64, y2: i64) {
 
 #[cfg(test)]
 mod tests {
-    use super::in_ignore_zone;
-    use crate::db::Zone;
+    use super::passes_zones_and_size;
+    use crate::db::{DetectConfig, PolyZone, Zone, ZoneKind};
+    use detector::Detection;
+
+    /// A detection whose box center is (cx, cy) in a 100x100 frame, sized w×h.
+    fn det_at(label: &'static str, cx: f32, cy: f32, w: f32, h: f32) -> Detection {
+        Detection {
+            label,
+            class: 0,
+            score: 0.9,
+            x1: cx - w / 2.0,
+            y1: cy - h / 2.0,
+            x2: cx + w / 2.0,
+            y2: cy + h / 2.0,
+        }
+    }
 
     #[test]
-    fn ignore_zone_drops_center_hits_only() {
-        let zones = vec![Zone {
-            x: 0.8,
-            y: 0.0,
-            w: 0.2,
-            h: 1.0,
-        }];
-        assert!(in_ignore_zone(&zones, 0.9, 0.5)); // street strip on the right
-        assert!(!in_ignore_zone(&zones, 0.5, 0.5)); // driveway center
-        assert!(!in_ignore_zone(&[], 0.9, 0.5)); // no zones -> nothing ignored
+    fn legacy_rect_ignore_zone_drops_center_hits_only() {
+        let cfg = DetectConfig {
+            ignore_zones: vec![Zone {
+                x: 0.8,
+                y: 0.0,
+                w: 0.2,
+                h: 1.0,
+            }],
+            ..Default::default()
+        };
+        assert!(!passes_zones_and_size(
+            &det_at("person", 90.0, 50.0, 4.0, 4.0),
+            &cfg,
+            100.0,
+            100.0
+        ));
+        assert!(passes_zones_and_size(
+            &det_at("person", 50.0, 50.0, 4.0, 4.0),
+            &cfg,
+            100.0,
+            100.0
+        ));
+        assert!(passes_zones_and_size(
+            &det_at("person", 90.0, 50.0, 4.0, 4.0),
+            &DetectConfig::default(),
+            100.0,
+            100.0
+        ));
+    }
+
+    #[test]
+    fn required_zone_keeps_only_inside_for_that_label() {
+        let cfg = DetectConfig {
+            zones: vec![PolyZone {
+                name: "driveway".into(),
+                points: vec![[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]],
+                kind: ZoneKind::Required,
+                labels: vec!["person".into()],
+            }],
+            ..Default::default()
+        };
+        // Person inside the left-half required zone: kept; outside: dropped.
+        assert!(passes_zones_and_size(
+            &det_at("person", 25.0, 50.0, 4.0, 4.0),
+            &cfg,
+            100.0,
+            100.0
+        ));
+        assert!(!passes_zones_and_size(
+            &det_at("person", 75.0, 50.0, 4.0, 4.0),
+            &cfg,
+            100.0,
+            100.0
+        ));
+        // A car is unconstrained by a person-only required zone.
+        assert!(passes_zones_and_size(
+            &det_at("car", 75.0, 50.0, 4.0, 4.0),
+            &cfg,
+            100.0,
+            100.0
+        ));
+    }
+
+    #[test]
+    fn polygon_ignore_zone_drops_inside() {
+        let cfg = DetectConfig {
+            zones: vec![PolyZone {
+                name: "sidewalk".into(),
+                points: vec![[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0]],
+                kind: ZoneKind::Ignore,
+                labels: vec![],
+            }],
+            ..Default::default()
+        };
+        assert!(!passes_zones_and_size(
+            &det_at("person", 75.0, 50.0, 4.0, 4.0),
+            &cfg,
+            100.0,
+            100.0
+        ));
+        assert!(passes_zones_and_size(
+            &det_at("person", 25.0, 50.0, 4.0, 4.0),
+            &cfg,
+            100.0,
+            100.0
+        ));
+    }
+
+    #[test]
+    fn object_size_gate() {
+        let cfg = DetectConfig {
+            min_area: Some(0.01), // ≥ 1% of frame
+            max_area: Some(0.5),  // ≤ 50% of frame
+            ..Default::default()
+        };
+        // 4x4 in 100x100 = 0.0016 -> too small.
+        assert!(!passes_zones_and_size(
+            &det_at("person", 50.0, 50.0, 4.0, 4.0),
+            &cfg,
+            100.0,
+            100.0
+        ));
+        // 20x20 = 0.04 -> ok.
+        assert!(passes_zones_and_size(
+            &det_at("person", 50.0, 50.0, 20.0, 20.0),
+            &cfg,
+            100.0,
+            100.0
+        ));
+        // 90x90 = 0.81 -> too big.
+        assert!(!passes_zones_and_size(
+            &det_at("person", 50.0, 50.0, 90.0, 90.0),
+            &cfg,
+            100.0,
+            100.0
+        ));
     }
 }

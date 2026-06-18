@@ -7,12 +7,18 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
   const [label, setLabel] = useState("");
   const [review, setReview] = useState<"all" | "alerts">("all");
   const [alertLabels, setAlertLabels] = useState<string[]>(["person"]);
+  const [plateDeny, setPlateDeny] = useState<string[]>([]);
+  const [plateAllow, setPlateAllow] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<CamEvent[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [faceFilter, setFaceFilter] = useState("");
   const [plateFilter, setPlateFilter] = useState("");
   const [gestureFilter, setGestureFilter] = useState("");
+  const [zoneFilter, setZoneFilter] = useState("");
+  const [fromTime, setFromTime] = useState("");
+  const [toTime, setToTime] = useState("");
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
 
   const runSearch = async () => {
     const q = query.trim();
@@ -70,43 +76,125 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
     }
   };
 
+  // Bookmarks: a flagged event is kept past retention; a note adds context.
+  const applyBookmark = (id: number, flagged: boolean, note: string | null) => {
+    const upd = (e: CamEvent) => (e.id === id ? { ...e, flagged, note } : e);
+    setEvents((prev) => prev.map(upd));
+    setSearchResults((prev) => (prev ? prev.map(upd) : prev));
+    setOpen((prev) => (prev && prev.id === id ? { ...prev, flagged, note } : prev));
+  };
+  const toggleFlag = async (ev: CamEvent) => {
+    // A note only lives on a saved event — un-saving discards it (so a note is
+    // never left orphaned, hidden from the Saved filter and lost at retention).
+    if (
+      ev.flagged &&
+      ev.note &&
+      !window.confirm("Remove this bookmark? Its note will be deleted.")
+    ) {
+      return;
+    }
+    const flagged = !ev.flagged;
+    const note = flagged ? ev.note : null;
+    try {
+      await api.bookmarkEvent(ev.id, flagged, note);
+      applyBookmark(ev.id, flagged, note);
+    } catch {
+      /* best-effort */
+    }
+  };
+  const editNote = async (ev: CamEvent) => {
+    const note = window.prompt("Note for this event:", ev.note ?? "");
+    if (note === null) return; // cancelled
+    const trimmed = note.trim();
+    // Adding a note implies keeping the event (flag it); clearing leaves the flag.
+    const flagged = trimmed ? true : ev.flagged;
+    try {
+      await api.bookmarkEvent(ev.id, flagged, trimmed || null);
+      applyBookmark(ev.id, flagged, trimmed || null);
+    } catch {
+      /* best-effort */
+    }
+  };
+
   const load = () => {
+    const after = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
+    const before = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
     api
       .events({
         camera_id: cameraId === "" ? undefined : cameraId,
         label: label || undefined,
+        after,
+        before,
+        flagged: flaggedOnly || undefined,
         limit: 200,
       })
       .then(setEvents)
       .catch(() => {});
   };
 
+  // Download the current filter set as a CSV (server streams it with the same
+  // filters the list uses).
+  const exportUrl = () => {
+    const p = new URLSearchParams();
+    if (cameraId !== "") p.set("camera_id", String(cameraId));
+    if (label) p.set("label", label);
+    const after = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
+    const before = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
+    if (after != null) p.set("after", String(after));
+    if (before != null) p.set("before", String(before));
+    if (flaggedOnly) p.set("flagged", "true");
+    return `/api/events/export.csv?${p}`;
+  };
+
   useEffect(() => {
     api
       .settings()
-      .then((s) => setAlertLabels(s.alert_labels ?? ["person"]))
+      .then((s) => {
+        setAlertLabels(s.alert_labels ?? ["person"]);
+        setPlateDeny(s.plate_denylist ?? []);
+        setPlateAllow(s.plate_allowlist ?? []);
+      })
       .catch(() => {});
   }, []);
+
+  // Classify a read plate against the watch lists (deny wins).
+  const plateClass = (plate: string | null): "deny" | "allow" | "" => {
+    if (!plate) return "";
+    const p = plate.toUpperCase();
+    if (plateDeny.some((e) => e.trim() && p.includes(e.trim().toUpperCase()))) return "deny";
+    if (plateAllow.some((e) => e.trim() && p.includes(e.trim().toUpperCase()))) return "allow";
+    return "";
+  };
 
   useEffect(() => {
     load();
     const t = setInterval(load, 5000); // events appear as they happen
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cameraId, label]);
+  }, [cameraId, label, fromTime, toTime, flaggedOnly]);
 
   const labels = [...new Set(events.map((e) => e.label))];
   const faces = [...new Set(events.map((e) => e.face).filter(Boolean))] as string[];
   const gestures = [...new Set(events.map((e) => e.gesture).filter(Boolean))] as string[];
+  const zones = [...new Set(events.map((e) => e.zone).filter(Boolean))] as string[];
   let shown =
     searchResults ??
     (review === "alerts" ? events.filter((e) => alertLabels.includes(e.label)) : events);
   if (faceFilter) shown = shown.filter((e) => e.face === faceFilter);
   if (gestureFilter) shown = shown.filter((e) => e.gesture === gestureFilter);
+  if (zoneFilter) shown = shown.filter((e) => e.zone === zoneFilter);
   if (plateFilter.trim())
     shown = shown.filter((e) =>
       (e.plate ?? "").toUpperCase().includes(plateFilter.trim().toUpperCase())
     );
+
+  // Explore: object-type counts across the loaded window (pre object-filter).
+  const exploreBase = searchResults ?? events;
+  const counts = exploreBase.reduce<Record<string, number>>((acc, e) => {
+    acc[e.label] = (acc[e.label] ?? 0) + 1;
+    return acc;
+  }, {});
+  const topLabels = Object.entries(counts).sort((a, b) => b[1] - a[1]);
 
   return (
     <>
@@ -116,7 +204,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
         <span>✨</span>
         <input
           type="text"
-          placeholder='Smart search — describe what you are looking for ("person in a dark coat", "blue car")'
+          placeholder='Smart search — what you saw or heard ("person in a dark coat", "someone yelling help")'
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -150,6 +238,13 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
         >
           🔔 Alerts
         </button>
+        <button
+          className={flaggedOnly ? "primary" : "ghost"}
+          onClick={() => setFlaggedOnly((v) => !v)}
+          title="Show only bookmarked events (kept past retention)"
+        >
+          ⭐ Saved
+        </button>
         <select value={cameraId} onChange={(e) => setCameraId(e.target.value === "" ? "" : Number(e.target.value))}>
           <option value="">all cameras</option>
           {cameras.map((c) => (
@@ -170,7 +265,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
           <option value="">anyone</option>
           {faces.map((f) => (
             <option key={f} value={f}>
-              👤 {f}
+              {f === "?" ? "🚶 stranger" : `👤 ${f}`}
             </option>
           ))}
         </select>
@@ -184,6 +279,33 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
             ))}
           </select>
         )}
+        {zones.length > 0 && (
+          <select value={zoneFilter} onChange={(e) => setZoneFilter(e.target.value)}>
+            <option value="">any zone</option>
+            {zones.map((z) => (
+              <option key={z} value={z}>
+                ▱ {z}
+              </option>
+            ))}
+          </select>
+        )}
+        <label className="field" title="from">
+          <input type="datetime-local" value={fromTime} onChange={(e) => setFromTime(e.target.value)} />
+        </label>
+        <label className="field" title="to">
+          <input type="datetime-local" value={toTime} onChange={(e) => setToTime(e.target.value)} />
+        </label>
+        {(fromTime || toTime) && (
+          <button
+            className="ghost"
+            onClick={() => {
+              setFromTime("");
+              setToTime("");
+            }}
+          >
+            clear time
+          </button>
+        )}
         <input
           type="text"
           placeholder="plate…"
@@ -192,7 +314,43 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
           onChange={(e) => setPlateFilter(e.target.value)}
         />
         <span className="muted">{shown.length} events · auto-refreshing</span>
+        <a
+          className="ghost"
+          style={{
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1px solid var(--border)",
+            textDecoration: "none",
+            color: "var(--text)",
+            fontSize: "0.9rem",
+          }}
+          href={exportUrl()}
+          title="Download the current filter as a CSV"
+        >
+          ⬇ Export CSV
+        </a>
       </div>
+
+      {topLabels.length > 0 && !searchResults && (
+        <div className="row" style={{ marginBottom: 12, flexWrap: "wrap" }}>
+          <span className="muted">Explore:</span>
+          <span
+            className={`pill toggle ${label === "" ? "on" : ""}`}
+            onClick={() => setLabel("")}
+          >
+            all ({exploreBase.length})
+          </span>
+          {topLabels.map(([l, n]) => (
+            <span
+              key={l}
+              className={`pill toggle ${label === l ? "on" : ""}`}
+              onClick={() => setLabel(label === l ? "" : l)}
+            >
+              {l} ({n})
+            </span>
+          ))}
+        </div>
+      )}
 
       {shown.length === 0 ? (
         <div className="empty">
@@ -204,17 +362,71 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
           {shown.map((ev) => (
             <div className="event-card" key={ev.id} onClick={() => setOpen(ev)}>
               {ev.snapshot ? (
-                <img src={`/api/snapshots/${ev.snapshot}`} alt={ev.label} loading="lazy" />
+                <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={ev.label} loading="lazy" />
               ) : (
                 <div style={{ aspectRatio: "4 / 3", background: "#000" }} />
               )}
               <div className="meta">
                 <b>{ev.label}</b> {(ev.score * 100).toFixed(0)}% · {ev.camera}
-                {ev.face && <span style={{ color: "var(--ok)" }}> · 👤 {ev.face}</span>}
-                {ev.plate && <span style={{ color: "var(--warn)" }}> · 🚗 {ev.plate}</span>}
+                {ev.face === "?" ? (
+                  <span style={{ color: "var(--warn)" }} title="A face was seen but matched nobody enrolled"> · 🚶 stranger</span>
+                ) : ev.face ? (
+                  <span style={{ color: "var(--ok)" }}> · 👤 {ev.face}</span>
+                ) : null}
+                {ev.plate && (
+                  <span style={{ color: "var(--warn)" }}>
+                    {" "}· 🚗 {ev.plate}
+                    {plateClass(ev.plate) === "deny" && (
+                      <span style={{ color: "var(--danger, #e5484d)", fontWeight: 700 }}> ⚠ of interest</span>
+                    )}
+                    {plateClass(ev.plate) === "allow" && <span style={{ color: "var(--ok)" }}> ✓ known</span>}
+                  </span>
+                )}
                 {ev.gesture && <span style={{ color: "var(--accent, #4f8cff)" }}> · ✋ {ev.gesture}</span>}
+                {ev.zone && <span className="muted"> · ▱ {ev.zone}</span>}
+                {ev.caption && (
+                  <div style={{ marginTop: 4, fontStyle: "italic", fontSize: "0.85rem" }}>
+                    “{ev.caption}”
+                  </div>
+                )}
+                {ev.transcript && (
+                  <div style={{ marginTop: 4, fontSize: "0.85rem" }} title="Speech-to-text of the event audio">
+                    🎙️ “{ev.transcript}”
+                  </div>
+                )}
+                {ev.note && (
+                  <div style={{ marginTop: 4, fontSize: "0.85rem" }} title="Your note">
+                    📝 {ev.note}
+                  </div>
+                )}
                 <div className="muted">{fmtTime(ev.ts)}</div>
                 <div className="row" style={{ marginTop: 8 }}>
+                  <button
+                    className={ev.flagged ? "primary" : "ghost"}
+                    aria-pressed={ev.flagged}
+                    title={
+                      ev.flagged
+                        ? "Bookmarked — kept past retention. Click to remove."
+                        : "Bookmark this event (keep it past retention)"
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleFlag(ev);
+                    }}
+                  >
+                    {ev.flagged ? "★ saved" : "☆ save"}
+                  </button>
+                  <button
+                    className="ghost"
+                    aria-label={ev.note ? "Edit note" : "Add note"}
+                    title={ev.note ? "Edit note" : "Add a note"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      editNote(ev);
+                    }}
+                  >
+                    📝
+                  </button>
                   <button
                     className="ghost"
                     onClick={(e) => {

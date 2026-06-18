@@ -38,6 +38,13 @@ Prerequisites:
 - **Rust** (stable) via [rustup](https://rustup.rs); on Windows also the MSVC Build
   Tools (VS installer → "Desktop development with C++" or just the
   `VC.Tools.x86.x64` + Windows SDK components).
+- **CMake** and **LLVM/libclang** — the bundled speech-to-text engine
+  (whisper.cpp, compiled in) builds with CMake and generates its FFI bindings
+  with bindgen (libclang). Linux can skip libclang by building with
+  `WHISPER_DONT_GENERATE_BINDINGS=1` (the crate ships Linux bindings); Windows
+  needs LLVM (`winget install LLVM.LLVM`, then `LIBCLANG_PATH` → its `bin`),
+  macOS gets libclang from Xcode. CMake: `winget install Kitware.CMake` /
+  `brew install cmake` / `apt install cmake`.
 - **Node.js** ≥ 20 (to build the web UI once).
 - **go2rtc** from [releases](https://github.com/AlexxIT/go2rtc/releases) → drop it at
   `./bin/go2rtc(.exe)`, or on `PATH`, or set `GO2RTC_BIN`.
@@ -63,6 +70,12 @@ Prerequisites:
   save `onnx/vision_model_quantized.onnx` as `./clip_vision.onnx`,
   `onnx/text_model_quantized.onnx` as `./clip_text.onnx`, and `tokenizer.json`
   as `./clip_tokenizer.json`. Enables the ✨ search box on the Events page.
+- *(Optional, for audio transcription / speech-to-text)* a whisper GGML model,
+  e.g. `ggml-tiny.en.bin` (~75 MB) or `ggml-base.en.bin` from
+  [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp), saved
+  in the repo root. Then enable *Audio transcription* in Settings (off by
+  default) and *audio detection* on the camera; speech in audio events is
+  transcribed onto the event. Fully local — the whisper engine is compiled in.
 
 Build and run:
 
@@ -97,6 +110,35 @@ Open **http://localhost:8080**, go to *Cameras*, and add your camera's RTSP URL
 
 No camera handy? Make a fake one (a panning video on loop) and add it with source
 `exec:ffmpeg -re -stream_loop -1 -i driveway.mp4 -c copy -rtsp_transport tcp -f rtsp {output}`.
+
+## Remote access & HTTPS
+
+On a trusted LAN you can run plain HTTP. Before exposing the NVR off-LAN:
+
+- **Set a password** in *Settings* — it gates all non-loopback API access (the
+  local box stays exempt, so you can't lock yourself out). Stored as **argon2id**;
+  repeated wrong logins from one IP get throttled (lockout after 8 tries in 5 min).
+- **Serve HTTPS** so the session cookie and traffic aren't in the clear:
+
+  ```bash
+  # one-flag TLS with an auto-generated, reused self-signed cert (<data>/tls)
+  cargo run -p zoomy -- --tls-self-signed --port 8443
+  # …or bring your own certificate
+  cargo run -p zoomy -- --tls-cert fullchain.pem --tls-key privkey.pem
+  ```
+
+  Self-signed certs trip a browser warning (expected); for a clean padlock use a
+  real certificate or front the NVR with a reverse proxy (Caddy/nginx/Traefik).
+
+- **Behind a reverse proxy?** A same-host proxy reaches the NVR over `127.0.0.1`,
+  which would otherwise inherit the local-access exemption and bypass the
+  password. Pass **`--trusted-proxy`** so auth and the brute-force throttle key
+  off the proxy's `X-Forwarded-For` header instead — and make sure the NVR is
+  reachable *only* through the proxy (bind it to loopback), since that flag tells
+  it to trust the header.
+
+The TLS stack is pure-Rust (rustls + the `ring` provider already in-tree) — no
+OpenSSL, no extra build tooling.
 
 ## Layout
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, Camera, Settings } from "../api";
+import { loadPlayer } from "../LiveVideo";
 
 // MediaPipe Tasks Vision is loaded at runtime from a CDN (configurable), so the
 // 21-point hand-landmark model runs GPU-accelerated in the browser on any OS —
@@ -53,6 +54,12 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
   const rafRef = useRef<number>(0);
   const recognizerRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // For an IP-camera source, MediaPipe runs on the go2rtc `<video-stream>`'s own
+  // <video> (the same player the Live grid uses) rather than the device webcam.
+  const streamHostRef = useRef<HTMLDivElement>(null);
+  const streamElRef = useRef<any>(null);
+  // Mirror of the selected source for the rAF loop, which captures at start.
+  const sourceRef = useRef<string>("webcam");
   // Hold-to-fire state, kept in a ref so the rAF loop reads fresh values.
   const holdRef = useRef<{ gesture: string; since: number; fired: boolean }>({
     gesture: "",
@@ -66,23 +73,68 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
   const [status, setStatus] = useState("Idle — start the camera to read hand signals.");
   const [current, setCurrent] = useState<{ gesture: string; score: number } | null>(null);
   const [toast, setToast] = useState<string>("");
+  const [touchless, setTouchless] = useState(false);
+  const [ptzOk, setPtzOk] = useState<boolean | null>(null);
+  const [duressFlash, setDuressFlash] = useState(false);
+  const lastPtz = useRef(0);
+  // The rAF loop captures state at start; mirror live controls into refs.
+  const touchlessRef = useRef(false);
+  const ptzOkRef = useRef(false);
+  const camIdRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     api.settings().then(setSettings).catch(() => {});
   }, []);
   useEffect(() => {
-    if (!camera && cameras.length) setCamera(cameras[0].name);
-  }, [cameras, camera]);
+    if (!camera) setCamera("webcam");
+  }, [camera]);
 
   const armed = settings?.gesture_labels ?? [];
   const holdSecs = settings?.gesture_hold_secs ?? 1.5;
-  const isArmed = (g: string) => armed.length === 0 || armed.includes(g);
+  const duress = settings?.gesture_duress ?? "";
+  // The duress signal always fires, even when not in the armed list.
+  const isArmed = (g: string) => g === duress || armed.length === 0 || armed.includes(g);
+  const isWebcam = camera === "webcam" || camera === "";
+  const camId = isWebcam ? undefined : cameras.find((c) => c.name === camera)?.id;
+
+  useEffect(() => {
+    touchlessRef.current = touchless;
+  }, [touchless]);
+  useEffect(() => {
+    ptzOkRef.current = !!ptzOk;
+  }, [ptzOk]);
+  useEffect(() => {
+    camIdRef.current = camId;
+  }, [camId]);
+  useEffect(() => {
+    sourceRef.current = isWebcam ? "webcam" : camera;
+  }, [camera, isWebcam]);
+
+  // Does the attributed camera answer PTZ? (gates touchless steering)
+  useEffect(() => {
+    setPtzOk(null);
+    if (camId == null) return;
+    api
+      .ptzCaps(camId)
+      .then((r) => setPtzOk(r.supported))
+      .catch(() => setPtzOk(false));
+  }, [camId]);
 
   const stop = () => {
     cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
+    // Tear down the go2rtc stream element, if one was attached.
+    if (streamElRef.current) {
+      try {
+        streamElRef.current.pc?.getSenders?.().forEach((s: any) => s.track && s.track.stop());
+      } catch {
+        /* best-effort */
+      }
+      streamElRef.current.parentNode?.removeChild(streamElRef.current);
+      streamElRef.current = null;
+    }
     setRunning(false);
     setCurrent(null);
     setStatus("Stopped.");
@@ -107,11 +159,26 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
         numHands: 2,
       });
 
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-      streamRef.current = stream;
-      const video = videoRef.current!;
-      video.srcObject = stream;
-      await video.play();
+      if (isWebcam) {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+        streamRef.current = stream;
+        const video = videoRef.current!;
+        video.srcObject = stream;
+        await video.play();
+      } else {
+        // Read from the selected IP camera's go2rtc stream (the same player the
+        // Live grid uses). MediaPipe runs on its <video> once frames arrive.
+        await loadPlayer();
+        const el: any = document.createElement("video-stream");
+        el.mode = "webrtc,mse,mjpeg";
+        el.media = "video";
+        el.background = false;
+        el.src = `/api/ws?src=${encodeURIComponent(camera)}`;
+        el.style.width = "100%";
+        el.style.height = "100%";
+        streamHostRef.current?.replaceChildren(el);
+        streamElRef.current = el;
+      }
       setRunning(true);
       setStatus("Reading hand signals…");
       loop();
@@ -125,8 +192,13 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
 
   const fire = async (g: string) => {
     try {
-      const r = await api.recordGesture({ gesture: g, camera: camera || undefined });
-      if (r.recorded) {
+      const r = await api.recordGesture({ gesture: g, camera: isWebcam ? undefined : camera });
+      if (r.duress) {
+        setDuressFlash(true);
+        setToast(`🚨 DURESS — ${pretty(g)} — high-priority alert sent`);
+        setTimeout(() => setDuressFlash(false), 6000);
+        setTimeout(() => setToast(""), 6000);
+      } else if (r.recorded) {
         setToast(`${pretty(g)} → signal sent`);
         setTimeout(() => setToast(""), 2500);
       }
@@ -137,7 +209,14 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
   };
 
   const loop = () => {
-    const video = videoRef.current;
+    // Resolve the active source <video> each frame: the device webcam, or the
+    // go2rtc stream element's own <video> (which appears once it connects).
+    const video =
+      sourceRef.current === "webcam"
+        ? videoRef.current
+        : ((streamElRef.current?.video as HTMLVideoElement) ||
+            (streamElRef.current?.querySelector?.("video") as HTMLVideoElement) ||
+            null);
     const canvas = canvasRef.current;
     const recognizer = recognizerRef.current;
     if (!video || !canvas || !recognizer || video.readyState < 2) {
@@ -164,6 +243,25 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
     const cats: any[] = (result?.gestures ?? []).map((g: any[]) => g[0]).filter(Boolean);
     const best = cats.sort((a, b) => b.score - a.score)[0];
     const now = performance.now();
+
+    // Touchless PTZ: steer the camera toward an OPEN PALM (the hand's position
+    // in frame), and STOP on a fist. Throttled, and only on PTZ cameras.
+    const tcam = camIdRef.current;
+    if (touchlessRef.current && ptzOkRef.current && tcam != null && hands[0] && now - lastPtz.current > 350) {
+      lastPtz.current = now;
+      const g = best && best.categoryName !== "None" ? canon(best.categoryName) : "";
+      const palm = hands[0][9] ?? hands[0][0]; // middle-finger MCP ≈ palm center
+      // Display is mirrored, so invert pan for intuitive control. Tilt up = -dy.
+      const dx = -(palm.x - 0.5);
+      const dy = palm.y - 0.5;
+      if (g === "open_palm" && (Math.abs(dx) > 0.12 || Math.abs(dy) > 0.12)) {
+        const pan = Math.max(-0.5, Math.min(0.5, dx * 1.2));
+        const tilt = Math.max(-0.5, Math.min(0.5, -dy * 1.2));
+        api.ptz(tcam, { action: "move", pan, tilt, zoom: 0 }).catch(() => {});
+      } else {
+        api.ptz(tcam, { action: "stop" }).catch(() => {});
+      }
+    }
     if (best && best.categoryName !== "None") {
       const g = canon(best.categoryName);
       setCurrent({ gesture: g, score: best.score });
@@ -196,9 +294,9 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
     <>
       <h1>Hand Signals ✋</h1>
       <p className="muted" style={{ marginTop: -8 }}>
-        Real-time hand-landmark tracking in your browser. Hold an armed signal for{" "}
-        {holdSecs.toFixed(1)}s to log an event and trigger any matching alarm — a silent
-        hand-signal "panic button" for your NVR.
+        Real-time hand-landmark tracking in your browser — from this device's webcam{" "}
+        <b>or any camera's live stream</b>. Hold an armed signal for {holdSecs.toFixed(1)}s to log
+        an event and trigger any matching alarm — a silent hand-signal "panic button" for your NVR.
       </p>
 
       <div className="card">
@@ -212,19 +310,40 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
               ■ Stop
             </button>
           )}
-          <label className="field">
-            log signals to camera
-            <select value={camera} onChange={(e) => setCamera(e.target.value)}>
-              {cameras.length === 0 && <option value="">(no cameras registered)</option>}
+          <label className="field" title="Run hand-signal detection on your device's webcam, or on one of your cameras' live streams.">
+            read hand signals from
+            <select value={camera} onChange={(e) => setCamera(e.target.value)} disabled={running}>
+              <option value="webcam">📷 This device's webcam</option>
               {cameras.map((c) => (
                 <option key={c.id} value={c.name}>
-                  {c.name}
+                  🎥 {c.name}
                 </option>
               ))}
             </select>
           </label>
+          {ptzOk && (
+            <label className="toggle field" title="Steer this PTZ camera with an open palm; make a fist to stop.">
+              touchless PTZ
+              <input type="checkbox" checked={touchless} onChange={() => setTouchless((t) => !t)} />
+            </label>
+          )}
           <span className="muted">{status}</span>
         </div>
+
+        {duressFlash && (
+          <div
+            style={{
+              background: "var(--danger, #e5484d)",
+              color: "#fff",
+              padding: "10px 14px",
+              borderRadius: 8,
+              fontWeight: 700,
+              marginBottom: 10,
+            }}
+          >
+            🚨 DURESS signal sent — a high-priority alert went out.
+          </div>
+        )}
 
         <div
           style={{
@@ -235,14 +354,32 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
             background: "#000",
             borderRadius: 12,
             overflow: "hidden",
-            transform: "scaleX(-1)", // selfie mirror; canvas rides along
+            // Selfie-mirror the device webcam only; IP camera streams aren't mirrored.
+            transform: isWebcam ? "scaleX(-1)" : "none",
           }}
         >
           <video
             ref={videoRef}
             playsInline
             muted
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              display: isWebcam ? "block" : "none",
+            }}
+          />
+          <div
+            ref={streamHostRef}
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              display: isWebcam ? "none" : "block",
+            }}
           />
           <canvas
             ref={canvasRef}
@@ -254,7 +391,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
                 position: "absolute",
                 top: 12,
                 left: 12,
-                transform: "scaleX(-1)", // un-mirror the label
+                transform: isWebcam ? "scaleX(-1)" : "none", // un-mirror the label (webcam only)
                 background: "rgba(0,0,0,0.6)",
                 color: "#fff",
                 padding: "6px 12px",

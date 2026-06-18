@@ -171,6 +171,8 @@ fn resolve_config(app: &tauri::AppHandle) -> Result<zoomy::ServerConfig> {
                 ui_dir: res.join("web/dist"),
                 go2rtc_bin: Some(res.join("bin").join(exe_name("go2rtc"))),
                 ffmpeg_bin: existing(res.join("bin").join(exe_name("ffmpeg"))),
+                // The desktop app talks to itself over loopback — no TLS needed.
+                ..Default::default()
             });
         }
     }
@@ -186,6 +188,7 @@ fn resolve_config(app: &tauri::AppHandle) -> Result<zoomy::ServerConfig> {
         ui_dir: workspace.join("web/dist"),
         go2rtc_bin: Some(workspace.join("bin").join(exe_name("go2rtc"))),
         ffmpeg_bin: existing(workspace.join("bin").join(exe_name("ffmpeg"))),
+        ..Default::default()
     })
 }
 

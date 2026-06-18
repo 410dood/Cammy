@@ -1,0 +1,9 @@
+# CMake 4.x removed compatibility with the old `cmake_minimum_required` that the
+# bundled whisper.cpp (compiled via whisper-rs) still declares — without this it
+# drops the compiler variables mid-configure and the build fails (seen with the
+# Homebrew CMake 4.x on the macOS CI runner). Restoring the pre-4 policy floor
+# fixes whisper.cpp's CMake build and is harmless on CMake 3.x. Only affects
+# whisper.cpp (the sole CMake-built dependency). cargo applies this only when the
+# variable isn't already set in the environment.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

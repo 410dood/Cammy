@@ -14,9 +14,249 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 28/28, 2026-06-10
+## Current status: v0.3 — competitor matrix 52/52, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **hand-signal recognition** (#28) — a `Signals` page tracks the 21-point
+Latest: **security audit log** (matrix #52). A bounded `audit_log` table records
+security events — `login_success`/`login_failed` (with client IP via
+`client_ip`, correct behind a trusted proxy), `password_set`/`password_cleared`,
+`token_created`/`token_revoked` — surfaced newest-first at `GET /api/audit` and
+in a Settings "Recent security activity" card. **No secrets logged** (action +
+token name only). The table self-trims to the most recent 2000 rows
+(`db::add_audit`, best-effort so it never blocks the audited action). The audit
+log is **session-only** — `token_forbidden` blocks a Bearer token from reading
+it so a leaked token can't recon login IPs / other tokens. Live-validated
+(set-password, wrong+correct login, token create → correct action/IP/detail).
+
+### Earlier this session: stranger / unfamiliar-face detection (matrix #51) — the marquee
+smart-NVR feature (UniFi "unfamiliar face"). A person whose face is detected but
+matches **no enrolled identity** is tagged with the reserved `db::UNKNOWN_FACE`
+("?") sentinel on the event, and a new `AlarmRule.face_unknown` condition fires
+a webhook/ntfy/MQTT action on it. `pipeline::run_faces` marks an unmatched
+confident face on its person box only if not already recognized (a real name
+wins) **and only when ≥1 identity is enrolled** (with none, everyone is
+"unknown" = noise — a review-driven guard against a first-run flood; crops are
+still saved for enrollment). Enroll/rename reject the reserved name. Alarms page
+"unknown face (stranger)" condition (exclusive with face-name match, enroll-first
+hint); Events shows "🚶 stranger". **Live-validated E2E on a USB webcam: un-enrolled
+face → person event face="?" → face_unknown webhook fired**; also validated on
+real IP cameras (Dahua + Amcrest over ONVIF→RTSP, DirectML). Review drove the
+zero-enrolled guard + reserved-name rejection + face_like exclusivity.
+
+### Earlier this session: event CSV export (matrix #50) `GET /api/events/export.csv` downloads
+matching events as RFC 4180 CSV (same filters as the events list, up to a
+generous cap, with a `Content-Disposition` attachment). Columns: id, local time,
+camera, label, score, face, plate, gesture, zone, flagged, note, caption,
+transcript. The renderer guards against spreadsheet **formula injection** (a
+field starting with `= + - @` is prefixed with `'`) since transcripts/captions/
+notes are partly attacker-influenced; pure `events_to_csv`/`csv_field` are
+unit-tested. Events page gains a "⬇ Export CSV" link carrying the active filters.
+Live-validated (headers + rows + the flagged filter narrowing the export).
+
+### Earlier this session: Prometheus metrics (matrix #49)
+
+`GET /api/metrics` returns
+Prometheus 0.0.4 text exposition — `zoomy_build_info`, `zoomy_cameras`/`_online`,
+`zoomy_events`, `zoomy_disk_free_bytes`, plus per-camera gauges
+(`zoomy_camera_online`/`_recording`/`_storage_bytes`/`_segments`/`_inference_ms`/
+`_last_frame_age_seconds`, labelled by camera). Hand-rendered from the segment
+index + status board + event count (no new dep); the pure `render_metrics` is
+unit-tested incl. label escaping. Gated by the same `/api` auth, so a scraper
+uses an API token (#48) via `Authorization: Bearer` or runs on loopback.
+Live-validated (valid exposition, `text/plain; version=0.0.4`, per-camera series,
+401 when scraped remotely without auth). Review: 0 defects above a pre-existing
+low (`poll_ms*3` overflow, hardened with `saturating_mul` in the new code).
+
+### Earlier this session: API access tokens (matrix #48)
+
+Bearer tokens let scripts /
+integrations (Home Assistant, MQTT automations) call the JSON API from another
+host without the session cookie. `POST /api/tokens` mints a `zoomy_<64-hex>`
+(256-bit) token, returns it **once**, stores only its SHA-256 hash; `GET
+/api/tokens` lists metadata; `DELETE /api/tokens/{id}` revokes. `auth::middleware`
+accepts `Authorization: Bearer …` (scheme case-insensitive) after the existing
+session/loopback checks, stamping last-used ≤once/min. **A Bearer token is denied
+token-management + password-change** (`token_forbidden` → 403 on `/api/tokens`
+POST·DELETE and `/api/auth/password`; only an interactive session/loopback can),
+so a leaked token can't mint siblings or lock the owner out. New
+`crates/core/src/db.rs` `api_tokens` table; Settings "API tokens" card.
+Live-validated via `--trusted-proxy`+XFF (remote 200 w/ token, 401 without/bad/
+revoked, 403 on escalation paths, loopback unaffected). Security review drove the
+escalation gate + case-insensitive scheme.
+
+### Earlier this session: event bookmarks (matrix #47)
+
+A per-event `flagged` + free-text
+`note` (new columns), `POST /api/events/{id}/bookmark`, and a server-side
+`flagged` list filter. A bookmarked event is **exempt from the event-retention
+prune** — `db::prune_events_before` keeps flagged rows and their snapshots (the
+snapshot-delete query skips files still referenced by any flagged event), so a
+saved clip survives past retention. Events page gains a ★/☆ save toggle + 📝
+note per card and a "⭐ Saved" filter; un-saving a noted event confirms then
+drops the note (no orphaned notes). The endpoint distinguishes absent (preserve)
+/ null·"" (clear) / string (set, ≤500) via a custom serde deserializer
+(`de_some`) — plain `Option<Option<String>>` can't tell absent from null.
+Live-validated via the API; retention-protection + the serde semantics are
+unit-tested. Review caught the note-orphan-on-unflag bug + absent-note-wipe.
+
+### Earlier this session: spoken-keyword alarm (matrix #46)
+
+A new Alarm Manager condition
+`transcript_like` (case-insensitive substring on an event's speech-to-text
+transcript) fires a webhook/ntfy/MQTT action when a phrase is *said* near a
+camera — a spoken "safe word" (e.g. "help"/"fire"), the audio sibling of the #35
+duress gesture. `AlarmRule::matches` gained a 7th `transcript` arg; the condition
+is evaluated **only** in the transcribe worker after whisper writes the transcript
+(`transcribe::fire_transcript_alarms`), guarded by a non-empty `transcript_like`
+so it never double-fires against the audio-event dispatch (which passes
+`transcript: None`). The matched transcript now rides into the webhook JSON /
+ntfy push / template `{{transcript}}` placeholder. Alarms page gains a "spoken
+phrase" field. Live-validated end-to-end (spoken "americans" → rule fired once →
+webhook carried the transcript). Review fixed a redundant clippy attribute,
+empty-phrase handling, and `\u`-escaping of control chars in webhook templates.
+
+### Earlier this session: transcript-aware smart search (matrix #45)
+
+The ✨ Events search is now hybrid — CLIP visual similarity **plus** a whole-word
+text match on each event's transcript + caption (`smart::text_match_score`), so
+you can search what was *said*, and a speech/caption hit outranks a pure-visual
+one. It also works **without** the CLIP models now (text-only mode instead of
+erroring). `db::search_corpus(with_embeddings)` joins event text + optional
+embedding in one query over the full (retention-bounded) history (no recall cap;
+embedding column skipped in text-only mode). Live-validated (search "americans" →
+the jfk transcript event on top, `match=speech`). Review drove uncapping recall,
+the text-only embedding skip, signal-only filtering, and whole-word matching.
+
+### Earlier this session: bundled audio transcription (matrix #44)
+
+Opt-in, off by default,
+fully local: **whisper.cpp is compiled into the binary** (whisper-rs) — no
+separate server. A YAMNet audio event triggers `crates/core/src/transcribe.rs`
+(its own worker; model loaded once), which captures a short clip from the
+camera's restream and writes a speech-to-text **transcript** onto the event
+(🎙️ on Events cards, searchable). Per-camera via the existing `audio_detect`;
+Settings card + model path (`ggml-tiny.en.bin`, downloaded not committed).
+**Live-validated end-to-end with the bundled model:** a jfk.wav "intercom"
+camera → "Speech" event → transcript "And so my fellow Americans ask not what
+you are" on the card. **BUILD GOTCHA: whisper-rs compiles for every build** and
+needs **cmake + libclang** — Linux can skip libclang via the crate's shipped
+bindings (`WHISPER_DONT_GENERATE_BINDINGS=1`, glibc-x86_64 only), Windows needs
+LLVM (`LIBCLANG_PATH`), macOS uses Xcode's; CI sets these per-OS (Windows has a
+`choco install llvm` fallback for the June-2026 image swap). Capture is
+watchdog-killed so a stalled stream can't hang shutdown; transcript text logs at
+debug (no PII at info). Review (build-CI/correctness/privacy): 0 high findings.
+
+### Earlier this session: two-way audio / push-to-talk (matrix #43)
+
+A per-camera opt-in
+`two_way_audio` (DetectConfig flag + tuning toggle) adds a **hold-to-talk**
+button to the camera detail view; holding it streams the browser mic to the
+camera over WebRTC (the go2rtc player adds a send-only audio track via
+`getUserMedia` → `addTransceiver(sendonly)`, riding the #42 `/api/ws` proxy).
+Forces WebRTC while talking. **Live-validated in Chrome with a real webcam mic**
+(sendonly transceiver negotiated, red "Talking…" over live video). **Mic-privacy
+GOTCHA the review caught:** go2rtc's `<video-rtc>` defers its own teardown — and
+the sender `track.stop()` — behind a 5 s `DISCONNECT_TIMEOUT`, so just removing
+the element leaves the mic hot ~5 s after release; `LiveVideo` cleanup now calls
+`sender.track.stop()` immediately (verified: mic ends ~100 ms after release) and
+CameraDetail adds a window pointer-up/blur release safety net. Speaker playout
+needs a camera with a backchannel (the webcam has none → unvalidated end).
+
+### Earlier this session: remote live-view via an authenticated WebSocket reverse-proxy (matrix #42)
+
+The live player's WebSocket now connects to zoomy's **own origin**
+`/api/ws?src=NAME` (`stream_ws`/`proxy_ws` in `api.rs`), which proxies to the
+loopback-only go2rtc — browser ⇄ zoomy ⇄ go2rtc. This makes **remote/LAN
+live-view work** (MSE/MJPEG media rides the proxied socket, so any viewer gets
+video — not just one on the server box), lets us **drop `origin: "*"`** (go2rtc
+keeps default same-origin protection — closes the localhost-CSRF the #41 review
+flagged), and routes live streams through zoomy's **auth middleware** (a password
+now gates live view too; loopback exempt). The proxy builds the upstream URL from
+the fixed loopback base + only the urlencoded `src` (no SSRF), pumps both ways
+with `tokio::select!`, times out the upstream connect (8s), rejects empty `src`,
+and sends a clean Close on failure. Deps: tokio-tungstenite 0.29 (deduped to
+axum's) + futures-util, axum `ws` feature — all pure-Rust, no TLS/C.
+**Live-validated in Chrome with a real USB webcam: WebRTC + MSE both play 640×480
+over `ws://localhost:8080/api/ws` (same origin), go2rtc.yaml has no `origin`.**
+Adversarial review: SSRF closed, no leak, 0 real defects above nit. `LiveVideo`
+now uses a relative `/api/ws` src; dead `base`/`config` props removed.
+
+### Earlier this session: native live-view player (matrix #41)
+
+The Live grid + camera detail
+embed go2rtc's `<video-stream>` web component (a real `<video>` with WebRTC +
+MSE/MJPEG fallback) instead of an `<iframe>` onto go2rtc's stream.html — the
+long-standing CLAUDE next-step #2. A thin same-origin `GET /api/player/{file}`
+proxy (allowlisted) serves go2rtc's player JS (it has no CORS). go2rtc's API is
+bound to **127.0.0.1** (was `0.0.0.0` — off the LAN). The player module caches
+only on success so a go2rtc restart can't permanently black out tiles
+(adversarial review caught that). New `web/src/LiveVideo.tsx`.
+
+### Earlier this session: config backup & restore (matrix #40)
+
+`GET /api/backup` downloads a
+JSON snapshot of the configuration (cameras + settings + alarm rules; not
+recordings/events/faces) with a `Content-Disposition` header; `POST /api/restore`
+imports it. Restore is additive (settings replaced; a camera/alarm whose name
+already exists is kept) and **re-points per-camera alarm scopes by camera name**
+so they hit the right camera on the new box. Settings page gains a Backup &
+restore card. The adversarial review caught a **real high-severity bug**: camera
+`source`/`detect_source` flow verbatim into go2rtc's generated YAML, so a newline
+in a source (e.g. from a malicious imported backup) could inject an `exec:` stream
+→ RCE on go2rtc restart. Fixed by rejecting control characters in source/sub-stream
+at **every** entry point (`add_camera`/`patch_camera`/`restore`) — `exec:`/`ffmpeg:`
+schemes still allowed — plus a defensive control-char strip in the go2rtc config
+writer. Unit-tested + live-validated end-to-end across two instances (round-trip,
+idempotent re-restore, alarm remap-by-name with shifted ids, injection rejected).
+
+### Earlier this session: camera groups + Wall view (matrix #39)
+
+Latest before backup/restore: **camera groups + Wall view** (matrix #39). An optional per-camera
+`group` tag (nullable `group_name` column) lets the Live grid filter into group
+tabs (All / each group / Ungrouped, persisted in localStorage); the Cameras page
+gains an inline group editor + `<datalist>` autocomplete + an add-form field.
+Bonus correctness win: `patch_camera` now restarts go2rtc **only** when a
+stream-relevant field changed (name/source/detect_source/enabled) — metadata-only
+edits (group, detect, record, zones) no longer needlessly restart go2rtc and blip
+live streams (a step toward the "don't restart go2rtc on CRUD" goal). Server CRUD
+live-validated incl. the restart-gating; build/clippy/test/web-build green;
+adversarial 2-lens review clean (4 nits, 0 real defects). The group label is
+capped at 64 chars.
+
+### Earlier this session: WAN-ready security (matrix #16 closed)
+
+Password storage moved from
+salted SHA-256 to **argon2id** (legacy hashes still verify and are transparently
+re-hashed on the next successful login). Added a **per-IP login brute-force
+throttle** (8 wrong tries in 5 min → HTTP 429 + Retry-After lockout; loopback
+exempt so the local box can never lock itself out; the map is swept + capped at
+4096 IPs so address rotation can't grow it unbounded). Added **native HTTPS** via
+rustls/axum-server: `--tls-self-signed` mints a reusable self-signed cert under
+`<data_dir>/tls` (key `0600`/dir `0700` on Unix) for one-flag TLS, or pass
+`--tls-cert`/`--tls-key` (and matching `ZOOMY_TLS_*` env vars) for a real
+certificate; session cookies gain `Secure` when serving over TLS. Opt-in
+`--trusted-proxy` makes auth + throttle key off the right-most `X-Forwarded-For`
+hop so a same-host reverse proxy's loopback connection can't inherit the
+local-access exemption (and a spoofed `XFF: 127.0.0.1` can't either — a proxied
+request is never treated as loopback). **TLS is pinned to the `ring` crypto
+provider** (`rustls`/`axum-server` with `default-features=false`), which is
+already in-tree via ureq/rumqttc/rcgen — so HTTPS adds **no new C/assembly dep**
+(notably no `aws-lc-sys`, which would pull CMake + NASM on Windows CI); confirmed
+`aws-lc-sys` is absent from the binary's `cargo tree`. Build/clippy/test green and
+**live-validated over HTTPS** (ring handshake, argon2 login, Secure cookie, 401 on
+wrong password, plain HTTP to the TLS port refused; with `--trusted-proxy`:
+proxied client forced to auth, spoofed-loopback rejected, XFF-keyed lockout fires
+on the 9th attempt). New `crates/core/src/tls.rs` holds the self-signed cert
+helper; `crates/core/src/auth.rs` gained argon2 + `LoginThrottle` + the
+`client_ip` proxy resolver (all unit-tested). A 3-lens adversarial review
+workflow (security/correctness/portability) drove the ring switch, key-perms,
+throttle-bounding, and trusted-proxy hardening. The matrix rows #29–#38 (zones, anti-fatigue push,
+HA discovery, event review, restream fan-out, per-camera detectors, gestures,
+LPR/face/GenAI) all shipped earlier on this branch.
+
+### Earlier: hand-signal recognition (#28), 2026-06-10
+
+Latest before the roadmap batch: **hand-signal recognition** (#28) — a `Signals`
+page tracks the 21-point
 hand-landmark mesh live in the browser (MediaPipe Tasks Vision, GPU, loaded from
 a configurable CDN so it stays portable/offline-capable), classifies hand signals
 (open-palm/fist/victory/point/thumb-up·down/I-love-you), and on a *held* armed

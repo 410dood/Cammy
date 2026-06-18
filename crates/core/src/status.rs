@@ -16,6 +16,12 @@ pub struct CamHealth {
     pub last_error: Option<String>,
     /// ffmpeg recorder process currently alive.
     pub recording: bool,
+    /// Last YOLO inference latency for this camera (milliseconds).
+    pub inference_ms: Option<f32>,
+    /// Execution provider the camera's detector is using (DirectML/CoreML/CUDA/CPU).
+    pub accelerator: Option<String>,
+    /// Model file the camera's detector loaded.
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -39,6 +45,15 @@ impl StatusBoard {
 
     pub fn set_recording(&self, camera_id: i64, recording: bool) {
         self.write().entry(camera_id).or_default().recording = recording;
+    }
+
+    /// Record a detector run's latency + which accelerator/model served it.
+    pub fn infer(&self, camera_id: i64, ms: f32, accelerator: &str, model: &str) {
+        let mut m = self.write();
+        let e = m.entry(camera_id).or_default();
+        e.inference_ms = Some(ms);
+        e.accelerator = Some(accelerator.to_string());
+        e.model = Some(model.to_string());
     }
 
     /// Drop state for cameras that no longer exist.

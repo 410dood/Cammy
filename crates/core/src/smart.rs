@@ -1,4 +1,4 @@
-﻿//! Smart search (UniFi AI Key style): CLIP ViT-B/32 embeddings make event
+//! Smart search (UniFi AI Key style): CLIP ViT-B/32 embeddings make event
 //! snapshots searchable by natural language — "person in a red shirt",
 //! "delivery truck at night". The pipeline embeds each event snapshot once;
 //! a text query embeds in ~50 ms and ranks events by cosine similarity.
@@ -96,7 +96,64 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+/// How well `query` matches free text (an event's transcript + caption), in
+/// `[0, 1]`, case-insensitive: `1.0` if the whole query is a substring, else
+/// the fraction of query words (≥2 chars) found in the text. `0` if no overlap.
+/// Used to fold spoken words / captions into smart search alongside CLIP.
+pub fn text_match_score(query: &str, text: &str) -> f32 {
+    let text = text.to_lowercase();
+    let query = query.trim().to_lowercase();
+    // Tokenize on non-alphanumeric boundaries; keep tokens of ≥2 chars so a
+    // stray single character can't match.
+    let toks = |s: &str| -> std::collections::HashSet<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|t| t.chars().count() >= 2)
+            .map(str::to_string)
+            .collect()
+    };
+    let q_words = toks(&query);
+    if text.trim().is_empty() || q_words.is_empty() {
+        return 0.0;
+    }
+    // A multi-word query that appears verbatim is a full phrase match.
+    if q_words.len() >= 2 && text.contains(&query) {
+        return 1.0;
+    }
+    // Otherwise match whole words only — "car" must not match "scared".
+    let t_words = toks(&text);
+    let hits = q_words.iter().filter(|w| t_words.contains(*w)).count();
+    hits as f32 / q_words.len() as f32
+}
+
 fn l2(v: &[f32]) -> Vec<f32> {
     let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-6);
     v.iter().map(|x| x / norm).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::text_match_score;
+
+    #[test]
+    fn text_match_scoring() {
+        // Whole-query substring (case-insensitive) → full match.
+        assert_eq!(
+            text_match_score("help me", "Someone yelling HELP ME outside"),
+            1.0
+        );
+        // Partial word overlap → fraction (one of three words present).
+        let partial = text_match_score("help fire truck", "the word help appears");
+        assert!((partial - 1.0 / 3.0).abs() < 1e-4, "got {partial}");
+        // Whole-word matching: a query word must not partial-match a longer word.
+        assert_eq!(text_match_score("car", "i was so scared"), 0.0);
+        assert_eq!(text_match_score("scared", "i was so scared"), 1.0);
+        // Punctuation around words is ignored.
+        assert_eq!(text_match_score("help", "stop! help! now."), 1.0);
+        // No overlap / empty text or query → 0.
+        assert_eq!(text_match_score("delivery", "good morning everyone"), 0.0);
+        assert_eq!(text_match_score("anything", ""), 0.0);
+        assert_eq!(text_match_score("", "some text"), 0.0);
+        // 1-char query is ignored (no stray single-letter matches).
+        assert_eq!(text_match_score("a", "a cat sat"), 0.0);
+    }
 }

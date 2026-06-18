@@ -21,6 +21,7 @@ use detector::ort::value::Tensor;
 
 use crate::db::Db;
 use crate::go2rtc::Go2Rtc;
+use crate::proc::NoConsole as _;
 
 pub const MODEL: &str = "yamnet.onnx";
 pub const CLASS_MAP: &str = "yamnet_class_map.csv";
@@ -91,6 +92,7 @@ fn capture(ffmpeg: &std::path::Path, rtsp_url: &str) -> Result<Vec<f32>> {
         .args(["-ar", &SAMPLE_RATE.to_string(), "-f", "f32le", "-"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .no_console()
         .spawn()
         .context("spawning ffmpeg audio capture")?;
     let mut bytes = Vec::new();
@@ -107,12 +109,15 @@ fn capture(ffmpeg: &std::path::Path, rtsp_url: &str) -> Result<Vec<f32>> {
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     db: Db,
     go2rtc: Arc<Go2Rtc>,
     ffmpeg_bin: Option<PathBuf>,
     snapshots_dir: PathBuf,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    throttle: crate::notify::AlarmThrottle,
+    transcribe_tx: std::sync::mpsc::Sender<crate::transcribe::TranscribeJob>,
     shutdown: Arc<AtomicBool>,
 ) {
     let Ok(ffmpeg) = recorder::locate_ffmpeg(ffmpeg_bin.as_deref()) else {
@@ -212,6 +217,7 @@ pub fn run(
                     None,
                     None,
                     None,
+                    None,
                 ) {
                     Ok(id) => {
                         tracing::info!(
@@ -230,6 +236,14 @@ pub fn run(
                             snapshot: format!("/api/snapshots/{snap_rel}"),
                             topic: None,
                         });
+                        // Opt-in speech-to-text: hand the event to the transcriber,
+                        // which captures a short clip and writes back a transcript.
+                        if settings.transcription_enabled {
+                            let _ = transcribe_tx.send(crate::transcribe::TranscribeJob {
+                                event_id: id,
+                                camera: cam.name.clone(),
+                            });
+                        }
                         let snap_abs = snapshots_dir.join(&snap_rel);
                         let alarm_ev = crate::notify::AlarmEvent {
                             event_id: id,
@@ -242,11 +256,15 @@ pub fn run(
                             face: None,
                             plate: None,
                             gesture: None,
+                            transcript: None,
+                            base_url: &settings.public_base_url,
+                            webhook_template: &settings.webhook_template,
+                            duress: false,
                         };
-                        for rule in alarms
-                            .iter()
-                            .filter(|r| r.matches(cam.id, &label, score, None, None, None))
-                        {
+                        for rule in alarms.iter().filter(|r| {
+                            r.matches(cam.id, &label, score, None, None, None, None)
+                                && crate::notify::ready(r, &throttle, now)
+                        }) {
                             crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
                         }
                     }

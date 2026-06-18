@@ -29,8 +29,12 @@ clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs", "cors"] }
+# WS client for the live-stream reverse-proxy (browser <-> zoomy <-> go2rtc).
+# No TLS features: the upstream hop is loopback ws:// to the supervised go2rtc.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -48,6 +52,21 @@ tokenizers = { version = "0.21", default-features = false, features = ["fancy-re
 base64 = "0.22"
 rand = "0.9"
 fs2 = "0.4"
+argon2 = "0.5"
+# Bundled speech-to-text: whisper.cpp compiled in (no separate server). Default
+# features = CPU (GPU backends are opt-in), which keeps it portable; takes the
+# 16 kHz mono f32 PCM we already capture for audio detection. Model downloaded,
+# not committed.
+whisper-rs = "0.16"
+# Native HTTPS for off-LAN exposure. We pin rustls to the *ring* crypto
+# provider, which is already in-tree (ureq, rumqttc, rcgen all pull it) — so TLS
+# adds no new C/assembly dependency (notably no aws-lc-sys, which would drag in
+# CMake + NASM on Windows CI). axum-server's `-no-provider` feature lets us own
+# the provider choice; rcgen mints self-signed certs so `--tls-self-signed`
+# works with zero setup. All pure-Rust, no OpenSSL — 3-OS CI stays green.
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 
 [workspace.package]
 edition = "2021"

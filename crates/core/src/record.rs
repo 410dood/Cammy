@@ -138,7 +138,7 @@ pub fn run(
                                 let _ = db.delete_segment_by_path(&path);
                                 continue;
                             }
-                            match recorder::reencode_segment(&ffmpeg, &p) {
+                            match recorder::reencode_segment(&ffmpeg, &p, &settings.hwaccel) {
                                 Ok(new_bytes) => {
                                     let _ = db.mark_segment_reduced(&path, new_bytes);
                                     tracing::info!(

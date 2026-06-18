@@ -37,6 +37,17 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
     }
   };
 
+  const rename = async (f: Enrolled) => {
+    const next = window.prompt(`Rename "${f.name}" to:`, f.name);
+    if (!next || !next.trim() || next.trim() === f.name) return;
+    try {
+      await api.renameFace(f.id, next.trim());
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
   const forget = async (f: Enrolled) => {
     if (!window.confirm(`Forget "${f.name}"? Their events keep the name, new ones won't match.`))
       return;
@@ -65,8 +76,15 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
               <span key={f.id} className="pill on" style={{ padding: "6px 14px", fontSize: "0.9rem" }}>
                 👤 {f.name}{" "}
                 <button
-                  className="danger"
+                  className="ghost"
                   style={{ marginLeft: 8, padding: "2px 8px" }}
+                  onClick={() => rename(f)}
+                >
+                  rename
+                </button>
+                <button
+                  className="danger"
+                  style={{ marginLeft: 4, padding: "2px 8px" }}
                   onClick={() => forget(f)}
                 >
                   forget
