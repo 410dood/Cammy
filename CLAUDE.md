@@ -14,9 +14,28 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 43/43, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 44/44, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **two-way audio / push-to-talk** (matrix #43). A per-camera opt-in
+Latest: **bundled audio transcription** (matrix #44). Opt-in, off by default,
+fully local: **whisper.cpp is compiled into the binary** (whisper-rs) — no
+separate server. A YAMNet audio event triggers `crates/core/src/transcribe.rs`
+(its own worker; model loaded once), which captures a short clip from the
+camera's restream and writes a speech-to-text **transcript** onto the event
+(🎙️ on Events cards, searchable). Per-camera via the existing `audio_detect`;
+Settings card + model path (`ggml-tiny.en.bin`, downloaded not committed).
+**Live-validated end-to-end with the bundled model:** a jfk.wav "intercom"
+camera → "Speech" event → transcript "And so my fellow Americans ask not what
+you are" on the card. **BUILD GOTCHA: whisper-rs compiles for every build** and
+needs **cmake + libclang** — Linux can skip libclang via the crate's shipped
+bindings (`WHISPER_DONT_GENERATE_BINDINGS=1`, glibc-x86_64 only), Windows needs
+LLVM (`LIBCLANG_PATH`), macOS uses Xcode's; CI sets these per-OS (Windows has a
+`choco install llvm` fallback for the June-2026 image swap). Capture is
+watchdog-killed so a stalled stream can't hang shutdown; transcript text logs at
+debug (no PII at info). Review (build-CI/correctness/privacy): 0 high findings.
+
+### Earlier this session: two-way audio / push-to-talk (matrix #43)
+
+A per-camera opt-in
 `two_way_audio` (DetectConfig flag + tuning toggle) adds a **hold-to-talk**
 button to the camera detail view; holding it streams the browser mic to the
 camera over WebRTC (the go2rtc player adds a send-only audio track via

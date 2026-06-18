@@ -24,6 +24,26 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         # Respects rust-toolchain.toml (pinned stable + clippy + rustfmt).
 
+      # whisper-rs compiles whisper.cpp (cmake — preinstalled on all runners)
+      # and generates FFI bindings with bindgen (libclang). Configure per OS:
+      #  - Linux: use the crate's shipped Linux bindings, so no libclang needed.
+      #  - Windows: point bindgen at the runner's preinstalled LLVM.
+      #  - macOS: bindgen finds libclang in the Xcode toolchain by default.
+      - name: Configure whisper.cpp build deps
+        shell: bash
+        run: |
+          case "${{ matrix.os }}" in
+            ubuntu-latest)  echo "WHISPER_DONT_GENERATE_BINDINGS=1" >> "$GITHUB_ENV" ;;
+            windows-latest)
+              # Prefer the runner's preinstalled LLVM; install it at the same
+              # path if a future image swap (Server 2025 / VS 2026) drops it, so
+              # bindgen always finds libclang.dll regardless of image churn.
+              if [ ! -f "/c/Program Files/LLVM/bin/libclang.dll" ]; then
+                choco install llvm -y --no-progress
+              fi
+              echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV" ;;
+          esac
+
       - name: Format
         run: cargo fmt --all -- --check
 

@@ -63,6 +63,7 @@ export interface CamEvent {
   gesture: string | null;
   zone: string | null;
   caption: string | null;
+  transcript: string | null;
 }
 
 export interface Segment {
@@ -117,6 +118,8 @@ export interface Settings {
   genai_url: string;
   genai_model: string;
   genai_api_key: string;
+  transcription_enabled: boolean;
+  transcription_model: string;
 }
 
 export interface CamStorage {

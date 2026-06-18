@@ -367,6 +367,36 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
+        <div className="card">
+          <h2>Audio transcription 🎙️</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Speech-to-text for audio events, using a <b>bundled, in-process</b> whisper.cpp engine —
+            audio never leaves this machine and there's no separate software to run.{" "}
+            <b>Off by default.</b> When on, this applies to <b>every camera with audio detection
+            enabled</b>: a sound event captures a short clip and the transcript is written onto the
+            event (shown on cards). Needs the whisper model file present.
+          </p>
+          <div className="row">
+            <label className="toggle field">
+              enable transcription
+              <input
+                type="checkbox"
+                checked={s.transcription_enabled}
+                onChange={() => set({ transcription_enabled: !s.transcription_enabled })}
+              />
+            </label>
+            <label className="field" style={{ flex: 1, minWidth: 320 }} title="Path to a whisper GGML model (downloaded separately), e.g. ggml-tiny.en.bin or ggml-base.en.bin.">
+              whisper model file
+              <input
+                type="text"
+                placeholder="ggml-tiny.en.bin"
+                value={s.transcription_model ?? ""}
+                onChange={(e) => set({ transcription_model: e.target.value })}
+              />
+            </label>
+          </div>
+        </div>
+
         <RemoteAccessCard onError={onError} />
 
         <BackupCard onError={onError} />

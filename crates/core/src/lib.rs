@@ -25,6 +25,7 @@ mod record;
 mod smart;
 mod status;
 pub mod tls;
+mod transcribe;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -131,6 +132,15 @@ pub async fn run(
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || genai::run(db, genai_rx, stop)
     })?;
+    // Speech-to-text worker (audio event -> capture -> bundled whisper.cpp).
+    let (transcribe_tx, transcribe_rx) = std::sync::mpsc::channel::<transcribe::TranscribeJob>();
+    let transcribe_thread = std::thread::Builder::new()
+        .name("transcribe".into())
+        .spawn({
+            let (db, go2rtc, stop) = (db.clone(), go2rtc.clone(), workers_stop.clone());
+            let ffmpeg_bin = cfg.ffmpeg_bin.clone();
+            move || transcribe::run(db, go2rtc, ffmpeg_bin, transcribe_rx, stop)
+        })?;
     let mqtt_thread = std::thread::Builder::new().name("mqtt".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || mqtt::run(db, mqtt_rx, stop)
@@ -149,7 +159,19 @@ pub async fn run(
         );
         let (ffmpeg_bin, tx) = (cfg.ffmpeg_bin.clone(), mqtt_tx2);
         let throttle = alarm_throttle.clone();
-        move || audio::run(db, go2rtc, ffmpeg_bin, dir, tx, throttle, stop)
+        let transcribe_tx = transcribe_tx.clone();
+        move || {
+            audio::run(
+                db,
+                go2rtc,
+                ffmpeg_bin,
+                dir,
+                tx,
+                throttle,
+                transcribe_tx,
+                stop,
+            )
+        }
     })?;
 
     // go2rtc watchdog.
@@ -251,6 +273,7 @@ pub async fn run(
         let _ = mqtt_thread.join();
         let _ = health_thread.join();
         let _ = genai_thread.join();
+        let _ = transcribe_thread.join();
     })
     .await;
     go2rtc.stop();

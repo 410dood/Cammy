@@ -307,6 +307,11 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                     “{ev.caption}”
                   </div>
                 )}
+                {ev.transcript && (
+                  <div style={{ marginTop: 4, fontSize: "0.85rem" }} title="Speech-to-text of the event audio">
+                    🎙️ “{ev.transcript}”
+                  </div>
+                )}
                 <div className="muted">{fmtTime(ev.ts)}</div>
                 <div className="row" style={{ marginTop: 8 }}>
                   <button

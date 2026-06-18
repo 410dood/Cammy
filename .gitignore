@@ -54,3 +54,7 @@ Thumbs.db
 /yamnet_class_map.csv
 
 web/tsconfig.tsbuildinfo
+
+# Whisper STT model (downloaded, not committed) + test sample
+/ggml-*.bin
+/jfk.wav

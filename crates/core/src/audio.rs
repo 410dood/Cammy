@@ -115,6 +115,7 @@ pub fn run(
     snapshots_dir: PathBuf,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
     throttle: crate::notify::AlarmThrottle,
+    transcribe_tx: std::sync::mpsc::Sender<crate::transcribe::TranscribeJob>,
     shutdown: Arc<AtomicBool>,
 ) {
     let Ok(ffmpeg) = recorder::locate_ffmpeg(ffmpeg_bin.as_deref()) else {
@@ -233,6 +234,14 @@ pub fn run(
                             snapshot: format!("/api/snapshots/{snap_rel}"),
                             topic: None,
                         });
+                        // Opt-in speech-to-text: hand the event to the transcriber,
+                        // which captures a short clip and writes back a transcript.
+                        if settings.transcription_enabled {
+                            let _ = transcribe_tx.send(crate::transcribe::TranscribeJob {
+                                event_id: id,
+                                camera: cam.name.clone(),
+                            });
+                        }
                         let snap_abs = snapshots_dir.join(&snap_rel);
                         let alarm_ev = crate::notify::AlarmEvent {
                             event_id: id,

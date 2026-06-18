@@ -53,6 +53,11 @@ base64 = "0.22"
 rand = "0.9"
 fs2 = "0.4"
 argon2 = "0.5"
+# Bundled speech-to-text: whisper.cpp compiled in (no separate server). Default
+# features = CPU (GPU backends are opt-in), which keeps it portable; takes the
+# 16 kHz mono f32 PCM we already capture for audio detection. Model downloaded,
+# not committed.
+whisper-rs = "0.14"
 # Native HTTPS for off-LAN exposure. We pin rustls to the *ring* crypto
 # provider, which is already in-tree (ureq, rumqttc, rcgen all pull it) — so TLS
 # adds no new C/assembly dependency (notably no aws-lc-sys, which would drag in

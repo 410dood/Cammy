@@ -202,6 +202,9 @@ pub struct Event {
     pub zone: Option<String>,
     /// Natural-language description from the optional GenAI captioner.
     pub caption: Option<String>,
+    /// Speech-to-text of the event's audio, from the optional (bundled, opt-in)
+    /// transcriber — set for audio events when transcription finds speech.
+    pub transcript: Option<String>,
 }
 
 /// Alarm Manager rule (UniFi style if-this-then-that): all set conditions
@@ -477,6 +480,12 @@ pub struct Settings {
     pub genai_model: String,
     /// Optional bearer token (for cloud/proxied endpoints). Empty for local Ollama.
     pub genai_api_key: String,
+    /// Opt-in speech-to-text of audio events, using the bundled (compiled-in)
+    /// whisper.cpp engine — nothing leaves the machine. Off by default.
+    pub transcription_enabled: bool,
+    /// Path to the whisper GGML model (downloaded, not committed), e.g.
+    /// `ggml-tiny.en.bin` (~75 MB) or `ggml-base.en.bin`.
+    pub transcription_model: String,
 }
 
 impl Default for Settings {
@@ -556,6 +565,8 @@ impl Default for Settings {
             genai_url: "http://localhost:11434/api/generate".into(),
             genai_model: "llava".into(),
             genai_api_key: String::new(),
+            transcription_enabled: false,
+            transcription_model: "ggml-tiny.en.bin".into(),
         }
     }
 }
@@ -612,6 +623,7 @@ impl Db {
         let _ = conn.execute("ALTER TABLE events ADD COLUMN gesture TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN zone TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN caption TEXT", []);
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN transcript TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
@@ -788,7 +800,7 @@ impl Db {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
-                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption
+                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -812,7 +824,7 @@ impl Db {
         let ev = conn
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
-                        e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption
+                        e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
@@ -961,6 +973,15 @@ impl Db {
         self.conn().execute(
             "UPDATE events SET caption = ?1 WHERE id = ?2",
             params![caption, event_id],
+        )?;
+        Ok(())
+    }
+
+    /// Store a speech-to-text transcript for an event (best-effort enrichment).
+    pub fn set_event_transcript(&self, event_id: i64, transcript: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE events SET transcript = ?1 WHERE id = ?2",
+            params![transcript, event_id],
         )?;
         Ok(())
     }
@@ -1257,6 +1278,7 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         gesture: r.get(13)?,
         zone: r.get(14)?,
         caption: r.get(15)?,
+        transcript: r.get(16)?,
     })
 }
 

@@ -40,6 +40,7 @@ rcgen.workspace = true
 rustls.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
+whisper-rs.workspace = true
 
 detector = { path = "../detector" }
 facerec = { path = "../facerec" }
