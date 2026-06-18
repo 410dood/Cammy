@@ -45,6 +45,7 @@ export interface Camera {
   record: boolean;
   created_ts: number;
   detect_config: DetectConfig;
+  group: string | null;
 }
 
 export interface CamEvent {
@@ -206,6 +207,7 @@ export const api = {
   addCamera: (c: {
     name: string;
     source: string;
+    group?: string;
     detect_source?: string;
     detect: boolean;
     record: boolean;

@@ -33,6 +33,11 @@ pub struct Camera {
     /// Per-camera detection tuning; unset fields inherit global settings.
     #[serde(default)]
     pub detect_config: DetectConfig,
+    /// Optional organizational group (e.g. "downstairs", "outdoor") used to
+    /// filter the live grid into camera groups / video walls. Pure metadata —
+    /// it does not affect go2rtc, recording, or detection.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// A rectangle in frame-fraction coordinates (0..1), so it survives resolution
@@ -594,6 +599,8 @@ impl Db {
         // Additive migrations; "duplicate column" on rerun is expected.
         let _ = conn.execute("ALTER TABLE cameras ADD COLUMN detect_json TEXT", []);
         let _ = conn.execute("ALTER TABLE cameras ADD COLUMN detect_source TEXT", []);
+        // `group` is a SQL reserved word, so the column is `group_name`.
+        let _ = conn.execute("ALTER TABLE cameras ADD COLUMN group_name TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN face TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN plate TEXT", []);
         let _ = conn.execute("ALTER TABLE events ADD COLUMN gesture TEXT", []);
@@ -655,7 +662,7 @@ impl Db {
     pub fn list_cameras(&self) -> Result<Vec<Camera>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, name, source, enabled, detect, record, created_ts, detect_json, detect_source
+            "SELECT id, name, source, enabled, detect, record, created_ts, detect_json, detect_source, group_name
              FROM cameras ORDER BY id",
         )?;
         let rows = stmt
@@ -668,7 +675,7 @@ impl Db {
         let conn = self.conn();
         let cam = conn
             .query_row(
-                "SELECT id, name, source, enabled, detect, record, created_ts, detect_json, detect_source
+                "SELECT id, name, source, enabled, detect, record, created_ts, detect_json, detect_source, group_name
                  FROM cameras WHERE id = ?1",
                 [id],
                 row_to_camera,
@@ -703,6 +710,7 @@ impl Db {
             record,
             created_ts: now,
             detect_config: DetectConfig::default(),
+            group: None,
         })
     }
 
@@ -710,7 +718,7 @@ impl Db {
         let detect_json = serde_json::to_string(&cam.detect_config)?;
         self.conn().execute(
             "UPDATE cameras SET name=?1, source=?2, enabled=?3, detect=?4, record=?5,
-             detect_json=?6, detect_source=?7 WHERE id=?8",
+             detect_json=?6, detect_source=?7, group_name=?8 WHERE id=?9",
             params![
                 cam.name,
                 cam.source,
@@ -719,6 +727,7 @@ impl Db {
                 cam.record,
                 detect_json,
                 cam.detect_source,
+                cam.group,
                 cam.id
             ],
         )?;
@@ -1259,6 +1268,7 @@ fn row_to_camera(r: &rusqlite::Row<'_>) -> rusqlite::Result<Camera> {
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default(),
         detect_source: r.get(8)?,
+        group: r.get(9)?,
     })
 }
 
@@ -1417,6 +1427,18 @@ mod tests {
         assert_eq!(pz.kind, ZoneKind::Required);
         assert!(pz.applies_to("person"));
         assert!(!pz.applies_to("car"));
+
+        // Group is persisted, defaults to None, and can be set + cleared.
+        assert_eq!(back.group, None);
+        cam.group = Some("outdoor".into());
+        db.update_camera(&cam).unwrap();
+        assert_eq!(
+            db.get_camera(cam.id).unwrap().unwrap().group.as_deref(),
+            Some("outdoor")
+        );
+        cam.group = None;
+        db.update_camera(&cam).unwrap();
+        assert_eq!(db.get_camera(cam.id).unwrap().unwrap().group, None);
     }
 
     #[test]

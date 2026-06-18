@@ -14,9 +14,23 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 38/38, WAN-hardened auth/TLS, 2026-06-17
+## Current status: v0.3 — competitor matrix 39/39, WAN-hardened auth/TLS, 2026-06-17
 
-Latest: **WAN-ready security** (matrix #16 closed). Password storage moved from
+Latest: **camera groups + Wall view** (matrix #39). An optional per-camera
+`group` tag (nullable `group_name` column) lets the Live grid filter into group
+tabs (All / each group / Ungrouped, persisted in localStorage); the Cameras page
+gains an inline group editor + `<datalist>` autocomplete + an add-form field.
+Bonus correctness win: `patch_camera` now restarts go2rtc **only** when a
+stream-relevant field changed (name/source/detect_source/enabled) — metadata-only
+edits (group, detect, record, zones) no longer needlessly restart go2rtc and blip
+live streams (a step toward the "don't restart go2rtc on CRUD" goal). Server CRUD
+live-validated incl. the restart-gating; build/clippy/test/web-build green;
+adversarial 2-lens review clean (4 nits, 0 real defects). The group label is
+capped at 64 chars.
+
+### Earlier this session: WAN-ready security (matrix #16 closed)
+
+Password storage moved from
 salted SHA-256 to **argon2id** (legacy hashes still verify and are transparently
 re-hashed on the next successful login). Added a **per-IP login brute-force
 throttle** (8 wrong tries in 5 min → HTTP 429 + Retry-After lockout; loopback

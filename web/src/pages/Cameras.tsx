@@ -277,6 +277,48 @@ function TuneModal({
   );
 }
 
+/// Inline group editor: commits on blur/Enter; empty string clears the group.
+/// Patching only `group` is metadata-only, so the server skips the go2rtc
+/// restart and live streams keep playing.
+function GroupCell({
+  cam,
+  onChange,
+  onError,
+}: {
+  cam: Camera;
+  onChange: () => void;
+  onError: (e: string) => void;
+}) {
+  const [val, setVal] = useState(cam.group ?? "");
+  useEffect(() => {
+    setVal(cam.group ?? "");
+  }, [cam.group]);
+  const commit = async () => {
+    const next = val.trim();
+    if (next === (cam.group ?? "")) return;
+    try {
+      await api.patchCamera(cam.id, { group: next } as Partial<Camera>);
+      onChange();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  return (
+    <input
+      className="field"
+      list="cam-groups"
+      placeholder="—"
+      style={{ width: 110 }}
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+    />
+  );
+}
+
 export default function Cameras({
   cameras,
   onChange,
@@ -298,6 +340,7 @@ export default function Cameras({
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
   const [detectSource, setDetectSource] = useState("");
+  const [group, setGroup] = useState("");
   const [detect, setDetect] = useState(true);
   const [record, setRecord] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -345,12 +388,14 @@ export default function Cameras({
         name: name.trim(),
         source: source.trim(),
         detect_source: detectSource.trim() || undefined,
+        group: group.trim() || undefined,
         detect,
         record,
       });
       setName("");
       setSource("");
       setDetectSource("");
+      setGroup("");
       setFound(null);
       onChange();
     } catch (err) {
@@ -379,9 +424,18 @@ export default function Cameras({
     }
   };
 
+  const groups = Array.from(
+    new Set(cameras.map((c) => c.group).filter((g): g is string => !!g)),
+  ).sort();
+
   return (
     <>
       <h1>Cameras</h1>
+      <datalist id="cam-groups">
+        {groups.map((g) => (
+          <option key={g} value={g} />
+        ))}
+      </datalist>
 
       <div className="card">
         <h2>Add camera</h2>
@@ -454,6 +508,16 @@ export default function Cameras({
               style={{ width: "100%" }}
             />
           </label>
+          <label className="field" style={{ minWidth: 130 }} title="Optional: group cameras for the Live view (e.g. 'outdoor', 'downstairs').">
+            group (optional)
+            <input
+              type="text"
+              list="cam-groups"
+              placeholder="e.g. outdoor"
+              value={group}
+              onChange={(e) => setGroup(e.target.value)}
+            />
+          </label>
           <label className="toggle">
             <input type="checkbox" checked={detect} onChange={() => setDetect(!detect)} /> detect
           </label>
@@ -485,6 +549,7 @@ export default function Cameras({
                 <th>Enabled</th>
                 <th>Detect</th>
                 <th>Record</th>
+                <th>Group</th>
                 <th>Perf</th>
                 <th></th>
               </tr>
@@ -519,6 +584,9 @@ export default function Cameras({
                       </span>
                     </td>
                   ))}
+                  <td>
+                    <GroupCell cam={cam} onChange={onChange} onError={onError} />
+                  </td>
                   <td className="muted" style={{ whiteSpace: "nowrap" }}>
                     {(() => {
                       const s = status[String(cam.id)];

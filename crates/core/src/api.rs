@@ -320,6 +320,8 @@ struct NewCamera {
     detect: bool,
     #[serde(default = "yes")]
     record: bool,
+    #[serde(default)]
+    group: Option<String>,
 }
 
 fn yes() -> bool {
@@ -332,6 +334,12 @@ fn valid_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// A camera group label is free-form display text, but bounded so it can't
+/// bloat the DB or the live-view tab bar.
+fn valid_group(group: &str) -> bool {
+    group.len() <= 64
 }
 
 async fn add_camera(
@@ -351,7 +359,7 @@ async fn add_camera(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let cam = st
+    let mut cam = st
         .db
         .add_camera(
             &body.name,
@@ -361,6 +369,18 @@ async fn add_camera(
             body.record,
         )
         .map_err(|e| bad_request(format!("could not add camera: {e}")))?;
+    if let Some(g) = body
+        .group
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if !valid_group(g) {
+            return Err(bad_request("group label must be 64 characters or fewer"));
+        }
+        cam.group = Some(g.to_string());
+        st.db.update_camera(&cam)?;
+    }
     st.go2rtc.restart_with(&st.db)?;
     Ok((StatusCode::CREATED, Json(cam)))
 }
@@ -375,6 +395,8 @@ struct CameraPatch {
     detect: Option<bool>,
     record: Option<bool>,
     detect_config: Option<crate::db::DetectConfig>,
+    /// `Some("")` clears the group; `None` leaves it unchanged.
+    group: Option<String>,
 }
 
 async fn patch_camera(
@@ -383,6 +405,13 @@ async fn patch_camera(
     Json(patch): Json<CameraPatch>,
 ) -> ApiResult<Json<Camera>> {
     let mut cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    // go2rtc's config depends only on name/source/detect_source/enabled, so a
+    // metadata-only patch (group, detect, record, zones) must NOT restart it —
+    // restarting needlessly drops every live stream.
+    let needs_go2rtc = patch.name.is_some()
+        || patch.source.is_some()
+        || patch.detect_source.is_some()
+        || patch.enabled.is_some();
     if let Some(name) = patch.name {
         if !valid_name(&name) {
             return Err(bad_request("invalid camera name"));
@@ -430,8 +459,17 @@ async fn patch_camera(
         }
         cam.detect_config = dc;
     }
+    if let Some(g) = patch.group {
+        let g = g.trim();
+        if !valid_group(g) {
+            return Err(bad_request("group label must be 64 characters or fewer"));
+        }
+        cam.group = (!g.is_empty()).then(|| g.to_string());
+    }
     st.db.update_camera(&cam)?;
-    st.go2rtc.restart_with(&st.db)?;
+    if needs_go2rtc {
+        st.go2rtc.restart_with(&st.db)?;
+    }
     Ok(Json(cam))
 }
 

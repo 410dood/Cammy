@@ -56,6 +56,7 @@ export default function Live({
   const [ptz, setPtz] = useState<Record<number, boolean>>({});
   const [detail, setDetail] = useState<Camera | null>(null);
   const [mode, setMode] = useState<StreamMode>(getStreamMode());
+  const [group, setGroup] = useState<string>(() => localStorage.getItem("zoomy-live-group") || "All");
 
   useEffect(() => {
     const load = () => api.status().then(setStatus).catch(() => {});
@@ -76,9 +77,32 @@ export default function Live({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameras]);
 
-  const live = cameras.filter((c) => c.enabled);
+  const enabled = cameras.filter((c) => c.enabled);
+  const groups = Array.from(
+    new Set(enabled.map((c) => c.group).filter((g): g is string => !!g)),
+  ).sort();
+  const hasUngrouped = enabled.some((c) => !c.group);
+
+  // Snap a stale selection (its cameras were removed/regrouped) back to All.
+  useEffect(() => {
+    if (group !== "All" && group !== "Ungrouped" && !groups.includes(group)) setGroup("All");
+    if (group === "Ungrouped" && !hasUngrouped) setGroup("All");
+    // NUL separator can't appear in a typed group name, so the dep key is
+    // unambiguous even for names containing punctuation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups.join("\u0000"), hasUngrouped]);
+
+  const pickGroup = (g: string) => {
+    setGroup(g);
+    localStorage.setItem("zoomy-live-group", g);
+  };
+
+  const live = enabled.filter((c) =>
+    group === "All" ? true : group === "Ungrouped" ? !c.group : c.group === group,
+  );
+
   if (!config) return <p className="muted">Connecting…</p>;
-  if (live.length === 0)
+  if (enabled.length === 0)
     return (
       <>
         <h1>Live</h1>
@@ -108,6 +132,22 @@ export default function Live({
           </select>
         </label>
       </div>
+      {groups.length > 0 && (
+        <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+          {["All", ...groups, ...(hasUngrouped ? ["Ungrouped"] : [])].map((g) => (
+            <span
+              key={g}
+              className={`pill toggle ${group === g ? "on" : ""}`}
+              onClick={() => pickGroup(g)}
+            >
+              {g}
+            </span>
+          ))}
+        </div>
+      )}
+      {live.length === 0 ? (
+        <div className="empty">No cameras in “{group}”.</div>
+      ) : (
       <div className="live-grid">
         {live.map((cam) => {
           const s = status[String(cam.id)];
@@ -131,6 +171,7 @@ export default function Live({
           );
         })}
       </div>
+      )}
 
       {detail && (
         <CameraDetail
