@@ -188,6 +188,38 @@ pub fn new_token() -> String {
     hex(&rand::random::<[u8; 32]>())
 }
 
+/// Hash an API token for storage / lookup. The token is 256 bits of entropy, so
+/// a fast hash (SHA-256) is sufficient — there is nothing to brute-force — and a
+/// DB leak never exposes a usable token.
+pub fn token_hash(raw: &str) -> String {
+    hex(&Sha256::digest(raw.as_bytes()))
+}
+
+/// The `Authorization: Bearer <token>` value, if present and non-empty. The
+/// scheme is matched case-insensitively (RFC 7235/6750) and surrounding
+/// whitespace is tolerated; an empty token yields `None` so it never reaches a
+/// DB lookup.
+fn bearer_token(req: &Request) -> Option<String> {
+    let value = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(char::is_whitespace)?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_string())
+}
+
+/// Endpoints a Bearer-token caller must NOT reach: token management and the
+/// password change. This keeps a *leaked* token from escalating to persistence
+/// (minting sibling tokens that survive revoking the original) or locking out
+/// the owner (rotating/clearing the password) — those require an interactive
+/// session (or loopback). Read-only `GET /api/tokens` stays allowed.
+fn token_forbidden(method: &axum::http::Method, path: &str) -> bool {
+    use axum::http::Method;
+    path == "/api/auth/password"
+        || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
+}
+
 /// Session cookie; `secure` adds the `Secure` attribute (set it when serving
 /// over HTTPS so the token is never sent in clear).
 pub fn session_cookie(token: &str, secure: bool) -> String {
@@ -255,6 +287,29 @@ pub async fn middleware(
             return next.run(req).await;
         }
     }
+    // API token (Authorization: Bearer …) for headless/automation callers —
+    // grants the same API access as a logged-in session, EXCEPT token
+    // management and password change (so a leaked token can't self-perpetuate
+    // or lock out the owner).
+    if let Some(bearer) = bearer_token(&req) {
+        if let Ok(Some((id, last))) = st.db.api_token_by_hash(&token_hash(&bearer)) {
+            if token_forbidden(req.method(), path) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "error": "this endpoint requires an interactive login, not an API token"
+                    })),
+                )
+                    .into_response();
+            }
+            let now = chrono::Local::now().timestamp();
+            // Throttle last-used writes to at most once a minute per token.
+            if last.map(|t| now - t >= 60).unwrap_or(true) {
+                let _ = st.db.touch_api_token(id, now);
+            }
+            return next.run(req).await;
+        }
+    }
     (
         StatusCode::UNAUTHORIZED,
         Json(serde_json::json!({ "error": "login required" })),
@@ -307,6 +362,33 @@ mod tests {
         assert!(!verify_password(&legacy, "wrong"));
         // Legacy hashes are flagged for upgrade-on-login.
         assert!(needs_rehash(&legacy));
+    }
+
+    #[test]
+    fn token_forbidden_blocks_escalation_but_allows_normal_api() {
+        use axum::http::Method;
+        // A Bearer token must not change the password or mint/revoke tokens.
+        assert!(token_forbidden(&Method::POST, "/api/auth/password"));
+        assert!(token_forbidden(&Method::POST, "/api/tokens"));
+        assert!(token_forbidden(&Method::DELETE, "/api/tokens/5"));
+        // …but read-only token listing and ordinary API calls are fine.
+        assert!(!token_forbidden(&Method::GET, "/api/tokens"));
+        assert!(!token_forbidden(&Method::GET, "/api/cameras"));
+        assert!(!token_forbidden(&Method::POST, "/api/cameras"));
+        assert!(!token_forbidden(&Method::GET, "/api/events"));
+    }
+
+    #[test]
+    fn token_hash_is_stable_and_distinct() {
+        let a = new_token();
+        let b = new_token();
+        assert_ne!(a, b, "tokens must be unique");
+        // Same input → same hash (lookup works); different input → different hash.
+        assert_eq!(token_hash(&a), token_hash(&a));
+        assert_ne!(token_hash(&a), token_hash(&b));
+        // SHA-256 hex is 64 chars and reveals nothing of the token.
+        assert_eq!(token_hash(&a).len(), 64);
+        assert!(!token_hash(&a).contains(&a));
     }
 
     #[test]

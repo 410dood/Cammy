@@ -73,6 +73,8 @@ pub fn router(state: AppState) -> Router {
             "/api/alarms/{id}",
             axum::routing::patch(patch_alarm_api).delete(delete_alarm_api),
         )
+        .route("/api/tokens", get(list_tokens).post(create_token))
+        .route("/api/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/faces", get(faces_overview).post(enroll_face))
         .route(
             "/api/faces/{id}",
@@ -1625,6 +1627,51 @@ async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>>
         "disk_free_bytes": disk_free,
         "recordings_root": rec_root.to_string_lossy(),
     })))
+}
+
+// --- API tokens --------------------------------------------------------------
+
+async fn list_tokens(State(st): State<AppState>) -> ApiResult<Json<Vec<crate::db::ApiToken>>> {
+    Ok(Json(st.db.list_api_tokens()?))
+}
+
+#[derive(Deserialize)]
+struct NewTokenReq {
+    name: String,
+}
+
+/// Mint an API token. The raw token is returned exactly once here and never
+/// stored or shown again — only its hash is kept. A token grants the same API
+/// access as a logged-in session, so it's only useful once a password is set.
+async fn create_token(
+    State(st): State<AppState>,
+    Json(req): Json<NewTokenReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(bad_request("token name required"));
+    }
+    if name.chars().count() > 64 {
+        return Err(bad_request("token name too long (max 64 chars)"));
+    }
+    let raw = format!("zoomy_{}", crate::auth::new_token());
+    let now = chrono::Local::now().timestamp();
+    let id = st
+        .db
+        .add_api_token(name, &crate::auth::token_hash(&raw), now)?;
+    Ok(Json(
+        serde_json::json!({ "id": id, "name": name, "token": raw }),
+    ))
+}
+
+async fn delete_token(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !st.db.delete_api_token(id)? {
+        return Err(not_found());
+    }
+    Ok(Json(serde_json::json!({ "deleted": id })))
 }
 
 // --- settings ----------------------------------------------------------------

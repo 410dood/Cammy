@@ -223,6 +223,17 @@ pub struct SearchRow {
     pub embedding: Option<Vec<f32>>,
 }
 
+/// A named API access token for headless/automation callers. The raw token is
+/// only ever shown once at creation; only its hash is stored, so this struct
+/// never carries the secret.
+#[derive(Clone, Debug, Serialize)]
+pub struct ApiToken {
+    pub id: i64,
+    pub name: String,
+    pub created_ts: i64,
+    pub last_used_ts: Option<i64>,
+}
+
 /// Alarm Manager rule (UniFi style if-this-then-that): all set conditions
 /// must match an event; `None` conditions match anything.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -693,6 +704,13 @@ impl Db {
                  action     TEXT NOT NULL,
                  target     TEXT NOT NULL,
                  created_ts INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS api_tokens (
+                 id           INTEGER PRIMARY KEY,
+                 name         TEXT NOT NULL,
+                 token_hash   TEXT NOT NULL UNIQUE,
+                 created_ts   INTEGER NOT NULL,
+                 last_used_ts INTEGER
              );",
         )?;
         // Additive migration for pre-schedule alarms tables.
@@ -1016,6 +1034,65 @@ impl Db {
             params![until, id],
         )?;
         Ok(())
+    }
+
+    // --- API tokens --------------------------------------------------------
+
+    /// Store a new API token (only its hash) and return its row id.
+    pub fn add_api_token(&self, name: &str, token_hash: &str, now: i64) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO api_tokens (name, token_hash, created_ts) VALUES (?1, ?2, ?3)",
+            params![name, token_hash, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// List tokens (metadata only — never the hash or the secret).
+    pub fn list_api_tokens(&self) -> Result<Vec<ApiToken>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id, name, created_ts, last_used_ts FROM api_tokens ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(ApiToken {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    created_ts: r.get(2)?,
+                    last_used_ts: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Look up a token by its hash, returning `(id, last_used_ts)` if it exists.
+    /// The middleware uses this to authenticate a Bearer token per request.
+    pub fn api_token_by_hash(&self, token_hash: &str) -> Result<Option<(i64, Option<i64>)>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT id, last_used_ts FROM api_tokens WHERE token_hash = ?1",
+                [token_hash],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Stamp a token's last-used time (the caller throttles how often).
+    pub fn touch_api_token(&self, id: i64, now: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE api_tokens SET last_used_ts = ?1 WHERE id = ?2",
+            params![now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_api_token(&self, id: i64) -> Result<bool> {
+        let n = self
+            .conn()
+            .execute("DELETE FROM api_tokens WHERE id=?1", [id])?;
+        Ok(n > 0)
     }
 
     pub fn delete_alarm(&self, id: i64) -> Result<()> {
@@ -1596,6 +1673,29 @@ mod tests {
             !removed.iter().any(|s| s == shared),
             "shared snapshot must not be deleted out from under the kept event"
         );
+    }
+
+    #[test]
+    fn api_token_crud_and_lookup() {
+        let db = mem_db();
+        let id = db.add_api_token("home-assistant", "hash_abc", 100).unwrap();
+        let list = db.list_api_tokens().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "home-assistant");
+        assert!(list[0].last_used_ts.is_none());
+        // Lookup by hash returns (id, last_used); unknown hash → None.
+        assert_eq!(db.api_token_by_hash("hash_abc").unwrap(), Some((id, None)));
+        assert_eq!(db.api_token_by_hash("nope").unwrap(), None);
+        // Touch records last-used; relisting reflects it.
+        db.touch_api_token(id, 200).unwrap();
+        assert_eq!(
+            db.api_token_by_hash("hash_abc").unwrap(),
+            Some((id, Some(200)))
+        );
+        // Delete is idempotent on a hit and reports a miss.
+        assert!(db.delete_api_token(id).unwrap());
+        assert!(!db.delete_api_token(id).unwrap());
+        assert!(db.list_api_tokens().unwrap().is_empty());
     }
 
     #[test]

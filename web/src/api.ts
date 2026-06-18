@@ -173,6 +173,13 @@ export interface AlarmRule {
   created_ts: number;
 }
 
+export interface ApiToken {
+  id: number;
+  name: string;
+  created_ts: number;
+  last_used_ts: number | null;
+}
+
 export interface CamStatus {
   online: boolean;
   recording: boolean;
@@ -297,6 +304,13 @@ export const api = {
   ptzCaps: (id: number) => req<{ supported: boolean }>(`/api/cameras/${id}/ptz`),
   ptz: (id: number, cmd: { action: "move" | "stop"; pan?: number; tilt?: number; zoom?: number }) =>
     req<{ ok: boolean }>(`/api/cameras/${id}/ptz`, { method: "POST", body: JSON.stringify(cmd) }),
+  tokens: () => req<ApiToken[]>("/api/tokens"),
+  createToken: (name: string) =>
+    req<{ id: number; name: string; token: string }>("/api/tokens", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  deleteToken: (id: number) => req<void>(`/api/tokens/${id}`, { method: "DELETE" }),
   authStatus: () => req<{ enabled: boolean }>("/api/auth"),
   login: (password: string) =>
     req<{ ok: boolean }>("/api/login", { method: "POST", body: JSON.stringify({ password }) }),

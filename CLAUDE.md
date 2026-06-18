@@ -14,9 +14,26 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 47/47, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 48/48, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **event bookmarks** (matrix #47). A per-event `flagged` + free-text
+Latest: **API access tokens** (matrix #48). Bearer tokens let scripts /
+integrations (Home Assistant, MQTT automations) call the JSON API from another
+host without the session cookie. `POST /api/tokens` mints a `zoomy_<64-hex>`
+(256-bit) token, returns it **once**, stores only its SHA-256 hash; `GET
+/api/tokens` lists metadata; `DELETE /api/tokens/{id}` revokes. `auth::middleware`
+accepts `Authorization: Bearer …` (scheme case-insensitive) after the existing
+session/loopback checks, stamping last-used ≤once/min. **A Bearer token is denied
+token-management + password-change** (`token_forbidden` → 403 on `/api/tokens`
+POST·DELETE and `/api/auth/password`; only an interactive session/loopback can),
+so a leaked token can't mint siblings or lock the owner out. New
+`crates/core/src/db.rs` `api_tokens` table; Settings "API tokens" card.
+Live-validated via `--trusted-proxy`+XFF (remote 200 w/ token, 401 without/bad/
+revoked, 403 on escalation paths, loopback unaffected). Security review drove the
+escalation gate + case-insensitive scheme.
+
+### Earlier this session: event bookmarks (matrix #47)
+
+A per-event `flagged` + free-text
 `note` (new columns), `POST /api/events/{id}/bookmark`, and a server-side
 `flagged` list filter. A bookmarked event is **exempt from the event-retention
 prune** — `db::prune_events_before` keeps flagged rows and their snapshots (the

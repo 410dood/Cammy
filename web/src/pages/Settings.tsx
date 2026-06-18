@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, Settings as S } from "../api";
+import { api, ApiToken, fmtTime, Settings as S } from "../api";
 
 function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
   const [enabled, setEnabled] = useState(false);
@@ -46,6 +46,98 @@ function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
         )}
         {msg && <span style={{ color: "var(--ok)" }}>{msg}</span>}
       </div>
+    </div>
+  );
+}
+
+function TokensCard({ onError }: { onError: (e: string) => void }) {
+  const [tokens, setTokens] = useState<ApiToken[]>([]);
+  const [name, setName] = useState("");
+  const [fresh, setFresh] = useState<{ name: string; token: string } | null>(null);
+
+  const load = () => {
+    api.tokens().then(setTokens).catch(() => {});
+  };
+  useEffect(load, []);
+
+  const create = async () => {
+    const n = name.trim();
+    if (!n) return;
+    try {
+      const r = await api.createToken(n);
+      setFresh({ name: r.name, token: r.token });
+      setName("");
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const remove = async (id: number) => {
+    if (!window.confirm("Revoke this token? Anything using it will lose access.")) return;
+    try {
+      await api.deleteToken(id);
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>API tokens</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Bearer tokens let scripts and integrations (Home Assistant, MQTT automations) call the
+        API from another machine without logging in — send{" "}
+        <code>Authorization: Bearer &lt;token&gt;</code>. A token can do almost anything the API
+        can, so keep it secret and revoke any that leak. (Tokens cannot change the password or
+        create/revoke other tokens — those need an interactive login here, so a leaked token
+        can't lock you out.)
+      </p>
+      <div className="row">
+        <input
+          type="text"
+          placeholder="token name (e.g. home-assistant)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && create()}
+        />
+        <button type="button" className="primary" disabled={!name.trim()} onClick={create}>
+          Create token
+        </button>
+      </div>
+      {fresh && (
+        <div
+          className="row"
+          style={{ marginTop: 8, flexDirection: "column", alignItems: "flex-start", gap: 4 }}
+        >
+          <span style={{ color: "var(--ok)" }}>
+            New token “{fresh.name}” — copy it now, it won’t be shown again:
+          </span>
+          <code style={{ userSelect: "all", wordBreak: "break-all" }}>{fresh.token}</code>
+        </div>
+      )}
+      {tokens.length > 0 && (
+        <table style={{ marginTop: 12, width: "100%", borderCollapse: "collapse" }}>
+          <tbody>
+            {tokens.map((t) => (
+              <tr key={t.id}>
+                <td>
+                  <b>{t.name}</b>
+                </td>
+                <td className="muted">created {fmtTime(t.created_ts)}</td>
+                <td className="muted">
+                  {t.last_used_ts ? `last used ${fmtTime(t.last_used_ts)}` : "never used"}
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <button type="button" className="danger" onClick={() => remove(t.id)}>
+                    Revoke
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -398,6 +490,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <RemoteAccessCard onError={onError} />
+
+        <TokensCard onError={onError} />
 
         <BackupCard onError={onError} />
 
