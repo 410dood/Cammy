@@ -289,6 +289,52 @@ function TuneModal({
   );
 }
 
+/// Inline camera-name editor: commits on blur/Enter. Renaming restarts go2rtc
+/// (a brief live-stream blip) since the stream name changes. Names are
+/// lowercase letters/digits/_/- (≤32); the server rejects others and we revert.
+function NameCell({
+  cam,
+  onChange,
+  onError,
+}: {
+  cam: Camera;
+  onChange: () => void;
+  onError: (e: string) => void;
+}) {
+  const [val, setVal] = useState(cam.name);
+  useEffect(() => {
+    setVal(cam.name);
+  }, [cam.name]);
+  const commit = async () => {
+    const next = val.trim();
+    if (next === cam.name) return;
+    if (!next) {
+      setVal(cam.name); // a name can't be empty
+      return;
+    }
+    try {
+      await api.patchCamera(cam.id, { name: next } as Partial<Camera>);
+      onChange();
+    } catch (e) {
+      setVal(cam.name); // revert on rejection (e.g. invalid chars)
+      onError(String(e));
+    }
+  };
+  return (
+    <input
+      className="field"
+      style={{ width: 130, fontWeight: 600 }}
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+      title="Rename (lowercase/digits/_/-; restarts the stream briefly)"
+    />
+  );
+}
+
 /// Inline group editor: commits on blur/Enter; empty string clears the group.
 /// Patching only `group` is metadata-only, so the server skips the go2rtc
 /// restart and live streams keep playing.
@@ -584,7 +630,7 @@ export default function Cameras({
                     </span>
                   </td>
                   <td>
-                    <b>{cam.name}</b>
+                    <NameCell cam={cam} onChange={onChange} onError={onError} />
                   </td>
                   <td className="muted" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {cam.source}
