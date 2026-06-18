@@ -61,6 +61,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cameras/{id}/ptz", get(ptz_caps).post(ptz_command))
         .route("/api/cameras/{id}/frame.jpg", get(camera_frame))
         .route("/api/events", get(list_events))
+        .route("/api/events/export.csv", get(export_events_csv))
         .route(
             "/api/events/{id}/bookmark",
             axum::routing::post(bookmark_event),
@@ -911,6 +912,98 @@ async fn list_events(
         q.flagged,
         q.limit.min(1000),
     )?))
+}
+
+/// Quote a CSV field per RFC 4180, and neutralize spreadsheet formula injection
+/// (a field starting with `= + - @` is prefixed with `'` so Excel/Sheets treats
+/// it as text, since transcripts/notes/captions are partly attacker-influenced).
+fn csv_field(s: &str) -> String {
+    let s = if s.starts_with(['=', '+', '-', '@']) {
+        format!("'{s}")
+    } else {
+        s.to_string()
+    };
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s
+    }
+}
+
+/// Render events as an RFC 4180 CSV (one header row + a row per event).
+fn events_to_csv(events: &[crate::db::Event]) -> String {
+    let mut out = String::from(
+        "id,time,camera,label,score,face,plate,gesture,zone,flagged,note,caption,transcript\n",
+    );
+    for e in events {
+        let time = chrono::DateTime::from_timestamp(e.ts, 0)
+            .map(|dt| {
+                dt.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_default();
+        let fields = [
+            e.id.to_string(),
+            time,
+            e.camera.clone(),
+            e.label.clone(),
+            format!("{:.3}", e.score),
+            e.face.clone().unwrap_or_default(),
+            e.plate.clone().unwrap_or_default(),
+            e.gesture.clone().unwrap_or_default(),
+            e.zone.clone().unwrap_or_default(),
+            if e.flagged {
+                "yes".into()
+            } else {
+                String::new()
+            },
+            e.note.clone().unwrap_or_default(),
+            e.caption.clone().unwrap_or_default(),
+            e.transcript.clone().unwrap_or_default(),
+        ];
+        out.push_str(
+            &fields
+                .iter()
+                .map(|f| csv_field(f))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        out.push('\n');
+    }
+    out
+}
+
+/// Download matching events as a CSV (same filters as the events list, up to a
+/// generous cap). Useful for record-keeping / insurance / sharing.
+async fn export_events_csv(
+    State(st): State<AppState>,
+    Query(q): Query<EventQuery>,
+) -> ApiResult<impl IntoResponse> {
+    let events = st.db.list_events(
+        q.camera_id,
+        q.label.as_deref(),
+        q.gesture.as_deref(),
+        q.zone.as_deref(),
+        q.after,
+        q.before,
+        q.flagged,
+        100_000,
+    )?;
+    let csv = events_to_csv(&events);
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/csv; charset=utf-8".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"zoomy-events.csv\"".to_string(),
+            ),
+        ],
+        csv,
+    ))
 }
 
 const NOTE_MAX_CHARS: usize = 500;
@@ -1905,7 +1998,57 @@ async fn put_settings(
 
 #[cfg(test)]
 mod tests {
-    use super::{no_control, render_metrics, valid_group, valid_source, BookmarkReq, CamMetric};
+    use super::{
+        csv_field, events_to_csv, no_control, render_metrics, valid_group, valid_source,
+        BookmarkReq, CamMetric,
+    };
+
+    #[test]
+    fn csv_field_quotes_and_guards_against_formula_injection() {
+        // Plain values pass through.
+        assert_eq!(csv_field("person"), "person");
+        // Comma / quote / newline force quoting; internal quotes are doubled.
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_field("line1\nline2"), "\"line1\nline2\"");
+        // Formula-injection leads get a `'` guard (and then quoting if needed).
+        assert_eq!(csv_field("=SUM(A1)"), "'=SUM(A1)");
+        assert_eq!(csv_field("@cmd"), "'@cmd");
+        assert_eq!(csv_field("=1,2"), "\"'=1,2\"");
+    }
+
+    #[test]
+    fn events_to_csv_has_header_and_rows() {
+        let ev = crate::db::Event {
+            id: 7,
+            camera_id: 1,
+            camera: "porch".into(),
+            ts: 0,
+            label: "person".into(),
+            score: 0.91234,
+            bbox: [0.0; 4],
+            snapshot: None,
+            face: Some("Bob".into()),
+            plate: None,
+            gesture: None,
+            zone: None,
+            caption: None,
+            transcript: Some("help, fire".into()), // comma → must be quoted
+            flagged: true,
+            note: None,
+        };
+        let csv = events_to_csv(std::slice::from_ref(&ev));
+        let mut lines = csv.lines();
+        assert_eq!(
+            lines.next().unwrap(),
+            "id,time,camera,label,score,face,plate,gesture,zone,flagged,note,caption,transcript"
+        );
+        let row = lines.next().unwrap();
+        assert!(row.starts_with("7,"));
+        assert!(row.contains(",porch,person,0.912,Bob,"));
+        assert!(row.contains(",yes,")); // flagged
+        assert!(row.ends_with(",\"help, fire\"")); // transcript quoted
+    }
 
     #[test]
     fn metrics_render_format_and_label_escaping() {

@@ -14,9 +14,21 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 49/49, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 50/50, WAN-hardened auth/TLS, 2026-06-18
 
-Latest: **Prometheus metrics** (matrix #49). `GET /api/metrics` returns
+Latest: **event CSV export** (matrix #50). `GET /api/events/export.csv` downloads
+matching events as RFC 4180 CSV (same filters as the events list, up to a
+generous cap, with a `Content-Disposition` attachment). Columns: id, local time,
+camera, label, score, face, plate, gesture, zone, flagged, note, caption,
+transcript. The renderer guards against spreadsheet **formula injection** (a
+field starting with `= + - @` is prefixed with `'`) since transcripts/captions/
+notes are partly attacker-influenced; pure `events_to_csv`/`csv_field` are
+unit-tested. Events page gains a "⬇ Export CSV" link carrying the active filters.
+Live-validated (headers + rows + the flagged filter narrowing the export).
+
+### Earlier this session: Prometheus metrics (matrix #49)
+
+`GET /api/metrics` returns
 Prometheus 0.0.4 text exposition — `zoomy_build_info`, `zoomy_cameras`/`_online`,
 `zoomy_events`, `zoomy_disk_free_bytes`, plus per-camera gauges
 (`zoomy_camera_online`/`_recording`/`_storage_bytes`/`_segments`/`_inference_ms`/

@@ -132,6 +132,20 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
       .catch(() => {});
   };
 
+  // Download the current filter set as a CSV (server streams it with the same
+  // filters the list uses).
+  const exportUrl = () => {
+    const p = new URLSearchParams();
+    if (cameraId !== "") p.set("camera_id", String(cameraId));
+    if (label) p.set("label", label);
+    const after = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
+    const before = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
+    if (after != null) p.set("after", String(after));
+    if (before != null) p.set("before", String(before));
+    if (flaggedOnly) p.set("flagged", "true");
+    return `/api/events/export.csv?${p}`;
+  };
+
   useEffect(() => {
     api
       .settings()
@@ -300,6 +314,21 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
           onChange={(e) => setPlateFilter(e.target.value)}
         />
         <span className="muted">{shown.length} events · auto-refreshing</span>
+        <a
+          className="ghost"
+          style={{
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: "1px solid var(--border)",
+            textDecoration: "none",
+            color: "var(--text)",
+            fontSize: "0.9rem",
+          }}
+          href={exportUrl()}
+          title="Download the current filter as a CSV"
+        >
+          ⬇ Export CSV
+        </a>
       </div>
 
       {topLabels.length > 0 && !searchResults && (
