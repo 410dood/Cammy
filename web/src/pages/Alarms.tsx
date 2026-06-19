@@ -148,7 +148,9 @@ export default function Alarms({
       ? `POST ${a.target}`
       : a.kind === "mqtt"
         ? `MQTT zoomy/alarms/${a.target}`
-        : `ntfy → ${a.target}${a.priority ? ` (p${a.priority})` : ""}`;
+        : a.kind === "email"
+          ? `email → ${a.target || "default recipient"}`
+          : `ntfy → ${a.target}${a.priority ? ` (p${a.priority})` : ""}`;
 
   const ruleActions = (r: AlarmRule): Action[] =>
     r.actions && r.actions.length > 0
