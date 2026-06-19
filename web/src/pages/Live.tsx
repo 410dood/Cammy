@@ -287,7 +287,7 @@ export default function Live({
                   <span className="rec"><IconRecDot size={9} /> REC</span>
                 )}
               </div>
-              <LiveVideo name={cam.name} mode={mode} />
+              <LiveVideo name={cam.name} mode={mode} online={s ? s.online : undefined} />
               <PrivacyOverlay masks={cam.detect_config.privacy_masks} />
               <button
                 className="expand"

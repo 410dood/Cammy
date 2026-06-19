@@ -26,6 +26,7 @@ export default function CameraDetail({
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
   const [talking, setTalking] = useState(false);
+  const [online, setOnline] = useState<boolean | undefined>(undefined);
   const twoWay = !!camera.detect_config.two_way_audio;
 
   // Safety net: guarantee push-to-talk releases (mic off) on ANY pointer-up or
@@ -46,6 +47,7 @@ export default function CameraDetail({
     const load = () => {
       api.recordings({ camera_id: camera.id, limit: 1000 }).then(setSegments).catch(() => {});
       api.events({ camera_id: camera.id, limit: 50 }).then(setEvents).catch(() => {});
+      api.status().then((m) => setOnline(m[String(camera.id)]?.online)).catch(() => {});
     };
     load();
     const t = setInterval(load, 10000);
@@ -93,7 +95,7 @@ export default function CameraDetail({
       <div className="detail-body">
         <div className="detail-main">
           <div className="tile" style={{ aspectRatio: "16 / 9" }}>
-            <LiveVideo name={camera.name} mode={getStreamMode()} audio mic={talking} />
+            <LiveVideo name={camera.name} mode={getStreamMode()} audio mic={talking} online={online} />
             <PrivacyOverlay masks={camera.detect_config.privacy_masks} />
             {ptz && <PtzInline cameraId={camera.id} />}
             {twoWay && (
