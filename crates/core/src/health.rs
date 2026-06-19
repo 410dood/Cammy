@@ -24,9 +24,7 @@ pub fn run(db: Db, status: StatusBoard, shutdown: Arc<AtomicBool>) {
         let cameras = db.list_cameras().unwrap_or_default();
         let board = status.snapshot();
         let now = chrono::Local::now().timestamp();
-        // Generous window: 3 poll intervals + slack, same as /api/status,
-        // plus a floor so sub-second poll settings don't flap.
-        let window = ((settings.poll_ms as i64 * 3) / 1000 + 5).max(20);
+        let window = crate::status::freshness_window(settings.poll_ms);
 
         for cam in &cameras {
             if !cam.enabled {
@@ -36,8 +34,7 @@ pub fn run(db: Db, status: StatusBoard, shutdown: Arc<AtomicBool>) {
                 continue;
             }
             let h = board.get(&cam.id).cloned().unwrap_or_default();
-            let fresh = h.last_frame_ts.map(|t| now - t <= window).unwrap_or(false);
-            let online = if cam.detect { fresh } else { h.recording };
+            let online = h.is_online(cam.detect, now, window);
 
             match last_state.insert(cam.id, online) {
                 Some(prev) if prev != online => {

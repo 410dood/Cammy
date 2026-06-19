@@ -163,7 +163,7 @@ async fn config(State(st): State<AppState>) -> Json<serde_json::Value> {
 /// or (for detect-off cameras) the recorder is alive.
 async fn camera_status(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let now = chrono::Local::now().timestamp();
-    let window = (st.db.settings().poll_ms as i64 * 3) / 1000 + 5;
+    let window = crate::status::freshness_window(st.db.settings().poll_ms);
     let mut out = serde_json::Map::new();
     for cam in st.db.list_cameras()? {
         let h = st
@@ -172,8 +172,7 @@ async fn camera_status(State(st): State<AppState>) -> ApiResult<Json<serde_json:
             .get(&cam.id)
             .cloned()
             .unwrap_or_default();
-        let fresh_frame = h.last_frame_ts.map(|t| now - t <= window).unwrap_or(false);
-        let online = if cam.detect { fresh_frame } else { h.recording };
+        let online = h.is_online(cam.detect, now, window);
         out.insert(
             cam.id.to_string(),
             serde_json::json!({
@@ -580,7 +579,7 @@ async fn discover_scan(State(_st): State<AppState>) -> ApiResult<Json<serde_json
 }
 
 /// Percent-encode credential characters that would break URL parsing.
-fn urlencode(s: &str) -> String {
+pub(crate) fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -696,7 +695,9 @@ async fn add_camera(
         cam.group = Some(g.to_string());
         st.db.update_camera(&cam)?;
     }
-    st.go2rtc.restart_with(&st.db)?;
+    // A brand-new stream: reconcile PUTs it without restarting, so other
+    // cameras' live views keep playing.
+    st.go2rtc.sync_streams(&st.db, false)?;
     Ok((StatusCode::CREATED, Json(cam)))
 }
 
@@ -721,12 +722,17 @@ async fn patch_camera(
 ) -> ApiResult<Json<Camera>> {
     let mut cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
     // go2rtc's config depends only on name/source/detect_source/enabled, so a
-    // metadata-only patch (group, detect, record, zones) must NOT restart it —
+    // metadata-only patch (group, detect, record, zones) must NOT touch it —
     // restarting needlessly drops every live stream.
     let needs_go2rtc = patch.name.is_some()
         || patch.source.is_some()
         || patch.detect_source.is_some()
         || patch.enabled.is_some();
+    // Snapshot the stream-defining fields so we can tell a *same-name source
+    // edit* (which the name-only live reconcile can't propagate, so it needs a
+    // restart) from an add/remove/rename (which it handles without a restart).
+    let (old_name, old_source, old_detect_source) =
+        (cam.name.clone(), cam.source.clone(), cam.detect_source.clone());
     if let Some(name) = patch.name {
         if !valid_name(&name) {
             return Err(bad_request("invalid camera name"));
@@ -793,7 +799,19 @@ async fn patch_camera(
     }
     st.db.update_camera(&cam)?;
     if needs_go2rtc {
-        st.go2rtc.restart_with(&st.db)?;
+        // A same-name edit of a live source string (main or sub) can't be
+        // reconciled by name alone — the stream stays but its producer would
+        // be stale — so force a restart for those. Add/remove/rename/enable
+        // toggles reconcile live without dropping unrelated streams.
+        let name_same = old_name == cam.name && cam.enabled;
+        let main_src_edit = name_same && old_source != cam.source;
+        let sub_src_edit = name_same
+            && matches!(
+                (&old_detect_source, &cam.detect_source),
+                (Some(a), Some(b)) if a != b
+            );
+        st.go2rtc
+            .sync_streams(&st.db, main_src_edit || sub_src_edit)?;
     }
     Ok(Json(cam))
 }
@@ -801,7 +819,8 @@ async fn patch_camera(
 async fn delete_camera(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
     st.db.get_camera(id)?.ok_or_else(not_found)?;
     st.db.delete_camera(id)?;
-    st.go2rtc.restart_with(&st.db)?;
+    // Reconcile DELETEs just this camera's stream(s); other live views hold.
+    st.go2rtc.sync_streams(&st.db, false)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -927,8 +946,10 @@ async fn restore(
         alarms_added += 1;
     }
 
-    // Cameras changed → regenerate go2rtc config once.
-    st.go2rtc.restart_with(&st.db)?;
+    // Restore is additive (existing-named cameras are kept untouched), so the
+    // live reconcile only PUTs the newly-imported streams and never blips
+    // cameras that were already running.
+    st.go2rtc.sync_streams(&st.db, false)?;
     Ok(Json(serde_json::json!({
         "settings_applied": true,
         "cameras_added": cams_added,
@@ -2181,7 +2202,7 @@ async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Valu
     let settings = st.db.settings();
     let now_dt = chrono::Local::now();
     let now = now_dt.timestamp();
-    let window = ((settings.poll_ms as i64).saturating_mul(3) / 1000 + 5).max(20);
+    let window = crate::status::freshness_window(settings.poll_ms);
 
     let mut online = 0u32;
     let mut recording = 0u32;
@@ -2190,8 +2211,7 @@ async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Valu
             continue;
         }
         let h = board.get(&cam.id).cloned().unwrap_or_default();
-        let fresh = h.last_frame_ts.map(|t| now - t <= window).unwrap_or(false);
-        if if cam.detect { fresh } else { h.recording } {
+        if h.is_online(cam.detect, now, window) {
             online += 1;
         }
         if h.recording {
@@ -2502,8 +2522,7 @@ fn render_metrics(version: &str, events: i64, disk_free: u64, cams: &[CamMetric]
 async fn metrics(State(st): State<AppState>) -> ApiResult<impl IntoResponse> {
     let now = chrono::Local::now().timestamp();
     let settings = st.db.settings();
-    // saturating so an absurd operator-set poll_ms can't overflow in debug.
-    let window = (settings.poll_ms as i64).saturating_mul(3) / 1000 + 5;
+    let window = crate::status::freshness_window(settings.poll_ms);
     let cameras = st.db.list_cameras()?;
     let storage = st.db.storage_stats()?;
     let health = st.status.snapshot();
@@ -2513,11 +2532,10 @@ async fn metrics(State(st): State<AppState>) -> ApiResult<impl IntoResponse> {
         .iter()
         .map(|cam| {
             let h = health.get(&cam.id).cloned().unwrap_or_default();
-            let fresh = h.last_frame_ts.map(|t| now - t <= window).unwrap_or(false);
             let s = store.get(&cam.id);
             CamMetric {
                 name: cam.name.clone(),
-                online: cam.enabled && if cam.detect { fresh } else { h.recording },
+                online: cam.enabled && h.is_online(cam.detect, now, window),
                 recording: h.recording,
                 inference_ms: h.inference_ms,
                 last_frame_age: h.last_frame_ts.map(|t| (now - t).max(0)),
