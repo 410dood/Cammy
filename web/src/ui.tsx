@@ -75,6 +75,37 @@ export function RelTime({
 }
 
 /* ======================================================================== */
+/* EmptyState — a friendly, branded "nothing here yet" block                 */
+/* ======================================================================== */
+
+/** Centered icon + title + hint (+ optional action) for empty lists. Replaces
+ *  bare "No X yet" text so empty surfaces feel intentional, not broken. */
+export function EmptyState({
+  icon,
+  title,
+  hint,
+  action,
+}: {
+  icon?: ReactNode;
+  title: string;
+  hint?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="empty-state">
+      {icon && (
+        <div className="empty-state-ico" aria-hidden="true">
+          {icon}
+        </div>
+      )}
+      <div className="empty-state-title">{title}</div>
+      {hint && <p className="empty-state-hint">{hint}</p>}
+      {action && <div className="empty-state-action">{action}</div>}
+    </div>
+  );
+}
+
+/* ======================================================================== */
 /* Toasts                                                                    */
 /* ======================================================================== */
 

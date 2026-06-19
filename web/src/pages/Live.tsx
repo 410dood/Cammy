@@ -7,10 +7,10 @@ import CameraDetail from "../CameraDetail";
 import LiveVideo from "../LiveVideo";
 import Wall from "../Wall";
 import PrivacyOverlay from "../PrivacyOverlay";
-import { useToast, useDialog } from "../ui";
+import { useToast, useDialog, EmptyState } from "../ui";
 import {
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight,
-  IconPlus, IconMinus, IconExpand, IconRecDot, IconLayers, IconX,
+  IconPlus, IconMinus, IconExpand, IconRecDot, IconLayers, IconX, IconVideo,
 } from "../icons";
 
 /// Hold-to-move PTZ pad, shown only on cameras that answer ONVIF PTZ.
@@ -182,9 +182,16 @@ export default function Live({
     return (
       <>
         <h1>Live</h1>
-        <div className="empty">
-          No cameras yet — add one on the <b>Cameras</b> page.
-        </div>
+        <EmptyState
+          icon={<IconVideo />}
+          title="No cameras yet"
+          hint={
+            <>
+              Add your first camera on the <b>Cameras</b> page — paste an RTSP URL or let ONVIF
+              auto-discover it on your network.
+            </>
+          }
+        />
       </>
     );
 

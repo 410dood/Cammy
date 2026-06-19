@@ -541,6 +541,37 @@ button.danger:hover { background: var(--danger-bg); }
   color: var(--muted);
 }
 
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  padding: 56px 24px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+.empty-state-ico {
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  color: var(--text-subtle);
+}
+.empty-state-ico svg { width: 26px; height: 26px; }
+.empty-state-title { font-size: 1.02rem; font-weight: 650; color: var(--text); }
+.empty-state-hint {
+  margin: 0;
+  max-width: 46ch;
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+.empty-state-action { margin-top: 4px; }
+
 /* --- PTZ pad ---------------------------------------------------------------- */
 .ptz-pad {
   position: absolute;
