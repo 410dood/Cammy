@@ -1,6 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { api, ApiToken, AuditEntry, fmtTime, Me, Role, Settings as S, User } from "../api";
-import { useToast, useDialog } from "../ui";
+import { useToast, useDialog, RelTime } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
   IconDownload, IconUpload, IconCheck, IconUser,
@@ -198,9 +198,9 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
                 <td>
                   <b>{t.name}</b> <span className={`role-pill role-${t.role}`}>{t.role}</span>
                 </td>
-                <td className="muted">created {fmtTime(t.created_ts)}</td>
+                <td className="muted">created <RelTime ts={t.created_ts} /></td>
                 <td className="muted">
-                  {t.last_used_ts ? `last used ${fmtTime(t.last_used_ts)}` : "never used"}
+                  {t.last_used_ts ? <RelTime ts={t.last_used_ts} prefix="last used " /> : "never used"}
                 </td>
                 <td style={{ textAlign: "right" }}>
                   <button type="button" className="danger" onClick={() => remove(t.id)}>
@@ -471,7 +471,7 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
                     <RoleOptions />
                   </select>
                 </td>
-                <td className="muted">created {fmtTime(u.created_ts)}</td>
+                <td className="muted">created <RelTime ts={u.created_ts} /></td>
                 <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                   <button type="button" className="btn btn-ghost ev-act" onClick={() => resetPw(u)}>
                     Reset password

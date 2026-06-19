@@ -1,5 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
-import { api, CamEvent, Camera, Segment, fmtTime, getStreamMode } from "./api";
+import { api, CamEvent, Camera, Segment, getStreamMode } from "./api";
+import { RelTime } from "./ui";
 import Timeline from "./Timeline";
 import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
@@ -142,7 +143,7 @@ export default function CameraDetail({
                     <IconCar size={12} /> {ev.plate}
                   </span>
                 )}
-                <div className="muted clock" style={{ fontSize: "0.75rem" }}>{fmtTime(ev.ts)}</div>
+                <RelTime ts={ev.ts} className="muted clock" style={{ display: "block", fontSize: "0.75rem" }} />
               </div>
             </div>
           ))}

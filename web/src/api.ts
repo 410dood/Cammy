@@ -446,5 +446,27 @@ export const streamUrl = (base: string, name: string, mode: StreamMode) => {
 };
 
 export const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleString();
+
+/** Compact relative time ("just now", "4m", "3h", "yesterday", "Apr 6") for
+ *  live feeds. Pairs with a full `fmtTime` tooltip via the <RelTime> component. */
+export function relTime(ts: number, nowMs: number = Date.now()): string {
+  const s = Math.floor(nowMs / 1000 - ts);
+  if (s < 45) return "just now";
+  if (s < 90) return "1m ago";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(s / 86400);
+  if (d === 1) return "yesterday";
+  if (d < 7) return `${d}d ago`;
+  const date = new Date(ts * 1000);
+  const sameYear = date.getFullYear() === new Date(nowMs).getFullYear();
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+}
 export const fmtBytes = (b: number) =>
   b > 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.round(b / 1e3)} KB`;

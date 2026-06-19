@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState } from "react";
 import { api, CamEvent, Camera, fmtTime, Segment } from "../api";
-import { useToast, useDialog, Modal } from "../ui";
+import { useToast, useDialog, Modal, RelTime } from "../ui";
 import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
@@ -604,7 +604,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                     <IconPencil size={13} /> <span>{ev.note}</span>
                   </div>
                 )}
-                <div className="muted ev-time">{fmtTime(ev.ts)}</div>
+                <RelTime ts={ev.ts} className="muted ev-time" />
                 <div className="ev-actions">
                   <button
                     className={`btn ev-act ${ev.flagged ? "btn-primary" : "btn-ghost"}`}

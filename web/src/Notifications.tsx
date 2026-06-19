@@ -1,7 +1,8 @@
 // A4 — Notifications center: a right-slide panel listing recent activity
 // (strangers, camera offline/online, anomalies, daily digests), with mark-read.
 
-import { Notification, fmtTime } from "./api";
+import { Notification } from "./api";
+import { RelTime } from "./ui";
 import {
   IconBell, IconX, IconWifiOff, IconWifi, IconStranger, IconSparkles,
   IconAlert, IconProps,
@@ -74,7 +75,7 @@ export default function NotificationsPanel({
                   <div className="notif-body">
                     <b>{n.title}</b>
                     {n.body && <div className="muted notif-text">{n.body}</div>}
-                    <div className="muted clock notif-time">{fmtTime(n.ts)}</div>
+                    <RelTime ts={n.ts} className="muted clock notif-time" />
                   </div>
                   {!n.read && <span className="notif-dot" aria-label="unread" />}
                 </button>

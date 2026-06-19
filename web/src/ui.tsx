@@ -19,8 +19,60 @@ import {
   useRef,
   useState,
   ReactNode,
+  CSSProperties,
 } from "react";
 import { IconCheck, IconAlert, IconInfo, IconX } from "./icons";
+import { relTime, fmtTime } from "./api";
+
+/* ======================================================================== */
+/* RelTime — self-updating relative timestamp                                */
+/* ======================================================================== */
+
+// One shared 30s ticker drives every <RelTime>, so a feed of 100 cards spins a
+// single timer instead of 100. Subscribers are re-rendered together.
+const nowSubs = new Set<() => void>();
+let nowTimer: ReturnType<typeof setInterval> | null = null;
+function subscribeNow(cb: () => void): () => void {
+  nowSubs.add(cb);
+  if (!nowTimer) {
+    nowTimer = setInterval(() => nowSubs.forEach((f) => f()), 30_000);
+  }
+  return () => {
+    nowSubs.delete(cb);
+    if (nowSubs.size === 0 && nowTimer) {
+      clearInterval(nowTimer);
+      nowTimer = null;
+    }
+  };
+}
+
+/** A `<time>` showing compact relative text ("4m ago") that refreshes itself,
+ *  with the absolute timestamp on hover (title) and in `dateTime`. */
+export function RelTime({
+  ts,
+  className,
+  prefix,
+  style,
+}: {
+  ts: number;
+  className?: string;
+  prefix?: string;
+  style?: CSSProperties;
+}) {
+  const [, force] = useState(0);
+  useEffect(() => subscribeNow(() => force((n) => n + 1)), []);
+  return (
+    <time
+      className={className}
+      style={style}
+      dateTime={new Date(ts * 1000).toISOString()}
+      title={fmtTime(ts)}
+    >
+      {prefix}
+      {relTime(ts)}
+    </time>
+  );
+}
 
 /* ======================================================================== */
 /* Toasts                                                                    */
