@@ -496,23 +496,42 @@ label.field {
   color: #aeb4c0; /* labels are essential, lifted off --muted */
 }
 
-button.primary, button.ghost, button.danger {
+/* Legacy bare-class buttons (button.primary/.ghost/.danger/.secondary) are kept
+   pixel-identical to the .btn system below so the whole app shares one button
+   look (inline-flex + gap for icon+text, press feedback, disabled-safe hover). */
+button.primary, button.ghost, button.danger, button.secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   border-radius: var(--radius-sm);
-  padding: 8px 15px;
+  padding: 8px 14px;
   font-size: var(--text-sm);
   font-weight: var(--fw-semibold);
   font-family: inherit;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+}
+button.primary:active, button.ghost:active, button.danger:active, button.secondary:active {
+  transform: translateY(0.5px);
+}
+button.primary:disabled, button.ghost:disabled, button.danger:disabled, button.secondary:disabled {
+  opacity: 0.45;
+  cursor: default;
+  transform: none;
 }
 button.primary { background: var(--accent); color: var(--text-on-accent); }
-button.primary:hover { background: var(--accent-hover); }
-button.primary:disabled { opacity: 0.45; cursor: default; }
+button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+button.secondary { background: var(--surface-active); border-color: var(--border-strong); color: var(--text); }
+button.secondary:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
 button.ghost { background: none; border-color: var(--border); color: var(--text); }
-button.ghost:hover { border-color: var(--border-hover); background: var(--surface-hover); }
+button.ghost:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
 button.danger { background: none; border-color: transparent; color: var(--danger); }
-button.danger:hover { background: var(--danger-bg); }
+button.danger:hover:not(:disabled) { background: var(--danger-bg); }
 
 .toggle { cursor: pointer; user-select: none; }
 .pill {
@@ -1487,3 +1506,37 @@ img.identity-thumb { background: var(--n-0); }
 }
 .role-pill.role-operator { color: var(--text); border-color: var(--border-strong); }
 .role-pill.role-viewer { color: var(--muted); }
+
+/* Settings in-page section nav (sticky jump chips + scroll-spy) */
+.settings-nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 0 11px;
+  margin: 0 0 4px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.settings-nav-chip {
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+    background var(--dur-1) var(--ease);
+}
+.settings-nav-chip:hover { color: var(--text); border-color: var(--border-hover); }
+.settings-nav-chip.active {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--accent-tint);
+}
+.settings-page .card { scroll-margin-top: 62px; }
