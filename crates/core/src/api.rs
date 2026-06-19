@@ -1993,6 +1993,9 @@ async fn add_plate_api(
         return Err(bad_request("category must be 'known' or 'watch'"));
     }
     let note = req.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    if note.map(|n| n.chars().count()).unwrap_or(0) > 500 {
+        return Err(bad_request("note too long (max 500 characters)"));
+    }
     let id = st.db.add_plate(&req.plate, name, category, note)?;
     Ok((
         StatusCode::CREATED,
@@ -2023,6 +2026,9 @@ async fn update_plate_api(
         return Err(bad_request("category must be 'known' or 'watch'"));
     }
     let note = req.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    if note.map(|n| n.chars().count()).unwrap_or(0) > 500 {
+        return Err(bad_request("note too long (max 500 characters)"));
+    }
     if !st.db.update_plate(id, name, category, note)? {
         return Err(not_found());
     }
