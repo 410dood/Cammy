@@ -63,7 +63,11 @@ pub fn run(db: Db, status: StatusBoard, shutdown: Arc<AtomicBool>) {
                     // push fires only when a topic URL is configured.
                     let _ = db.add_notification(
                         now,
-                        if online { "camera_online" } else { "camera_offline" },
+                        if online {
+                            "camera_online"
+                        } else {
+                            "camera_offline"
+                        },
                         title,
                         Some(&msg),
                         None,

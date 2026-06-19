@@ -42,7 +42,9 @@ impl CamHealth {
     /// `camera.enabled` separately (a paused camera isn't an outage).
     pub fn is_online(&self, detect: bool, now: i64, window: i64) -> bool {
         if detect {
-            self.last_frame_ts.map(|t| now - t <= window).unwrap_or(false)
+            self.last_frame_ts
+                .map(|t| now - t <= window)
+                .unwrap_or(false)
         } else {
             self.recording
         }
