@@ -34,6 +34,8 @@ export interface DetectConfig {
   poll_ms: number | null;
   face_recognize: boolean | null;
   two_way_audio: boolean;
+  /** Per-camera retention override in days; null inherits the global setting. */
+  retention_days: number | null;
 }
 
 export interface Camera {

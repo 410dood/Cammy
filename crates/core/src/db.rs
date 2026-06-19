@@ -175,6 +175,13 @@ pub struct DetectConfig {
     /// a speaker / ONVIF backchannel — purely a UI gate; the audio path is the
     /// player's WebRTC mic track through the `/api/ws` proxy.
     pub two_way_audio: bool,
+    /// Per-camera recording RETENTION override in days (UniFi-style: keep the
+    /// doorbell 30d, a quiet side camera 3d). `None` inherits the global
+    /// `Settings.retention_days`. The global byte cap still applies as the
+    /// disk-bound safety net, so this only tightens/extends *age*, never the
+    /// total-disk guarantee.
+    #[serde(default)]
+    pub retention_days: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2291,6 +2298,7 @@ mod tests {
             poll_ms: Some(2000),
             face_recognize: Some(true),
             two_way_audio: true,
+            retention_days: Some(14),
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
