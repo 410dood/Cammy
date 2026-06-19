@@ -79,6 +79,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/audit", get(list_audit))
         .route("/api/me", get(me))
+        .route("/api/me/password", axum::routing::post(change_my_password))
         .route("/api/users", get(list_users_api).post(create_user_api))
         .route(
             "/api/users/{id}",
@@ -352,6 +353,46 @@ async fn me(axum::Extension(p): axum::Extension<crate::auth::Principal>) -> Json
         "username": p.username,
         "role": p.role,
     }))
+}
+
+#[derive(Deserialize)]
+struct ChangePwReq {
+    old_password: String,
+    new_password: String,
+}
+
+/// A logged-in *named* user changes their own password (any role — gated to
+/// Viewer in `min_role_for`). Verifies the current password first. Loopback /
+/// legacy / token admins have no per-user password here; they manage the shared
+/// password under Settings → Remote access.
+async fn change_my_password(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<ChangePwReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (Some(uid), Some(uname)) = (p.user_id, p.username.as_deref()) else {
+        return Err(bad_request(
+            "no user account to change — set the shared password under Settings",
+        ));
+    };
+    if req.new_password.len() < 6 {
+        return Err(bad_request("new password must be at least 6 characters"));
+    }
+    let Some((id, hash, _role)) = st.db.user_by_name(uname)? else {
+        return Err(not_found());
+    };
+    if id != uid || !crate::auth::verify_password(&hash, &req.old_password) {
+        return Err(ApiError(
+            StatusCode::UNAUTHORIZED,
+            "current password is wrong".into(),
+        ));
+    }
+    st.db
+        .set_user_password(uid, &crate::auth::hash_password(&req.new_password))?;
+    let now = chrono::Local::now().timestamp();
+    st.db
+        .add_audit(now, None, "user_password_changed", Some(&format!("#{uid} (self)")));
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 fn valid_username(s: &str) -> bool {
@@ -2308,11 +2349,18 @@ async fn list_audit(
 #[derive(Deserialize)]
 struct NewTokenReq {
     name: String,
+    /// Scope for the token: "viewer" (read-only), "operator" (read+mutate, the
+    /// default), or "admin" (incl. backup/restore). Unknown values fall back to
+    /// viewer (least privilege). Token-management + password endpoints stay
+    /// blocked for every token regardless of role (`token_forbidden`).
+    #[serde(default)]
+    role: Option<String>,
 }
 
 /// Mint an API token. The raw token is returned exactly once here and never
-/// stored or shown again — only its hash is kept. A token grants the same API
-/// access as a logged-in session, so it's only useful once a password is set.
+/// stored or shown again — only its hash is kept. A token grants its assigned
+/// role's API access (minus the interactive-only endpoints), so it's only useful
+/// once a password or user account exists.
 async fn create_token(
     State(st): State<AppState>,
     Json(req): Json<NewTokenReq>,
@@ -2324,14 +2372,21 @@ async fn create_token(
     if name.chars().count() > 64 {
         return Err(bad_request("token name too long (max 64 chars)"));
     }
+    // Default new tokens to operator (a secure, useful default); the creator can
+    // pick viewer for a dashboard token or admin for a backup script.
+    let role = match req.role.as_deref() {
+        Some(r) if !r.is_empty() => crate::auth::Role::parse(r).as_str(),
+        _ => crate::auth::Role::Operator.as_str(),
+    };
     let raw = format!("zoomy_{}", crate::auth::new_token());
     let now = chrono::Local::now().timestamp();
     let id = st
         .db
-        .add_api_token(name, &crate::auth::token_hash(&raw), now)?;
-    st.db.add_audit(now, None, "token_created", Some(name));
+        .add_api_token(name, &crate::auth::token_hash(&raw), role, now)?;
+    st.db
+        .add_audit(now, None, "token_created", Some(&format!("{name} ({role})")));
     Ok(Json(
-        serde_json::json!({ "id": id, "name": name, "token": raw }),
+        serde_json::json!({ "id": id, "name": name, "role": role, "token": raw }),
     ))
 }
 

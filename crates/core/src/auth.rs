@@ -121,6 +121,12 @@ impl Sessions {
 /// mutations need Operator; account / password / token management needs Admin.
 pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
     use axum::http::Method;
+    // A user changing their OWN password only needs to be authenticated (the
+    // handler verifies their current password), so it stays Viewer-reachable —
+    // listed before the POST→Operator default below.
+    if path == "/api/me/password" {
+        return Role::Viewer;
+    }
     // Account/security management AND config snapshots (which embed camera
     // rtsp://user:pass credentials) require Admin — note /api/backup is a GET, so
     // it must be listed explicitly or the GET default would expose secrets.
@@ -385,14 +391,20 @@ pub async fn middleware(
             Some(p)
         } else if let Some(bearer) = bearer_token(&req) {
             match st.db.api_token_by_hash(&token_hash(&bearer)) {
-                Ok(Some((id, last))) => {
+                Ok(Some((id, last, role))) => {
                     is_token = true;
                     let now = chrono::Local::now().timestamp();
                     // Throttle last-used writes to at most once a minute per token.
                     if last.map(|t| now - t >= 60).unwrap_or(true) {
                         let _ = st.db.touch_api_token(id, now);
                     }
-                    Some(Principal::admin())
+                    // A token acts at its assigned role (scoped, not blanket admin);
+                    // `token_forbidden` still blocks the interactive-only endpoints.
+                    Some(Principal {
+                        user_id: None,
+                        username: None,
+                        role: Role::parse(&role),
+                    })
                 }
                 _ => None,
             }

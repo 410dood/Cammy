@@ -113,7 +113,8 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
   const dialog = useDialog();
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [name, setName] = useState("");
-  const [fresh, setFresh] = useState<{ name: string; token: string } | null>(null);
+  const [role, setRole] = useState<Role>("operator");
+  const [fresh, setFresh] = useState<{ name: string; role: Role; token: string } | null>(null);
 
   const load = () => {
     api.tokens().then(setTokens).catch(() => {});
@@ -124,8 +125,8 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
     const n = name.trim();
     if (!n) return;
     try {
-      const r = await api.createToken(n);
-      setFresh({ name: r.name, token: r.token });
+      const r = await api.createToken(n, role);
+      setFresh({ name: r.name, role: r.role, token: r.token });
       setName("");
       load();
     } catch (e) {
@@ -155,10 +156,11 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
       <p className="muted" style={{ marginTop: 0 }}>
         Bearer tokens let scripts and integrations (Home Assistant, MQTT automations) call the
         API from another machine without logging in — send{" "}
-        <code>Authorization: Bearer &lt;token&gt;</code>. A token can do almost anything the API
-        can, so keep it secret and revoke any that leak. (Tokens cannot change the password or
-        create/revoke other tokens — those need an interactive login here, so a leaked token
-        can't lock you out.)
+        <code>Authorization: Bearer &lt;token&gt;</code>. Each token is <b>scoped to a role</b>:{" "}
+        <b>viewer</b> (read-only), <b>operator</b> (read + manage cameras/settings/alarms), or{" "}
+        <b>admin</b> (also backup/restore). Pick the least privilege the integration needs, keep it
+        secret, and revoke any that leak. (No token — at any role — can change a password or
+        create/revoke tokens; those need an interactive login, so a leaked token can't lock you out.)
       </p>
       <div className="row">
         <input
@@ -168,6 +170,11 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && create()}
         />
+        <select value={role} onChange={(e) => setRole(e.target.value as Role)} aria-label="token role">
+          <option value="viewer">viewer</option>
+          <option value="operator">operator</option>
+          <option value="admin">admin</option>
+        </select>
         <button type="button" className="primary" disabled={!name.trim()} onClick={create}>
           Create token
         </button>
@@ -178,7 +185,7 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
           style={{ marginTop: 8, flexDirection: "column", alignItems: "flex-start", gap: 4 }}
         >
           <span style={{ color: "var(--ok)" }}>
-            New token “{fresh.name}” — copy it now, it won’t be shown again:
+            New <b>{fresh.role}</b> token “{fresh.name}” — copy it now, it won’t be shown again:
           </span>
           <code style={{ userSelect: "all", wordBreak: "break-all" }}>{fresh.token}</code>
         </div>
@@ -189,7 +196,7 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
             {tokens.map((t) => (
               <tr key={t.id}>
                 <td>
-                  <b>{t.name}</b>
+                  <b>{t.name}</b> <span className={`role-pill role-${t.role}`}>{t.role}</span>
                 </td>
                 <td className="muted">created {fmtTime(t.created_ts)}</td>
                 <td className="muted">
@@ -205,6 +212,76 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+// Self-service password change — only shown to a logged-in *named* account
+// (loopback / legacy / token admins manage the shared password elsewhere).
+function AccountCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const [me, setMe] = useState<Me | null>(null);
+  const [oldPw, setOldPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.me().then(setMe).catch(() => {});
+  }, []);
+
+  if (!me || !me.named) return null;
+
+  const submit = async () => {
+    if (newPw.length < 6) {
+      onError("new password must be at least 6 characters");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.changeMyPassword(oldPw, newPw);
+      setOldPw("");
+      setNewPw("");
+      toast.success("Password changed");
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Your account</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Signed in as <b>{me.username}</b>{" "}
+        <span className={`role-pill role-${me.role}`}>{me.role}</span>. Change your own password
+        here — you’ll need your current one.
+      </p>
+      <div className="row">
+        <input
+          type="password"
+          autoComplete="current-password"
+          placeholder="current password"
+          value={oldPw}
+          onChange={(e) => setOldPw(e.target.value)}
+        />
+        <input
+          type="password"
+          autoComplete="new-password"
+          placeholder="new password (min 6)"
+          value={newPw}
+          onChange={(e) => setNewPw(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+        />
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || !oldPw || newPw.length < 6}
+          onClick={submit}
+        >
+          Change password
+        </button>
+      </div>
     </div>
   );
 }
@@ -739,6 +816,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <RemoteAccessCard onError={onError} />
+
+        <AccountCard onError={onError} />
 
         <UsersCard onError={onError} />
 

@@ -181,6 +181,7 @@ export interface AlarmRule {
 export interface ApiToken {
   id: number;
   name: string;
+  role: Role;
   created_ts: number;
   last_used_ts: number | null;
 }
@@ -254,6 +255,8 @@ export interface User {
 
 export interface Me {
   authenticated: boolean;
+  /** true for a real user account; false for the legacy/loopback/token admin */
+  named: boolean;
   username: string | null;
   role: Role;
 }
@@ -371,10 +374,10 @@ export const api = {
   ptz: (id: number, cmd: { action: "move" | "stop"; pan?: number; tilt?: number; zoom?: number }) =>
     req<{ ok: boolean }>(`/api/cameras/${id}/ptz`, { method: "POST", body: JSON.stringify(cmd) }),
   tokens: () => req<ApiToken[]>("/api/tokens"),
-  createToken: (name: string) =>
-    req<{ id: number; name: string; token: string }>("/api/tokens", {
+  createToken: (name: string, role: Role = "operator") =>
+    req<{ id: number; name: string; role: Role; token: string }>("/api/tokens", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, role }),
     }),
   deleteToken: (id: number) => req<void>(`/api/tokens/${id}`, { method: "DELETE" }),
   audit: (limit = 100) => req<AuditEntry[]>(`/api/audit?limit=${limit}`),
@@ -385,6 +388,11 @@ export const api = {
       body: JSON.stringify({ username: username || undefined, password }),
     }),
   me: () => req<Me>("/api/me"),
+  changeMyPassword: (old_password: string, new_password: string) =>
+    req<{ ok: boolean }>("/api/me/password", {
+      method: "POST",
+      body: JSON.stringify({ old_password, new_password }),
+    }),
   users: () => req<User[]>("/api/users"),
   createUser: (body: { username: string; password: string; role: Role }) =>
     req<{ id: number }>("/api/users", { method: "POST", body: JSON.stringify(body) }),
