@@ -11,7 +11,7 @@ import {
   fmtTime,
   ArmMode,
 } from "../api";
-import { RelTime, useToast } from "../ui";
+import { RelTime, useToast, Modal } from "../ui";
 import {
   IconVideo,
   IconRecDot,
@@ -84,6 +84,7 @@ export default function Home({
   const [digest, setDigest] = useState<Digest | null>(null);
   const [notes, setNotes] = useState<Notification[]>([]);
   const [arm, setArm] = useState<ArmMode | null>(null);
+  const [lightbox, setLightbox] = useState<CamEvent | null>(null);
 
   useEffect(() => {
     const load = () => {
@@ -245,7 +246,15 @@ export default function Home({
               {recent.map((e) => (
                 <div className="feed-item" key={e.id}>
                   {e.snapshot && (
-                    <img src={`/api/snapshots/${e.snapshot}?w=160`} alt={e.label} loading="lazy" />
+                    <button
+                      type="button"
+                      className="feed-thumb"
+                      title="View snapshot"
+                      aria-label={`View ${e.label} snapshot from ${e.camera}`}
+                      onClick={() => setLightbox(e)}
+                    >
+                      <img src={`/api/snapshots/${e.snapshot}?w=160`} alt={e.label} loading="lazy" />
+                    </button>
                   )}
                   <div>
                     <b style={{ textTransform: "capitalize" }}>{e.label}</b>{" "}
@@ -286,6 +295,29 @@ export default function Home({
             </div>
           ))}
         </div>
+      )}
+
+      {lightbox && lightbox.snapshot && (
+        <Modal
+          className="lightbox"
+          title={`${lightbox.label} · ${lightbox.camera}`}
+          onClose={() => setLightbox(null)}
+        >
+          <img
+            src={`/api/snapshots/${lightbox.snapshot}`}
+            alt={`${lightbox.label} on ${lightbox.camera}`}
+            style={{ display: "block", width: "100%" }}
+          />
+          <div className="lightbox-meta">
+            <span className="muted">{lightbox.camera}</span>
+            {lightbox.face && lightbox.face !== "?" && (
+              <span className="badge ok">
+                <IconUser size={11} /> {lightbox.face}
+              </span>
+            )}
+            <RelTime ts={lightbox.ts} className="muted clock" style={{ marginLeft: "auto" }} />
+          </div>
+        </Modal>
       )}
     </>
   );
