@@ -2008,6 +2008,36 @@ async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>>
     let disk_free = fs2::available_space(&rec_root)
         .or_else(|_| fs2::available_space(std::path::Path::new(".")))
         .unwrap_or(0);
+
+    // Storage forecast (UniFi-style): a naive linear extrapolation from the
+    // footage on disk. Per camera, rate = bytes / span; summed to a total
+    // write rate, then days-until-full and a projected fill date. `None` until a
+    // camera has accumulated enough span to estimate (avoids div-by-zero and
+    // wild numbers on a camera added minutes ago).
+    let now = chrono::Local::now().timestamp();
+    let mut write_per_day: f64 = 0.0;
+    for c in &cameras {
+        if let (Some(o), Some(n)) = (c.oldest_ts, c.newest_ts) {
+            // Need at least an hour of span before the rate means anything.
+            let span_days = (n - o) as f64 / 86_400.0;
+            if span_days >= 1.0 / 24.0 {
+                write_per_day += c.bytes as f64 / span_days;
+            }
+        }
+    }
+    let write_per_day = write_per_day.round() as u64;
+    let days_until_full = (write_per_day > 0).then(|| disk_free as f64 / write_per_day as f64);
+    let est_full_ts = days_until_full.map(|d| now + (d * 86_400.0) as i64);
+    // Where retention caps history first: min(retention_days, the GB budget at
+    // the current write rate).
+    let by_days = (settings.retention_days > 0).then_some(settings.retention_days as f64);
+    let by_gb = (settings.retention_gb > 0 && write_per_day > 0)
+        .then(|| settings.retention_gb as f64 * 1e9 / write_per_day as f64);
+    let retention_horizon_days = match (by_days, by_gb) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+
     Ok(Json(serde_json::json!({
         "cameras": cameras,
         "total_bytes": total_bytes,
@@ -2015,6 +2045,10 @@ async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>>
         "events_total": st.db.count_events()?,
         "disk_free_bytes": disk_free,
         "recordings_root": rec_root.to_string_lossy(),
+        "write_bytes_per_day": write_per_day,
+        "days_until_full": days_until_full,
+        "est_full_ts": est_full_ts,
+        "retention_horizon_days": retention_horizon_days,
     })))
 }
 

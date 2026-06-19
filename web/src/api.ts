@@ -126,6 +126,10 @@ export interface Settings {
   digest_enabled: boolean;
   liveviews: Liveview[];
   floorplan: string;
+  /** AudioSet display names (yamnet_class_map.csv) that fire audio events. */
+  audio_labels: string[];
+  /** Mean YAMNet score (0..1) needed to fire an audio event. */
+  audio_threshold: number;
 }
 
 export interface CamStorage {
@@ -144,6 +148,11 @@ export interface Stats {
   events_total: number;
   disk_free_bytes: number;
   recordings_root: string;
+  /** Estimated write rate + when the disk fills / retention caps history. */
+  write_bytes_per_day: number;
+  days_until_full: number | null;
+  est_full_ts: number | null;
+  retention_horizon_days: number | null;
 }
 
 export interface DiscoveredCam {

@@ -753,6 +753,7 @@ impl Default for Settings {
                 "Bark",
                 "Doorbell",
                 "Knock",
+                "Baby cry, infant cry",
             ]
             .map(String::from)
             .to_vec(),
