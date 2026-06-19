@@ -91,6 +91,11 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(rename_face_api).delete(delete_face_api),
         )
         .route("/api/faces/unknown/{file}", get(unknown_face_img))
+        .route("/api/plates", get(list_plates_api).post(add_plate_api))
+        .route(
+            "/api/plates/{id}",
+            axum::routing::patch(update_plate_api).delete(delete_plate_api),
+        )
         .route("/api/snapshots/{file}", get(snapshot))
         .route("/api/recordings", get(list_recordings))
         .route("/api/recordings/at", get(recording_at))
@@ -1946,6 +1951,95 @@ async fn unknown_face_img(
         return Err(not_found());
     }
     Ok(ServeFile::new(path).oneshot(req).await.into_response())
+}
+
+// --- license-plate library ---------------------------------------------------
+
+fn valid_plate_category(c: &str) -> bool {
+    matches!(c, "known" | "watch")
+}
+
+async fn list_plates_api(State(st): State<AppState>) -> ApiResult<Json<Vec<crate::db::PlateRow>>> {
+    Ok(Json(st.db.list_plates()?))
+}
+
+#[derive(Deserialize)]
+struct NewPlateReq {
+    plate: String,
+    name: String,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+async fn add_plate_api(
+    State(st): State<AppState>,
+    Json(req): Json<NewPlateReq>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    let key = crate::db::normalize_plate(&req.plate);
+    if key.is_empty() {
+        return Err(bad_request("plate must contain letters or digits"));
+    }
+    if key.len() > 16 {
+        return Err(bad_request("plate too long (max 16 chars)"));
+    }
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err(bad_request("name must be 1-64 characters"));
+    }
+    let category = req.category.as_deref().unwrap_or("known");
+    if !valid_plate_category(category) {
+        return Err(bad_request("category must be 'known' or 'watch'"));
+    }
+    let note = req.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    if note.map(|n| n.chars().count()).unwrap_or(0) > 500 {
+        return Err(bad_request("note too long (max 500 characters)"));
+    }
+    let id = st.db.add_plate(&req.plate, name, category, note)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "id": id, "plate": key })),
+    ))
+}
+
+#[derive(Deserialize)]
+struct PatchPlateReq {
+    name: String,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+async fn update_plate_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<PatchPlateReq>,
+) -> ApiResult<StatusCode> {
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err(bad_request("name must be 1-64 characters"));
+    }
+    let category = req.category.as_deref().unwrap_or("known");
+    if !valid_plate_category(category) {
+        return Err(bad_request("category must be 'known' or 'watch'"));
+    }
+    let note = req.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+    if note.map(|n| n.chars().count()).unwrap_or(0) > 500 {
+        return Err(bad_request("note too long (max 500 characters)"));
+    }
+    if !st.db.update_plate(id, name, category, note)? {
+        return Err(not_found());
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_plate_api(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    if !st.db.delete_plate(id)? {
+        return Err(not_found());
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // --- recordings -------------------------------------------------------------

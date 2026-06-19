@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
-import { api, CamEvent } from "../api";
+import { api, CamEvent, PlateEntry, PlateCategory } from "../api";
 import { useToast, useDialog, Modal, RelTime } from "../ui";
-import { IconUser, IconStranger, IconCar, IconAlert, IconCheck } from "../icons";
+import { IconUser, IconStranger, IconCar, IconAlert, IconCheck, IconTrash, IconPlus } from "../icons";
+
+/** Mirror of the backend normalize_plate: uppercase, alphanumerics only. */
+const normalizePlate = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
 interface Enrolled {
   id: number;
@@ -24,6 +27,7 @@ interface PlateStat {
   last: CamEvent;
   cameras: Record<string, number>;
   cls: "deny" | "allow" | "";
+  entry?: PlateEntry; // matching library entry, if any
 }
 
 function topCamera(cameras: Record<string, number>): string {
@@ -40,6 +44,10 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   const [plateDeny, setPlateDeny] = useState<string[]>([]);
   const [plateAllow, setPlateAllow] = useState<string[]>([]);
   const [openId, setOpenId] = useState<IdentityStat | null>(null);
+  const [lib, setLib] = useState<PlateEntry[]>([]);
+  const [pPlate, setPPlate] = useState("");
+  const [pName, setPName] = useState("");
+  const [pCat, setPCat] = useState<PlateCategory>("known");
 
   const load = () => {
     api.faces().then((r) => {
@@ -47,6 +55,44 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
       setUnknown(r.unknown);
     }).catch(() => {});
     api.events({ limit: 3000 }).then(setEvents).catch(() => {});
+    api.plates().then(setLib).catch(() => {});
+  };
+
+  const addPlate = async () => {
+    const plate = pPlate.trim();
+    const name = pName.trim();
+    if (!plate || !name) return;
+    try {
+      await api.addPlate({ plate, name, category: pCat });
+      setPPlate("");
+      setPName("");
+      setPCat("known");
+      toast.success(`Added ${normalizePlate(plate)} to the library`);
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  const setPlateCategory = async (p: PlateEntry, category: PlateCategory) => {
+    try {
+      await api.updatePlate(p.id, { name: p.name, category, note: p.note ?? undefined });
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  const removePlate = async (p: PlateEntry) => {
+    if (!(await dialog.confirm({ title: `Remove ${p.plate} (${p.name})?`, confirmLabel: "Remove", danger: true })))
+      return;
+    try {
+      await api.deletePlate(p.id);
+      toast.success("Removed from the library");
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
   };
 
   useEffect(() => {
@@ -111,8 +157,12 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   let strangerCount = 0;
   let lastStranger: CamEvent | undefined;
   const plateMap: Record<string, PlateStat> = {};
+  const libMap: Record<string, PlateEntry> = {};
+  for (const p of lib) libMap[p.plate] = p;
 
-  const plateClass = (plate: string): "deny" | "allow" | "" => {
+  // The library entry wins; otherwise fall back to the legacy allow/deny lists.
+  const plateClass = (plate: string, entry?: PlateEntry): "deny" | "allow" | "" => {
+    if (entry) return entry.category === "watch" ? "deny" : "allow";
     const p = plate.toUpperCase();
     if (plateDeny.some((e) => e.trim() && p.includes(e.trim().toUpperCase()))) return "deny";
     if (plateAllow.some((e) => e.trim() && p.includes(e.trim().toUpperCase()))) return "allow";
@@ -132,9 +182,10 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
       if (s.sightings.length < 24) s.sightings.push(e);
     }
     if (e.plate) {
+      const entry = libMap[normalizePlate(e.plate)];
       const s =
         plateMap[e.plate] ??
-        (plateMap[e.plate] = { plate: e.plate, count: 0, last: e, cameras: {}, cls: plateClass(e.plate) });
+        (plateMap[e.plate] = { plate: e.plate, count: 0, last: e, cameras: {}, cls: plateClass(e.plate, entry), entry });
       s.count++;
       s.cameras[e.camera] = (s.cameras[e.camera] ?? 0) + 1;
     }
@@ -146,6 +197,9 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   }
   const identities = Object.values(idMap).sort((a, b) => b.count - a.count);
   const plates = Object.values(plateMap).sort((a, b) => b.count - a.count);
+  // Sightings per library entry (by normalized key), for the library table.
+  const sightingsByLib: Record<string, number> = {};
+  for (const s of plates) sightingsByLib[normalizePlate(s.plate)] = (sightingsByLib[normalizePlate(s.plate)] ?? 0) + s.count;
 
   return (
     <>
@@ -227,8 +281,30 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                 <div className="identity-body">
                   <div className="identity-head">
                     <b style={{ letterSpacing: "0.04em" }}>{s.plate}</b>
-                    {s.cls === "deny" && <span className="badge danger"><IconAlert size={11} /> of interest</span>}
-                    {s.cls === "allow" && <span className="badge ok"><IconCheck size={11} /> known</span>}
+                    {s.entry && <span style={{ fontWeight: 600 }}>{s.entry.name}</span>}
+                    {s.cls === "deny" && (
+                      <span className="badge danger">
+                        <IconAlert size={11} /> {s.entry ? "watch" : "of interest"}
+                      </span>
+                    )}
+                    {s.cls === "allow" && !s.entry && (
+                      <span className="badge ok"><IconCheck size={11} /> known</span>
+                    )}
+                    {!s.entry && (
+                      <button
+                        className="btn btn-ghost"
+                        style={{ padding: "2px 8px", fontSize: "0.72rem" }}
+                        title="Add this plate to the library"
+                        onClick={() => {
+                          setPPlate(s.plate);
+                          document
+                            .getElementById("plate-library")
+                            ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                        }}
+                      >
+                        <IconPlus size={11} /> name
+                      </button>
+                    )}
                   </div>
                   <div className="muted">
                     {s.count} sighting{s.count === 1 ? "" : "s"} · {topCamera(s.cameras)}
@@ -240,6 +316,82 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
           </div>
         </div>
       )}
+
+      <div className="card" id="plate-library">
+        <h2>Plate library</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Name known vehicles and flag vehicles of interest — the car analog of the People library.
+          A <b>watch</b> plate fires a vehicle-of-interest alert (to the camera-health push topic)
+          the moment it's read on any camera; <b>known</b> plates just get labelled.
+        </p>
+        <div className="row" style={{ marginBottom: 12 }}>
+          <input
+            type="text"
+            placeholder="plate (e.g. ABC1234)"
+            value={pPlate}
+            onChange={(e) => setPPlate(e.target.value)}
+            style={{ textTransform: "uppercase", width: 170 }}
+            onKeyDown={(e) => e.key === "Enter" && addPlate()}
+          />
+          <input
+            type="text"
+            placeholder="name / owner"
+            value={pName}
+            onChange={(e) => setPName(e.target.value)}
+            style={{ flex: 1, minWidth: 160 }}
+            onKeyDown={(e) => e.key === "Enter" && addPlate()}
+          />
+          <select value={pCat} onChange={(e) => setPCat(e.target.value as PlateCategory)}>
+            <option value="known">known</option>
+            <option value="watch">watch (alert)</option>
+          </select>
+          <button className="btn btn-primary" disabled={!pPlate.trim() || !pName.trim()} onClick={addPlate}>
+            <IconPlus size={14} /> Add
+          </button>
+        </div>
+        {lib.length === 0 ? (
+          <p className="muted">No plates yet. Add one above, or click “name” on a vehicle seen.</p>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Plate</th>
+                  <th>Category</th>
+                  <th>Sightings</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {lib.map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      <b>{p.name}</b>
+                    </td>
+                    <td style={{ letterSpacing: "0.04em" }}>{p.plate}</td>
+                    <td>
+                      <select
+                        value={p.category}
+                        onChange={(e) => setPlateCategory(p, e.target.value as PlateCategory)}
+                      >
+                        <option value="known">known</option>
+                        <option value="watch">watch (alert)</option>
+                      </select>
+                    </td>
+                    <td className="muted">{sightingsByLib[p.plate] ?? 0}</td>
+                    <td style={{ textAlign: "right" }}>
+                      <button className="btn btn-danger" title="Remove" onClick={() => removePlate(p)}>
+                        <IconTrash size={13} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       <div className="card">
         <h2>Unknown faces</h2>

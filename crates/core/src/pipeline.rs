@@ -315,20 +315,33 @@ pub fn run(
                             })
                         });
                         if let Some(text) = read.filter(|t| t.len() >= 3) {
-                            // Vehicle of interest: a deny-listed plate gets a
-                            // guaranteed high-priority push (independent of any
-                            // alarm rule).
-                            if crate::lpr::plate_status(
-                                &text,
-                                &settings.plate_allowlist,
-                                &settings.plate_denylist,
-                            ) == crate::lpr::PlateStatus::Deny
-                                && !settings.health_ntfy_url.is_empty()
-                            {
+                            // Vehicle of interest gets a guaranteed high-priority
+                            // push (independent of any alarm rule). The plate
+                            // library wins: a "watch" entry alerts with its name;
+                            // otherwise fall back to the legacy deny-list.
+                            let lib = db
+                                .plate_by_text(&crate::db::normalize_plate(&text))
+                                .ok()
+                                .flatten();
+                            let interest = match &lib {
+                                Some(p) => p.category == "watch",
+                                None => {
+                                    crate::lpr::plate_status(
+                                        &text,
+                                        &settings.plate_allowlist,
+                                        &settings.plate_denylist,
+                                    ) == crate::lpr::PlateStatus::Deny
+                                }
+                            };
+                            if interest && !settings.health_ntfy_url.is_empty() {
+                                let who = lib
+                                    .as_ref()
+                                    .map(|p| format!("{} — plate {text}", p.name))
+                                    .unwrap_or_else(|| format!("Plate {text} (deny-list)"));
                                 crate::notify::ntfy_text(
                                     &settings.health_ntfy_url,
                                     &format!("🚗 Vehicle of interest on {}", cam.name),
-                                    &format!("Plate {text} (deny-list) seen on {}", cam.name),
+                                    &format!("{who} seen on {}", cam.name),
                                     "warning,oncoming_automobile",
                                 );
                             }

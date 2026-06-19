@@ -537,6 +537,29 @@ pub struct FaceRow {
     pub created_ts: i64,
 }
 
+/// A named entry in the license-plate library (the vehicle analog of an enrolled
+/// face). `category` is "known" (an expected vehicle) or "watch" (a vehicle of
+/// interest that fires an alert when seen).
+#[derive(Clone, Debug, Serialize)]
+pub struct PlateRow {
+    pub id: i64,
+    pub plate: String,
+    pub name: String,
+    pub category: String,
+    pub note: Option<String>,
+    pub created_ts: i64,
+}
+
+/// Canonical plate key: uppercase, alphanumerics only (drop spaces/dashes), so
+/// "ab-12 34" and "AB1234" match the same library entry and OCR spacing noise
+/// doesn't matter.
+pub fn normalize_plate(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_uppercase())
+        .collect()
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct CamStorage {
     pub camera_id: i64,
@@ -874,6 +897,14 @@ impl Db {
              CREATE TABLE IF NOT EXISTS event_embeddings (
                  event_id  INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
                  embedding BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS plates (
+                 id         INTEGER PRIMARY KEY,
+                 plate      TEXT NOT NULL UNIQUE,
+                 name       TEXT NOT NULL,
+                 category   TEXT NOT NULL DEFAULT 'known',
+                 note       TEXT,
+                 created_ts INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS alarms (
                  id         INTEGER PRIMARY KEY,
@@ -1752,6 +1783,88 @@ impl Db {
         Ok(())
     }
 
+    // --- license-plate library -------------------------------------------
+
+    /// Add a library entry (upsert by normalized plate). Returns the row id.
+    pub fn add_plate(
+        &self,
+        plate: &str,
+        name: &str,
+        category: &str,
+        note: Option<&str>,
+    ) -> Result<i64> {
+        let key = normalize_plate(plate);
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO plates (plate, name, category, note, created_ts)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(plate) DO UPDATE SET
+                 name = excluded.name, category = excluded.category, note = excluded.note",
+            params![key, name, category, note, chrono::Local::now().timestamp()],
+        )?;
+        Ok(conn.query_row("SELECT id FROM plates WHERE plate = ?1", [key], |r| r.get(0))?)
+    }
+
+    pub fn list_plates(&self) -> Result<Vec<PlateRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, plate, name, category, note, created_ts FROM plates ORDER BY name",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(PlateRow {
+                    id: r.get(0)?,
+                    plate: r.get(1)?,
+                    name: r.get(2)?,
+                    category: r.get(3)?,
+                    note: r.get(4)?,
+                    created_ts: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Look up a library entry by an already-normalized plate key.
+    pub fn plate_by_text(&self, normalized: &str) -> Result<Option<PlateRow>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT id, plate, name, category, note, created_ts FROM plates WHERE plate = ?1",
+                [normalized],
+                |r| {
+                    Ok(PlateRow {
+                        id: r.get(0)?,
+                        plate: r.get(1)?,
+                        name: r.get(2)?,
+                        category: r.get(3)?,
+                        note: r.get(4)?,
+                        created_ts: r.get(5)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn update_plate(
+        &self,
+        id: i64,
+        name: &str,
+        category: &str,
+        note: Option<&str>,
+    ) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE plates SET name = ?1, category = ?2, note = ?3 WHERE id = ?4",
+            params![name, category, note, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn delete_plate(&self, id: i64) -> Result<bool> {
+        let n = self.conn().execute("DELETE FROM plates WHERE id = ?1", [id])?;
+        Ok(n > 0)
+    }
+
     // --- segments --------------------------------------------------------
 
     pub fn upsert_segment(
@@ -2506,6 +2619,31 @@ mod tests {
         assert_eq!(got.modes, vec!["away".to_string()]);
         assert_eq!(got.action, "ntfy"); // legacy column dual-written from actions[0]
         assert_eq!(got.target, "https://ntfy.sh/x");
+    }
+
+    #[test]
+    fn plate_library_roundtrip() {
+        let db = mem_db();
+        assert_eq!(normalize_plate("ab-12 34"), "AB1234");
+        assert_eq!(normalize_plate("  -- "), "");
+        let id = db
+            .add_plate("ab 12-34", "My car", "known", Some("daily driver"))
+            .unwrap();
+        // Upsert by normalized plate updates the same row, doesn't duplicate.
+        let id2 = db.add_plate("AB1234", "My Car", "watch", None).unwrap();
+        assert_eq!(id, id2);
+        let list = db.list_plates().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].plate, "AB1234");
+        assert_eq!(list[0].category, "watch");
+        // Lookup is by the normalized key; misses return None.
+        assert_eq!(db.plate_by_text("AB1234").unwrap().unwrap().name, "My Car");
+        assert!(db.plate_by_text("ZZ9999").unwrap().is_none());
+        assert!(db.update_plate(id, "Renamed", "known", None).unwrap());
+        assert_eq!(db.plate_by_text("AB1234").unwrap().unwrap().name, "Renamed");
+        assert!(db.delete_plate(id).unwrap());
+        assert!(db.list_plates().unwrap().is_empty());
+        assert!(!db.delete_plate(id).unwrap());
     }
 
     #[test]

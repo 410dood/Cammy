@@ -255,6 +255,19 @@ export interface Digest {
   text: string;
 }
 
+export type PlateCategory = "known" | "watch";
+
+/** A named entry in the license-plate library (the vehicle analog of an
+ *  enrolled face). `plate` is the normalized key (uppercase, alphanumerics). */
+export interface PlateEntry {
+  id: number;
+  plate: string;
+  name: string;
+  category: PlateCategory;
+  note: string | null;
+  created_ts: number;
+}
+
 export interface Overview {
   cameras_total: number;
   cameras_online: number;
@@ -407,6 +420,12 @@ export const api = {
   deleteFace: (id: number) => req<void>(`/api/faces/${id}`, { method: "DELETE" }),
   renameFace: (id: number, name: string) =>
     req<void>(`/api/faces/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  plates: () => req<PlateEntry[]>("/api/plates"),
+  addPlate: (body: { plate: string; name: string; category: PlateCategory; note?: string }) =>
+    req<{ id: number; plate: string }>("/api/plates", { method: "POST", body: JSON.stringify(body) }),
+  updatePlate: (id: number, body: { name: string; category: PlateCategory; note?: string }) =>
+    req<void>(`/api/plates/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deletePlate: (id: number) => req<void>(`/api/plates/${id}`, { method: "DELETE" }),
   ptzCaps: (id: number) => req<{ supported: boolean }>(`/api/cameras/${id}/ptz`),
   ptz: (id: number, cmd: { action: "move" | "stop"; pan?: number; tilt?: number; zoom?: number }) =>
     req<{ ok: boolean }>(`/api/cameras/${id}/ptz`, { method: "POST", body: JSON.stringify(cmd) }),
