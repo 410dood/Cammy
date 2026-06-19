@@ -32,6 +32,7 @@ function TuneModal({
     poll_ms: camera.detect_config.poll_ms ?? null,
     face_recognize: camera.detect_config.face_recognize ?? null,
     two_way_audio: camera.detect_config.two_way_audio ?? false,
+    retention_days: camera.detect_config.retention_days ?? null,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -225,6 +226,25 @@ function TuneModal({
               type="checkbox"
               checked={dc.event_only_recording}
               onChange={() => setDc({ ...dc, event_only_recording: !dc.event_only_recording })}
+            />
+          </label>
+          <label
+            className="field"
+            title="Keep this camera's footage for a custom number of days (e.g. a doorbell 30, a quiet side camera 3). Blank inherits the global retention. The global disk size cap still applies as the safety net."
+          >
+            retention (days, blank = global)
+            <input
+              type="number"
+              min="0"
+              style={{ width: 110 }}
+              value={dc.retention_days ?? ""}
+              placeholder="global"
+              onChange={(e) =>
+                setDc({
+                  ...dc,
+                  retention_days: e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0),
+                })
+              }
             />
           </label>
         </div>

@@ -193,14 +193,37 @@ pub fn run(
                 }
             }
 
-            let max_bytes = u64::from(settings.retention_gb) * 1_000_000_000;
-            match recorder::prune(&dirs, Some(settings.retention_days), Some(max_bytes)) {
-                Ok(deleted) => {
-                    for path in deleted {
-                        let _ = db.delete_segment_by_path(&path.to_string_lossy());
-                    }
+            // Retention in two passes:
+            //  1. Per-camera AGE prune — each camera keeps its own number of
+            //     days (its override, else the global default). Age-only here so
+            //     a camera's window is honored regardless of the others.
+            //  2. ONE global pooled BYTE-cap pass — the disk-bound safety net,
+            //     deleting oldest-across-all until under the global GB cap. This
+            //     keeps total disk bounded even if per-camera overrides sum high.
+            let mut pruned: Vec<PathBuf> = Vec::new();
+            for cam in &cameras {
+                let days = cam
+                    .detect_config
+                    .retention_days
+                    .unwrap_or(settings.retention_days);
+                if days == 0 {
+                    continue; // 0 = keep indefinitely (byte cap still applies below)
                 }
-                Err(e) => tracing::warn!("retention failed: {e:#}"),
+                let dir = recordings_dir.join(&cam.name);
+                match recorder::prune(&[dir], Some(days), None) {
+                    Ok(deleted) => pruned.extend(deleted),
+                    Err(e) => tracing::warn!(camera = %cam.name, "age retention failed: {e:#}"),
+                }
+            }
+            let max_bytes = u64::from(settings.retention_gb) * 1_000_000_000;
+            if max_bytes > 0 {
+                match recorder::prune(&dirs, None, Some(max_bytes)) {
+                    Ok(deleted) => pruned.extend(deleted),
+                    Err(e) => tracing::warn!("byte-cap retention failed: {e:#}"),
+                }
+            }
+            for path in pruned {
+                let _ = db.delete_segment_by_path(&path.to_string_lossy());
             }
 
             // Event retention: expire old events and their snapshot files
