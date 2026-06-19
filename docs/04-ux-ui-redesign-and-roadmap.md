@@ -1,4 +1,4 @@
-# ZoomyZoomyCamCam — UX/UI Redesign & Feature Roadmap
+# Cammy — UX/UI Redesign & Feature Roadmap
 
 > **Implementation status (2026-06-18):** the full design-system overhaul plus **14
 > of the 16 net-new features** in §6 are built and validated (A1–A6, B1–B3, C1–C4,
@@ -34,7 +34,7 @@
 
 ## 1. Vision & design principles
 
-ZoomyZoomyCamCam is a self-hosted, local-first, privacy-first NVR that should feel
+Cammy is a self-hosted, local-first, privacy-first NVR that should feel
 as considered as UniFi Protect while staying true to its "no account, no cloud,
 runs on your own box" identity. The redesign closes the gap between an app that
 *looks* self-hosted and one that *looks* like a premium instrument: it replaces
@@ -102,7 +102,7 @@ site change. Paste this in place of the current `:root` block in
 
 ```css
 /* =====================================================================
-   ZoomyZoomyCamCam design tokens — UniFi-blue dark NVR system.
+   Cammy design tokens — UniFi-blue dark NVR system.
    OKLCH source of truth + hex fallback. Never pure #000/#fff.
    Legacy names kept as aliases so existing components inherit the
    upgrade for free.
@@ -342,7 +342,7 @@ input::-webkit-calendar-picker-indicator { filter: invert(0.7); cursor: pointer;
 
 ### Surface map (which ramp step goes where)
 
-| Step | Token | Where it lives in ZoomyZoomyCamCam |
+| Step | Token | Where it lives in Cammy |
 |-------|-------------------|------------------------------------------------------------|
 | n-0 | (video bg) | Camera-tile / lightbox letterboxing only. Never UI. |
 | n-1 | `--bg-shell` | Rail + topbar (darkest chrome), timeline track well. |

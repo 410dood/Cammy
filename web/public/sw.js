@@ -1,9 +1,9 @@
-// ZoomyZoomyCamCam service worker (C4 PWA). Hand-rolled, no dependency.
+// Cammy service worker (C4 PWA). Hand-rolled, no dependency.
 // Strategy: never touch /api or non-GET (live data + video must stay fresh);
 // network-first for navigations (so a new build wins, offline falls back to the
 // cached shell); cache-first for hashed static assets (instant, immutable).
 
-const CACHE = "zoomy-shell-v1";
+const CACHE = "cammy-shell-v1";
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();

@@ -2,7 +2,7 @@
 
 **Goal:** prove that a single exported YOLO model runs with **GPU acceleration on
 both Windows and macOS** (and Linux) through ONNX Runtime — the capability that
-makes ZoomyZoomyCamCam's AI portable in a way Frigate isn't. This underpins Phase 4
+makes Cammy's AI portable in a way Frigate isn't. This underpins Phase 4
 (AI object detection).
 
 ## How portability works

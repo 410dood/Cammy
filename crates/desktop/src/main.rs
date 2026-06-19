@@ -1,4 +1,4 @@
-//! ZoomyZoomyCamCam desktop app.
+//! Cammy desktop app.
 //!
 //! A thin Tauri shell around the `zoomy` library: it starts the whole platform
 //! (API, go2rtc, recorder, AI pipeline) in-process on a background thread, waits
@@ -62,7 +62,7 @@ fn main() {
 
             let url: tauri::Url = base.parse().expect("valid localhost url");
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
-                .title("ZoomyZoomyCamCam")
+                .title("Cammy")
                 .inner_size(1440.0, 920.0)
                 .min_inner_size(900.0, 600.0)
                 .build()?;
@@ -92,12 +92,12 @@ fn main() {
 }
 
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open ZoomyZoomyCamCam", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open Cammy", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit (stops recording)", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
 
     let mut tray = TrayIconBuilder::with_id("zoomy-tray")
-        .tooltip("ZoomyZoomyCamCam — recording")
+        .tooltip("Cammy — recording")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
