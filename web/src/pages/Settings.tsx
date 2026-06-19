@@ -955,6 +955,65 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <BackupCard onError={onError} />
 
         <div className="card">
+          <h2>Email (SMTP)</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Send alarm emails with the snapshot attached — add an <b>email</b> action to any Alarm
+            rule. Use <code>smtps://host:465</code> for implicit TLS or <code>smtp://host:587</code>{" "}
+            for STARTTLS. The password is write-only (never sent back; leave blank to keep it).
+          </p>
+          <div className="row">
+            <label className="field" style={{ flex: 1, minWidth: 280 }}>
+              SMTP server URL
+              <input
+                type="text"
+                placeholder="smtps://smtp.example.com:465"
+                value={s.smtp_url}
+                onChange={(e) => set({ smtp_url: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              username
+              <input
+                type="text"
+                autoComplete="off"
+                value={s.smtp_user}
+                onChange={(e) => set({ smtp_user: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              password
+              <input
+                type="password"
+                autoComplete="new-password"
+                placeholder={s.smtp_url ? "•••••• (unchanged)" : ""}
+                value={s.smtp_pass}
+                onChange={(e) => set({ smtp_pass: e.target.value })}
+              />
+            </label>
+          </div>
+          <div className="row">
+            <label className="field" style={{ flex: 1, minWidth: 240 }}>
+              from address
+              <input
+                type="text"
+                placeholder="nvr@example.com"
+                value={s.smtp_from}
+                onChange={(e) => set({ smtp_from: e.target.value })}
+              />
+            </label>
+            <label className="field" style={{ flex: 1, minWidth: 240 }}>
+              default recipient(s), comma-separated
+              <input
+                type="text"
+                placeholder="me@example.com"
+                value={s.smtp_to}
+                onChange={(e) => set({ smtp_to: e.target.value })}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="card">
           <h2>Notifications</h2>
           <div className="row">
             <label className="field" style={{ flex: 1, minWidth: 320 }}>

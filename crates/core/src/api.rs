@@ -1441,6 +1441,17 @@ async fn record_gesture(
     let webhook_url = settings.webhook_url.clone();
     let base_url = settings.public_base_url.clone();
     let webhook_template = settings.webhook_template.clone();
+    // Clone SMTP config into owned strings for the spawned task (the AlarmEvent
+    // there borrows from these). None when email isn't configured.
+    let smtp_owned = (!settings.smtp_url.trim().is_empty()).then(|| {
+        (
+            settings.smtp_url.clone(),
+            settings.smtp_user.clone(),
+            settings.smtp_pass.clone(),
+            settings.smtp_from.clone(),
+            settings.smtp_to.clone(),
+        )
+    });
     let health_ntfy = settings.health_ntfy_url.clone();
     let camera = cam.name.clone();
     let gesture_owned = canonical.to_string();
@@ -1460,6 +1471,13 @@ async fn record_gesture(
             transcript: None,
             base_url: &base_url,
             webhook_template: &webhook_template,
+            smtp: smtp_owned.as_ref().map(|(u, us, p, f, t)| crate::notify::SmtpConfig {
+                url: u,
+                user: us,
+                pass: p,
+                from: f,
+                to: t,
+            }),
             duress: is_duress,
         };
         // Guaranteed panic path: a duress signal pushes straight to the health
@@ -1670,10 +1688,12 @@ async fn add_alarm_api(
     // the legacy single action for older clients, so this covers both shapes.
     let actions = rule.effective_actions();
     for a in &actions {
-        if !matches!(a.kind.as_str(), "webhook" | "mqtt" | "ntfy") {
-            return Err(bad_request("each action must be webhook, mqtt or ntfy"));
+        if !matches!(a.kind.as_str(), "webhook" | "mqtt" | "ntfy" | "email") {
+            return Err(bad_request("each action must be webhook, mqtt, ntfy or email"));
         }
-        if a.target.trim().is_empty() {
+        // An email action may leave target blank (uses the default smtp_to);
+        // every other kind needs an explicit target.
+        if a.kind != "email" && a.target.trim().is_empty() {
             return Err(bad_request("each action needs a target (URL or MQTT topic)"));
         }
         if a.priority > 5 {
@@ -2522,7 +2542,14 @@ async fn delete_token(
 // --- settings ----------------------------------------------------------------
 
 async fn get_settings(State(st): State<AppState>) -> Json<Settings> {
-    Json(st.db.settings())
+    let mut s = st.db.settings();
+    // GET /api/settings is Viewer-reachable; never hand the SMTP password back.
+    // The field is write-only: a blank smtp_pass on save preserves the stored one
+    // (see put_settings), so blanking it here doesn't lose it.
+    if !s.smtp_pass.is_empty() {
+        s.smtp_pass = String::new();
+    }
+    Json(s)
 }
 
 async fn put_settings(
@@ -2550,8 +2577,16 @@ async fn put_settings(
             .map_err(|e| bad_request(format!("recordings dir not writable: {e}")))?;
         let _ = std::fs::remove_file(&probe);
     }
+    // SMTP password is write-only (get_settings blanks it): a blank incoming
+    // value means "unchanged", so restore the stored one rather than wipe it.
+    let mut s = s;
+    if s.smtp_pass.is_empty() {
+        s.smtp_pass = st.db.settings().smtp_pass;
+    }
     st.db.save_settings(&s)?;
-    Ok(Json(st.db.settings()))
+    let mut out = st.db.settings();
+    out.smtp_pass = String::new(); // never echo the secret back
+    Ok(Json(out))
 }
 
 #[cfg(test)]
