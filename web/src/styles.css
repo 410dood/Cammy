@@ -1540,3 +1540,39 @@ img.identity-thumb { background: var(--n-0); }
   background: var(--accent-tint);
 }
 .settings-page .card { scroll-margin-top: 62px; }
+
+/* Home security mode segmented control (Home / Away / Disarmed) */
+.arm-bar {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin: 0 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.arm-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease);
+}
+.arm-opt:disabled { opacity: 0.5; cursor: default; }
+.arm-opt:hover:not(.active):not(:disabled) { color: var(--text); background: var(--surface-hover); }
+.arm-opt.active { color: var(--text); background: var(--surface-active); border-color: var(--border-strong); }
+.arm-opt.arm-home.active { color: var(--accent); border-color: var(--accent-border); background: var(--accent-tint); }
+.arm-opt.arm-away.active { color: var(--ok); border-color: var(--ok); background: var(--success-bg); }
+.arm-opt.arm-disarmed.active { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+
+/* Alarm "scene" editor — repeatable action rows */
+.actions-edit { display: flex; flex-direction: column; gap: 8px; }
+.actions-edit .action-row { align-items: center; margin: 0; }

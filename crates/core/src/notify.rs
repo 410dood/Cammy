@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::db::AlarmRule;
+use crate::db::{Action, AlarmRule};
 use crate::mqtt::EventMsg;
 
 /// Shared per-rule last-fired clock (rule id → unix seconds). Lives in memory
@@ -101,12 +101,38 @@ pub fn ready(rule: &AlarmRule, throttle: &AlarmThrottle, now: i64) -> bool {
     true
 }
 
-/// Fire one matched rule's action. Failures are logged and swallowed —
-/// notification problems must never stall detection.
+/// Whether a rule is armed in the current system security mode (UniFi-style
+/// Home/Away/Disarmed). An empty `modes` list means "armed in every *armed*
+/// mode" (home + away) but suppressed while the system is "disarmed". A rule
+/// that explicitly lists "disarmed" still fires while disarmed — a panic rule.
+/// Callers OR this with the per-event `duress` flag so a panic always fires.
+pub fn armed_in_mode(modes: &[String], arm_mode: &str) -> bool {
+    if arm_mode == "disarmed" {
+        modes.iter().any(|m| m == "disarmed")
+    } else {
+        modes.is_empty() || modes.iter().any(|m| m == arm_mode)
+    }
+}
+
+/// Fire a matched rule's actions — a "scene" can be several at once (push AND
+/// webhook AND …). Failures are logged and swallowed; notification problems
+/// must never stall detection. `effective_actions` falls back to the legacy
+/// single action for pre-scenes rules.
 pub fn fire(rule: &AlarmRule, ev: &AlarmEvent, mqtt_tx: &std::sync::mpsc::Sender<EventMsg>) {
     tracing::info!(rule = %rule.name, event = ev.event_id, "alarm triggered");
-    match rule.action.as_str() {
-        "webhook" => webhook(&rule.target, ev),
+    for action in rule.effective_actions() {
+        fire_action(&action, &rule.name, ev, mqtt_tx);
+    }
+}
+
+fn fire_action(
+    action: &Action,
+    rule_name: &str,
+    ev: &AlarmEvent,
+    mqtt_tx: &std::sync::mpsc::Sender<EventMsg>,
+) {
+    match action.kind.as_str() {
+        "webhook" => webhook(&action.target, ev),
         "mqtt" => {
             let _ = mqtt_tx.send(EventMsg {
                 event_id: ev.event_id,
@@ -115,10 +141,10 @@ pub fn fire(rule: &AlarmRule, ev: &AlarmEvent, mqtt_tx: &std::sync::mpsc::Sender
                 score: ev.score,
                 ts: ev.ts,
                 snapshot: ev.snapshot_url.to_string(),
-                topic: Some(format!("alarms/{}", rule.target)),
+                topic: Some(format!("alarms/{}", action.target)),
             });
         }
-        "ntfy" => ntfy(&rule.target, &rule.name, rule.priority, ev),
+        "ntfy" => ntfy(&action.target, rule_name, action.priority, ev),
         other => tracing::warn!("unknown alarm action {other:?}"),
     }
 }
@@ -257,7 +283,31 @@ mod tests {
             priority: 0,
             snooze_until: snooze,
             created_ts: 0,
+            modes: vec![],
+            actions: vec![],
         }
+    }
+
+    #[test]
+    fn arm_modes_gate_dispatch() {
+        // Back-compat guard: a legacy empty-modes rule MUST still fire in the
+        // default arm mode after an upgrade — i.e. the default is an *armed*
+        // mode. If someone changes the default to "disarmed", this fails loudly
+        // instead of silently muting every existing rule.
+        assert!(armed_in_mode(&[], &crate::db::Settings::default().arm_mode));
+        // Empty modes: armed in home + away, suppressed when disarmed.
+        assert!(armed_in_mode(&[], "home"));
+        assert!(armed_in_mode(&[], "away"));
+        assert!(!armed_in_mode(&[], "disarmed"));
+        // Opted into "away" only.
+        let away = vec!["away".to_string()];
+        assert!(armed_in_mode(&away, "away"));
+        assert!(!armed_in_mode(&away, "home"));
+        assert!(!armed_in_mode(&away, "disarmed"));
+        // A panic rule opts into "disarmed": fires even while disarmed.
+        let panic = vec!["disarmed".to_string(), "home".to_string(), "away".to_string()];
+        assert!(armed_in_mode(&panic, "disarmed"));
+        assert!(armed_in_mode(&panic, "home"));
     }
 
     #[test]

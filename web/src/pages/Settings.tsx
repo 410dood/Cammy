@@ -19,6 +19,23 @@ const AUDIT_META: Record<string, { label: string; Icon: (p: IconProps) => JSX.El
   user_password_changed: { label: "user password reset", Icon: IconKey, cls: "" },
 };
 
+// Curated security sounds → the EXACT AudioSet display names YAMNet emits
+// (audio.rs matches these case-insensitively). A chip is "on" when all its
+// values are in Settings.audio_labels; toggling adds/removes them together.
+const AUDIO_SOUNDS: { label: string; values: string[] }[] = [
+  { label: "Glass breaking", values: ["Glass", "Shatter"] },
+  { label: "Gunshot", values: ["Gunshot, gunfire"] },
+  { label: "Scream", values: ["Screaming"] },
+  { label: "Smoke / fire alarm", values: ["Smoke detector, smoke alarm", "Fire alarm"] },
+  { label: "Siren", values: ["Siren"] },
+  { label: "Car alarm", values: ["Car alarm"] },
+  { label: "Alarm / buzzer", values: ["Alarm"] },
+  { label: "Dog bark", values: ["Bark"] },
+  { label: "Doorbell", values: ["Doorbell"] },
+  { label: "Knock", values: ["Knock"] },
+  { label: "Baby cry", values: ["Baby cry, infant cry"] },
+];
+
 function AuditCard() {
   const [rows, setRows] = useState<AuditEntry[]>([]);
   useEffect(() => {
@@ -837,6 +854,52 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               />
             </label>
           </div>
+        </div>
+
+        <div className="card">
+          <h2>Audio detection</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            The bundled YAMNet model listens for specific sounds and raises an audio event
+            you can alarm on (glass break, smoke alarm, scream, baby cry…). Enable it per
+            camera with <b>audio detection</b> on the Cameras page; nothing leaves this machine.
+          </p>
+          <label className="field" style={{ maxWidth: 460 }}>
+            sensitivity — higher fires fewer, more confident triggers (
+            {s.audio_threshold.toFixed(2)})
+            <input
+              type="range"
+              min="0.1"
+              max="0.9"
+              step="0.05"
+              value={s.audio_threshold}
+              onChange={(e) => set({ audio_threshold: Number(e.target.value) })}
+            />
+          </label>
+          <div className="muted" style={{ margin: "12px 0 6px" }}>monitored sounds</div>
+          <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
+            {AUDIO_SOUNDS.map((snd) => {
+              const on = snd.values.every((v) => s.audio_labels.includes(v));
+              return (
+                <span
+                  key={snd.label}
+                  className={`pill toggle ${on ? "on" : ""}`}
+                  title={snd.values.join(", ")}
+                  onClick={() => {
+                    const set_ = new Set(s.audio_labels);
+                    if (on) snd.values.forEach((v) => set_.delete(v));
+                    else snd.values.forEach((v) => set_.add(v));
+                    set({ audio_labels: [...set_] });
+                  }}
+                >
+                  {snd.label}
+                </span>
+              );
+            })}
+          </div>
+          <small className="muted" style={{ display: "block", marginTop: 8 }}>
+            {s.audio_labels.length} AudioSet label(s) active. Chips map to exact YAMNet
+            class names so detection fires reliably.
+          </small>
         </div>
 
         <div className="card">

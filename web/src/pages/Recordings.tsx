@@ -71,6 +71,26 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
               {stats.disk_free_bytes != null && <> · {fmtBytes(stats.disk_free_bytes)} free on disk</>}
             </span>
           </div>
+          {stats.write_bytes_per_day > 0 && (
+            <div className="row" style={{ marginBottom: 12 }}>
+              <span className="muted">
+                <b>Capacity</b> — writing ~{fmtBytes(stats.write_bytes_per_day)}/day
+                {stats.days_until_full != null && (
+                  <>
+                    {" "}
+                    · ~{Math.round(stats.days_until_full)} days until full
+                    {stats.est_full_ts != null && (
+                      <> ({new Date(stats.est_full_ts * 1000).toLocaleDateString()})</>
+                    )}
+                  </>
+                )}
+                {stats.retention_horizon_days != null && (
+                  <> · retention caps history at ~{Math.round(stats.retention_horizon_days)} days</>
+                )}
+                <span style={{ opacity: 0.7 }}> · estimated</span>
+              </span>
+            </div>
+          )}
           {stats.cameras.map((c) => (
             <div className="row" key={c.camera_id} style={{ marginBottom: 6 }}>
               <span style={{ width: 120 }}>

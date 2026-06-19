@@ -263,6 +263,7 @@ pub fn run(
                         };
                         for rule in alarms.iter().filter(|r| {
                             r.matches(cam.id, &label, score, None, None, None, None)
+                                && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
                                 && crate::notify::ready(r, &throttle, now)
                         }) {
                             crate::notify::fire(rule, &alarm_ev, &mqtt_tx);

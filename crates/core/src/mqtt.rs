@@ -231,6 +231,18 @@ pub fn run(db: Db, rx: Receiver<EventMsg>, shutdown: Arc<AtomicBool>) {
                     })
                     .to_string();
                     match &ev.topic {
+                        // System arm-mode state: publish RETAINED as a bare mode
+                        // string ("home"/"away"/"disarmed") so a (re)connecting
+                        // HA / keypad automation always reads the current mode from
+                        // the broker, not just live changes.
+                        Some(t) if t == "mode" => {
+                            let _ = client.publish(
+                                format!("{prefix}/mode"),
+                                QoS::AtLeastOnce,
+                                true,
+                                ev.label.clone(),
+                            );
+                        }
                         // Alarm rule with a custom topic: publish there only.
                         Some(t) => {
                             let _ = client.publish(
