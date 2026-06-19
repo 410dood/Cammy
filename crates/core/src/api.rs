@@ -2027,7 +2027,11 @@ async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>>
     }
     let write_per_day = write_per_day.round() as u64;
     let days_until_full = (write_per_day > 0).then(|| disk_free as f64 / write_per_day as f64);
-    let est_full_ts = days_until_full.map(|d| now + (d * 86_400.0) as i64);
+    let est_full_ts = days_until_full.map(|d| {
+        // Clamp to ~100 years and saturate: a near-zero write rate would
+        // otherwise project past i64::MAX and overflow (panic in debug/tests).
+        now.saturating_add((d.min(36_500.0) * 86_400.0) as i64)
+    });
     // Where retention caps history first: min(retention_days, the GB budget at
     // the current write rate).
     let by_days = (settings.retention_days > 0).then_some(settings.retention_days as f64);

@@ -290,6 +290,11 @@ mod tests {
 
     #[test]
     fn arm_modes_gate_dispatch() {
+        // Back-compat guard: a legacy empty-modes rule MUST still fire in the
+        // default arm mode after an upgrade — i.e. the default is an *armed*
+        // mode. If someone changes the default to "disarmed", this fails loudly
+        // instead of silently muting every existing rule.
+        assert!(armed_in_mode(&[], &crate::db::Settings::default().arm_mode));
         // Empty modes: armed in home + away, suppressed when disarmed.
         assert!(armed_in_mode(&[], "home"));
         assert!(armed_in_mode(&[], "away"));
