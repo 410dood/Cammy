@@ -1,6 +1,8 @@
 ﻿import { useEffect, useState } from "react";
 import { api, CamEvent, Camera, fmtBytes, fmtTime, Segment, Stats } from "../api";
 import Timeline from "../Timeline";
+import CrossTimeline from "../CrossTimeline";
+import { IconPlay } from "../icons";
 
 const WINDOWS = [
   { label: "1h", secs: 3600 },
@@ -23,9 +25,11 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       .then(setSegments)
       .catch(() => {});
     api.stats().then(setStats).catch(() => {});
-    if (cameraId !== "") {
-      api.events({ camera_id: cameraId, limit: 1000 }).then(setEvents).catch(() => {});
-    }
+    // Fetch events for the timeline: all cameras (cross-camera lanes) or just one.
+    api
+      .events({ camera_id: cameraId === "" ? undefined : cameraId, limit: 1500 })
+      .then(setEvents)
+      .catch(() => {});
   };
 
   useEffect(() => {
@@ -41,8 +45,11 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
 
   const seekTo = async (ts: number) => {
     if (cameraId === "") return;
+    seekCamera(cameraId, ts);
+  };
+  const seekCamera = async (camId: number, ts: number) => {
     try {
-      const r = await api.recordingAt(cameraId, ts);
+      const r = await api.recordingAt(camId, ts);
       setPlaying({ segment: r.segment, offset: r.offset_secs });
     } catch {
       /* clicked a gap — nothing recorded there */
@@ -94,22 +101,33 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             </option>
           ))}
         </select>
-        {cameraId !== "" &&
-          WINDOWS.map((w) => (
-            <button
-              key={w.secs}
-              className={windowSecs === w.secs ? "primary" : "ghost"}
-              onClick={() => setWindowSecs(w.secs)}
-            >
-              {w.label}
-            </button>
-          ))}
+        {WINDOWS.map((w) => (
+          <button
+            key={w.secs}
+            className={`btn ${windowSecs === w.secs ? "btn-primary" : "btn-ghost"}`}
+            onClick={() => setWindowSecs(w.secs)}
+          >
+            {w.label}
+          </button>
+        ))}
         <span className="muted">
           {segments.length} segments · {fmtBytes(segments.reduce((a, s) => a + s.bytes, 0))} total
         </span>
       </div>
 
-      {cameraId !== "" && (
+      {cameraId === "" ? (
+        cameras.length > 0 && (
+          <CrossTimeline
+            cameras={cameras.filter((c) => c.enabled)}
+            segments={segments}
+            events={events}
+            windowSecs={windowSecs}
+            segmentSecs={segmentSecs}
+            nowTs={Math.floor(Date.now() / 1000)}
+            onSeek={seekCamera}
+          />
+        )
+      ) : (
         <Timeline
           windowSecs={windowSecs}
           segmentSecs={segmentSecs}
@@ -144,8 +162,8 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
                   <td>{fmtTime(s.start_ts)}</td>
                   <td className="muted">{fmtBytes(s.bytes)}</td>
                   <td>
-                    <button className="ghost" onClick={() => setPlaying({ segment: s, offset: 0 })}>
-                      ▶ Play
+                    <button className="btn btn-ghost ev-act" onClick={() => setPlaying({ segment: s, offset: 0 })}>
+                      <IconPlay size={13} /> Play
                     </button>
                   </td>
                 </tr>

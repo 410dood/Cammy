@@ -1,13 +1,22 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, AuditEntry, fmtTime, Settings as S } from "../api";
+import { api, ApiToken, AuditEntry, fmtTime, Me, Role, Settings as S, User } from "../api";
+import { useToast, useDialog } from "../ui";
+import {
+  IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
+  IconDownload, IconUpload, IconCheck, IconUser,
+} from "../icons";
 
-const AUDIT_LABELS: Record<string, string> = {
-  login_success: "✅ login",
-  login_failed: "⛔ failed login",
-  password_set: "🔑 password set",
-  password_cleared: "🔓 password cleared",
-  token_created: "🎫 token created",
-  token_revoked: "🗑️ token revoked",
+const AUDIT_META: Record<string, { label: string; Icon: (p: IconProps) => JSX.Element; cls: string }> = {
+  login_success: { label: "login", Icon: IconLogIn, cls: "ok" },
+  login_failed: { label: "failed login", Icon: IconBan, cls: "danger" },
+  password_set: { label: "password set", Icon: IconKey, cls: "" },
+  password_cleared: { label: "password cleared", Icon: IconLock, cls: "warn" },
+  token_created: { label: "token created", Icon: IconTicket, cls: "" },
+  token_revoked: { label: "token revoked", Icon: IconTrash, cls: "warn" },
+  user_created: { label: "user created", Icon: IconUser, cls: "" },
+  user_deleted: { label: "user deleted", Icon: IconTrash, cls: "warn" },
+  user_role_changed: { label: "role changed", Icon: IconUser, cls: "warn" },
+  user_password_changed: { label: "user password reset", Icon: IconKey, cls: "" },
 };
 
 function AuditCard() {
@@ -25,14 +34,25 @@ function AuditCard() {
       </p>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td>{AUDIT_LABELS[r.action] ?? r.action}</td>
-              <td className="muted">{fmtTime(r.ts)}</td>
-              <td className="muted">{r.ip ?? ""}</td>
-              <td className="muted">{r.detail ?? ""}</td>
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const m = AUDIT_META[r.action];
+            return (
+              <tr key={r.id}>
+                <td>
+                  {m ? (
+                    <span className={`badge ${m.cls}`}>
+                      <m.Icon size={13} /> {m.label}
+                    </span>
+                  ) : (
+                    r.action
+                  )}
+                </td>
+                <td className="muted clock">{fmtTime(r.ts)}</td>
+                <td className="muted">{r.ip ?? ""}</td>
+                <td className="muted">{r.detail ?? ""}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -89,9 +109,12 @@ function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
 }
 
 function TokensCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const dialog = useDialog();
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [name, setName] = useState("");
-  const [fresh, setFresh] = useState<{ name: string; token: string } | null>(null);
+  const [role, setRole] = useState<Role>("operator");
+  const [fresh, setFresh] = useState<{ name: string; role: Role; token: string } | null>(null);
 
   const load = () => {
     api.tokens().then(setTokens).catch(() => {});
@@ -102,8 +125,8 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
     const n = name.trim();
     if (!n) return;
     try {
-      const r = await api.createToken(n);
-      setFresh({ name: r.name, token: r.token });
+      const r = await api.createToken(n, role);
+      setFresh({ name: r.name, role: r.role, token: r.token });
       setName("");
       load();
     } catch (e) {
@@ -111,9 +134,16 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
     }
   };
   const remove = async (id: number) => {
-    if (!window.confirm("Revoke this token? Anything using it will lose access.")) return;
+    const ok = await dialog.confirm({
+      title: "Revoke this token?",
+      body: "Anything using it (scripts, Home Assistant, integrations) will immediately lose access.",
+      confirmLabel: "Revoke",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api.deleteToken(id);
+      toast.success("Token revoked");
       load();
     } catch (e) {
       onError(String(e));
@@ -126,10 +156,11 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
       <p className="muted" style={{ marginTop: 0 }}>
         Bearer tokens let scripts and integrations (Home Assistant, MQTT automations) call the
         API from another machine without logging in — send{" "}
-        <code>Authorization: Bearer &lt;token&gt;</code>. A token can do almost anything the API
-        can, so keep it secret and revoke any that leak. (Tokens cannot change the password or
-        create/revoke other tokens — those need an interactive login here, so a leaked token
-        can't lock you out.)
+        <code>Authorization: Bearer &lt;token&gt;</code>. Each token is <b>scoped to a role</b>:{" "}
+        <b>viewer</b> (read-only), <b>operator</b> (read + manage cameras/settings/alarms), or{" "}
+        <b>admin</b> (also backup/restore). Pick the least privilege the integration needs, keep it
+        secret, and revoke any that leak. (No token — at any role — can change a password or
+        create/revoke tokens; those need an interactive login, so a leaked token can't lock you out.)
       </p>
       <div className="row">
         <input
@@ -139,6 +170,11 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && create()}
         />
+        <select value={role} onChange={(e) => setRole(e.target.value as Role)} aria-label="token role">
+          <option value="viewer">viewer</option>
+          <option value="operator">operator</option>
+          <option value="admin">admin</option>
+        </select>
         <button type="button" className="primary" disabled={!name.trim()} onClick={create}>
           Create token
         </button>
@@ -149,7 +185,7 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
           style={{ marginTop: 8, flexDirection: "column", alignItems: "flex-start", gap: 4 }}
         >
           <span style={{ color: "var(--ok)" }}>
-            New token “{fresh.name}” — copy it now, it won’t be shown again:
+            New <b>{fresh.role}</b> token “{fresh.name}” — copy it now, it won’t be shown again:
           </span>
           <code style={{ userSelect: "all", wordBreak: "break-all" }}>{fresh.token}</code>
         </div>
@@ -160,7 +196,7 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
             {tokens.map((t) => (
               <tr key={t.id}>
                 <td>
-                  <b>{t.name}</b>
+                  <b>{t.name}</b> <span className={`role-pill role-${t.role}`}>{t.role}</span>
                 </td>
                 <td className="muted">created {fmtTime(t.created_ts)}</td>
                 <td className="muted">
@@ -180,7 +216,79 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
   );
 }
 
+// Self-service password change — only shown to a logged-in *named* account
+// (loopback / legacy / token admins manage the shared password elsewhere).
+function AccountCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const [me, setMe] = useState<Me | null>(null);
+  const [oldPw, setOldPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.me().then(setMe).catch(() => {});
+  }, []);
+
+  if (!me || !me.named) return null;
+
+  const submit = async () => {
+    if (newPw.length < 6) {
+      onError("new password must be at least 6 characters");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.changeMyPassword(oldPw, newPw);
+      setOldPw("");
+      setNewPw("");
+      toast.success("Password changed");
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Your account</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Signed in as <b>{me.username}</b>{" "}
+        <span className={`role-pill role-${me.role}`}>{me.role}</span>. Change your own password
+        here — you’ll need your current one.
+      </p>
+      <div className="row">
+        <input
+          type="password"
+          autoComplete="current-password"
+          placeholder="current password"
+          value={oldPw}
+          onChange={(e) => setOldPw(e.target.value)}
+        />
+        <input
+          type="password"
+          autoComplete="new-password"
+          placeholder="new password (min 6)"
+          value={newPw}
+          onChange={(e) => setNewPw(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+        />
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || !oldPw || newPw.length < 6}
+          onClick={submit}
+        >
+          Change password
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function BackupCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const dialog = useDialog();
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -188,17 +296,18 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
     const file = e.target.files?.[0];
     e.target.value = ""; // let the user re-pick the same file later
     if (!file) return;
-    if (
-      !window.confirm(
-        "Restore configuration from this file? Settings are replaced; cameras and alarms whose names already exist are kept as-is.",
-      )
-    )
-      return;
+    const ok = await dialog.confirm({
+      title: "Restore configuration?",
+      body: "Settings are replaced. Cameras and alarms whose names already exist are kept as-is.",
+      confirmLabel: "Restore",
+    });
+    if (!ok) return;
     setBusy(true);
     setMsg("");
     try {
       const backup = JSON.parse(await file.text());
       const r = await api.restore(backup);
+      toast.success("Configuration restored — reload to see changes");
       setMsg(
         `Restored — ${r.cameras_added} camera(s) added, ${r.cameras_skipped} skipped, ${r.alarms_added} alarm(s) added, settings applied. Reload to see changes.`,
       );
@@ -219,16 +328,11 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
         but a camera/alarm whose name already exists is left untouched.
       </p>
       <div className="row" style={{ alignItems: "center" }}>
-        <a
-          className="pill"
-          href="/api/backup"
-          download="zoomy-backup.json"
-          style={{ textDecoration: "none" }}
-        >
-          ⬇ Download backup
+        <a className="btn btn-ghost" href="/api/backup" download="zoomy-backup.json">
+          <IconDownload size={15} /> Download backup
         </a>
-        <label className="pill" style={{ cursor: busy ? "wait" : "pointer" }}>
-          ⬆ Restore from file…
+        <label className="btn btn-ghost" style={{ cursor: busy ? "wait" : "pointer" }}>
+          <IconUpload size={15} /> Restore from file…
           <input
             type="file"
             accept="application/json,.json"
@@ -243,7 +347,150 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
   );
 }
 
+function UsersCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const dialog = useDialog();
+  const [me, setMe] = useState<Me | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
+  const [name, setName] = useState("");
+  const [pw, setPw] = useState("");
+  const [role, setRole] = useState<Role>("viewer");
+
+  const load = () => {
+    api.me().then(setMe).catch(() => {});
+    api.users().then(setUsers).catch(() => {});
+  };
+  useEffect(load, []);
+
+  // Only admins manage users (the backend gates it too).
+  if (!me || me.role !== "admin") return null;
+
+  const create = async () => {
+    if (!name.trim() || pw.length < 6) return;
+    try {
+      await api.createUser({ username: name.trim(), password: pw, role });
+      setName("");
+      setPw("");
+      setRole("viewer");
+      toast.success("User created");
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const changeRole = async (u: User, r: Role) => {
+    try {
+      await api.patchUser(u.id, { role: r });
+      toast.success(`${u.username} is now ${r}`);
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const resetPw = async (u: User) => {
+    const np = await dialog.prompt({
+      title: `Reset password for ${u.username}`,
+      label: "New password (min 6 chars)",
+    });
+    if (np === null) return;
+    if (np.length < 6) {
+      toast.error("Password must be at least 6 characters");
+      return;
+    }
+    try {
+      await api.patchUser(u.id, { password: np });
+      toast.success("Password reset — all sessions logged out");
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const remove = async (u: User) => {
+    if (!(await dialog.confirm({ title: `Delete ${u.username}?`, confirmLabel: "Delete", danger: true })))
+      return;
+    try {
+      await api.deleteUser(u.id);
+      toast.success("User deleted");
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  const RoleOptions = () => (
+    <>
+      <option value="viewer">viewer</option>
+      <option value="operator">operator</option>
+      <option value="admin">admin</option>
+    </>
+  );
+
+  return (
+    <div className="card">
+      <h2>Users &amp; roles</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Named accounts, each with a role: <b>admin</b> (full control, incl. users),{" "}
+        <b>operator</b> (manage cameras, settings, alarms), <b>viewer</b> (read-only + live).
+        This computer (localhost) and the legacy single password always have admin, so you can
+        never lock yourself out locally.
+      </p>
+      <div className="row">
+        <input type="text" placeholder="username" value={name} onChange={(e) => setName(e.target.value)} />
+        <input
+          type="password"
+          placeholder="password (min 6)"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+        />
+        <select value={role} onChange={(e) => setRole(e.target.value as Role)} aria-label="Role">
+          <RoleOptions />
+        </select>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!name.trim() || pw.length < 6}
+          onClick={create}
+        >
+          Add user
+        </button>
+      </div>
+      {users.length > 0 && (
+        <table style={{ marginTop: 12, width: "100%", borderCollapse: "collapse" }}>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id}>
+                <td>
+                  <b>{u.username}</b>
+                  {me.username === u.username && <span className="muted"> (you)</span>}
+                </td>
+                <td>
+                  <select
+                    value={u.role}
+                    onChange={(e) => changeRole(u, e.target.value as Role)}
+                    aria-label={`Role for ${u.username}`}
+                  >
+                    <RoleOptions />
+                  </select>
+                </td>
+                <td className="muted">created {fmtTime(u.created_ts)}</td>
+                <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  <button type="button" className="btn btn-ghost ev-act" onClick={() => resetPw(u)}>
+                    Reset password
+                  </button>
+                  <button type="button" className="btn btn-danger ev-act" onClick={() => remove(u)}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 export default function Settings({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
   const [s, setS] = useState<S | null>(null);
   const [saved, setSaved] = useState(false);
 
@@ -263,6 +510,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
     try {
       setS(await api.saveSettings(s));
       setSaved(true);
+      toast.success("Settings saved");
     } catch (err) {
       onError(String(err));
     }
@@ -389,7 +637,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <div className="card">
-          <h2>Hand signals ✋</h2>
+          <h2>Hand signals</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             The Signals page tracks hand landmarks live in the browser. A held, armed signal logs
             an event and fires any Alarm with a matching <b>gesture</b> condition.
@@ -498,7 +746,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <div className="card">
-          <h2>Audio transcription 🎙️</h2>
+          <h2>Audio transcription</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Speech-to-text for audio events, using a <b>bundled, in-process</b> whisper.cpp engine —
             audio never leaves this machine and there's no separate software to run.{" "}
@@ -527,7 +775,51 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
+        <div className="card">
+          <h2>AI insights</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Opt-in background analysis of your own event history — fully local, nothing leaves this
+            machine. Both surface in Notifications and on the Overview page.
+          </p>
+          <div className="row">
+            <label className="toggle field" title="Flag activity that is unusual for a camera at this time of day.">
+              anomaly detection
+              <input
+                type="checkbox"
+                checked={!!s.anomaly_detection}
+                onChange={() => set({ anomaly_detection: !s.anomaly_detection })}
+              />
+            </label>
+            <label className="toggle field" title="Post a plain-language recap of the day each morning.">
+              daily digest
+              <input
+                type="checkbox"
+                checked={!!s.digest_enabled}
+                onChange={() => set({ digest_enabled: !s.digest_enabled })}
+              />
+            </label>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={async () => {
+                try {
+                  await api.runDigest();
+                  toast.success("Digest generated — see the Overview page");
+                } catch (e) {
+                  onError(String(e));
+                }
+              }}
+            >
+              Generate digest now
+            </button>
+          </div>
+        </div>
+
         <RemoteAccessCard onError={onError} />
+
+        <AccountCard onError={onError} />
+
+        <UsersCard onError={onError} />
 
         <TokensCard onError={onError} />
 
@@ -707,9 +999,11 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
-        <div className="row">
-          <button className="primary">Save</button>
-          {saved && <span style={{ color: "var(--ok)" }}>Saved ✓</span>}
+        <div className="row save-bar">
+          <button className="btn btn-primary">Save</button>
+          {saved && (
+            <span className="save-ok"><IconCheck size={15} /> Saved</span>
+          )}
           <span className="muted">Changes apply within a few seconds — no restart needed.</span>
         </div>
       </form>

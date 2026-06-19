@@ -1,7 +1,150 @@
 ﻿import { useEffect, useState } from "react";
 import { api, CamEvent, Camera, fmtTime, Segment } from "../api";
+import { useToast, useDialog, Modal } from "../ui";
+import {
+  IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil,
+  IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
+  IconAlert, IconCheck, IconLayers,
+} from "../icons";
+
+// --- A3: smart-detection grouping --------------------------------------------
+// Collapse a run of same-camera, same-label detections that happen close in
+// time into one "activity" card (best frame + count + duration), the way
+// UniFi Protect groups motion into a single smart detection.
+interface Cluster {
+  rep: CamEvent; // best (highest-score) frame in the run
+  count: number;
+  startTs: number; // oldest
+  endTs: number; // newest
+}
+const GROUP_GAP = 120; // seconds between detections that still count as one activity
+
+function groupEvents(list: CamEvent[]): Cluster[] {
+  const out: Cluster[] = [];
+  for (const e of list) {
+    // `list` is newest-first, so the cluster's first member is its newest (endTs).
+    const last = out[out.length - 1];
+    if (last && last.rep.camera_id === e.camera_id && last.rep.label === e.label && last.startTs - e.ts <= GROUP_GAP) {
+      last.count++;
+      last.startTs = e.ts;
+      if (e.score > last.rep.score) last.rep = e;
+    } else {
+      out.push({ rep: e, count: 1, startTs: e.ts, endTs: e.ts });
+    }
+  }
+  return out;
+}
+
+function durationLabel(secs: number): string {
+  if (secs < 60) return `${secs}s`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m`;
+  return `${(secs / 3600).toFixed(1)}h`;
+}
+
+// --- B2: natural-language search parser --------------------------------------
+// Pulls structured filters (time window, camera, object, identity) out of a
+// plain-language query and leaves the rest as the visual/text search residual.
+const LABEL_WORDS: Record<string, string> = {
+  person: "person", people: "person", man: "person", woman: "person", someone: "person",
+  car: "car", cars: "car", truck: "truck", trucks: "truck", bus: "bus",
+  bike: "bicycle", bicycle: "bicycle", motorcycle: "motorcycle", motorbike: "motorcycle",
+  dog: "dog", cat: "cat",
+};
+
+interface Parsed {
+  residual: string;
+  label?: string;
+  cameraId?: number;
+  face?: string;
+  after?: number;
+  before?: number;
+  chips: string[];
+}
+
+function toLocalInput(ts: number): string {
+  const d = new Date(ts * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function parseNL(raw: string, cameras: Camera[], faces: string[]): Parsed {
+  let q = ` ${raw.toLowerCase()} `;
+  const chips: string[] = [];
+  const out: Parsed = { residual: raw, chips };
+  const strip = (re: RegExp, chip?: string) => {
+    if (re.test(q)) {
+      q = q.replace(re, " ");
+      if (chip) chips.push(chip);
+      return true;
+    }
+    return false;
+  };
+  const startOfDay = (offsetDays = 0) => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return Math.floor(d.getTime() / 1000) + offsetDays * 86400;
+  };
+
+  // time windows (first match wins)
+  let m: RegExpExecArray | null;
+  if ((m = /\blast (\d+) (hour|hours|day|days|week|weeks)\b/.exec(q))) {
+    const n = parseInt(m[1], 10);
+    const unit = m[2].startsWith("hour") ? 3600 : m[2].startsWith("day") ? 86400 : 604800;
+    out.after = Math.floor(Date.now() / 1000) - n * unit;
+    strip(/\blast \d+ (hour|hours|day|days|week|weeks)\b/, `last ${n} ${m[2]}`);
+  } else if (strip(/\b(today)\b/, "today")) {
+    out.after = startOfDay(0);
+  } else if (strip(/\b(yesterday)\b/, "yesterday")) {
+    out.after = startOfDay(-1);
+    out.before = startOfDay(0);
+  } else if (strip(/\b(this week|past week|last week)\b/, "this week")) {
+    out.after = Math.floor(Date.now() / 1000) - 7 * 86400;
+  } else if (strip(/\b(last hour|past hour)\b/, "last hour")) {
+    out.after = Math.floor(Date.now() / 1000) - 3600;
+  } else if (strip(/\b(tonight|at night|after dark|overnight)\b/, "at night")) {
+    out.after = startOfDay(0); // today; night nuance is left to visual search
+  }
+
+  // camera by name
+  for (const c of cameras) {
+    const re = new RegExp(`\\b${c.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+    if (strip(re, c.name)) {
+      out.cameraId = c.id;
+      break;
+    }
+  }
+  // stranger
+  if (strip(/\b(stranger|strangers|unfamiliar|unknown face|unknown person)\b/, "stranger")) {
+    out.face = "?";
+  } else {
+    // enrolled face by name
+    for (const f of faces) {
+      if (f === "?") continue;
+      const re = new RegExp(`\\b${f.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+      if (strip(re, f)) {
+        out.face = f;
+        break;
+      }
+    }
+  }
+  // object label
+  for (const [word, label] of Object.entries(LABEL_WORDS)) {
+    const re = new RegExp(`\\b${word}\\b`);
+    if (re.test(q)) {
+      out.label = label;
+      q = q.replace(re, " ");
+      if (!chips.includes(label)) chips.push(label);
+      break;
+    }
+  }
+
+  out.residual = q.replace(/\s+/g, " ").trim();
+  return out;
+}
 
 export default function Events({ cameras }: { cameras: Camera[] }) {
+  const toast = useToast();
+  const dialog = useDialog();
   const [events, setEvents] = useState<CamEvent[]>([]);
   const [cameraId, setCameraId] = useState<number | "">("");
   const [label, setLabel] = useState("");
@@ -19,22 +162,48 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
   const [fromTime, setFromTime] = useState("");
   const [toTime, setToTime] = useState("");
   const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const [grouped, setGrouped] = useState(false);
+  const [interpreted, setInterpreted] = useState<string[]>([]);
 
   const runSearch = async () => {
-    const q = query.trim();
-    if (!q) {
+    const raw = query.trim();
+    if (!raw) {
       setSearchResults(null);
+      setInterpreted([]);
+      return;
+    }
+    // B2: pull structured filters (time / camera / object / identity) out of the
+    // natural-language query; the leftover text is the visual + transcript search.
+    const faceNames = [...new Set(events.map((e) => e.face).filter(Boolean))] as string[];
+    const p = parseNL(raw, cameras, faceNames);
+    if (p.label) setLabel(p.label);
+    if (p.cameraId != null) setCameraId(p.cameraId);
+    if (p.face) setFaceFilter(p.face);
+    if (p.after != null) setFromTime(toLocalInput(p.after));
+    if (p.before != null) setToTime(toLocalInput(p.before));
+    setInterpreted(p.chips);
+
+    if (!p.residual) {
+      // Fully structured query — let the filters drive the server-side list.
+      setSearchResults(null);
+      setSearching(false);
       return;
     }
     setSearching(true);
     try {
-      const r = await api.search(q, 24);
+      const r = await api.search(p.residual, 48);
       setSearchResults(r.results.map((x) => x.event));
     } catch {
       setSearchResults([]);
     } finally {
       setSearching(false);
     }
+  };
+
+  const clearSearch = () => {
+    setQuery("");
+    setSearchResults(null);
+    setInterpreted([]);
   };
   const [open, setOpen] = useState<CamEvent | null>(null);
   const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
@@ -89,7 +258,12 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
     if (
       ev.flagged &&
       ev.note &&
-      !window.confirm("Remove this bookmark? Its note will be deleted.")
+      !(await dialog.confirm({
+        title: "Remove bookmark?",
+        body: "Its note will be deleted, and the event can be pruned at retention.",
+        confirmLabel: "Remove",
+        danger: true,
+      }))
     ) {
       return;
     }
@@ -98,12 +272,20 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
     try {
       await api.bookmarkEvent(ev.id, flagged, note);
       applyBookmark(ev.id, flagged, note);
-    } catch {
-      /* best-effort */
+      toast.success(flagged ? "Event saved" : "Bookmark removed");
+    } catch (e) {
+      toast.error(`Couldn't update bookmark: ${e}`);
     }
   };
   const editNote = async (ev: CamEvent) => {
-    const note = window.prompt("Note for this event:", ev.note ?? "");
+    const note = await dialog.prompt({
+      title: ev.note ? "Edit note" : "Add note",
+      label: "Note for this event",
+      defaultValue: ev.note ?? "",
+      placeholder: "e.g. delivery driver, ignore",
+      multiline: true,
+      maxLength: 500,
+    });
     if (note === null) return; // cancelled
     const trimmed = note.trim();
     // Adding a note implies keeping the event (flag it); clearing leaves the flag.
@@ -111,8 +293,9 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
     try {
       await api.bookmarkEvent(ev.id, flagged, trimmed || null);
       applyBookmark(ev.id, flagged, trimmed || null);
-    } catch {
-      /* best-effort */
+      toast.success(trimmed ? "Note saved" : "Note cleared");
+    } catch (e) {
+      toast.error(`Couldn't save note: ${e}`);
     }
   };
 
@@ -187,6 +370,17 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
     shown = shown.filter((e) =>
       (e.plate ?? "").toUpperCase().includes(plateFilter.trim().toUpperCase())
     );
+  // Apply the time window client-side too, so it also narrows smart-search
+  // results (the server only time-filters the plain list, not the search).
+  const afterTs = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
+  const beforeTs = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
+  if (afterTs != null) shown = shown.filter((e) => e.ts >= afterTs);
+  if (beforeTs != null) shown = shown.filter((e) => e.ts < beforeTs);
+
+  // A3: optionally collapse runs of detections into activity clusters.
+  const list: { ev: CamEvent; cluster?: Cluster }[] = grouped
+    ? groupEvents(shown).map((c) => ({ ev: c.rep, cluster: c }))
+    : shown.map((ev) => ({ ev }));
 
   // Explore: object-type counts across the loaded window (pre object-filter).
   const exploreBase = searchResults ?? events;
@@ -201,7 +395,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
       <h1>Events</h1>
 
       <div className="smart-search">
-        <span>✨</span>
+        <span className="smart-ico"><IconSparkles size={18} /></span>
         <input
           type="text"
           placeholder='Smart search — what you saw or heard ("person in a dark coat", "someone yelling help")'
@@ -212,38 +406,45 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
           }}
           onKeyDown={(e) => e.key === "Enter" && runSearch()}
         />
-        {searchResults && (
-          <button
-            className="ghost"
-            onClick={() => {
-              setQuery("");
-              setSearchResults(null);
-            }}
-          >
-            clear
-          </button>
+        {(searchResults || interpreted.length > 0) && (
+          <button className="btn btn-ghost" onClick={clearSearch}>clear</button>
         )}
-        <button className="primary" onClick={runSearch} disabled={searching || !query.trim()}>
+        <button className="btn btn-primary" onClick={runSearch} disabled={searching || !query.trim()}>
           {searching ? "searching…" : "Search"}
         </button>
       </div>
+      {interpreted.length > 0 && (
+        <div className="row" style={{ marginTop: -8, marginBottom: 14, gap: 6, flexWrap: "wrap" }}>
+          <span className="muted" style={{ fontSize: "var(--text-sm)" }}>Interpreted as</span>
+          {interpreted.map((c) => (
+            <span key={c} className="badge accent">{c}</span>
+          ))}
+        </div>
+      )}
       <div className="row" style={{ marginBottom: 16 }}>
         <button className={review === "all" ? "primary" : "ghost"} onClick={() => setReview("all")}>
           All
         </button>
         <button
-          className={review === "alerts" ? "primary" : "ghost"}
+          className={`btn ${review === "alerts" ? "btn-primary" : "btn-ghost"}`}
           onClick={() => setReview("alerts")}
           title={`alert labels: ${alertLabels.join(", ")}`}
         >
-          🔔 Alerts
+          <IconBell size={15} /> Alerts
         </button>
         <button
-          className={flaggedOnly ? "primary" : "ghost"}
+          className={`btn ${flaggedOnly ? "btn-primary" : "btn-ghost"}`}
           onClick={() => setFlaggedOnly((v) => !v)}
           title="Show only bookmarked events (kept past retention)"
         >
-          ⭐ Saved
+          <IconStar size={15} filled={flaggedOnly} /> Saved
+        </button>
+        <button
+          className={`btn ${grouped ? "btn-primary" : "btn-ghost"}`}
+          onClick={() => setGrouped((v) => !v)}
+          title="Group a run of detections into one activity (best frame + count + duration)"
+        >
+          <IconLayers size={15} /> Group
         </button>
         <select value={cameraId} onChange={(e) => setCameraId(e.target.value === "" ? "" : Number(e.target.value))}>
           <option value="">all cameras</option>
@@ -261,30 +462,30 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
             </option>
           ))}
         </select>
-        <select value={faceFilter} onChange={(e) => setFaceFilter(e.target.value)}>
+        <select value={faceFilter} onChange={(e) => setFaceFilter(e.target.value)} aria-label="Filter by face">
           <option value="">anyone</option>
           {faces.map((f) => (
             <option key={f} value={f}>
-              {f === "?" ? "🚶 stranger" : `👤 ${f}`}
+              {f === "?" ? "stranger (unknown)" : f}
             </option>
           ))}
         </select>
         {gestures.length > 0 && (
-          <select value={gestureFilter} onChange={(e) => setGestureFilter(e.target.value)}>
+          <select value={gestureFilter} onChange={(e) => setGestureFilter(e.target.value)} aria-label="Filter by hand signal">
             <option value="">any signal</option>
             {gestures.map((g) => (
               <option key={g} value={g}>
-                ✋ {g}
+                {g}
               </option>
             ))}
           </select>
         )}
         {zones.length > 0 && (
-          <select value={zoneFilter} onChange={(e) => setZoneFilter(e.target.value)}>
+          <select value={zoneFilter} onChange={(e) => setZoneFilter(e.target.value)} aria-label="Filter by zone">
             <option value="">any zone</option>
             {zones.map((z) => (
               <option key={z} value={z}>
-                ▱ {z}
+                {z}
               </option>
             ))}
           </select>
@@ -313,21 +514,9 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
           value={plateFilter}
           onChange={(e) => setPlateFilter(e.target.value)}
         />
-        <span className="muted">{shown.length} events · auto-refreshing</span>
-        <a
-          className="ghost"
-          style={{
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            textDecoration: "none",
-            color: "var(--text)",
-            fontSize: "0.9rem",
-          }}
-          href={exportUrl()}
-          title="Download the current filter as a CSV"
-        >
-          ⬇ Export CSV
+        <span className="muted count">{shown.length} events · auto-refreshing</span>
+        <a className="btn btn-ghost" href={exportUrl()} title="Download the current filter as a CSV">
+          <IconDownload size={15} /> Export CSV
         </a>
       </div>
 
@@ -352,14 +541,15 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
         </div>
       )}
 
-      {shown.length === 0 ? (
+      {list.length === 0 ? (
         <div className="empty">
-          No events yet. They appear when a detect-enabled camera sees motion and the AI
-          recognizes an object.
+          {searchResults || interpreted.length > 0
+            ? `No events match ${query ? `“${query}”` : "these filters"}.`
+            : "No events yet. They appear when a detect-enabled camera sees motion and the AI recognizes an object."}
         </div>
       ) : (
         <div className="event-grid">
-          {shown.map((ev) => (
+          {list.map(({ ev, cluster }) => (
             <div className="event-card" key={ev.id} onClick={() => setOpen(ev)}>
               {ev.snapshot ? (
                 <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={ev.label} loading="lazy" />
@@ -367,42 +557,57 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                 <div style={{ aspectRatio: "4 / 3", background: "#000" }} />
               )}
               <div className="meta">
-                <b>{ev.label}</b> {(ev.score * 100).toFixed(0)}% · {ev.camera}
-                {ev.face === "?" ? (
-                  <span style={{ color: "var(--warn)" }} title="A face was seen but matched nobody enrolled"> · 🚶 stranger</span>
-                ) : ev.face ? (
-                  <span style={{ color: "var(--ok)" }}> · 👤 {ev.face}</span>
-                ) : null}
-                {ev.plate && (
-                  <span style={{ color: "var(--warn)" }}>
-                    {" "}· 🚗 {ev.plate}
-                    {plateClass(ev.plate) === "deny" && (
-                      <span style={{ color: "var(--danger, #e5484d)", fontWeight: 700 }}> ⚠ of interest</span>
+                <div className="ev-head">
+                  <b className="ev-label">{ev.label}</b>
+                  <span className="ev-score score">{(ev.score * 100).toFixed(0)}%</span>
+                  <span className="muted">{ev.camera}</span>
+                  {cluster && cluster.count > 1 && (
+                    <span className="badge" title={`${cluster.count} detections in this activity`}>
+                      <IconLayers size={11} /> ×{cluster.count} · {durationLabel(cluster.endTs - cluster.startTs)}
+                    </span>
+                  )}
+                </div>
+                {(ev.face || ev.plate || ev.gesture || ev.zone) && (
+                  <div className="ev-chips">
+                    {ev.face === "?" ? (
+                      <span className="badge warn" title="A face was seen but matched nobody enrolled">
+                        <IconStranger size={13} /> stranger
+                      </span>
+                    ) : ev.face ? (
+                      <span className="badge ok"><IconUser size={13} /> {ev.face}</span>
+                    ) : null}
+                    {ev.plate && (
+                      <>
+                        <span className={`badge ${plateClass(ev.plate) === "deny" ? "danger" : plateClass(ev.plate) === "allow" ? "ok" : "warn"}`}>
+                          <IconCar size={13} /> {ev.plate}
+                        </span>
+                        {plateClass(ev.plate) === "deny" && (
+                          <span className="badge danger"><IconAlert size={12} /> of interest</span>
+                        )}
+                        {plateClass(ev.plate) === "allow" && (
+                          <span className="badge ok"><IconCheck size={12} /> known</span>
+                        )}
+                      </>
                     )}
-                    {plateClass(ev.plate) === "allow" && <span style={{ color: "var(--ok)" }}> ✓ known</span>}
-                  </span>
-                )}
-                {ev.gesture && <span style={{ color: "var(--accent, #4f8cff)" }}> · ✋ {ev.gesture}</span>}
-                {ev.zone && <span className="muted"> · ▱ {ev.zone}</span>}
-                {ev.caption && (
-                  <div style={{ marginTop: 4, fontStyle: "italic", fontSize: "0.85rem" }}>
-                    “{ev.caption}”
+                    {ev.gesture && <span className="badge accent"><IconHand size={13} /> {ev.gesture}</span>}
+                    {ev.zone && <span className="badge"><IconZone size={13} /> {ev.zone}</span>}
                   </div>
                 )}
+                {ev.caption && <div className="ev-caption">“{ev.caption}”</div>}
                 {ev.transcript && (
-                  <div style={{ marginTop: 4, fontSize: "0.85rem" }} title="Speech-to-text of the event audio">
-                    🎙️ “{ev.transcript}”
+                  <div className="ev-line" title="Speech-to-text of the event audio">
+                    <IconMic size={13} /> <span>“{ev.transcript}”</span>
                   </div>
                 )}
                 {ev.note && (
-                  <div style={{ marginTop: 4, fontSize: "0.85rem" }} title="Your note">
-                    📝 {ev.note}
+                  <div className="ev-line" title="Your note">
+                    <IconPencil size={13} /> <span>{ev.note}</span>
                   </div>
                 )}
-                <div className="muted">{fmtTime(ev.ts)}</div>
-                <div className="row" style={{ marginTop: 8 }}>
+                <div className="muted ev-time">{fmtTime(ev.ts)}</div>
+                <div className="ev-actions">
                   <button
-                    className={ev.flagged ? "primary" : "ghost"}
+                    className={`btn ev-act ${ev.flagged ? "btn-primary" : "btn-ghost"}`}
                     aria-pressed={ev.flagged}
                     title={
                       ev.flagged
@@ -414,10 +619,10 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                       toggleFlag(ev);
                     }}
                   >
-                    {ev.flagged ? "★ saved" : "☆ save"}
+                    <IconStar size={14} filled={ev.flagged} /> {ev.flagged ? "Saved" : "Save"}
                   </button>
                   <button
-                    className="ghost"
+                    className="btn btn-ghost ev-act"
                     aria-label={ev.note ? "Edit note" : "Add note"}
                     title={ev.note ? "Edit note" : "Add a note"}
                     onClick={(e) => {
@@ -425,24 +630,24 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                       editNote(ev);
                     }}
                   >
-                    📝
+                    <IconPencil size={14} />
                   </button>
                   <button
-                    className="ghost"
+                    className="btn btn-ghost ev-act"
                     onClick={(e) => {
                       e.stopPropagation();
                       jumpToRecording(ev);
                     }}
                   >
-                    {noClip === ev.id ? "no recording" : "▶ view recording"}
+                    <IconPlay size={13} /> {noClip === ev.id ? "no clip" : "Recording"}
                   </button>
                   <a
-                    className="ghost"
-                    style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)", textDecoration: "none", color: "var(--text)", fontSize: "0.9rem" }}
+                    className="btn btn-ghost ev-act"
                     href={`/api/events/${ev.id}/clip`}
                     onClick={(e) => e.stopPropagation()}
+                    title="Download a short clip"
                   >
-                    ⬇ clip
+                    <IconDownload size={14} /> Clip
                   </a>
                 </div>
               </div>
@@ -452,9 +657,28 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
       )}
 
       {open && (
-        <div className="modal-bg" onClick={() => setOpen(null)}>
-          {open.snapshot && <img src={`/api/snapshots/${open.snapshot}`} alt={open.label} />}
-        </div>
+        <Modal className="lightbox" title={`${open.label} · ${open.camera}`} onClose={() => setOpen(null)}>
+          {open.snapshot && (
+            <img
+              className="lightbox-img"
+              src={`/api/snapshots/${open.snapshot}`}
+              alt={`${open.label} detected at ${open.camera}, ${fmtTime(open.ts)}`}
+            />
+          )}
+          <div className="lightbox-meta">
+            <span className="badge accent score">{(open.score * 100).toFixed(0)}%</span>
+            {open.face === "?" ? (
+              <span className="badge warn"><IconStranger size={13} /> stranger</span>
+            ) : open.face ? (
+              <span className="badge ok"><IconUser size={13} /> {open.face}</span>
+            ) : null}
+            {open.plate && <span className="badge warn"><IconCar size={13} /> {open.plate}</span>}
+            {open.gesture && <span className="badge accent"><IconHand size={13} /> {open.gesture}</span>}
+            {open.zone && <span className="badge"><IconZone size={13} /> {open.zone}</span>}
+            <span className="muted clock" style={{ marginLeft: "auto" }}>{fmtTime(open.ts)}</span>
+          </div>
+          {open.transcript && <p className="ev-line" style={{ margin: "10px 0 0" }}><IconMic size={14} /> <span>“{open.transcript}”</span></p>}
+        </Modal>
       )}
 
       {playing && (

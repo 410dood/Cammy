@@ -9,10 +9,12 @@
 //!   - runs continuous packet-copy recording with retention (ffmpeg)
 //!   - runs the motion-gated AI detection pipeline (ONNX Runtime)
 
+mod anomaly;
 mod api;
 mod audio;
 mod auth;
 mod db;
+mod digest;
 mod genai;
 mod go2rtc;
 mod health;
@@ -165,6 +167,16 @@ pub async fn run(
         let status = status_board.clone();
         move || health::run(db, status, stop)
     })?;
+    // B1: daily AI digest. B3: anomaly scoring. Both opt-in (gated on settings),
+    // re-read live config each tick, and join cleanly at shutdown.
+    let digest_thread = std::thread::Builder::new().name("digest".into()).spawn({
+        let (db, stop) = (db.clone(), workers_stop.clone());
+        move || digest::run(db, stop)
+    })?;
+    let anomaly_thread = std::thread::Builder::new().name("anomaly".into()).spawn({
+        let (db, stop) = (db.clone(), workers_stop.clone());
+        move || anomaly::run(db, stop)
+    })?;
     let audio_thread = std::thread::Builder::new().name("audio".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -289,6 +301,8 @@ pub async fn run(
         let _ = health_thread.join();
         let _ = genai_thread.join();
         let _ = transcribe_thread.join();
+        let _ = digest_thread.join();
+        let _ = anomaly_thread.join();
     })
     .await;
     go2rtc.stop();

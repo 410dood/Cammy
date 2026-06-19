@@ -122,6 +122,10 @@ export interface Settings {
   genai_api_key: string;
   transcription_enabled: boolean;
   transcription_model: string;
+  anomaly_detection: boolean;
+  digest_enabled: boolean;
+  liveviews: Liveview[];
+  floorplan: string;
 }
 
 export interface CamStorage {
@@ -177,6 +181,7 @@ export interface AlarmRule {
 export interface ApiToken {
   id: number;
   name: string;
+  role: Role;
   created_ts: number;
   last_used_ts: number | null;
 }
@@ -200,6 +205,61 @@ export interface CamStatus {
 }
 
 export type StatusMap = Record<string, CamStatus>;
+
+export interface Notification {
+  id: number;
+  ts: number;
+  kind: string; // "stranger" | "camera_offline" | "digest" | "anomaly" | ...
+  title: string;
+  body: string | null;
+  event_id: number | null;
+  read: boolean;
+}
+
+export interface Digest {
+  id: number;
+  ts: number;
+  text: string;
+}
+
+export interface Overview {
+  cameras_total: number;
+  cameras_online: number;
+  recording: number;
+  events_total: number;
+  events_today: number;
+  disk_free_bytes: number;
+  total_bytes: number;
+  today_by_label: [string, number][];
+  unread_notifications: number;
+}
+
+export interface Liveview {
+  name: string;
+  cameras: string[];
+}
+
+export interface FloorPlan {
+  image: string; // data URL or /api path
+  pins: { camera: string; x: number; y: number }[];
+}
+
+export type Role = "viewer" | "operator" | "admin";
+
+export interface User {
+  id: number;
+  username: string;
+  role: Role;
+  created_ts: number;
+}
+
+export interface Me {
+  authenticated: boolean;
+  /** true for a real user account; false for the legacy/loopback/token admin */
+  named: boolean;
+  username: string | null;
+  role: Role;
+}
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, {
@@ -314,16 +374,31 @@ export const api = {
   ptz: (id: number, cmd: { action: "move" | "stop"; pan?: number; tilt?: number; zoom?: number }) =>
     req<{ ok: boolean }>(`/api/cameras/${id}/ptz`, { method: "POST", body: JSON.stringify(cmd) }),
   tokens: () => req<ApiToken[]>("/api/tokens"),
-  createToken: (name: string) =>
-    req<{ id: number; name: string; token: string }>("/api/tokens", {
+  createToken: (name: string, role: Role = "operator") =>
+    req<{ id: number; name: string; role: Role; token: string }>("/api/tokens", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, role }),
     }),
   deleteToken: (id: number) => req<void>(`/api/tokens/${id}`, { method: "DELETE" }),
   audit: (limit = 100) => req<AuditEntry[]>(`/api/audit?limit=${limit}`),
-  authStatus: () => req<{ enabled: boolean }>("/api/auth"),
-  login: (password: string) =>
-    req<{ ok: boolean }>("/api/login", { method: "POST", body: JSON.stringify({ password }) }),
+  authStatus: () => req<{ enabled: boolean; users: number }>("/api/auth"),
+  login: (password: string, username?: string) =>
+    req<{ ok: boolean }>("/api/login", {
+      method: "POST",
+      body: JSON.stringify({ username: username || undefined, password }),
+    }),
+  me: () => req<Me>("/api/me"),
+  changeMyPassword: (old_password: string, new_password: string) =>
+    req<{ ok: boolean }>("/api/me/password", {
+      method: "POST",
+      body: JSON.stringify({ old_password, new_password }),
+    }),
+  users: () => req<User[]>("/api/users"),
+  createUser: (body: { username: string; password: string; role: Role }) =>
+    req<{ id: number }>("/api/users", { method: "POST", body: JSON.stringify(body) }),
+  patchUser: (id: number, patch: { role?: Role; password?: string }) =>
+    req<{ id: number }>(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteUser: (id: number) => req<void>(`/api/users/${id}`, { method: "DELETE" }),
   setPassword: (password: string) =>
     req<{ enabled: boolean }>("/api/auth/password", {
       method: "POST",
@@ -339,6 +414,19 @@ export const api = {
   settings: () => req<Settings>("/api/settings"),
   saveSettings: (s: Settings) =>
     req<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
+  overview: () => req<Overview>("/api/overview"),
+  notifications: (q: { unread?: boolean; limit?: number } = {}) => {
+    const p = new URLSearchParams();
+    if (q.unread) p.set("unread", "true");
+    if (q.limit) p.set("limit", String(q.limit));
+    return req<Notification[]>(`/api/notifications?${p}`);
+  },
+  markNotificationRead: (id: number) =>
+    req<{ id: number; read: boolean }>(`/api/notifications/${id}/read`, { method: "POST" }),
+  markAllNotificationsRead: () =>
+    req<{ updated: number }>("/api/notifications/read-all", { method: "POST" }),
+  digests: (limit = 14) => req<Digest[]>(`/api/digests?limit=${limit}`),
+  runDigest: () => req<Digest>("/api/digests/run", { method: "POST" }),
 };
 
 // Live-view transport. go2rtc restreams a single upstream camera connection to

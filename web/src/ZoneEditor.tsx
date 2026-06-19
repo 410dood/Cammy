@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Camera, PolyZone, ZoneKind } from "./api";
+import { IconRefresh } from "./icons";
 
 type Mask = [number, number][];
 type Draw = { kind: "zone"; zoneKind: ZoneKind; points: Mask } | { kind: "mask"; points: Mask } | null;
@@ -123,13 +124,13 @@ export default function ZoneEditor({
               <div style={{ marginTop: 8 }}>
                 <button
                   type="button"
-                  className="ghost"
+                  className="btn btn-ghost ev-act"
                   onClick={(e) => {
                     e.stopPropagation();
                     retry();
                   }}
                 >
-                  ↻ retry
+                  <IconRefresh size={14} /> retry
                 </button>
               </div>
             </div>

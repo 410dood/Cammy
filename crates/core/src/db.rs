@@ -212,6 +212,9 @@ pub struct Event {
     /// Free-text note the user attached to the event.
     #[serde(default)]
     pub note: Option<String>,
+    /// Anomaly score (0..1) from the anomaly-detection worker; None = unscored.
+    #[serde(default)]
+    pub anomaly_score: Option<f32>,
 }
 
 /// One row of the smart-search corpus: an event's id, its searchable text
@@ -230,6 +233,7 @@ pub struct SearchRow {
 pub struct ApiToken {
     pub id: i64,
     pub name: String,
+    pub role: String,
     pub created_ts: i64,
     pub last_used_ts: Option<i64>,
 }
@@ -243,6 +247,61 @@ pub struct AuditEntry {
     pub ip: Option<String>,
     pub action: String,
     pub detail: Option<String>,
+}
+
+/// One in-app notification (A4 notifications center): a security/activity event
+/// surfaced in the rail bell + notifications panel. Self-trimmed so it stays
+/// bounded. `event_id` deep-links to the originating event when there is one.
+#[derive(Clone, Debug, Serialize)]
+pub struct Notification {
+    pub id: i64,
+    pub ts: i64,
+    /// "stranger" | "camera_offline" | "camera_online" | "digest" | "anomaly" | ...
+    pub kind: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub event_id: Option<i64>,
+    pub read: bool,
+}
+
+/// One AI daily digest (B1): a natural-language recap of a period's activity.
+#[derive(Clone, Debug, Serialize)]
+pub struct Digest {
+    pub id: i64,
+    pub ts: i64,
+    pub text: String,
+}
+
+/// A named user account (C5 multi-user roles). The password hash is never
+/// serialized out of the API.
+#[derive(Clone, Debug, Serialize)]
+pub struct UserRow {
+    pub id: i64,
+    pub username: String,
+    pub role: String,
+    pub created_ts: i64,
+}
+
+/// Outcome of a guarded role change (keeps the last-admin check + update atomic).
+pub enum SetRole {
+    Ok,
+    NotFound,
+    LastAdmin,
+}
+
+/// Outcome of a guarded user delete.
+pub enum DeleteUser {
+    Deleted,
+    NotFound,
+    LastAdmin,
+}
+
+/// A saved named camera layout (A6 Liveviews), persisted in `Settings`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Liveview {
+    pub name: String,
+    #[serde(default)]
+    pub cameras: Vec<String>,
 }
 
 /// Sentinel stored in an event's `face` when a face was detected on a person
@@ -560,6 +619,18 @@ pub struct Settings {
     /// Path to the whisper GGML model (downloaded, not committed), e.g.
     /// `ggml-tiny.en.bin` (~75 MB) or `ggml-base.en.bin`.
     pub transcription_model: String,
+    /// B3: master switch for the anomaly-detection worker (opt-in).
+    #[serde(default)]
+    pub anomaly_detection: bool,
+    /// B1: master switch for the daily AI digest worker (opt-in).
+    #[serde(default)]
+    pub digest_enabled: bool,
+    /// A6: saved named camera layouts ("Liveviews") for the Live wall.
+    #[serde(default)]
+    pub liveviews: Vec<Liveview>,
+    /// C6: floor-plan camera map as JSON ({ image, pins:[{camera,x,y}] }); empty = none.
+    #[serde(default)]
+    pub floorplan: String,
 }
 
 impl Default for Settings {
@@ -641,6 +712,10 @@ impl Default for Settings {
             genai_api_key: String::new(),
             transcription_enabled: false,
             transcription_model: "ggml-tiny.en.bin".into(),
+            anomaly_detection: false,
+            digest_enabled: false,
+            liveviews: Vec::new(),
+            floorplan: String::new(),
         }
     }
 }
@@ -703,6 +778,8 @@ impl Db {
             [],
         );
         let _ = conn.execute("ALTER TABLE events ADD COLUMN note TEXT", []);
+        // B3: anomaly score (0..1) written by the anomaly-detection worker.
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN anomaly_score REAL", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
@@ -744,6 +821,28 @@ impl Db {
                  ip     TEXT,
                  action TEXT NOT NULL,
                  detail TEXT
+             );
+             CREATE TABLE IF NOT EXISTS notifications (
+                 id       INTEGER PRIMARY KEY,
+                 ts       INTEGER NOT NULL,
+                 kind     TEXT NOT NULL,
+                 title    TEXT NOT NULL,
+                 body     TEXT,
+                 event_id INTEGER REFERENCES events(id) ON DELETE SET NULL,
+                 read     INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE INDEX IF NOT EXISTS notifications_id ON notifications(id DESC);
+             CREATE TABLE IF NOT EXISTS digests (
+                 id   INTEGER PRIMARY KEY,
+                 ts   INTEGER NOT NULL,
+                 text TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS users (
+                 id            INTEGER PRIMARY KEY,
+                 username      TEXT NOT NULL UNIQUE,
+                 password_hash TEXT NOT NULL,
+                 role          TEXT NOT NULL DEFAULT 'viewer',
+                 created_ts    INTEGER NOT NULL
              );",
         )?;
         // Additive migration for pre-schedule alarms tables.
@@ -764,6 +863,12 @@ impl Db {
         );
         let _ = conn.execute(
             "ALTER TABLE alarms ADD COLUMN snooze_until INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        // Scoped API tokens (C5 follow-up): existing tokens default to 'admin'
+        // so they keep their pre-roles behaviour; new tokens pick a role.
+        let _ = conn.execute(
+            "ALTER TABLE api_tokens ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'",
             [],
         );
         Ok(Self(Arc::new(Mutex::new(conn))))
@@ -900,7 +1005,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note
+                    e.flagged, e.note, e.anomaly_score
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -935,7 +1040,7 @@ impl Db {
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                         e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                        e.flagged, e.note
+                        e.flagged, e.note, e.anomaly_score
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
@@ -1078,11 +1183,11 @@ impl Db {
     // --- API tokens --------------------------------------------------------
 
     /// Store a new API token (only its hash) and return its row id.
-    pub fn add_api_token(&self, name: &str, token_hash: &str, now: i64) -> Result<i64> {
+    pub fn add_api_token(&self, name: &str, token_hash: &str, role: &str, now: i64) -> Result<i64> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO api_tokens (name, token_hash, created_ts) VALUES (?1, ?2, ?3)",
-            params![name, token_hash, now],
+            "INSERT INTO api_tokens (name, token_hash, role, created_ts) VALUES (?1, ?2, ?3, ?4)",
+            params![name, token_hash, role, now],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -1090,30 +1195,31 @@ impl Db {
     /// List tokens (metadata only — never the hash or the secret).
     pub fn list_api_tokens(&self) -> Result<Vec<ApiToken>> {
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT id, name, created_ts, last_used_ts FROM api_tokens ORDER BY id")?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, role, created_ts, last_used_ts FROM api_tokens ORDER BY id")?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(ApiToken {
                     id: r.get(0)?,
                     name: r.get(1)?,
-                    created_ts: r.get(2)?,
-                    last_used_ts: r.get(3)?,
+                    role: r.get(2)?,
+                    created_ts: r.get(3)?,
+                    last_used_ts: r.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    /// Look up a token by its hash, returning `(id, last_used_ts)` if it exists.
-    /// The middleware uses this to authenticate a Bearer token per request.
-    pub fn api_token_by_hash(&self, token_hash: &str) -> Result<Option<(i64, Option<i64>)>> {
+    /// Look up a token by its hash, returning `(id, last_used_ts, role)` if it
+    /// exists. The middleware uses this to authenticate a Bearer token per request.
+    pub fn api_token_by_hash(&self, token_hash: &str) -> Result<Option<(i64, Option<i64>, String)>> {
         Ok(self
             .conn()
             .query_row(
-                "SELECT id, last_used_ts FROM api_tokens WHERE token_hash = ?1",
+                "SELECT id, last_used_ts, role FROM api_tokens WHERE token_hash = ?1",
                 [token_hash],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?)
     }
@@ -1176,6 +1282,226 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    // --- notifications (A4) --------------------------------------------------
+
+    const NOTIF_KEEP: i64 = 2000;
+
+    /// Insert a notification; returns its row id. Self-trims read rows beyond
+    /// NOTIF_KEEP so the table stays bounded.
+    pub fn add_notification(
+        &self,
+        ts: i64,
+        kind: &str,
+        title: &str,
+        body: Option<&str>,
+        event_id: Option<i64>,
+    ) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO notifications (ts, kind, title, body, event_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![ts, kind, title, body, event_id],
+        )?;
+        let id = conn.last_insert_rowid();
+        let _ = conn.execute(
+            "DELETE FROM notifications WHERE read = 1 AND id <= \
+             (SELECT MAX(id) FROM notifications) - ?1",
+            [Self::NOTIF_KEEP],
+        );
+        Ok(id)
+    }
+
+    /// Newest-first notifications; when `unread_only`, only rows with read = 0.
+    pub fn list_notifications(&self, unread_only: bool, limit: u32) -> Result<Vec<Notification>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, kind, title, body, event_id, read FROM notifications
+             WHERE (?1 = 0 OR read = 0) ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![unread_only as i64, limit], |r| {
+                Ok(Notification {
+                    id: r.get(0)?,
+                    ts: r.get(1)?,
+                    kind: r.get(2)?,
+                    title: r.get(3)?,
+                    body: r.get(4)?,
+                    event_id: r.get(5)?,
+                    read: r.get::<_, i64>(6)? != 0,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn count_unread_notifications(&self) -> Result<i64> {
+        Ok(self.conn().query_row(
+            "SELECT COUNT(*) FROM notifications WHERE read = 0",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Mark one notification read; returns whether it existed.
+    pub fn mark_notification_read(&self, id: i64) -> Result<bool> {
+        let n = self
+            .conn()
+            .execute("UPDATE notifications SET read = 1 WHERE id = ?1", [id])?;
+        Ok(n > 0)
+    }
+
+    /// Mark all notifications read; returns how many rows changed.
+    pub fn mark_all_notifications_read(&self) -> Result<usize> {
+        Ok(self
+            .conn()
+            .execute("UPDATE notifications SET read = 1 WHERE read = 0", [])?)
+    }
+
+    // --- digests (B1) --------------------------------------------------------
+
+    const DIGEST_KEEP: i64 = 365;
+
+    /// Insert a digest; returns its row id. Self-trims to DIGEST_KEEP rows.
+    pub fn add_digest(&self, ts: i64, text: &str) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO digests (ts, text) VALUES (?1, ?2)",
+            params![ts, text],
+        )?;
+        let id = conn.last_insert_rowid();
+        let _ = conn.execute(
+            "DELETE FROM digests WHERE id <= (SELECT MAX(id) FROM digests) - ?1",
+            [Self::DIGEST_KEEP],
+        );
+        Ok(id)
+    }
+
+    pub fn list_digests(&self, limit: u32) -> Result<Vec<Digest>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id, ts, text FROM digests ORDER BY id DESC LIMIT ?1")?;
+        let rows = stmt
+            .query_map([limit], |r| {
+                Ok(Digest {
+                    id: r.get(0)?,
+                    ts: r.get(1)?,
+                    text: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Store an anomaly score for an event (best-effort enrichment).
+    pub fn set_event_anomaly(&self, event_id: i64, score: f32) -> Result<()> {
+        self.conn().execute(
+            "UPDATE events SET anomaly_score = ?1 WHERE id = ?2",
+            params![score, event_id],
+        )?;
+        Ok(())
+    }
+
+    // --- users / roles (C5) --------------------------------------------------
+
+    pub fn count_users(&self) -> Result<i64> {
+        Ok(self
+            .conn()
+            .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?)
+    }
+
+    pub fn add_user(&self, username: &str, password_hash: &str, role: &str, now: i64) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, created_ts) VALUES (?1, ?2, ?3, ?4)",
+            params![username, password_hash, role, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// `(id, password_hash, role)` for a username, if it exists.
+    pub fn user_by_name(&self, username: &str) -> Result<Option<(i64, String, String)>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT id, password_hash, role FROM users WHERE username = ?1",
+                [username],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn list_users(&self) -> Result<Vec<UserRow>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id, username, role, created_ts FROM users ORDER BY username")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(UserRow {
+                    id: r.get(0)?,
+                    username: r.get(1)?,
+                    role: r.get(2)?,
+                    created_ts: r.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn set_user_password(&self, id: i64, password_hash: &str) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            params![password_hash, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Set a user's role, refusing to strip the last admin. The role read, the
+    /// admin count, and the update all run while the single DB lock is held, so
+    /// two concurrent demotions can never both win and leave zero admins.
+    pub fn set_user_role_guarded(&self, id: i64, role: &str) -> Result<SetRole> {
+        let conn = self.conn();
+        let cur: Option<String> = conn
+            .query_row("SELECT role FROM users WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        let Some(cur) = cur else {
+            return Ok(SetRole::NotFound);
+        };
+        if cur == "admin" && role != "admin" {
+            let admins: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin'",
+                [],
+                |r| r.get(0),
+            )?;
+            if admins <= 1 {
+                return Ok(SetRole::LastAdmin);
+            }
+        }
+        conn.execute("UPDATE users SET role = ?1 WHERE id = ?2", params![role, id])?;
+        Ok(SetRole::Ok)
+    }
+
+    /// Delete a user, refusing to delete the last admin (atomic under one lock).
+    pub fn delete_user_guarded(&self, id: i64) -> Result<DeleteUser> {
+        let conn = self.conn();
+        let cur: Option<String> = conn
+            .query_row("SELECT role FROM users WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        let Some(cur) = cur else {
+            return Ok(DeleteUser::NotFound);
+        };
+        if cur == "admin" {
+            let admins: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin'",
+                [],
+                |r| r.get(0),
+            )?;
+            if admins <= 1 {
+                return Ok(DeleteUser::LastAdmin);
+            }
+        }
+        conn.execute("DELETE FROM users WHERE id = ?1", [id])?;
+        Ok(DeleteUser::Deleted)
     }
 
     pub fn delete_alarm(&self, id: i64) -> Result<()> {
@@ -1544,6 +1870,7 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         transcript: r.get(16)?,
         flagged: r.get::<_, i64>(17)? != 0,
         note: r.get(18)?,
+        anomaly_score: r.get(19)?,
     })
 }
 
@@ -1761,19 +2088,25 @@ mod tests {
     #[test]
     fn api_token_crud_and_lookup() {
         let db = mem_db();
-        let id = db.add_api_token("home-assistant", "hash_abc", 100).unwrap();
+        let id = db
+            .add_api_token("home-assistant", "hash_abc", "operator", 100)
+            .unwrap();
         let list = db.list_api_tokens().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "home-assistant");
+        assert_eq!(list[0].role, "operator");
         assert!(list[0].last_used_ts.is_none());
-        // Lookup by hash returns (id, last_used); unknown hash → None.
-        assert_eq!(db.api_token_by_hash("hash_abc").unwrap(), Some((id, None)));
+        // Lookup by hash returns (id, last_used, role); unknown hash → None.
+        assert_eq!(
+            db.api_token_by_hash("hash_abc").unwrap(),
+            Some((id, None, "operator".to_string()))
+        );
         assert_eq!(db.api_token_by_hash("nope").unwrap(), None);
         // Touch records last-used; relisting reflects it.
         db.touch_api_token(id, 200).unwrap();
         assert_eq!(
             db.api_token_by_hash("hash_abc").unwrap(),
-            Some((id, Some(200)))
+            Some((id, Some(200), "operator".to_string()))
         );
         // Delete is idempotent on a hit and reports a miss.
         assert!(db.delete_api_token(id).unwrap());

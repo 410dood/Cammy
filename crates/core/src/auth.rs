@@ -13,7 +13,7 @@
 //! after [`MAX_FAILURES`] wrong passwords inside [`FAILURE_WINDOW`], that peer is
 //! locked out for [`LOCKOUT`]. Loopback is never throttled.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,6 +25,7 @@ use axum::http::{header, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::api::AppState;
@@ -44,18 +45,102 @@ pub const LOCKOUT: Duration = Duration::from_secs(300);
 /// untracked (existing lockouts still hold) rather than exhausting memory.
 const MAX_TRACKED_IPS: usize = 4096;
 
+/// Access level (C5), ordered Viewer < Operator < Admin: a higher role can do
+/// everything a lower one can. Gates `/api/*` by method + path in the middleware.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Viewer,
+    Operator,
+    Admin,
+}
+
+impl Role {
+    /// Parse leniently from stored text; anything unrecognized is the safest
+    /// (least-privileged) role.
+    pub fn parse(s: &str) -> Role {
+        match s.to_ascii_lowercase().as_str() {
+            "admin" => Role::Admin,
+            "operator" => Role::Operator,
+            _ => Role::Viewer,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Admin => "admin",
+            Role::Operator => "operator",
+            Role::Viewer => "viewer",
+        }
+    }
+}
+
+/// The authenticated caller behind a request: which named user (if any) and at
+/// what role. The middleware injects this into request extensions so handlers
+/// (e.g. user management, `/api/me`) know who is asking.
+#[derive(Clone, Debug, Serialize)]
+pub struct Principal {
+    pub user_id: Option<i64>,
+    pub username: Option<String>,
+    pub role: Role,
+}
+
+impl Principal {
+    /// Full access: the local box (loopback), the legacy single-password login,
+    /// open mode, and API tokens (which `token_forbidden` still constrains).
+    pub fn admin() -> Self {
+        Principal { user_id: None, username: None, role: Role::Admin }
+    }
+}
+
+/// Active sessions: opaque token -> the caller's [`Principal`]. Cleared on
+/// restart and whenever the password / a user account changes.
 #[derive(Clone, Default)]
-pub struct Sessions(Arc<Mutex<HashSet<String>>>);
+pub struct Sessions(Arc<Mutex<HashMap<String, Principal>>>);
 
 impl Sessions {
-    pub fn insert(&self, token: String) {
-        self.0.lock().expect("sessions poisoned").insert(token);
+    pub fn insert(&self, token: String, principal: Principal) {
+        self.0.lock().expect("sessions poisoned").insert(token, principal);
     }
-    pub fn contains(&self, token: &str) -> bool {
-        self.0.lock().expect("sessions poisoned").contains(token)
+    pub fn get(&self, token: &str) -> Option<Principal> {
+        self.0.lock().expect("sessions poisoned").get(token).cloned()
     }
     pub fn clear(&self) {
         self.0.lock().expect("sessions poisoned").clear();
+    }
+    /// Invalidate just one named user's sessions (e.g. after their role or
+    /// password changes), without logging everyone else out.
+    pub fn clear_user(&self, user_id: i64) {
+        self.0
+            .lock()
+            .expect("sessions poisoned")
+            .retain(|_, p| p.user_id != Some(user_id));
+    }
+}
+
+/// Minimum role required to call `method path` (C5). Reads need Viewer; ordinary
+/// mutations need Operator; account / password / token management needs Admin.
+pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
+    use axum::http::Method;
+    // A user changing their OWN password only needs to be authenticated (the
+    // handler verifies their current password), so it stays Viewer-reachable —
+    // listed before the POST→Operator default below.
+    if path == "/api/me/password" {
+        return Role::Viewer;
+    }
+    // Account/security management AND config snapshots (which embed camera
+    // rtsp://user:pass credentials) require Admin — note /api/backup is a GET, so
+    // it must be listed explicitly or the GET default would expose secrets.
+    if path.starts_with("/api/users")
+        || path == "/api/auth/password"
+        || path == "/api/backup"
+        || path == "/api/restore"
+        || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
+    {
+        return Role::Admin;
+    }
+    match *method {
+        Method::GET | Method::HEAD | Method::OPTIONS => Role::Viewer,
+        _ => Role::Operator,
     }
 }
 
@@ -220,6 +305,7 @@ fn token_forbidden(method: &axum::http::Method, path: &str) -> bool {
     use axum::http::Method;
     path == "/api/auth/password"
         || path == "/api/audit"
+        || path.starts_with("/api/users") // user/role management is interactive-only (C5)
         || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
 }
 
@@ -272,52 +358,95 @@ fn request_token(req: &Request) -> Option<String> {
 pub async fn middleware(
     State(st): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response {
-    let path = req.uri().path();
-    let exempt =
-        !path.starts_with("/api") || matches!(path, "/api/login" | "/api/health" | "/api/auth");
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let exempt = !path.starts_with("/api")
+        || matches!(path.as_str(), "/api/login" | "/api/health" | "/api/auth");
+
     // A proxied request is never granted the loopback exemption (the proxy's
-    // own 127.0.0.1 connection, or a spoofed XFF, must not bypass the password).
+    // own 127.0.0.1 connection, or a spoofed XFF, must not bypass auth).
     let (cip, via_proxy) = client_ip(req.headers(), addr.ip(), st.behind_proxy);
     let loopback_exempt = !via_proxy && cip.is_loopback();
-    if exempt || loopback_exempt || st.db.get_kv(KV_PASSWORD).is_none() {
+    // Auth is active once a single password OR any named user account exists.
+    // A failed user count is treated as "auth on" (fail closed): a transient DB
+    // error must never silently open the gate to unauthenticated remote callers.
+    let auth_on =
+        st.db.get_kv(KV_PASSWORD).is_some() || st.db.count_users().map(|n| n > 0).unwrap_or(true);
+
+    // The local box and open mode get full access with no role gating.
+    if loopback_exempt || !auth_on {
+        req.extensions_mut().insert(Principal::admin());
         return next.run(req).await;
     }
-    if let Some(token) = request_token(&req) {
-        if st.sessions.contains(&token) {
-            return next.run(req).await;
-        }
-    }
-    // API token (Authorization: Bearer …) for headless/automation callers —
-    // grants the same API access as a logged-in session, EXCEPT token
-    // management and password change (so a leaked token can't self-perpetuate
-    // or lock out the owner).
-    if let Some(bearer) = bearer_token(&req) {
-        if let Ok(Some((id, last))) = st.db.api_token_by_hash(&token_hash(&bearer)) {
-            if token_forbidden(req.method(), path) {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({
-                        "error": "this endpoint requires an interactive login, not an API token"
-                    })),
-                )
-                    .into_response();
+
+    // Resolve the caller: a session cookie (a named user or the legacy
+    // single-password admin), or an API token (admin-level, but constrained by
+    // `token_forbidden`).
+    let mut is_token = false;
+    let principal: Option<Principal> =
+        if let Some(p) = request_token(&req).and_then(|t| st.sessions.get(&t)) {
+            Some(p)
+        } else if let Some(bearer) = bearer_token(&req) {
+            match st.db.api_token_by_hash(&token_hash(&bearer)) {
+                Ok(Some((id, last, role))) => {
+                    is_token = true;
+                    let now = chrono::Local::now().timestamp();
+                    // Throttle last-used writes to at most once a minute per token.
+                    if last.map(|t| now - t >= 60).unwrap_or(true) {
+                        let _ = st.db.touch_api_token(id, now);
+                    }
+                    // A token acts at its assigned role (scoped, not blanket admin);
+                    // `token_forbidden` still blocks the interactive-only endpoints.
+                    Some(Principal {
+                        user_id: None,
+                        username: None,
+                        role: Role::parse(&role),
+                    })
+                }
+                _ => None,
             }
-            let now = chrono::Local::now().timestamp();
-            // Throttle last-used writes to at most once a minute per token.
-            if last.map(|t| now - t >= 60).unwrap_or(true) {
-                let _ = st.db.touch_api_token(id, now);
-            }
-            return next.run(req).await;
+        } else {
+            None
+        };
+
+    // Open endpoints (login/health/auth-status, static assets) pass through,
+    // carrying any principal we resolved.
+    if exempt {
+        if let Some(p) = principal {
+            req.extensions_mut().insert(p);
         }
+        return next.run(req).await;
     }
+
+    let principal = match principal {
+        Some(p) => p,
+        None => return unauthorized(),
+    };
+    // A leaked API token must not reach interactive-only endpoints.
+    if is_token && token_forbidden(&method, &path) {
+        return forbidden("this endpoint requires an interactive login, not an API token");
+    }
+    // Role gate (C5).
+    if principal.role < min_role_for(&method, &path) {
+        return forbidden("your account role does not allow this action");
+    }
+    req.extensions_mut().insert(principal);
+    next.run(req).await
+}
+
+fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
         Json(serde_json::json!({ "error": "login required" })),
     )
         .into_response()
+}
+
+fn forbidden(msg: &str) -> Response {
+    (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": msg }))).into_response()
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -376,6 +505,9 @@ mod tests {
         assert!(token_forbidden(&Method::DELETE, "/api/tokens/5"));
         // The security audit log is session-only (no token recon of login IPs).
         assert!(token_forbidden(&Method::GET, "/api/audit"));
+        // User/role management is interactive-only.
+        assert!(token_forbidden(&Method::GET, "/api/users"));
+        assert!(token_forbidden(&Method::POST, "/api/users"));
         // …but read-only token listing and ordinary API calls are fine.
         assert!(!token_forbidden(&Method::GET, "/api/tokens"));
         assert!(!token_forbidden(&Method::GET, "/api/cameras"));
@@ -400,11 +532,33 @@ mod tests {
     fn sessions_lifecycle() {
         let s = Sessions::default();
         let t = new_token();
-        assert!(!s.contains(&t));
-        s.insert(t.clone());
-        assert!(s.contains(&t));
+        assert!(s.get(&t).is_none());
+        s.insert(t.clone(), Principal::admin());
+        assert_eq!(s.get(&t).map(|p| p.role), Some(Role::Admin));
         s.clear();
-        assert!(!s.contains(&t));
+        assert!(s.get(&t).is_none());
+    }
+
+    #[test]
+    fn role_ordering_and_parse() {
+        assert!(Role::Viewer < Role::Operator);
+        assert!(Role::Operator < Role::Admin);
+        assert_eq!(Role::parse("admin"), Role::Admin);
+        assert_eq!(Role::parse("OPERATOR"), Role::Operator);
+        assert_eq!(Role::parse("nonsense"), Role::Viewer); // unknown = least privilege
+        assert_eq!(Role::Admin.as_str(), "admin");
+    }
+
+    #[test]
+    fn min_role_gates_by_method_and_path() {
+        use axum::http::Method;
+        assert_eq!(min_role_for(&Method::GET, "/api/events"), Role::Viewer);
+        assert_eq!(min_role_for(&Method::POST, "/api/cameras"), Role::Operator);
+        assert_eq!(min_role_for(&Method::PATCH, "/api/settings"), Role::Operator);
+        assert_eq!(min_role_for(&Method::GET, "/api/users"), Role::Admin);
+        assert_eq!(min_role_for(&Method::POST, "/api/users"), Role::Admin);
+        assert_eq!(min_role_for(&Method::POST, "/api/auth/password"), Role::Admin);
+        assert_eq!(min_role_for(&Method::DELETE, "/api/tokens/3"), Role::Admin);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
 import { api, AlarmRule, Camera } from "../api";
+import { IconStranger, IconMoon } from "../icons";
 
 const LABELS = ["person", "car", "truck", "bus", "bicycle", "motorcycle", "dog", "cat"];
 const GESTURES = ["open_palm", "fist", "victory", "point", "thumb_up", "thumb_down", "love", "ok", "call_me"];
@@ -98,10 +99,10 @@ export default function Alarms({
         : "any camera",
       r.label ?? "any object",
       r.face_like ? `face ~ "${r.face_like}"` : null,
-      r.face_unknown ? `🚶 unknown face` : null,
+      r.face_unknown ? `unknown face (stranger)` : null,
       r.plate_like ? `plate ~ "${r.plate_like}"` : null,
-      r.gesture_like ? `✋ ${r.gesture_like}` : null,
-      r.transcript_like ? `🎙️ said "${r.transcript_like}"` : null,
+      r.gesture_like ? `signal ${r.gesture_like}` : null,
+      r.transcript_like ? `said "${r.transcript_like}"` : null,
       sched ? `armed ${sched}` : null,
       r.cooldown_secs > 0 ? `cooldown ${r.cooldown_secs}s` : null,
       r.priority > 0 ? `priority ${r.priority}` : null,
@@ -169,7 +170,7 @@ export default function Alarms({
                   checked={faceUnknown}
                   onChange={(e) => setFaceUnknown(e.target.checked)}
                 />{" "}
-                🚶 unknown face (stranger)
+                <IconStranger size={14} /> unknown face (stranger)
               </span>
               {faceUnknown && (
                 <small className="muted">
@@ -188,7 +189,7 @@ export default function Alarms({
                 <option value="">any / none</option>
                 {GESTURES.map((g) => (
                   <option key={g} value={g}>
-                    ✋ {g}
+                    {g}
                   </option>
                 ))}
               </select>
@@ -199,7 +200,7 @@ export default function Alarms({
                 type="text"
                 value={transcriptLike}
                 onChange={(e) => setTranscriptLike(e.target.value)}
-                placeholder='🎙️ e.g. "help"'
+                placeholder='e.g. "help"'
               />
             </label>
           </div>
@@ -318,7 +319,7 @@ export default function Alarms({
                     </span>
                     {snoozeText(r) && (
                       <span className="pill" style={{ marginLeft: 6 }} title="snoozed">
-                        💤 {snoozeText(r)}
+                        <IconMoon size={12} /> {snoozeText(r)}
                       </span>
                     )}
                   </td>
