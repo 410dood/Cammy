@@ -186,7 +186,11 @@ fn email(target: &str, rule_name: &str, ev: &AlarmEvent) {
         tracing::warn!("email action skipped: SMTP not configured in Settings");
         return;
     };
-    let to_raw = if target.trim().is_empty() { cfg.to } else { target };
+    let to_raw = if target.trim().is_empty() {
+        cfg.to
+    } else {
+        target
+    };
     if cfg.from.trim().is_empty() || to_raw.trim().is_empty() {
         tracing::warn!("email action skipped: missing from/to address");
         return;
@@ -203,12 +207,7 @@ fn email(target: &str, rule_name: &str, ev: &AlarmEvent) {
     } else {
         format!("Alarm: {rule_name}")
     };
-    let mut body = format!(
-        "{} ({:.0}%) on {}",
-        ev.label,
-        ev.score * 100.0,
-        ev.camera
-    );
+    let mut body = format!("{} ({:.0}%) on {}", ev.label, ev.score * 100.0, ev.camera);
     if let Some(f) = ev.face {
         body.push_str(&format!("\nFace: {f}"));
     }
@@ -457,7 +456,11 @@ mod tests {
         assert!(!armed_in_mode(&away, "home"));
         assert!(!armed_in_mode(&away, "disarmed"));
         // A panic rule opts into "disarmed": fires even while disarmed.
-        let panic = vec!["disarmed".to_string(), "home".to_string(), "away".to_string()];
+        let panic = vec![
+            "disarmed".to_string(),
+            "home".to_string(),
+            "away".to_string(),
+        ];
         assert!(armed_in_mode(&panic, "disarmed"));
         assert!(armed_in_mode(&panic, "home"));
     }

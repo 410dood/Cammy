@@ -88,7 +88,11 @@ impl Principal {
     /// Full access: the local box (loopback), the legacy single-password login,
     /// open mode, and API tokens (which `token_forbidden` still constrains).
     pub fn admin() -> Self {
-        Principal { user_id: None, username: None, role: Role::Admin }
+        Principal {
+            user_id: None,
+            username: None,
+            role: Role::Admin,
+        }
     }
 }
 
@@ -99,10 +103,17 @@ pub struct Sessions(Arc<Mutex<HashMap<String, Principal>>>);
 
 impl Sessions {
     pub fn insert(&self, token: String, principal: Principal) {
-        self.0.lock().expect("sessions poisoned").insert(token, principal);
+        self.0
+            .lock()
+            .expect("sessions poisoned")
+            .insert(token, principal);
     }
     pub fn get(&self, token: &str) -> Option<Principal> {
-        self.0.lock().expect("sessions poisoned").get(token).cloned()
+        self.0
+            .lock()
+            .expect("sessions poisoned")
+            .get(token)
+            .cloned()
     }
     pub fn clear(&self) {
         self.0.lock().expect("sessions poisoned").clear();
@@ -446,7 +457,11 @@ fn unauthorized() -> Response {
 }
 
 fn forbidden(msg: &str) -> Response {
-    (StatusCode::FORBIDDEN, Json(serde_json::json!({ "error": msg }))).into_response()
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({ "error": msg })),
+    )
+        .into_response()
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -554,10 +569,16 @@ mod tests {
         use axum::http::Method;
         assert_eq!(min_role_for(&Method::GET, "/api/events"), Role::Viewer);
         assert_eq!(min_role_for(&Method::POST, "/api/cameras"), Role::Operator);
-        assert_eq!(min_role_for(&Method::PATCH, "/api/settings"), Role::Operator);
+        assert_eq!(
+            min_role_for(&Method::PATCH, "/api/settings"),
+            Role::Operator
+        );
         assert_eq!(min_role_for(&Method::GET, "/api/users"), Role::Admin);
         assert_eq!(min_role_for(&Method::POST, "/api/users"), Role::Admin);
-        assert_eq!(min_role_for(&Method::POST, "/api/auth/password"), Role::Admin);
+        assert_eq!(
+            min_role_for(&Method::POST, "/api/auth/password"),
+            Role::Admin
+        );
         assert_eq!(min_role_for(&Method::DELETE, "/api/tokens/3"), Role::Admin);
     }
 

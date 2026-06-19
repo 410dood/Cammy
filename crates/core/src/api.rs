@@ -163,7 +163,7 @@ async fn config(State(st): State<AppState>) -> Json<serde_json::Value> {
 /// or (for detect-off cameras) the recorder is alive.
 async fn camera_status(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let now = chrono::Local::now().timestamp();
-    let window = (st.db.settings().poll_ms as i64 * 3) / 1000 + 5;
+    let window = crate::status::freshness_window(st.db.settings().poll_ms);
     let mut out = serde_json::Map::new();
     for cam in st.db.list_cameras()? {
         let h = st
@@ -172,8 +172,7 @@ async fn camera_status(State(st): State<AppState>) -> ApiResult<Json<serde_json:
             .get(&cam.id)
             .cloned()
             .unwrap_or_default();
-        let fresh_frame = h.last_frame_ts.map(|t| now - t <= window).unwrap_or(false);
-        let online = if cam.detect { fresh_frame } else { h.recording };
+        let online = h.is_online(cam.detect, now, window);
         out.insert(
             cam.id.to_string(),
             serde_json::json!({
@@ -331,8 +330,12 @@ async fn login(
         ));
     };
     st.login_throttle.record_success(peer_ip);
-    st.db
-        .add_audit(now, Some(&ip), "login_success", principal.username.as_deref());
+    st.db.add_audit(
+        now,
+        Some(&ip),
+        "login_success",
+        principal.username.as_deref(),
+    );
     let token = crate::auth::new_token();
     st.sessions.insert(token.clone(), principal);
     let mut resp = Json(serde_json::json!({ "ok": true })).into_response();
@@ -349,7 +352,9 @@ async fn login(
 
 /// Who the caller is (role + username), for the frontend to gate UI. Reachable
 /// only once authenticated; the middleware injects the principal.
-async fn me(axum::Extension(p): axum::Extension<crate::auth::Principal>) -> Json<serde_json::Value> {
+async fn me(
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> Json<serde_json::Value> {
     // Reaching this handler means the caller already passed auth (a session, the
     // local box, an API token, or open mode), so they are authenticated. `named`
     // distinguishes a real user account from the legacy/loopback/token admin.
@@ -396,15 +401,20 @@ async fn change_my_password(
     st.db
         .set_user_password(uid, &crate::auth::hash_password(&req.new_password))?;
     let now = chrono::Local::now().timestamp();
-    st.db
-        .add_audit(now, None, "user_password_changed", Some(&format!("#{uid} (self)")));
+    st.db.add_audit(
+        now,
+        None,
+        "user_password_changed",
+        Some(&format!("#{uid} (self)")),
+    );
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 fn valid_username(s: &str) -> bool {
     !s.is_empty()
         && s.chars().count() <= 64
-        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
 }
 
 async fn list_users_api(State(st): State<AppState>) -> ApiResult<Json<Vec<crate::db::UserRow>>> {
@@ -438,12 +448,19 @@ async fn create_user_api(
     let now = chrono::Local::now().timestamp();
     let id = st
         .db
-        .add_user(username, &crate::auth::hash_password(&req.password), role, now)
+        .add_user(
+            username,
+            &crate::auth::hash_password(&req.password),
+            role,
+            now,
+        )
         .map_err(|_| bad_request("could not add user (is the username already taken?)"))?;
     let (ip, _) = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy);
     st.db
         .add_audit(now, Some(&ip.to_string()), "user_created", Some(username));
-    Ok(Json(serde_json::json!({ "id": id, "username": username, "role": role })))
+    Ok(Json(
+        serde_json::json!({ "id": id, "username": username, "role": role }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -462,7 +479,9 @@ async fn patch_user_api(
     axum::Extension(me): axum::Extension<crate::auth::Principal>,
     Json(req): Json<PatchUserReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy).0.to_string();
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
     let now = chrono::Local::now().timestamp();
     let mut changed = false;
 
@@ -476,23 +495,36 @@ async fn patch_user_api(
         match st.db.set_user_role_guarded(id, role)? {
             crate::db::SetRole::Ok => {}
             crate::db::SetRole::NotFound => return Err(not_found()),
-            crate::db::SetRole::LastAdmin => return Err(bad_request("can't demote the last admin")),
+            crate::db::SetRole::LastAdmin => {
+                return Err(bad_request("can't demote the last admin"))
+            }
         }
         st.sessions.clear_user(id); // the new role takes effect on next request
-        st.db
-            .add_audit(now, Some(&ip), "user_role_changed", Some(&format!("#{id} -> {role}")));
+        st.db.add_audit(
+            now,
+            Some(&ip),
+            "user_role_changed",
+            Some(&format!("#{id} -> {role}")),
+        );
         changed = true;
     }
     if let Some(pw) = &req.password {
         if pw.len() < 6 {
             return Err(bad_request("password must be at least 6 characters"));
         }
-        if !st.db.set_user_password(id, &crate::auth::hash_password(pw))? {
+        if !st
+            .db
+            .set_user_password(id, &crate::auth::hash_password(pw))?
+        {
             return Err(not_found());
         }
         st.sessions.clear_user(id); // force just that user to re-login
-        st.db
-            .add_audit(now, Some(&ip), "user_password_changed", Some(&format!("#{id}")));
+        st.db.add_audit(
+            now,
+            Some(&ip),
+            "user_password_changed",
+            Some(&format!("#{id}")),
+        );
         changed = true;
     }
     if !changed {
@@ -517,7 +549,9 @@ async fn delete_user_api(
         crate::db::DeleteUser::LastAdmin => return Err(bad_request("can't delete the last admin")),
     }
     st.sessions.clear_user(id); // invalidate the deleted user's sessions
-    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy).0.to_string();
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
     st.db.add_audit(
         chrono::Local::now().timestamp(),
         Some(&ip),
@@ -580,7 +614,7 @@ async fn discover_scan(State(_st): State<AppState>) -> ApiResult<Json<serde_json
 }
 
 /// Percent-encode credential characters that would break URL parsing.
-fn urlencode(s: &str) -> String {
+pub(crate) fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -696,7 +730,9 @@ async fn add_camera(
         cam.group = Some(g.to_string());
         st.db.update_camera(&cam)?;
     }
-    st.go2rtc.restart_with(&st.db)?;
+    // A brand-new stream: reconcile PUTs it without restarting, so other
+    // cameras' live views keep playing.
+    st.go2rtc.sync_streams(&st.db, false)?;
     Ok((StatusCode::CREATED, Json(cam)))
 }
 
@@ -721,12 +757,20 @@ async fn patch_camera(
 ) -> ApiResult<Json<Camera>> {
     let mut cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
     // go2rtc's config depends only on name/source/detect_source/enabled, so a
-    // metadata-only patch (group, detect, record, zones) must NOT restart it —
+    // metadata-only patch (group, detect, record, zones) must NOT touch it —
     // restarting needlessly drops every live stream.
     let needs_go2rtc = patch.name.is_some()
         || patch.source.is_some()
         || patch.detect_source.is_some()
         || patch.enabled.is_some();
+    // Snapshot the stream-defining fields so we can tell a *same-name source
+    // edit* (which the name-only live reconcile can't propagate, so it needs a
+    // restart) from an add/remove/rename (which it handles without a restart).
+    let (old_name, old_source, old_detect_source) = (
+        cam.name.clone(),
+        cam.source.clone(),
+        cam.detect_source.clone(),
+    );
     if let Some(name) = patch.name {
         if !valid_name(&name) {
             return Err(bad_request("invalid camera name"));
@@ -793,7 +837,19 @@ async fn patch_camera(
     }
     st.db.update_camera(&cam)?;
     if needs_go2rtc {
-        st.go2rtc.restart_with(&st.db)?;
+        // A same-name edit of a live source string (main or sub) can't be
+        // reconciled by name alone — the stream stays but its producer would
+        // be stale — so force a restart for those. Add/remove/rename/enable
+        // toggles reconcile live without dropping unrelated streams.
+        let name_same = old_name == cam.name && cam.enabled;
+        let main_src_edit = name_same && old_source != cam.source;
+        let sub_src_edit = name_same
+            && matches!(
+                (&old_detect_source, &cam.detect_source),
+                (Some(a), Some(b)) if a != b
+            );
+        st.go2rtc
+            .sync_streams(&st.db, main_src_edit || sub_src_edit)?;
     }
     Ok(Json(cam))
 }
@@ -801,7 +857,8 @@ async fn patch_camera(
 async fn delete_camera(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
     st.db.get_camera(id)?.ok_or_else(not_found)?;
     st.db.delete_camera(id)?;
-    st.go2rtc.restart_with(&st.db)?;
+    // Reconcile DELETEs just this camera's stream(s); other live views hold.
+    st.go2rtc.sync_streams(&st.db, false)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -927,8 +984,10 @@ async fn restore(
         alarms_added += 1;
     }
 
-    // Cameras changed → regenerate go2rtc config once.
-    st.go2rtc.restart_with(&st.db)?;
+    // Restore is additive (existing-named cameras are kept untouched), so the
+    // live reconcile only PUTs the newly-imported streams and never blips
+    // cameras that were already running.
+    st.go2rtc.sync_streams(&st.db, false)?;
     Ok(Json(serde_json::json!({
         "settings_applied": true,
         "cameras_added": cams_added,
@@ -1476,13 +1535,15 @@ async fn record_gesture(
             transcript: None,
             base_url: &base_url,
             webhook_template: &webhook_template,
-            smtp: smtp_owned.as_ref().map(|(u, us, p, f, t)| crate::notify::SmtpConfig {
-                url: u,
-                user: us,
-                pass: p,
-                from: f,
-                to: t,
-            }),
+            smtp: smtp_owned
+                .as_ref()
+                .map(|(u, us, p, f, t)| crate::notify::SmtpConfig {
+                    url: u,
+                    user: us,
+                    pass: p,
+                    from: f,
+                    to: t,
+                }),
             duress: is_duress,
         };
         // Guaranteed panic path: a duress signal pushes straight to the health
@@ -1694,12 +1755,16 @@ async fn add_alarm_api(
     let actions = rule.effective_actions();
     for a in &actions {
         if !matches!(a.kind.as_str(), "webhook" | "mqtt" | "ntfy" | "email") {
-            return Err(bad_request("each action must be webhook, mqtt, ntfy or email"));
+            return Err(bad_request(
+                "each action must be webhook, mqtt, ntfy or email",
+            ));
         }
         // An email action may leave target blank (uses the default smtp_to);
         // every other kind needs an explicit target.
         if a.kind != "email" && a.target.trim().is_empty() {
-            return Err(bad_request("each action needs a target (URL or MQTT topic)"));
+            return Err(bad_request(
+                "each action needs a target (URL or MQTT topic)",
+            ));
         }
         if a.priority > 5 {
             return Err(bad_request("action priority must be 0 (default) through 5"));
@@ -2035,7 +2100,10 @@ async fn update_plate_api(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_plate_api(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+async fn delete_plate_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<StatusCode> {
     if !st.db.delete_plate(id)? {
         return Err(not_found());
     }
@@ -2181,7 +2249,7 @@ async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Valu
     let settings = st.db.settings();
     let now_dt = chrono::Local::now();
     let now = now_dt.timestamp();
-    let window = ((settings.poll_ms as i64).saturating_mul(3) / 1000 + 5).max(20);
+    let window = crate::status::freshness_window(settings.poll_ms);
 
     let mut online = 0u32;
     let mut recording = 0u32;
@@ -2190,8 +2258,7 @@ async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Valu
             continue;
         }
         let h = board.get(&cam.id).cloned().unwrap_or_default();
-        let fresh = h.last_frame_ts.map(|t| now - t <= window).unwrap_or(false);
-        if if cam.detect { fresh } else { h.recording } {
+        if h.is_online(cam.detect, now, window) {
             online += 1;
         }
         if h.recording {
@@ -2204,9 +2271,16 @@ async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Valu
         use chrono::Timelike;
         now - now_dt.num_seconds_from_midnight() as i64
     };
-    let today =
-        st.db
-            .list_events(None, None, None, None, Some(today_start), None, false, 20_000)?;
+    let today = st.db.list_events(
+        None,
+        None,
+        None,
+        None,
+        Some(today_start),
+        None,
+        false,
+        20_000,
+    )?;
     let mut by_label: std::collections::BTreeMap<String, u32> = Default::default();
     for e in &today {
         *by_label.entry(e.label.clone()).or_default() += 1;
@@ -2269,9 +2343,12 @@ async fn set_arm_mode(
     // concurrent Settings-page save can't clobber it.
     st.db.set_kv("arm_mode", &mode)?;
 
-    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy).0.to_string();
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
     let now = chrono::Local::now().timestamp();
-    st.db.add_audit(now, Some(&ip), "arm_mode_changed", Some(&mode));
+    st.db
+        .add_audit(now, Some(&ip), "arm_mode_changed", Some(&mode));
     let _ = st.db.add_notification(
         now,
         "mode",
@@ -2348,9 +2425,16 @@ async fn list_digests_api(
 /// Generate a digest for the last 24 hours immediately (manual "run now").
 async fn run_digest_api(State(st): State<AppState>) -> ApiResult<Json<crate::db::Digest>> {
     let now = chrono::Local::now().timestamp();
-    let events =
-        st.db
-            .list_events(None, None, None, None, Some(now - 86_400), None, false, 20_000)?;
+    let events = st.db.list_events(
+        None,
+        None,
+        None,
+        None,
+        Some(now - 86_400),
+        None,
+        false,
+        20_000,
+    )?;
     let text = crate::digest::summarize(&events);
     let id = st.db.add_digest(now, &text)?;
     Ok(Json(crate::db::Digest { id, ts: now, text }))
@@ -2502,8 +2586,7 @@ fn render_metrics(version: &str, events: i64, disk_free: u64, cams: &[CamMetric]
 async fn metrics(State(st): State<AppState>) -> ApiResult<impl IntoResponse> {
     let now = chrono::Local::now().timestamp();
     let settings = st.db.settings();
-    // saturating so an absurd operator-set poll_ms can't overflow in debug.
-    let window = (settings.poll_ms as i64).saturating_mul(3) / 1000 + 5;
+    let window = crate::status::freshness_window(settings.poll_ms);
     let cameras = st.db.list_cameras()?;
     let storage = st.db.storage_stats()?;
     let health = st.status.snapshot();
@@ -2513,11 +2596,10 @@ async fn metrics(State(st): State<AppState>) -> ApiResult<impl IntoResponse> {
         .iter()
         .map(|cam| {
             let h = health.get(&cam.id).cloned().unwrap_or_default();
-            let fresh = h.last_frame_ts.map(|t| now - t <= window).unwrap_or(false);
             let s = store.get(&cam.id);
             CamMetric {
                 name: cam.name.clone(),
-                online: cam.enabled && if cam.detect { fresh } else { h.recording },
+                online: cam.enabled && h.is_online(cam.detect, now, window),
                 recording: h.recording,
                 inference_ms: h.inference_ms,
                 last_frame_age: h.last_frame_ts.map(|t| (now - t).max(0)),
@@ -2610,8 +2692,12 @@ async fn create_token(
     let id = st
         .db
         .add_api_token(name, &crate::auth::token_hash(&raw), role, now)?;
-    st.db
-        .add_audit(now, None, "token_created", Some(&format!("{name} ({role})")));
+    st.db.add_audit(
+        now,
+        None,
+        "token_created",
+        Some(&format!("{name} ({role})")),
+    );
     Ok(Json(
         serde_json::json!({ "id": id, "name": name, "role": role, "token": raw }),
     ))

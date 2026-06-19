@@ -24,6 +24,33 @@ pub struct CamHealth {
     pub model: Option<String>,
 }
 
+/// Seconds within which a camera must have delivered a frame to count as
+/// "online": three poll intervals plus slack, with a 20 s floor so a
+/// sub-second `poll_ms` can't make healthy cameras flap, and saturating so an
+/// absurd operator-set `poll_ms` can't overflow `i64` in debug builds.
+///
+/// Shared by `/api/status`, `/api/stats`, `/api/metrics`, and the health
+/// notification worker so they never disagree about whether a camera is up.
+pub fn freshness_window(poll_ms: u64) -> i64 {
+    ((poll_ms as i64).saturating_mul(3) / 1000 + 5).max(20)
+}
+
+impl CamHealth {
+    /// Whether the camera counts as online at `now` (unix secs): a detecting
+    /// camera needs a frame within `window` seconds (see [`freshness_window`]);
+    /// a detect-off camera just needs its recorder alive. Callers still gate on
+    /// `camera.enabled` separately (a paused camera isn't an outage).
+    pub fn is_online(&self, detect: bool, now: i64, window: i64) -> bool {
+        if detect {
+            self.last_frame_ts
+                .map(|t| now - t <= window)
+                .unwrap_or(false)
+        } else {
+            self.recording
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct StatusBoard(Arc<RwLock<HashMap<i64, CamHealth>>>);
 
@@ -90,5 +117,45 @@ mod tests {
         let s = b.snapshot();
         assert!(!s.contains_key(&1));
         assert!(s.contains_key(&2));
+    }
+
+    #[test]
+    fn freshness_window_floor_and_overflow() {
+        // Typical 1 s poll: 3*1 + 5 = 8, raised to the 20 s floor.
+        assert_eq!(freshness_window(1000), 20);
+        // Sub-second poll must not drop below the floor (anti-flap).
+        assert_eq!(freshness_window(100), 20);
+        // A large but sane poll scales past the floor.
+        assert_eq!(freshness_window(20_000), 65);
+        // A huge-but-representable poll saturates instead of overflowing.
+        assert_eq!(freshness_window(i64::MAX as u64), i64::MAX / 1000 + 5);
+        // An absurd poll whose i64 cast wraps negative is still safe: the 20 s
+        // floor catches it rather than returning a nonsensical tiny window.
+        assert_eq!(freshness_window(u64::MAX), 20);
+    }
+
+    #[test]
+    fn is_online_detect_vs_recording() {
+        let now = 1_000;
+        let window = 20;
+        // Detecting camera: online iff a frame arrived within the window.
+        let mut h = CamHealth {
+            last_frame_ts: Some(now - 5),
+            ..Default::default()
+        };
+        assert!(h.is_online(true, now, window));
+        // Exact boundary: the window is inclusive (`<=`), so a frame exactly
+        // `window` seconds old still counts as online.
+        h.last_frame_ts = Some(now - window);
+        assert!(h.is_online(true, now, window));
+        h.last_frame_ts = Some(now - 30);
+        assert!(!h.is_online(true, now, window));
+        h.last_frame_ts = None;
+        assert!(!h.is_online(true, now, window));
+        // Detect-off camera ignores frames; it's online iff recording.
+        h.recording = true;
+        assert!(h.is_online(false, now, window));
+        h.recording = false;
+        assert!(!h.is_online(false, now, window));
     }
 }

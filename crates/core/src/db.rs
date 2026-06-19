@@ -1240,7 +1240,11 @@ impl Db {
                     });
                 let modes: Vec<String> = sched["modes"]
                     .as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 Ok(AlarmRule {
                     id: r.get(0)?,
@@ -1339,8 +1343,9 @@ impl Db {
     /// List tokens (metadata only — never the hash or the secret).
     pub fn list_api_tokens(&self) -> Result<Vec<ApiToken>> {
         let conn = self.conn();
-        let mut stmt = conn
-            .prepare("SELECT id, name, role, created_ts, last_used_ts FROM api_tokens ORDER BY id")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, role, created_ts, last_used_ts FROM api_tokens ORDER BY id",
+        )?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(ApiToken {
@@ -1357,7 +1362,10 @@ impl Db {
 
     /// Look up a token by its hash, returning `(id, last_used_ts, role)` if it
     /// exists. The middleware uses this to authenticate a Bearer token per request.
-    pub fn api_token_by_hash(&self, token_hash: &str) -> Result<Option<(i64, Option<i64>, String)>> {
+    pub fn api_token_by_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<(i64, Option<i64>, String)>> {
         Ok(self
             .conn()
             .query_row(
@@ -1554,7 +1562,13 @@ impl Db {
             .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?)
     }
 
-    pub fn add_user(&self, username: &str, password_hash: &str, role: &str, now: i64) -> Result<i64> {
+    pub fn add_user(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: &str,
+        now: i64,
+    ) -> Result<i64> {
         let conn = self.conn();
         conn.execute(
             "INSERT INTO users (username, password_hash, role, created_ts) VALUES (?1, ?2, ?3, ?4)",
@@ -1612,16 +1626,18 @@ impl Db {
             return Ok(SetRole::NotFound);
         };
         if cur == "admin" && role != "admin" {
-            let admins: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM users WHERE role = 'admin'",
-                [],
-                |r| r.get(0),
-            )?;
+            let admins: i64 =
+                conn.query_row("SELECT COUNT(*) FROM users WHERE role = 'admin'", [], |r| {
+                    r.get(0)
+                })?;
             if admins <= 1 {
                 return Ok(SetRole::LastAdmin);
             }
         }
-        conn.execute("UPDATE users SET role = ?1 WHERE id = ?2", params![role, id])?;
+        conn.execute(
+            "UPDATE users SET role = ?1 WHERE id = ?2",
+            params![role, id],
+        )?;
         Ok(SetRole::Ok)
     }
 
@@ -1635,11 +1651,10 @@ impl Db {
             return Ok(DeleteUser::NotFound);
         };
         if cur == "admin" {
-            let admins: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM users WHERE role = 'admin'",
-                [],
-                |r| r.get(0),
-            )?;
+            let admins: i64 =
+                conn.query_row("SELECT COUNT(*) FROM users WHERE role = 'admin'", [], |r| {
+                    r.get(0)
+                })?;
             if admins <= 1 {
                 return Ok(DeleteUser::LastAdmin);
             }
@@ -1802,7 +1817,11 @@ impl Db {
                  name = excluded.name, category = excluded.category, note = excluded.note",
             params![key, name, category, note, chrono::Local::now().timestamp()],
         )?;
-        Ok(conn.query_row("SELECT id FROM plates WHERE plate = ?1", [key], |r| r.get(0))?)
+        Ok(
+            conn.query_row("SELECT id FROM plates WHERE plate = ?1", [key], |r| {
+                r.get(0)
+            })?,
+        )
     }
 
     pub fn list_plates(&self) -> Result<Vec<PlateRow>> {
@@ -1861,7 +1880,9 @@ impl Db {
     }
 
     pub fn delete_plate(&self, id: i64) -> Result<bool> {
-        let n = self.conn().execute("DELETE FROM plates WHERE id = ?1", [id])?;
+        let n = self
+            .conn()
+            .execute("DELETE FROM plates WHERE id = ?1", [id])?;
         Ok(n > 0)
     }
 
@@ -2602,8 +2623,16 @@ mod tests {
         // a usable (degraded) rule.
         let scene = AlarmRule {
             actions: vec![
-                Action { kind: "ntfy".into(), target: "https://ntfy.sh/x".into(), priority: 5 },
-                Action { kind: "mqtt".into(), target: "door".into(), priority: 0 },
+                Action {
+                    kind: "ntfy".into(),
+                    target: "https://ntfy.sh/x".into(),
+                    priority: 5,
+                },
+                Action {
+                    kind: "mqtt".into(),
+                    target: "door".into(),
+                    priority: 0,
+                },
             ],
             modes: vec!["away".into()],
             action: String::new(),
