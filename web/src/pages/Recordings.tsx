@@ -2,7 +2,8 @@
 import { api, CamEvent, Camera, fmtBytes, fmtTime, Segment, Stats } from "../api";
 import Timeline from "../Timeline";
 import CrossTimeline from "../CrossTimeline";
-import { IconPlay } from "../icons";
+import { IconPlay, IconFilm } from "../icons";
+import { EmptyState } from "../ui";
 
 const WINDOWS = [
   { label: "1h", secs: 3600 },
@@ -138,9 +139,11 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       )}
 
       {segments.length === 0 ? (
-        <div className="empty">
-          No recordings yet. Segments land here ~1 minute after a record-enabled camera connects.
-        </div>
+        <EmptyState
+          icon={<IconFilm />}
+          title="No recordings yet"
+          hint="Segments land here about a minute after a record-enabled camera connects. Check that recording is on for at least one camera."
+        />
       ) : (
         <div className="card">
           <div className="table-scroll">

@@ -1,10 +1,11 @@
 // A4 — Notifications center: a right-slide panel listing recent activity
 // (strangers, camera offline/online, anomalies, daily digests), with mark-read.
 
-import { Notification, fmtTime } from "./api";
+import { Notification } from "./api";
+import { RelTime, EmptyState } from "./ui";
 import {
   IconBell, IconX, IconWifiOff, IconWifi, IconStranger, IconSparkles,
-  IconAlert, IconProps,
+  IconAlert, IconCheck, IconProps,
 } from "./icons";
 
 const KIND_ICON: Record<string, (p: IconProps) => JSX.Element> = {
@@ -49,7 +50,11 @@ export default function NotificationsPanel({
         </div>
         <div className="notif-list">
           {notes.length === 0 ? (
-            <div className="empty" style={{ margin: 16 }}>You're all caught up.</div>
+            <EmptyState
+              icon={<IconCheck />}
+              title="You're all caught up"
+              hint="Strangers, camera offline/online alerts, anomalies, and daily digests show up here."
+            />
           ) : (
             notes.map((n) => {
               const Icon = KIND_ICON[n.kind] ?? IconBell;
@@ -74,7 +79,7 @@ export default function NotificationsPanel({
                   <div className="notif-body">
                     <b>{n.title}</b>
                     {n.body && <div className="muted notif-text">{n.body}</div>}
-                    <div className="muted clock notif-time">{fmtTime(n.ts)}</div>
+                    <RelTime ts={n.ts} className="muted clock notif-time" />
                   </div>
                   {!n.read && <span className="notif-dot" aria-label="unread" />}
                 </button>

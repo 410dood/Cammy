@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, CamEvent, fmtTime } from "../api";
-import { useToast, useDialog, Modal } from "../ui";
+import { api, CamEvent } from "../api";
+import { useToast, useDialog, Modal, RelTime } from "../ui";
 import { IconUser, IconStranger, IconCar, IconAlert, IconCheck } from "../icons";
 
 interface Enrolled {
@@ -167,7 +167,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                   <b>Strangers</b>
                   <div className="muted">
                     {strangerCount} sighting{strangerCount === 1 ? "" : "s"} · last{" "}
-                    <span className="clock">{fmtTime(lastStranger.ts)}</span>
+                    <RelTime ts={lastStranger.ts} className="clock" />
                   </div>
                 </div>
               </div>
@@ -190,7 +190,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                       : `${s.count} sighting${s.count === 1 ? "" : "s"} · ${topCamera(s.cameras)}`}
                   </div>
                   {s.count > 0 && (
-                    <div className="muted clock" style={{ fontSize: "0.72rem" }}>last {fmtTime(s.last.ts)}</div>
+                    <RelTime ts={s.last.ts} prefix="last " className="muted clock" style={{ display: "block", fontSize: "0.72rem" }} />
                   )}
                 </div>
                 {s.enrolled && (
@@ -233,7 +233,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                   <div className="muted">
                     {s.count} sighting{s.count === 1 ? "" : "s"} · {topCamera(s.cameras)}
                   </div>
-                  <div className="muted clock" style={{ fontSize: "0.72rem" }}>last {fmtTime(s.last.ts)}</div>
+                  <RelTime ts={s.last.ts} prefix="last " className="muted clock" style={{ display: "block", fontSize: "0.72rem" }} />
                 </div>
               </div>
             ))}
@@ -287,7 +287,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                 {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}?w=300`} alt={openId.name} loading="lazy" />}
                 <div className="meta">
                   <span className="muted">{ev.camera}</span>
-                  <div className="muted clock" style={{ fontSize: "0.75rem" }}>{fmtTime(ev.ts)}</div>
+                  <RelTime ts={ev.ts} className="muted clock" style={{ display: "block", fontSize: "0.75rem" }} />
                 </div>
               </div>
             ))}

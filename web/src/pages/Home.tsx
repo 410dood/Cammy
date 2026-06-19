@@ -10,6 +10,7 @@ import {
   fmtBytes,
   fmtTime,
 } from "../api";
+import { RelTime } from "../ui";
 import {
   IconVideo,
   IconRecDot,
@@ -220,7 +221,7 @@ export default function Home({
                         <IconHand size={11} /> {e.gesture}
                       </span>
                     )}
-                    <div className="muted clock" style={{ fontSize: "0.75rem" }}>{fmtTime(e.ts)}</div>
+                    <RelTime ts={e.ts} className="muted clock" style={{ display: "block", fontSize: "0.75rem" }} />
                   </div>
                 </div>
               ))}
@@ -237,7 +238,7 @@ export default function Home({
               <div>
                 <b>{n.title}</b>
                 {n.body && <span className="muted"> — {n.body}</span>}
-                <div className="muted clock" style={{ fontSize: "0.75rem" }}>{fmtTime(n.ts)}</div>
+                <RelTime ts={n.ts} className="muted clock" style={{ display: "block", fontSize: "0.75rem" }} />
               </div>
             </div>
           ))}
@@ -265,7 +266,7 @@ function LastSeen({
         <div className="lastseen-label">{label}</div>
         {ev ? (
           <div className="muted">
-            {ev.camera} · <span className="clock">{fmtTime(ev.ts)}</span>
+            {ev.camera} · <RelTime ts={ev.ts} className="clock" />
           </div>
         ) : (
           <div className="muted">not seen recently</div>

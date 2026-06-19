@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState } from "react";
 import { api, CamEvent, Camera, fmtTime, Segment } from "../api";
-import { useToast, useDialog, Modal } from "../ui";
+import { useToast, useDialog, Modal, RelTime, EmptyState } from "../ui";
 import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
@@ -542,11 +542,19 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
       )}
 
       {list.length === 0 ? (
-        <div className="empty">
-          {searchResults || interpreted.length > 0
-            ? `No events match ${query ? `“${query}”` : "these filters"}.`
-            : "No events yet. They appear when a detect-enabled camera sees motion and the AI recognizes an object."}
-        </div>
+        searchResults || interpreted.length > 0 ? (
+          <EmptyState
+            icon={<IconSparkles />}
+            title={query ? `No events match “${query}”` : "No events match these filters"}
+            hint="Try a broader search, a different camera, or clearing the active filters."
+          />
+        ) : (
+          <EmptyState
+            icon={<IconBell />}
+            title="No events yet"
+            hint="Events appear here when a detect-enabled camera sees motion and the AI recognizes an object — a person, vehicle, package, and more."
+          />
+        )
       ) : (
         <div className="event-grid">
           {list.map(({ ev, cluster }) => (
@@ -604,7 +612,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                     <IconPencil size={13} /> <span>{ev.note}</span>
                   </div>
                 )}
-                <div className="muted ev-time">{fmtTime(ev.ts)}</div>
+                <RelTime ts={ev.ts} className="muted ev-time" />
                 <div className="ev-actions">
                   <button
                     className={`btn ev-act ${ev.flagged ? "btn-primary" : "btn-ghost"}`}
@@ -682,17 +690,16 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
       )}
 
       {playing && (
-        <div className="modal-bg" onClick={() => setPlaying(null)}>
+        <Modal bare onClose={() => setPlaying(null)}>
           <video
             src={`/api/recordings/${playing.segment.id}/video`}
             controls
             autoPlay
-            onClick={(e) => e.stopPropagation()}
             onLoadedMetadata={(e) => {
               e.currentTarget.currentTime = playing.offset;
             }}
           />
-        </div>
+        </Modal>
       )}
     </>
   );

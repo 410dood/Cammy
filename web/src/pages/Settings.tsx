@@ -1,6 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { api, ApiToken, AuditEntry, fmtTime, Me, Role, Settings as S, User } from "../api";
-import { useToast, useDialog } from "../ui";
+import { useToast, useDialog, RelTime } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
   IconDownload, IconUpload, IconCheck, IconUser,
@@ -198,9 +198,9 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
                 <td>
                   <b>{t.name}</b> <span className={`role-pill role-${t.role}`}>{t.role}</span>
                 </td>
-                <td className="muted">created {fmtTime(t.created_ts)}</td>
+                <td className="muted">created <RelTime ts={t.created_ts} /></td>
                 <td className="muted">
-                  {t.last_used_ts ? `last used ${fmtTime(t.last_used_ts)}` : "never used"}
+                  {t.last_used_ts ? <RelTime ts={t.last_used_ts} prefix="last used " /> : "never used"}
                 </td>
                 <td style={{ textAlign: "right" }}>
                   <button type="button" className="danger" onClick={() => remove(t.id)}>
@@ -471,7 +471,7 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
                     <RoleOptions />
                   </select>
                 </td>
-                <td className="muted">created {fmtTime(u.created_ts)}</td>
+                <td className="muted">created <RelTime ts={u.created_ts} /></td>
                 <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                   <button type="button" className="btn btn-ghost ev-act" onClick={() => resetPw(u)}>
                     Reset password
@@ -486,6 +486,69 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
         </table>
       )}
     </div>
+  );
+}
+
+// Sticky in-page section nav for the long Settings page. Self-scanning: it reads
+// each rendered `.card`'s <h2>, gives the card a slug id, and renders jump chips
+// with scroll-spy — so new cards appear in the nav automatically, no wiring.
+function SettingsNav() {
+  const [sections, setSections] = useState<{ id: string; label: string }[]>([]);
+  const [active, setActive] = useState("");
+
+  useEffect(() => {
+    const scan = () => {
+      const root = document.querySelector(".settings-page");
+      if (!root) return;
+      const secs = [...root.querySelectorAll<HTMLElement>(".card")]
+        .map((c) => {
+          const label = c.querySelector("h2")?.textContent?.trim();
+          if (!label) return null;
+          const id = "set-" + label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+          c.id = id;
+          return { id, label };
+        })
+        .filter((x): x is { id: string; label: string } => x !== null);
+      setSections(secs);
+    };
+    scan();
+    // Re-scan once for cards that appear after an async load (Users, AI insights).
+    const t = setTimeout(scan, 700);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    if (!sections.length) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) if (e.isIntersecting) setActive((e.target as HTMLElement).id);
+      },
+      { rootMargin: "-72px 0px -70% 0px" },
+    );
+    for (const s of sections) {
+      const el = document.getElementById(s.id);
+      if (el) obs.observe(el);
+    }
+    return () => obs.disconnect();
+  }, [sections]);
+
+  if (sections.length < 3) return null;
+
+  return (
+    <nav className="settings-nav" aria-label="Settings sections">
+      {sections.map((s) => (
+        <button
+          key={s.id}
+          type="button"
+          className={`settings-nav-chip ${active === s.id ? "active" : ""}`}
+          onClick={() =>
+            document.getElementById(s.id)?.scrollIntoView({ behavior: "smooth", block: "start" })
+          }
+        >
+          {s.label}
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -522,8 +585,9 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
   };
 
   return (
-    <>
+    <div className="settings-page">
       <h1>Settings</h1>
+      <SettingsNav />
       <form onSubmit={save}>
         <div className="card">
           <h2>Detection</h2>
@@ -1007,6 +1071,6 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           <span className="muted">Changes apply within a few seconds — no restart needed.</span>
         </div>
       </form>
-    </>
+    </div>
   );
 }

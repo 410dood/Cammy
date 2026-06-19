@@ -1,5 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
-import { api, CamEvent, Camera, Segment, fmtTime, getStreamMode } from "./api";
+import { api, CamEvent, Camera, Segment, getStreamMode } from "./api";
+import { RelTime, Modal } from "./ui";
 import Timeline from "./Timeline";
 import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
@@ -25,6 +26,7 @@ export default function CameraDetail({
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
   const [talking, setTalking] = useState(false);
+  const [online, setOnline] = useState<boolean | undefined>(undefined);
   const twoWay = !!camera.detect_config.two_way_audio;
 
   // Safety net: guarantee push-to-talk releases (mic off) on ANY pointer-up or
@@ -45,6 +47,7 @@ export default function CameraDetail({
     const load = () => {
       api.recordings({ camera_id: camera.id, limit: 1000 }).then(setSegments).catch(() => {});
       api.events({ camera_id: camera.id, limit: 50 }).then(setEvents).catch(() => {});
+      api.status().then((m) => setOnline(m[String(camera.id)]?.online)).catch(() => {});
     };
     load();
     const t = setInterval(load, 10000);
@@ -92,7 +95,7 @@ export default function CameraDetail({
       <div className="detail-body">
         <div className="detail-main">
           <div className="tile" style={{ aspectRatio: "16 / 9" }}>
-            <LiveVideo name={camera.name} mode={getStreamMode()} audio mic={talking} />
+            <LiveVideo name={camera.name} mode={getStreamMode()} audio mic={talking} online={online} />
             <PrivacyOverlay masks={camera.detect_config.privacy_masks} />
             {ptz && <PtzInline cameraId={camera.id} />}
             {twoWay && (
@@ -142,7 +145,7 @@ export default function CameraDetail({
                     <IconCar size={12} /> {ev.plate}
                   </span>
                 )}
-                <div className="muted clock" style={{ fontSize: "0.75rem" }}>{fmtTime(ev.ts)}</div>
+                <RelTime ts={ev.ts} className="muted clock" style={{ display: "block", fontSize: "0.75rem" }} />
               </div>
             </div>
           ))}
@@ -150,19 +153,18 @@ export default function CameraDetail({
       </div>
 
       {playing && (
-        <div className="modal-bg" onClick={() => setPlaying(null)}>
+        <Modal bare onClose={() => setPlaying(null)}>
           <video
             src={`/api/recordings/${playing.segment.id}/video`}
             controls
             autoPlay
-            onClick={(e) => e.stopPropagation()}
             onLoadedMetadata={(e) => {
               const v = e.currentTarget;
               if (playing.offset > 0)
                 v.currentTime = Math.min(playing.offset, Math.max(0, v.duration - 2));
             }}
           />
-        </div>
+        </Modal>
       )}
     </div>
   );
