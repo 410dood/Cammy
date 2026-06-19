@@ -40,8 +40,8 @@ fn device_class(label: &str) -> &'static str {
 fn ha_device(camera: &str) -> serde_json::Value {
     serde_json::json!({
         "identifiers": [format!("zoomy_{}", slug(camera))],
-        "name": format!("Zoomy {camera}"),
-        "manufacturer": "ZoomyZoomyCamCam",
+        "name": format!("Cammy {camera}"),
+        "manufacturer": "Cammy",
         "model": "NVR camera",
     })
 }

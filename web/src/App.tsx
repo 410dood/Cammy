@@ -72,7 +72,7 @@ function LoginOverlay() {
     <div className="modal-bg">
       <form className="card login-card" onSubmit={submit}>
         <h2 className="login-title">
-          <IconLock size={18} /> ZoomyZoomyCamCam
+          <IconLock size={18} /> Cammy
         </h2>
         <p className="muted">Log in to access this NVR remotely.</p>
         {hasUsers && (
@@ -217,7 +217,7 @@ export default function App() {
     <>
       <nav className="sidebar">
         <div className="brand">
-          Zoomy<span>Zoomy</span>CamCam
+          Cam<span>my</span>
         </div>
         {PAGES.map((p) => {
           const Icon = ICONS[p];

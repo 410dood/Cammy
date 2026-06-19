@@ -1,4 +1,4 @@
-# ZoomyZoomyCamCam — Research & Architecture
+# Cammy — Research & Architecture
 
 *Self-hosted home surveillance platform (BlueIris / iSpy class). Prepared June 9, 2026.*
 
@@ -59,7 +59,7 @@ So you train/export a YOLO model once, ship one `.onnx`, and get GPU acceleratio
 
 ```
                  ┌─────────────────────────────────────────────┐
-   IP cameras    │              ZoomyZoomyCamCam                │
+   IP cameras    │              Cammy                │
   (RTSP/ONVIF)   │                                             │
        │         │   ┌──────────┐   main stream (copy)         │
        ├────────────▶│  go2rtc  │────────────────┐             │

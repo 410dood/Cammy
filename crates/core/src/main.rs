@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
     let scheme = if tls_cert.is_some() { "https" } else { "http" };
 
     println!();
-    println!("  ZoomyZoomyCamCam is starting");
+    println!("  Cammy is starting");
     println!("      Web UI:   {scheme}://localhost:{}/", args.port);
     println!(
         "      API:      {scheme}://localhost:{}/api/health",

@@ -1,6 +1,6 @@
 {
-  "name": "ZoomyZoomyCamCam",
-  "short_name": "Zoomy",
+  "name": "Cammy",
+  "short_name": "Cammy",
   "description": "Self-hosted home surveillance with on-device AI detection",
   "start_url": "/",
   "scope": "/",

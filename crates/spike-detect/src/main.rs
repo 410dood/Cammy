@@ -5,7 +5,7 @@
 //! the SAME `.onnx` file runs with a GPU backend chosen for the host OS —
 //! DirectML on Windows, CoreML on macOS, CUDA on Linux — with automatic CPU
 //! fallback. This is the capability Frigate can't offer natively on Windows/Mac
-//! and is the core of ZoomyZoomyCamCam's AI story.
+//! and is the core of Cammy's AI story.
 //!
 //! Pipeline: load image -> letterbox to 640x640 -> NCHW f32 tensor ->
 //! ONNX Runtime inference -> decode [1,84,8400] output -> NMS -> print.

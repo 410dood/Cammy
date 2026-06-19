@@ -1,4 +1,4 @@
-# ZoomyZoomyCamCam — Cargo workspace
+# Cammy — Cargo workspace
 # Self-hosted, cross-platform home surveillance platform.
 #
 # The workspace groups independent crates. Phase 0 ships two "spikes" that
@@ -71,8 +71,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 [workspace.package]
 edition = "2021"
 license = "MIT OR Apache-2.0"
-authors = ["ZoomyZoomyCamCam contributors"]
-repository = "https://github.com/410dood/ZoomyZoomyCamCam"
+authors = ["Cammy contributors"]
+repository = "https://github.com/410dood/Cammy"
 
 # Optimize dependencies even in dev so video/inference spikes aren't painfully slow.
 [profile.dev.package."*"]

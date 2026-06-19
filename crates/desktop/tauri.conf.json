@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ZoomyZoomyCamCam",
+  "productName": "Cammy",
   "version": "0.3.0",
-  "identifier": "com.zoomyzoomycamcam.desktop",
+  "identifier": "com.cammy.desktop",
   "build": {},
   "app": {
     "windows": [],

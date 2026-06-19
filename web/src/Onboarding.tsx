@@ -58,7 +58,7 @@ export default function Onboarding({
 
   return (
     <div className="modal-bg">
-      <div className="onb" role="dialog" aria-modal="true" aria-label="Welcome to ZoomyZoomyCamCam">
+      <div className="onb" role="dialog" aria-modal="true" aria-label="Welcome to Cammy">
         <div className="onb-steps">
           {["Welcome", "Secure", "Cameras"].map((s, i) => (
             <span key={s} className={`onb-step ${i === step ? "active" : ""} ${i < step ? "done" : ""}`}>
@@ -71,7 +71,7 @@ export default function Onboarding({
         {step === 0 && (
           <div className="onb-body">
             <span className="onb-hero"><IconVideo size={26} /></span>
-            <h2>Welcome to ZoomyZoomyCamCam</h2>
+            <h2>Welcome to Cammy</h2>
             <p className="muted">
               Your self-hosted, private NVR with on-device AI. Nothing leaves this machine. Let's
               get your first camera streaming in a minute.

@@ -1,6 +1,6 @@
 # MQTT, Home Assistant & webhook integration
 
-How ZoomyZoomyCamCam publishes detections to home-automation systems. Everything
+How Cammy publishes detections to home-automation systems. Everything
 here is opt-in via **Settings → Notifications**.
 
 ## MQTT topics
@@ -46,7 +46,7 @@ publishes retained discovery configs under `mqtt_ha_prefix` (default
 - **`sensor.zoomy_{camera}_event`** — state is the last object label; the full
   event JSON is attached as attributes (`json_attributes_topic`).
 
-All of a camera's entities group under one HA **device** (`Zoomy {camera}`).
+All of a camera's entities group under one HA **device** (`Cammy {camera}`).
 Discovery is re-published automatically when you add/remove/enable cameras or
 change the detected-object list. These entities are ready-made automation
 triggers (e.g. *person on front-door after sunset → turn on the porch light*).

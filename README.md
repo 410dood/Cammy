@@ -1,4 +1,4 @@
-# ZoomyZoomyCamCam
+# Cammy
 
 A self-hosted, **cross-platform** (Windows + macOS + Linux) home surveillance / NVR
 platform — think Blue Iris, but not chained to Windows, with Frigate-class AI object
@@ -143,7 +143,7 @@ OpenSSL, no extra build tooling.
 ## Layout
 
 ```
-ZoomyZoomyCamCam/
+Cammy/
 ├── Cargo.toml                # workspace
 ├── docs/                     # research, architecture, roadmap
 ├── config/                   # example go2rtc config

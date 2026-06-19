@@ -1,4 +1,4 @@
-# CLAUDE.md — ZoomyZoomyCamCam
+# CLAUDE.md — Cammy
 
 Guidance for Claude Code (and any AI agent) working in this repository. Read this
 first. For the full background, read `docs/01-research-and-architecture.md`.
@@ -437,7 +437,7 @@ cameras ──RTSP──▶ go2rtc (ingest + WebRTC) ──▶ recorder (packets
 ## Repository layout
 
 ```
-ZoomyZoomyCamCam/
+Cammy/
 ├── Cargo.toml                 # workspace (resolver 2); shared dep versions
 ├── rust-toolchain.toml        # pinned stable + clippy/rustfmt
 ├── CLAUDE.md                  # this file

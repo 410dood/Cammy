@@ -9,7 +9,7 @@
 //!
 //! Why go2rtc instead of rolling our own WebRTC stack? Camera-protocol breadth
 //! (RTSP/ONVIF/RTMP) plus browser WebRTC signalling is exactly the part that is
-//! already solved and miserable to rewrite. The real ZoomyZoomyCamCam core will
+//! already solved and miserable to rewrite. The real Cammy core will
 //! supervise this same binary; here we just prove the path end to end.
 
 use std::io::Write as _;

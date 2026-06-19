@@ -249,7 +249,7 @@ pub async fn run(
     tracing::info!(
         ui = format!("{scheme}://localhost:{}/", cfg.port),
         go2rtc = format!("{}/", go2rtc.api_base()),
-        "ZoomyZoomyCamCam is running"
+        "Cammy is running"
     );
 
     if let (Some(cert), Some(key)) = (&cfg.tls_cert, &cfg.tls_key) {
