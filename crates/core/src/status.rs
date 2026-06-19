@@ -142,6 +142,10 @@ mod tests {
             ..Default::default()
         };
         assert!(h.is_online(true, now, window));
+        // Exact boundary: the window is inclusive (`<=`), so a frame exactly
+        // `window` seconds old still counts as online.
+        h.last_frame_ts = Some(now - window);
+        assert!(h.is_online(true, now, window));
         h.last_frame_ts = Some(now - 30);
         assert!(!h.is_online(true, now, window));
         h.last_frame_ts = None;

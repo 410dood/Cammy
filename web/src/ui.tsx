@@ -198,6 +198,9 @@ export function Modal({
   const labelId = useId();
   const cardRef = useRef<HTMLDivElement>(null);
 
+  // Escape-to-close. Keyed on onClose, which callers often pass as an inline
+  // arrow, so this effect may re-run on every parent render — that's fine, it
+  // only swaps a window listener.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -206,16 +209,27 @@ export function Modal({
       }
     };
     window.addEventListener("keydown", onKey);
-    // Move focus into the dialog, remembering where it came from so we can
-    // return it on close (keyboard/screen-reader users land back where they
-    // were rather than at the top of the document).
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Move focus into the dialog on open and return it to the triggering element
+  // on close. EMPTY deps on purpose: this must run only on mount/unmount.
+  // Callers typically pass an inline onClose whose identity changes every
+  // render, and parent pages poll on intervals — keying focus handling on
+  // onClose would re-run it on every render and repeatedly yank focus out of
+  // the modal's own fields (unusable for keyboard / screen-reader users).
+  useEffect(() => {
     const prevFocus = document.activeElement as HTMLElement | null;
     cardRef.current?.focus();
     return () => {
-      window.removeEventListener("keydown", onKey);
-      prevFocus?.focus?.();
+      // Restore only to a still-connected trigger we don't already hold, so a
+      // removed trigger or focus intentionally moved elsewhere isn't clobbered.
+      if (prevFocus && prevFocus.isConnected && document.activeElement !== prevFocus) {
+        prevFocus.focus?.();
+      }
     };
-  }, [onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="modal-bg" onClick={onClose}>
