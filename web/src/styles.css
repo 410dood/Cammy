@@ -772,6 +772,18 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
   background: #000;
   flex-shrink: 0;
 }
+/* Clickable snapshot button wrapping the thumbnail (opens the lightbox). */
+.feed-thumb {
+  padding: 0;
+  border: 0;
+  background: none;
+  line-height: 0;
+  flex-shrink: 0;
+  border-radius: 6px;
+  cursor: zoom-in;
+  transition: opacity var(--dur-1) var(--ease);
+}
+.feed-thumb:hover { opacity: 0.85; }
 
 .tile .expand {
   position: absolute;
