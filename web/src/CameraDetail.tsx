@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from "react";
 import { api, CamEvent, Camera, Segment, getStreamMode } from "./api";
-import { RelTime } from "./ui";
+import { RelTime, Modal } from "./ui";
 import Timeline from "./Timeline";
 import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
@@ -153,19 +153,18 @@ export default function CameraDetail({
       </div>
 
       {playing && (
-        <div className="modal-bg" onClick={() => setPlaying(null)}>
+        <Modal bare onClose={() => setPlaying(null)}>
           <video
             src={`/api/recordings/${playing.segment.id}/video`}
             controls
             autoPlay
-            onClick={(e) => e.stopPropagation()}
             onLoadedMetadata={(e) => {
               const v = e.currentTarget;
               if (playing.offset > 0)
                 v.currentTime = Math.min(playing.offset, Math.max(0, v.duration - 2));
             }}
           />
-        </div>
+        </Modal>
       )}
     </div>
   );

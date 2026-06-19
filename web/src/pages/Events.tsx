@@ -690,17 +690,16 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
       )}
 
       {playing && (
-        <div className="modal-bg" onClick={() => setPlaying(null)}>
+        <Modal bare onClose={() => setPlaying(null)}>
           <video
             src={`/api/recordings/${playing.segment.id}/video`}
             controls
             autoPlay
-            onClick={(e) => e.stopPropagation()}
             onLoadedMetadata={(e) => {
               e.currentTarget.currentTime = playing.offset;
             }}
           />
-        </div>
+        </Modal>
       )}
     </>
   );
