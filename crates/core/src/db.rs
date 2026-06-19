@@ -318,9 +318,10 @@ pub struct Liveview {
 pub const UNKNOWN_FACE: &str = "?";
 
 /// One action a rule fires. A rule can fire several at once (a "scene"): e.g.
-/// push to your phone AND POST a webhook. `kind` is "webhook" | "mqtt" | "ntfy"
-/// (an "email" kind backed by the `smtp_*` settings is reserved for a follow-up
-/// and not yet wired); `target` is the URL / MQTT topic suffix / ntfy topic.
+/// push to your phone AND POST a webhook AND email a snapshot. `kind` is
+/// "webhook" | "mqtt" | "ntfy" | "email"; `target` is the URL / MQTT topic
+/// suffix / ntfy topic / email recipient (blank email target = the default
+/// `smtp_to` from Settings).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Action {
     pub kind: String,
@@ -684,9 +685,10 @@ pub struct Settings {
     /// which alarm rules fire — see `notify::armed_in_mode`.
     #[serde(default = "default_arm_mode")]
     pub arm_mode: String,
-    /// SMTP for a future "email" alarm action (reserved — not yet wired). When
-    /// implemented these will gain redaction in GET /api/settings since that is
-    /// Viewer-reachable; today they are always empty so there is no exposure.
+    /// SMTP for the "email" alarm action. `smtp_url` is "smtps://host:465"
+    /// (implicit TLS) / "smtp://host:587" (STARTTLS) / "host[:port]"; creds go in
+    /// `smtp_user`/`smtp_pass`. `smtp_pass` is write-only — blanked in
+    /// GET /api/settings (Viewer-reachable) and preserved on a blank save.
     #[serde(default)]
     pub smtp_url: String,
     #[serde(default)]

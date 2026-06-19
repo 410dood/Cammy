@@ -13,13 +13,16 @@ const ACTION_KINDS: { id: ActionKind; label: string }[] = [
   { id: "webhook", label: "POST webhook" },
   { id: "mqtt", label: "publish MQTT" },
   { id: "ntfy", label: "push via ntfy" },
+  { id: "email", label: "send email" },
 ];
 const targetHint = (kind: ActionKind) =>
   kind === "webhook"
     ? "https://… (receives the event JSON)"
     : kind === "mqtt"
       ? "topic suffix → zoomy/alarms/<suffix>"
-      : "https://ntfy.sh/your-secret-topic (push, snapshot attached)";
+      : kind === "email"
+        ? "recipient@example.com (blank = default from Settings)"
+        : "https://ntfy.sh/your-secret-topic (push, snapshot attached)";
 
 export default function Alarms({
   cameras,
@@ -63,7 +66,7 @@ export default function Alarms({
   const add = async (e: FormEvent) => {
     e.preventDefault();
     const acts = actions.map((a) => ({ ...a, target: a.target.trim() }));
-    if (acts.some((a) => !a.target)) {
+    if (acts.some((a) => a.kind !== "email" && !a.target)) {
       onError("every action needs a target (URL or MQTT topic)");
       return;
     }

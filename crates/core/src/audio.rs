@@ -259,6 +259,7 @@ pub fn run(
                             transcript: None,
                             base_url: &settings.public_base_url,
                             webhook_template: &settings.webhook_template,
+                            smtp: crate::notify::smtp_cfg(&settings),
                             duress: false,
                         };
                         for rule in alarms.iter().filter(|r| {

@@ -41,6 +41,9 @@ rustls.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 whisper-rs.workspace = true
+# Email (SMTP) alarm action. rustls-tls resolves onto ring (our pinned crypto) —
+# vetted to NOT pull aws-lc-sys / openssl / CMake. Blocking SmtpTransport.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls-tls", "hostname"] }
 
 detector = { path = "../detector" }
 facerec = { path = "../facerec" }

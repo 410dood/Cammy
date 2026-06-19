@@ -17,6 +17,29 @@ use crate::mqtt::EventMsg;
 /// ticks without a DB round-trip per event.
 pub type AlarmThrottle = Arc<Mutex<HashMap<i64, i64>>>;
 
+/// SMTP config for the "email" alarm action, borrowed from Settings at the
+/// dispatch site. `to` is the default recipient(s) (comma-separated); an action
+/// can override it with its own `target`.
+pub struct SmtpConfig<'a> {
+    pub url: &'a str,
+    pub user: &'a str,
+    pub pass: &'a str,
+    pub from: &'a str,
+    pub to: &'a str,
+}
+
+/// Borrow an SmtpConfig from Settings when SMTP is configured (URL set), for the
+/// `smtp` field of an AlarmEvent at each dispatch site. `None` = email off.
+pub fn smtp_cfg(s: &crate::db::Settings) -> Option<SmtpConfig<'_>> {
+    (!s.smtp_url.trim().is_empty()).then(|| SmtpConfig {
+        url: &s.smtp_url,
+        user: &s.smtp_user,
+        pass: &s.smtp_pass,
+        from: &s.smtp_from,
+        to: &s.smtp_to,
+    })
+}
+
 pub struct AlarmEvent<'a> {
     pub event_id: i64,
     pub camera: &'a str,
@@ -39,6 +62,8 @@ pub struct AlarmEvent<'a> {
     /// Optional webhook body template ({{placeholder}} form). Empty = default
     /// detection JSON.
     pub webhook_template: &'a str,
+    /// SMTP config for an "email" action; `None` = email not configured.
+    pub smtp: Option<SmtpConfig<'a>>,
     /// Duress/panic event: force max push urgency and a distinct alarm tag.
     pub duress: bool,
 }
@@ -145,8 +170,135 @@ fn fire_action(
             });
         }
         "ntfy" => ntfy(&action.target, rule_name, action.priority, ev),
+        "email" => email(&action.target, rule_name, ev),
         other => tracing::warn!("unknown alarm action {other:?}"),
     }
+}
+
+/// Email (SMTP) action: send the alarm detail with the snapshot attached.
+/// Best-effort and log-and-swallow like every other channel. The recipient is
+/// the action's `target` if set, else the configured default `smtp.to`.
+fn email(target: &str, rule_name: &str, ev: &AlarmEvent) {
+    use lettre::message::{header::ContentType, Attachment, MultiPart, SinglePart};
+    use lettre::{Message, Transport};
+
+    let Some(cfg) = &ev.smtp else {
+        tracing::warn!("email action skipped: SMTP not configured in Settings");
+        return;
+    };
+    let to_raw = if target.trim().is_empty() { cfg.to } else { target };
+    if cfg.from.trim().is_empty() || to_raw.trim().is_empty() {
+        tracing::warn!("email action skipped: missing from/to address");
+        return;
+    }
+    let from = match cfg.from.trim().parse() {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("email skipped: bad from address {:?}: {e}", cfg.from);
+            return;
+        }
+    };
+    let subject = if ev.duress {
+        format!("🚨 DURESS — {rule_name}")
+    } else {
+        format!("Alarm: {rule_name}")
+    };
+    let mut body = format!(
+        "{} ({:.0}%) on {}",
+        ev.label,
+        ev.score * 100.0,
+        ev.camera
+    );
+    if let Some(f) = ev.face {
+        body.push_str(&format!("\nFace: {f}"));
+    }
+    if let Some(p) = ev.plate {
+        body.push_str(&format!("\nPlate: {p}"));
+    }
+    if let Some(t) = ev.transcript {
+        body.push_str(&format!("\nHeard: \"{t}\""));
+    }
+    if !ev.base_url.is_empty() {
+        let base = ev.base_url.trim_end_matches('/');
+        body.push_str(&format!("\n\nClip: {base}/api/events/{}/clip", ev.event_id));
+    }
+
+    let mut builder = Message::builder().from(from).subject(subject);
+    let mut any_to = false;
+    for addr in to_raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        match addr.parse() {
+            Ok(a) => {
+                builder = builder.to(a);
+                any_to = true;
+            }
+            Err(e) => tracing::warn!("email: bad recipient {addr:?}: {e}"),
+        }
+    }
+    if !any_to {
+        return;
+    }
+
+    let text = SinglePart::plain(body);
+    let msg = match ev.snapshot_path.and_then(|p| std::fs::read(p).ok()) {
+        Some(bytes) => {
+            let att = Attachment::new("snapshot.jpg".to_string())
+                .body(bytes, ContentType::parse("image/jpeg").unwrap());
+            builder.multipart(MultiPart::mixed().singlepart(text).singlepart(att))
+        }
+        None => builder.singlepart(text),
+    };
+    let msg = match msg {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("email build failed: {e}");
+            return;
+        }
+    };
+    match build_smtp(cfg) {
+        Ok(mailer) => {
+            if let Err(e) = mailer.send(&msg) {
+                tracing::debug!("email send failed: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("email transport failed: {e}"),
+    }
+}
+
+/// Build a blocking SMTP transport from the config. URL forms: "smtps://host:465"
+/// (implicit TLS), "smtp://host:587" (STARTTLS), or bare "host[:port]" (implicit
+/// TLS). Any user:pass@ in the URL is ignored in favor of the explicit creds.
+fn build_smtp(cfg: &SmtpConfig) -> Result<lettre::SmtpTransport, lettre::transport::smtp::Error> {
+    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::SmtpTransport;
+
+    let raw = cfg.url.trim();
+    let (starttls, rest) = if let Some(r) = raw.strip_prefix("smtps://") {
+        (false, r)
+    } else if let Some(r) = raw.strip_prefix("smtp://") {
+        (true, r)
+    } else {
+        (false, raw)
+    };
+    let hostport = rest.rsplit('@').next().unwrap_or(rest);
+    let (host, port) = match hostport.split_once(':') {
+        Some((h, p)) => (h, p.parse::<u16>().ok()),
+        None => (hostport, None),
+    };
+    let mut builder = if starttls {
+        SmtpTransport::starttls_relay(host)?
+    } else {
+        SmtpTransport::relay(host)?
+    };
+    // Bound the send: this runs inline on the detection/audio worker threads, so
+    // a hung SMTP server must not stall detection (lettre defaults to 60s).
+    builder = builder.timeout(Some(Duration::from_secs(10)));
+    if let Some(p) = port {
+        builder = builder.port(p);
+    }
+    if !cfg.user.is_empty() {
+        builder = builder.credentials(Credentials::new(cfg.user.to_string(), cfg.pass.to_string()));
+    }
+    Ok(builder.build())
 }
 
 /// Plain-text ntfy push (no attachment) — used for camera health alerts.
@@ -352,6 +504,7 @@ mod tests {
             transcript: Some("help\u{000b}me"),
             base_url: "",
             webhook_template: "",
+            smtp: None,
             duress: false,
         };
         let out = render_template(

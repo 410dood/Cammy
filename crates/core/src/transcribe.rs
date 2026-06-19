@@ -251,6 +251,7 @@ fn fire_transcript_alarms(
         transcript: Some(transcript),
         base_url: &s.public_base_url,
         webhook_template: &s.webhook_template,
+        smtp: crate::notify::smtp_cfg(&s),
         duress: false,
     };
     for rule in db.list_alarms().unwrap_or_default().iter().filter(|r| {

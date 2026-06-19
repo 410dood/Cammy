@@ -132,6 +132,13 @@ export interface Settings {
   audio_labels: string[];
   /** Mean YAMNet score (0..1) needed to fire an audio event. */
   audio_threshold: number;
+  /** SMTP for the "email" alarm action. smtp_pass is write-only (blank on read;
+   *  blank on save keeps the stored one). */
+  smtp_url: string;
+  smtp_user: string;
+  smtp_pass: string;
+  smtp_from: string;
+  smtp_to: string;
 }
 
 export interface CamStorage {
@@ -167,7 +174,7 @@ export interface AppConfig {
 }
 
 export type ArmMode = "home" | "away" | "disarmed";
-export type ActionKind = "webhook" | "mqtt" | "ntfy";
+export type ActionKind = "webhook" | "mqtt" | "ntfy" | "email";
 
 /// One action a rule fires. A rule can fire several at once (a "scene").
 export interface Action {
