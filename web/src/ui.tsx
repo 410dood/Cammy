@@ -206,8 +206,15 @@ export function Modal({
       }
     };
     window.addEventListener("keydown", onKey);
+    // Move focus into the dialog, remembering where it came from so we can
+    // return it on close (keyboard/screen-reader users land back where they
+    // were rather than at the top of the document).
+    const prevFocus = document.activeElement as HTMLElement | null;
     cardRef.current?.focus();
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      prevFocus?.focus?.();
+    };
   }, [onClose]);
 
   return (

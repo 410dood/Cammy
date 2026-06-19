@@ -384,6 +384,8 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
           />
           <canvas
             ref={canvasRef}
+            role="img"
+            aria-label="Live hand-landmark overlay for gesture detection"
             style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
           />
           {current && (

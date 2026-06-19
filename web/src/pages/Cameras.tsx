@@ -1,6 +1,7 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
 import { api, Camera, DetectConfig, DiscoveredCam, StatusMap, Zone } from "../api";
 import ZoneEditor from "../ZoneEditor";
+import { Modal } from "../ui";
 import { IconRadar, IconSearch, IconCheck } from "../icons";
 
 function TuneModal({
@@ -55,9 +56,8 @@ function TuneModal({
   };
 
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="card" style={{ minWidth: 540 }} onClick={(e) => e.stopPropagation()}>
-        <h2>Detection tuning — {camera.name}</h2>
+    <Modal onClose={onClose} title={`Detection tuning — ${camera.name}`}>
+      <div style={{ padding: "16px 18px 18px" }}>
         <p className="muted" style={{ marginTop: 0 }}>
           Empty fields inherit the global Settings values.
         </p>
@@ -306,7 +306,7 @@ function TuneModal({
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 

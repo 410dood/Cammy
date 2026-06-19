@@ -139,6 +139,8 @@ export default function ZoneEditor({
         <svg
           viewBox="0 0 1 1"
           preserveAspectRatio="none"
+          role="img"
+          aria-label="Detection zones and privacy masks drawn over the camera frame"
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
         >
           {zones.map((z, i) => (
