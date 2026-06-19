@@ -98,6 +98,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/stats", get(stats))
         .route("/api/overview", get(overview))
+        .route("/api/arm", get(get_arm_mode).put(set_arm_mode))
         .route("/api/notifications", get(list_notifications_api))
         .route(
             "/api/notifications/read-all",
@@ -1431,6 +1432,8 @@ async fn record_gesture(
         .into_iter()
         .filter(|r| {
             r.matches(cam.id, "gesture", score, None, None, Some(canonical), None)
+                // Panic/duress gestures fire regardless of arm mode.
+                && (is_duress || crate::notify::armed_in_mode(&r.modes, &settings.arm_mode))
                 && crate::notify::ready(r, &st.alarm_throttle, now)
         })
         .collect();
@@ -1663,17 +1666,27 @@ async fn add_alarm_api(
     if rule.name.trim().is_empty() {
         return Err(bad_request("rule name required"));
     }
-    if !matches!(rule.action.as_str(), "webhook" | "mqtt" | "ntfy") {
-        return Err(bad_request("action must be webhook, mqtt or ntfy"));
+    // Validate the action list (a "scene"). effective_actions() falls back to
+    // the legacy single action for older clients, so this covers both shapes.
+    let actions = rule.effective_actions();
+    for a in &actions {
+        if !matches!(a.kind.as_str(), "webhook" | "mqtt" | "ntfy") {
+            return Err(bad_request("each action must be webhook, mqtt or ntfy"));
+        }
+        if a.target.trim().is_empty() {
+            return Err(bad_request("each action needs a target (URL or MQTT topic)"));
+        }
+        if a.priority > 5 {
+            return Err(bad_request("action priority must be 0 (default) through 5"));
+        }
     }
-    if rule.target.trim().is_empty() {
-        return Err(bad_request("target required (URL or MQTT topic suffix)"));
+    for m in &rule.modes {
+        if !matches!(m.as_str(), "home" | "away" | "disarmed") {
+            return Err(bad_request("modes must be home, away or disarmed"));
+        }
     }
     if rule.days.iter().any(|d| *d > 6) {
         return Err(bad_request("days must be 0 (Sunday) through 6 (Saturday)"));
-    }
-    if rule.priority > 5 {
-        return Err(bad_request("priority must be 0 (default) through 5"));
     }
     if rule.cooldown_secs < 0 {
         return Err(bad_request("cooldown must be ≥ 0 seconds"));
@@ -2070,7 +2083,69 @@ async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Valu
         "total_bytes": total_bytes,
         "today_by_label": today_by_label,
         "unread_notifications": st.db.count_unread_notifications()?,
+        "arm_mode": settings.arm_mode,
     })))
+}
+
+async fn get_arm_mode(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "arm_mode": st.db.settings().arm_mode }))
+}
+
+#[derive(Deserialize)]
+struct ArmReq {
+    mode: String,
+}
+
+/// Set the system-wide security mode (UniFi-style Home / Away / Disarmed). Gates
+/// which alarm rules fire (see `notify::armed_in_mode`). Audited, raises an
+/// in-app notification, and publishes the new mode to MQTT for HA / keypad
+/// automations to read.
+async fn set_arm_mode(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<ArmReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let mode = req.mode.trim().to_lowercase();
+    if !matches!(mode.as_str(), "home" | "away" | "disarmed") {
+        return Err(bad_request("mode must be home, away or disarmed"));
+    }
+    if st.db.settings().arm_mode == mode {
+        return Ok(Json(serde_json::json!({ "arm_mode": mode })));
+    }
+    // Single-key write (no read-modify-write of the settings blob), so a
+    // concurrent Settings-page save can't clobber it.
+    st.db.set_kv("arm_mode", &mode)?;
+
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy).0.to_string();
+    let now = chrono::Local::now().timestamp();
+    st.db.add_audit(now, Some(&ip), "arm_mode_changed", Some(&mode));
+    let _ = st.db.add_notification(
+        now,
+        "mode",
+        &format!("System {}", mode_phrase(&mode)),
+        Some(&format!("Security mode set to {mode}.")),
+        None,
+    );
+    // Publish to MQTT (retained-style state topic) for inbound automations.
+    let _ = st.mqtt_tx.send(crate::mqtt::EventMsg {
+        event_id: 0,
+        camera: String::new(),
+        label: mode.clone(),
+        score: 0.0,
+        ts: now,
+        snapshot: String::new(),
+        topic: Some("mode".to_string()),
+    });
+    Ok(Json(serde_json::json!({ "arm_mode": mode })))
+}
+
+fn mode_phrase(mode: &str) -> &'static str {
+    match mode {
+        "home" => "armed (Home)",
+        "disarmed" => "disarmed",
+        _ => "armed (Away)",
+    }
 }
 
 #[derive(Deserialize)]

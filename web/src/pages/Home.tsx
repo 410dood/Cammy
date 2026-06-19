@@ -9,8 +9,9 @@ import {
   Notification,
   fmtBytes,
   fmtTime,
+  ArmMode,
 } from "../api";
-import { RelTime } from "../ui";
+import { RelTime, useToast } from "../ui";
 import {
   IconVideo,
   IconRecDot,
@@ -22,9 +23,18 @@ import {
   IconHand,
   IconSparkles,
   IconWifiOff,
+  IconHome,
+  IconShield,
+  IconLock,
 } from "../icons";
 
 const VEHICLES = ["car", "truck", "bus", "motorcycle", "bicycle"];
+
+const ARM_MODES: { id: ArmMode; label: string; icon: JSX.Element; hint: string }[] = [
+  { id: "home", label: "Home", icon: <IconHome size={15} />, hint: "Armed — you're home" },
+  { id: "away", label: "Away", icon: <IconShield size={15} />, hint: "Armed — fully away" },
+  { id: "disarmed", label: "Disarmed", icon: <IconLock size={15} />, hint: "Alerts paused" },
+];
 
 /** Local start-of-today in unix seconds. */
 function startOfToday(): number {
@@ -67,16 +77,19 @@ export default function Home({
   onOpenEvents: () => void;
   onOpenCamera: (c: Camera) => void;
 }) {
+  const toast = useToast();
   const [stats, setStats] = useState<Stats | null>(null);
   const [status, setStatus] = useState<StatusMap>({});
   const [events, setEvents] = useState<CamEvent[]>([]);
   const [digest, setDigest] = useState<Digest | null>(null);
   const [notes, setNotes] = useState<Notification[]>([]);
+  const [arm, setArm] = useState<ArmMode | null>(null);
 
   useEffect(() => {
     const load = () => {
       api.stats().then(setStats).catch(() => {});
       api.status().then(setStatus).catch(() => {});
+      api.armMode().then((r) => setArm(r.arm_mode)).catch(() => {});
       api.events({ limit: 500 }).then(setEvents).catch(() => {});
       // These two are best-effort: the endpoints exist only once the backend
       // build ships the digest/notifications features.
@@ -87,6 +100,19 @@ export default function Home({
     const t = setInterval(load, 15000);
     return () => clearInterval(t);
   }, []);
+
+  const setMode = async (m: ArmMode) => {
+    const prev = arm;
+    setArm(m); // optimistic
+    try {
+      const r = await api.arm(m);
+      setArm(r.arm_mode);
+      toast.success(m === "disarmed" ? "System disarmed" : `Armed — ${m === "home" ? "Home" : "Away"}`);
+    } catch (e) {
+      setArm(prev);
+      toast.error(String(e));
+    }
+  };
 
   const enabled = cameras.filter((c) => c.enabled);
   const online = enabled.filter((c) => status[String(c.id)]?.online).length;
@@ -110,6 +136,23 @@ export default function Home({
   return (
     <>
       <h1>Overview</h1>
+
+      <div className="arm-bar" role="group" aria-label="Security mode">
+        {ARM_MODES.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={`arm-opt arm-${m.id} ${arm === m.id ? "active" : ""}`}
+            aria-pressed={arm === m.id}
+            title={m.hint}
+            disabled={arm === null}
+            onClick={() => arm !== m.id && setMode(m.id)}
+          >
+            {m.icon}
+            <span>{m.label}</span>
+          </button>
+        ))}
+      </div>
 
       <div className="stat-grid">
         <StatCard

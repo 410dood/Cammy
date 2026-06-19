@@ -268,6 +268,7 @@ fn fire_transcript_alarms(
                 ev.gesture.as_deref(),
                 Some(transcript),
             )
+            && crate::notify::armed_in_mode(&r.modes, &s.arm_mode)
             && crate::notify::ready(r, throttle, now)
     }) {
         crate::notify::fire(rule, &alarm_ev, mqtt_tx);

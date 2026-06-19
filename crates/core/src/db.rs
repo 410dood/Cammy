@@ -310,6 +310,20 @@ pub struct Liveview {
 /// with a real enrolled name.
 pub const UNKNOWN_FACE: &str = "?";
 
+/// One action a rule fires. A rule can now fire several at once (a "scene"):
+/// e.g. push to your phone AND POST a webhook AND email a snapshot. `kind` is
+/// "webhook" | "mqtt" | "ntfy" | "email"; `target` is the URL/topic/recipient
+/// (empty email target = the configured default smtp_to).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Action {
+    pub kind: String,
+    #[serde(default)]
+    pub target: String,
+    /// ntfy/push priority 1..5; 0 = channel default. Ignored by other kinds.
+    #[serde(default)]
+    pub priority: u8,
+}
+
 /// Alarm Manager rule (UniFi style if-this-then-that): all set conditions
 /// must match an event; `None` conditions match anything.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -342,9 +356,12 @@ pub struct AlarmRule {
     pub face_unknown: bool,
     #[serde(default)]
     pub min_score: f32,
-    /// "webhook" (POST event JSON to target URL), "mqtt" (publish to
-    /// {prefix}/{target}) or "ntfy" (push to target topic URL).
+    /// Legacy single action: "webhook" / "mqtt" / "ntfy". Superseded by
+    /// `actions` (a rule can now fire several). Kept in sync with `actions[0]`
+    /// for back-compat, so older builds still read a usable rule.
+    #[serde(default)]
     pub action: String,
+    #[serde(default)]
     pub target: String,
     /// Arming schedule (Blue Iris-style): days of week the rule is armed,
     /// 0 = Sunday .. 6 = Saturday; empty = every day.
@@ -368,6 +385,16 @@ pub struct AlarmRule {
     pub snooze_until: i64,
     #[serde(default)]
     pub created_ts: i64,
+    /// Arm modes this rule is active in (e.g. ["away"]). Empty = active in every
+    /// armed mode (home + away) but suppressed when the system is "disarmed". A
+    /// rule that lists "disarmed" still fires while disarmed (a panic rule).
+    /// See `notify::armed_in_mode`.
+    #[serde(default)]
+    pub modes: Vec<String>,
+    /// Actions fired when the rule matches — a "scene" (e.g. push + webhook +
+    /// email at once). Empty falls back to the legacy single `action`/`target`.
+    #[serde(default)]
+    pub actions: Vec<Action>,
 }
 
 fn default_true() -> bool {
@@ -381,6 +408,21 @@ fn parse_hhmm(s: &str) -> Option<u16> {
 }
 
 impl AlarmRule {
+    /// The rule's action list, always non-empty: the explicit `actions` scene
+    /// if set, otherwise a single Action synthesized from the legacy
+    /// `action`/`target`/`priority` fields. Used for both persistence and firing.
+    pub fn effective_actions(&self) -> Vec<Action> {
+        if self.actions.is_empty() {
+            vec![Action {
+                kind: self.action.clone(),
+                target: self.target.clone(),
+                priority: self.priority,
+            }]
+        } else {
+            self.actions.clone()
+        }
+    }
+
     /// Is the rule armed on this weekday (0 = Sunday) at this minute of day?
     pub fn armed_at(&self, weekday: u8, minute: u16) -> bool {
         if !self.days.is_empty() && !self.days.contains(&weekday) {
@@ -631,6 +673,28 @@ pub struct Settings {
     /// C6: floor-plan camera map as JSON ({ image, pins:[{camera,x,y}] }); empty = none.
     #[serde(default)]
     pub floorplan: String,
+    /// System security mode (UniFi-style): "home" | "away" | "disarmed". Gates
+    /// which alarm rules fire — see `notify::armed_in_mode`.
+    #[serde(default = "default_arm_mode")]
+    pub arm_mode: String,
+    /// SMTP for the "email" alarm action. smtp_url like
+    /// "smtps://user:pass@smtp.example.com:465" or "smtp://host:587"; the
+    /// user/pass/from/to fields override/supplement it. All empty = email off.
+    #[serde(default)]
+    pub smtp_url: String,
+    #[serde(default)]
+    pub smtp_user: String,
+    #[serde(default)]
+    pub smtp_pass: String,
+    #[serde(default)]
+    pub smtp_from: String,
+    /// Default recipient(s) (comma-separated) for email actions whose target is blank.
+    #[serde(default)]
+    pub smtp_to: String,
+}
+
+fn default_arm_mode() -> String {
+    "away".into()
 }
 
 impl Default for Settings {
@@ -716,6 +780,12 @@ impl Default for Settings {
             digest_enabled: false,
             liveviews: Vec::new(),
             floorplan: String::new(),
+            arm_mode: default_arm_mode(),
+            smtp_url: String::new(),
+            smtp_user: String::new(),
+            smtp_pass: String::new(),
+            smtp_from: String::new(),
+            smtp_to: String::new(),
         }
     }
 }
@@ -849,6 +919,9 @@ impl Db {
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN schedule_json TEXT", []);
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN gesture_like TEXT", []);
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN transcript_like TEXT", []);
+        // Multi-action "scenes": the full Vec<Action> as JSON. NULL on legacy
+        // rows -> list_alarms synthesizes one Action from the legacy columns.
+        let _ = conn.execute("ALTER TABLE alarms ADD COLUMN actions_json TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE alarms ADD COLUMN face_unknown INTEGER NOT NULL DEFAULT 0",
             [],
@@ -1053,15 +1126,20 @@ impl Db {
 
     pub fn add_alarm(&self, r: &AlarmRule) -> Result<i64> {
         let schedule = serde_json::json!({
-            "days": r.days, "start": r.start_hhmm, "end": r.end_hhmm
+            "days": r.days, "start": r.start_hhmm, "end": r.end_hhmm, "modes": r.modes
         })
         .to_string();
+        // Persist the full scene, and dual-write the legacy action/target/priority
+        // columns from action[0] so an older build still reads (a degraded) rule.
+        let actions = r.effective_actions();
+        let actions_json = serde_json::to_string(&actions).unwrap_or_else(|_| "[]".into());
+        let primary = &actions[0];
         let conn = self.conn();
         conn.execute(
             "INSERT INTO alarms (name, enabled, camera_id, label, face_like, plate_like,
              gesture_like, min_score, action, target, schedule_json, cooldown_secs, priority,
-             snooze_until, created_ts, transcript_like, face_unknown)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             snooze_until, created_ts, transcript_like, face_unknown, actions_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 r.name,
                 r.enabled,
@@ -1071,15 +1149,16 @@ impl Db {
                 r.plate_like,
                 r.gesture_like,
                 r.min_score,
-                r.action,
-                r.target,
+                primary.kind,
+                primary.target,
                 schedule,
                 r.cooldown_secs,
-                r.priority,
+                primary.priority,
                 r.snooze_until,
                 chrono::Local::now().timestamp(),
                 r.transcript_like,
-                r.face_unknown as i64
+                r.face_unknown as i64,
+                actions_json
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -1090,7 +1169,8 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT id, name, enabled, camera_id, label, face_like, plate_like,
                     min_score, action, target, created_ts, schedule_json, gesture_like,
-                    cooldown_secs, priority, snooze_until, transcript_like, face_unknown
+                    cooldown_secs, priority, snooze_until, transcript_like, face_unknown,
+                    actions_json
              FROM alarms ORDER BY id",
         )?;
         let rows = stmt
@@ -1100,6 +1180,27 @@ impl Db {
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or(serde_json::Value::Null);
+                let action: String = r.get(8)?;
+                let target: String = r.get(9)?;
+                let priority = r.get::<_, i64>(14)? as u8;
+                // Use the persisted scene; fall back to a one-element scene
+                // synthesized from the legacy columns for pre-scenes rows.
+                let actions_json: Option<String> = r.get(18)?;
+                let actions: Vec<Action> = actions_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<Vec<Action>>(s).ok())
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| {
+                        vec![Action {
+                            kind: action.clone(),
+                            target: target.clone(),
+                            priority,
+                        }]
+                    });
+                let modes: Vec<String> = sched["modes"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
                 Ok(AlarmRule {
                     id: r.get(0)?,
                     name: r.get(1)?,
@@ -1110,8 +1211,8 @@ impl Db {
                     plate_like: r.get(6)?,
                     gesture_like: r.get(12)?,
                     min_score: r.get(7)?,
-                    action: r.get(8)?,
-                    target: r.get(9)?,
+                    action,
+                    target,
                     days: sched["days"]
                         .as_array()
                         .map(|a| {
@@ -1124,11 +1225,13 @@ impl Db {
                     start_hhmm: sched["start"].as_str().map(str::to_string),
                     end_hhmm: sched["end"].as_str().map(str::to_string),
                     cooldown_secs: r.get(13)?,
-                    priority: r.get::<_, i64>(14)? as u8,
+                    priority,
                     snooze_until: r.get(15)?,
                     transcript_like: r.get(16)?,
                     face_unknown: r.get::<_, i64>(17)? != 0,
                     created_ts: r.get(10)?,
+                    modes,
+                    actions,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1837,8 +1940,19 @@ impl Db {
             .optional()
             .ok()
             .flatten();
-        json.and_then(|j| serde_json::from_str(&j).ok())
-            .unwrap_or_default()
+        let mut s: Settings = json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        // arm_mode is stored in its own KV row (the authoritative source), not the
+        // settings blob — so a Settings-page save can never clobber the live arm
+        // state, and `set_arm_mode` is a single-key write with no read-modify-write
+        // race. Overlay it here so every reader (the dispatch sites) sees it.
+        if let Some(mode) = self.get_kv("arm_mode") {
+            if matches!(mode.as_str(), "home" | "away" | "disarmed") {
+                s.arm_mode = mode;
+            }
+        }
+        s
     }
 
     pub fn save_settings(&self, s: &Settings) -> Result<()> {
@@ -2243,6 +2357,8 @@ mod tests {
             priority: 0,
             snooze_until: 0,
             created_ts: 0,
+            modes: vec![],
+            actions: vec![],
         };
         assert!(rule.matches(3, "person", 0.8, None, None, None, None));
         assert!(!rule.matches(2, "person", 0.8, None, None, None, None)); // wrong camera
@@ -2333,6 +2449,8 @@ mod tests {
                 priority: 4,
                 snooze_until: 0,
                 created_ts: 0,
+                modes: vec![],
+                actions: vec![],
             })
             .unwrap();
         let back = &db.list_alarms().unwrap()[0];
@@ -2343,11 +2461,40 @@ mod tests {
         assert_eq!(back.priority, 4);
         assert_eq!(back.transcript_like.as_deref(), Some("help"));
         assert!(back.face_unknown);
+        // A legacy rule (no explicit scene) reads back as a 1-action scene
+        // synthesized from the legacy action/target/priority columns.
+        assert_eq!(back.actions.len(), 1);
+        assert_eq!(back.actions[0].kind, "webhook");
+        assert_eq!(back.actions[0].target, "http://t");
+        assert_eq!(back.actions[0].priority, 4);
         assert_eq!(db.list_alarms().unwrap().len(), 1);
         db.set_alarm_enabled(id, false).unwrap();
         assert!(!db.list_alarms().unwrap()[0].enabled);
         db.delete_alarm(id).unwrap();
         assert!(db.list_alarms().unwrap().is_empty());
+
+        // Multi-action scene + arm modes round-trip; the legacy action/target
+        // columns are dual-written from actions[0] so an older build still reads
+        // a usable (degraded) rule.
+        let scene = AlarmRule {
+            actions: vec![
+                Action { kind: "ntfy".into(), target: "https://ntfy.sh/x".into(), priority: 5 },
+                Action { kind: "mqtt".into(), target: "door".into(), priority: 0 },
+            ],
+            modes: vec!["away".into()],
+            action: String::new(),
+            target: String::new(),
+            ..back.clone()
+        };
+        db.add_alarm(&scene).unwrap();
+        let got = db.list_alarms().unwrap().remove(0);
+        assert_eq!(got.actions.len(), 2);
+        assert_eq!(got.actions[0].kind, "ntfy");
+        assert_eq!(got.actions[0].priority, 5);
+        assert_eq!(got.actions[1].target, "door");
+        assert_eq!(got.modes, vec!["away".to_string()]);
+        assert_eq!(got.action, "ntfy"); // legacy column dual-written from actions[0]
+        assert_eq!(got.target, "https://ntfy.sh/x");
     }
 
     #[test]
@@ -2373,6 +2520,8 @@ mod tests {
             priority: 0,
             snooze_until: 0,
             created_ts: 0,
+            modes: vec![],
+            actions: vec![],
         };
         // No schedule = always armed.
         assert!(base.armed_at(0, 0));

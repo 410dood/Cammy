@@ -155,6 +155,16 @@ export interface AppConfig {
   go2rtc_base: string;
 }
 
+export type ArmMode = "home" | "away" | "disarmed";
+export type ActionKind = "webhook" | "mqtt" | "ntfy";
+
+/// One action a rule fires. A rule can fire several at once (a "scene").
+export interface Action {
+  kind: ActionKind;
+  target: string;
+  priority: number;
+}
+
 export interface AlarmRule {
   id: number;
   name: string;
@@ -167,6 +177,7 @@ export interface AlarmRule {
   transcript_like: string | null;
   face_unknown: boolean;
   min_score: number;
+  /** Legacy single action; kept in sync with actions[0]. Prefer `actions`. */
   action: string;
   target: string;
   days: number[];
@@ -176,6 +187,10 @@ export interface AlarmRule {
   priority: number;
   snooze_until: number;
   created_ts: number;
+  /** Arm modes this rule fires in; empty = home+away (suppressed when disarmed). */
+  modes: ArmMode[];
+  /** Actions fired (a "scene"). Empty falls back to the legacy action/target. */
+  actions: Action[];
 }
 
 export interface ApiToken {
@@ -232,6 +247,7 @@ export interface Overview {
   total_bytes: number;
   today_by_label: [string, number][];
   unread_notifications: number;
+  arm_mode: ArmMode;
 }
 
 export interface Liveview {
@@ -348,6 +364,9 @@ export const api = {
     req<{ segment: Segment; offset_secs: number }>(
       `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
     ),
+  armMode: () => req<{ arm_mode: ArmMode }>("/api/arm"),
+  arm: (mode: ArmMode) =>
+    req<{ arm_mode: ArmMode }>("/api/arm", { method: "PUT", body: JSON.stringify({ mode }) }),
   alarms: () => req<AlarmRule[]>("/api/alarms"),
   addAlarm: (r: Omit<AlarmRule, "id" | "created_ts">) =>
     req<{ id: number }>("/api/alarms", { method: "POST", body: JSON.stringify(r) }),

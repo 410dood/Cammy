@@ -409,7 +409,8 @@ pub fn run(
                                 plates[i].as_deref(),
                                 None,
                                 None,
-                            ) && crate::notify::ready(r, &throttle, now)
+                            ) && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
+                                && crate::notify::ready(r, &throttle, now)
                         }) {
                             crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
                         }
