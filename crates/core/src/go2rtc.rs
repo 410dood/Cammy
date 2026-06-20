@@ -22,6 +22,16 @@ fn clean(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
 }
 
+/// Whether go2rtc will accept this source over its REST `PUT /api/streams` API.
+/// Local-process sources (`exec:` / `ffmpeg:`) are config-file only — the API
+/// rejects them (they're an RCE vector, and the `{output}` placeholder isn't
+/// resolvable there), so a stream using one must be applied via a config
+/// rewrite + restart rather than a live reconcile.
+fn api_addable(src: &str) -> bool {
+    let s = src.trim_start();
+    !(s.starts_with("exec:") || s.starts_with("ffmpeg:"))
+}
+
 /// The go2rtc stream `name -> source` map the registry implies: every enabled
 /// camera, plus its optional low-res detect sub-stream under `{name}_sub`.
 /// Single source of truth shared by the config writer and the live REST sync.
@@ -120,7 +130,14 @@ impl Go2Rtc {
             return Ok(false);
         }
         match self.reconcile_via_api(&cameras) {
-            Ok(()) => Ok(true),
+            Ok(true) => Ok(true),
+            // A new stream uses a config-only source (exec:/ffmpeg:) that go2rtc
+            // won't accept over its API — an expected restart, not a failure.
+            Ok(false) => {
+                tracing::info!("go2rtc has a config-only source to apply; restarting");
+                self.restart_with(db)?;
+                Ok(false)
+            }
             Err(e) => {
                 tracing::warn!("go2rtc stream sync failed ({e:#}); falling back to restart");
                 self.restart_with(db)?;
@@ -135,7 +152,10 @@ impl Go2Rtc {
     /// old name plus an add of the new. Streams added out-of-band (e.g. ONVIF
     /// probe streams) that aren't in the registry are removed to converge on
     /// the config. Any failed `PUT` aborts so the caller can restart instead.
-    fn reconcile_via_api(&self, cameras: &[Camera]) -> Result<()> {
+    /// Returns `Ok(true)` if the live set was fully reconciled, or `Ok(false)`
+    /// if a new stream uses a config-only source (see [`api_addable`]) that the
+    /// caller must apply with a restart instead.
+    fn reconcile_via_api(&self, cameras: &[Camera]) -> Result<bool> {
         let base = self.api_base();
         let live: serde_json::Value = ureq::get(&format!("{base}/api/streams"))
             .timeout(Duration::from_secs(4))
@@ -162,8 +182,15 @@ impl Go2Rtc {
         }
         // Add streams that are new. A failing PUT is fatal to the reconcile so
         // the caller falls back to a restart and the camera still comes up.
+        let mut needs_restart = false;
         for (name, src) in &desired {
             if !live_names.contains(name) {
+                if !api_addable(src) {
+                    // exec:/ffmpeg: are config-only — go2rtc's API rejects them.
+                    // Defer to a restart rather than a doomed PUT (400).
+                    needs_restart = true;
+                    continue;
+                }
                 ureq::put(&format!(
                     "{base}/api/streams?name={}&src={}",
                     urlencode(name),
@@ -175,7 +202,7 @@ impl Go2Rtc {
                 tracing::info!(stream = %name, "go2rtc stream added (no restart)");
             }
         }
-        Ok(())
+        Ok(!needs_restart)
     }
 
     /// Restart the child if it died (call from a watchdog loop).
@@ -303,6 +330,18 @@ mod tests {
                 ("back".to_string(), "rtsp://b".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn api_addable_rejects_config_only_sources() {
+        // Network sources can be PUT over go2rtc's API.
+        assert!(api_addable("rtsp://cam/stream"));
+        assert!(api_addable("onvif://user:pass@host"));
+        assert!(api_addable("http://host/stream.m3u8"));
+        // Local-process sources are config-only (API returns 400) -> need restart.
+        assert!(!api_addable("exec:ffmpeg -i x -f rtsp {output}"));
+        assert!(!api_addable("ffmpeg:device?video=0"));
+        assert!(!api_addable("  exec:foo")); // leading whitespace tolerated
     }
 
     #[test]
