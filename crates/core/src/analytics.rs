@@ -400,7 +400,11 @@ mod tests {
             let (_, lo) = st.tick(&[&t], &[], &zones, now);
             total.extend(lo);
         }
-        assert_eq!(total.len(), 1, "dwell survived the brief occlusion and fired");
+        assert_eq!(
+            total.len(),
+            1,
+            "dwell survived the brief occlusion and fired"
+        );
     }
 
     #[test]

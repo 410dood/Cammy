@@ -242,14 +242,36 @@ pub fn run(
                 );
                 for c in &crossings {
                     emit_analytics_event(
-                        &db, &settings, &alarms, &throttle, &mqtt_tx, &snapshots_dir, &frame, cam,
-                        "crossing", c.anchor, Some(&c.tripwire), Some(c.dir.as_str()), now,
+                        &db,
+                        &settings,
+                        &alarms,
+                        &throttle,
+                        &mqtt_tx,
+                        &snapshots_dir,
+                        &frame,
+                        cam,
+                        "crossing",
+                        c.anchor,
+                        Some(&c.tripwire),
+                        Some(c.dir.as_str()),
+                        now,
                     );
                 }
                 for l in &loiters {
                     emit_analytics_event(
-                        &db, &settings, &alarms, &throttle, &mqtt_tx, &snapshots_dir, &frame, cam,
-                        "loiter", l.anchor, Some(&l.zone), None, now,
+                        &db,
+                        &settings,
+                        &alarms,
+                        &throttle,
+                        &mqtt_tx,
+                        &snapshots_dir,
+                        &frame,
+                        cam,
+                        "loiter",
+                        l.anchor,
+                        Some(&l.zone),
+                        None,
+                        now,
                     );
                 }
             }
@@ -744,7 +766,17 @@ fn emit_analytics_event(
         tracing::warn!("analytics snapshot save failed: {e:#}");
     }
     let id = match db.add_event_dir(
-        cam.id, now, label, 1.0, bbox, Some(&snap_rel), None, None, None, zone, direction,
+        cam.id,
+        now,
+        label,
+        1.0,
+        bbox,
+        Some(&snap_rel),
+        None,
+        None,
+        None,
+        zone,
+        direction,
     ) {
         Ok(id) => id,
         Err(e) => {

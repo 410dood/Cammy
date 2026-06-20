@@ -424,11 +424,7 @@ mod tests {
         let id = tr.confirmed().next().unwrap().id;
         // One frame with no detection (occlusion) — track must persist.
         tr.update(&[], 2);
-        assert_eq!(
-            tr.tracks().len(),
-            1,
-            "track survives a miss within max_age"
-        );
+        assert_eq!(tr.tracks().len(), 1, "track survives a miss within max_age");
         // Reappears near the predicted position -> same id.
         tr.update(&[det("person", mk(0.28))], 3);
         let again = tr.confirmed().next().unwrap().id;
@@ -446,7 +442,11 @@ mod tests {
         for t in 2..=5 {
             tr.update(&[], t);
         }
-        assert_eq!(tr.tracks().len(), 0, "track retired after exceeding max_age");
+        assert_eq!(
+            tr.tracks().len(),
+            0,
+            "track retired after exceeding max_age"
+        );
     }
 
     #[test]
@@ -475,7 +475,10 @@ mod tests {
         let a = (0.5, 0.0);
         let bb = (0.5, 1.0);
         assert!(side_of_line(a, bb, (0.2, 0.5)) > 0.0, "left of upward line");
-        assert!(side_of_line(a, bb, (0.8, 0.5)) < 0.0, "right of upward line");
+        assert!(
+            side_of_line(a, bb, (0.8, 0.5)) < 0.0,
+            "right of upward line"
+        );
         assert!(side_of_line(a, bb, (0.5, 0.5)).abs() < 1e-6, "on the line");
     }
 }
