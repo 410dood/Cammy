@@ -1,14 +1,19 @@
 import { useState } from "react";
-import { Camera, PolyZone, ZoneKind } from "./api";
+import { Camera, CrossDir, PolyZone, Tripwire, ZoneKind } from "./api";
 import { IconRefresh } from "./icons";
 
 type Mask = [number, number][];
-type Draw = { kind: "zone"; zoneKind: ZoneKind; points: Mask } | { kind: "mask"; points: Mask } | null;
+type Draw =
+  | { kind: "zone"; zoneKind: ZoneKind; points: Mask }
+  | { kind: "mask"; points: Mask }
+  | { kind: "tripwire"; points: Mask }
+  | null;
 
 const COLORS: Record<string, string> = {
   required: "#36d399",
   ignore: "#f87272",
   mask: "#a3a3a3",
+  tripwire: "#38bdf8",
 };
 
 /**
@@ -20,12 +25,16 @@ export default function ZoneEditor({
   camera,
   zones,
   masks,
+  tripwires,
   onChange,
+  onTripwires,
 }: {
   camera: Camera;
   zones: PolyZone[];
   masks: Mask[];
+  tripwires: Tripwire[];
   onChange: (zones: PolyZone[], masks: Mask[]) => void;
+  onTripwires: (t: Tripwire[]) => void;
 }) {
   const [draw, setDraw] = useState<Draw>(null);
   // Frame loading is resilient: go2rtc may be mid-restart or waiting for a
@@ -56,14 +65,18 @@ export default function ZoneEditor({
 
   const addPoint = (e: React.MouseEvent) => {
     if (!draw) return;
+    // A tripwire is exactly a 2-point segment; ignore extra clicks.
+    if (draw.kind === "tripwire" && draw.points.length >= 2) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
     setDraw({ ...draw, points: [...draw.points, [Number(x.toFixed(4)), Number(y.toFixed(4))]] });
   };
 
+  const minPts = (d: NonNullable<Draw>) => (d.kind === "tripwire" ? 2 : 3);
+
   const finish = () => {
-    if (!draw || draw.points.length < 3) {
+    if (!draw || draw.points.length < minPts(draw)) {
       setDraw(null);
       return;
     }
@@ -75,6 +88,17 @@ export default function ZoneEditor({
         ],
         masks
       );
+    } else if (draw.kind === "tripwire") {
+      onTripwires([
+        ...tripwires,
+        {
+          name: `line ${tripwires.length + 1}`,
+          a: draw.points[0],
+          b: draw.points[1],
+          direction: "both",
+          labels: [],
+        },
+      ]);
     } else {
       onChange(zones, [...masks, draw.points]);
     }
@@ -165,12 +189,36 @@ export default function ZoneEditor({
               vectorEffect="non-scaling-stroke"
             />
           ))}
+          {tripwires.map((tw, i) => (
+            <g key={`tw${i}`}>
+              {/* Fractional stroke (viewBox units), NOT non-scaling-stroke: a
+                  degenerate-bbox vertical/horizontal line + preserveAspectRatio
+                  "none" makes Chrome blow a non-scaling stroke up to user units
+                  (filling the frame), so size it in 0..1 space instead. */}
+              <line
+                x1={tw.a[0]}
+                y1={tw.a[1]}
+                x2={tw.b[0]}
+                y2={tw.b[1]}
+                stroke={COLORS.tripwire}
+                strokeWidth={0.006}
+              />
+              <circle cx={tw.a[0]} cy={tw.a[1]} r={0.012} fill={COLORS.tripwire} />
+              <circle cx={tw.b[0]} cy={tw.b[1]} r={0.012} fill={COLORS.tripwire} />
+            </g>
+          ))}
           {draw && draw.points.length > 0 && (
             <>
               <polyline
                 points={polyStr(draw.points)}
                 fill="none"
-                stroke={draw.kind === "mask" ? COLORS.mask : COLORS[draw.zoneKind]}
+                stroke={
+                  draw.kind === "mask"
+                    ? COLORS.mask
+                    : draw.kind === "tripwire"
+                      ? COLORS.tripwire
+                      : COLORS[draw.zoneKind]
+                }
                 strokeWidth={2}
                 strokeDasharray="4 3"
                 vectorEffect="non-scaling-stroke"
@@ -203,15 +251,27 @@ export default function ZoneEditor({
             <button type="button" className="ghost" onClick={() => setDraw({ kind: "mask", points: [] })}>
               + privacy mask
             </button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => setDraw({ kind: "tripwire", points: [] })}
+            >
+              + tripwire
+            </button>
             <span className="muted">
-              click points on the image to outline a polygon, then Finish
+              draw a polygon (zones/masks) or click 2 points for a tripwire line, then Finish
             </span>
           </>
         ) : (
           <>
             <span className="pill on">
-              drawing {draw.kind === "mask" ? "privacy mask" : `${draw.zoneKind} zone`} ·{" "}
-              {draw.points.length} pts
+              drawing{" "}
+              {draw.kind === "mask"
+                ? "privacy mask"
+                : draw.kind === "tripwire"
+                  ? "tripwire"
+                  : `${draw.zoneKind} zone`}{" "}
+              · {draw.points.length} pts
             </span>
             <button
               type="button"
@@ -221,7 +281,12 @@ export default function ZoneEditor({
             >
               undo point
             </button>
-            <button type="button" className="primary" disabled={draw.points.length < 3} onClick={finish}>
+            <button
+              type="button"
+              className="primary"
+              disabled={draw.points.length < minPts(draw)}
+              onClick={finish}
+            >
               Finish
             </button>
             <button type="button" className="ghost" onClick={() => setDraw(null)}>
@@ -259,13 +324,32 @@ export default function ZoneEditor({
               <input
                 type="text"
                 placeholder="objects (all)"
-                style={{ width: 150 }}
+                style={{ width: 130 }}
                 value={z.labels.join(", ")}
                 onChange={(e) =>
                   onChange(
                     zones.map((x, j) =>
                       j === i
                         ? { ...x, labels: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) }
+                        : x
+                    ),
+                    masks
+                  )
+                }
+              />
+              <input
+                type="number"
+                min="0"
+                step="5"
+                placeholder="dwell s"
+                title="Loiter alert: seconds an object must dwell inside this zone to fire a loiter event (blank/0 = off, needs tracking)"
+                style={{ width: 76 }}
+                value={z.dwell_secs ?? ""}
+                onChange={(e) =>
+                  onChange(
+                    zones.map((x, j) =>
+                      j === i
+                        ? { ...x, dwell_secs: e.target.value === "" ? null : Number(e.target.value) }
                         : x
                     ),
                     masks
@@ -291,6 +375,65 @@ export default function ZoneEditor({
                 type="button"
                 className="danger"
                 onClick={() => onChange(zones, masks.filter((_, j) => j !== i))}
+              >
+                remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tripwires.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div className="muted" style={{ fontSize: "0.8rem", marginBottom: 4 }}>
+            Tripwires — an object crossing the line fires a <code>crossing</code> event (in/out counting,
+            perimeter, one-way enforcement).
+          </div>
+          {tripwires.map((tw, i) => (
+            <div className="row" key={`tw${i}`} style={{ marginBottom: 6, alignItems: "center" }}>
+              <span className="dot" style={{ background: COLORS.tripwire }} />
+              <input
+                type="text"
+                style={{ width: 110 }}
+                value={tw.name}
+                onChange={(e) =>
+                  onTripwires(tripwires.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))
+                }
+              />
+              <select
+                value={tw.direction}
+                title="Which crossing direction fires"
+                onChange={(e) =>
+                  onTripwires(
+                    tripwires.map((x, j) =>
+                      j === i ? { ...x, direction: e.target.value as CrossDir } : x
+                    )
+                  )
+                }
+              >
+                <option value="both">both ways</option>
+                <option value="a_to_b">A → B only</option>
+                <option value="b_to_a">B → A only</option>
+              </select>
+              <input
+                type="text"
+                placeholder="objects (all)"
+                style={{ width: 130 }}
+                value={tw.labels.join(", ")}
+                onChange={(e) =>
+                  onTripwires(
+                    tripwires.map((x, j) =>
+                      j === i
+                        ? { ...x, labels: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) }
+                        : x
+                    )
+                  )
+                }
+              />
+              <button
+                type="button"
+                className="danger"
+                onClick={() => onTripwires(tripwires.filter((_, j) => j !== i))}
               >
                 remove
               </button>

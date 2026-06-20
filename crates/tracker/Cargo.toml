@@ -1,0 +1,11 @@
+[package]
+name = "tracker"
+version = "0.3.0"
+description = "Lightweight multi-object tracker (SORT-lite): persistent track IDs + trajectories from per-frame detections"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true

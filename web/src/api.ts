@@ -14,6 +14,19 @@ export interface PolyZone {
   points: [number, number][];
   kind: ZoneKind;
   labels: string[];
+  /** Loitering threshold in seconds (requires tracking); null/0 = not a dwell zone. */
+  dwell_secs?: number | null;
+}
+
+export type CrossDir = "both" | "a_to_b" | "b_to_a";
+
+/** A directed virtual line for line-crossing analytics (frame-fraction coords). */
+export interface Tripwire {
+  name: string;
+  a: [number, number];
+  b: [number, number];
+  direction: CrossDir;
+  labels: string[];
 }
 
 export interface DetectConfig {
@@ -22,6 +35,7 @@ export interface DetectConfig {
   motion_threshold: number | null;
   ignore_zones: Zone[];
   zones: PolyZone[];
+  tripwires: Tripwire[];
   privacy_masks: [number, number][][];
   min_area: number | null;
   max_area: number | null;

@@ -9,6 +9,7 @@
 //!   - runs continuous packet-copy recording with retention (ffmpeg)
 //!   - runs the motion-gated AI detection pipeline (ONNX Runtime)
 
+mod analytics;
 mod anomaly;
 mod api;
 mod audio;

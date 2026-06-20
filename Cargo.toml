@@ -18,6 +18,7 @@ members = [
     "crates/gesture",
     "crates/motion",
     "crates/recorder",
+    "crates/tracker",
     "crates/core",
     "crates/desktop",
 ]
