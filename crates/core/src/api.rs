@@ -2823,6 +2823,7 @@ mod tests {
             note: None,
             anomaly_score: None,
             direction: None,
+            speed: None,
         };
         let csv = events_to_csv(std::slice::from_ref(&ev));
         let mut lines = csv.lines();

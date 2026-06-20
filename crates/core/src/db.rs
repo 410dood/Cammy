@@ -121,6 +121,18 @@ pub fn point_in_polygon(poly: &[[f32; 2]], x: f32, y: f32) -> bool {
     inside
 }
 
+/// Ground-plane calibration for speed estimation: four image points (frame
+/// fractions) marking the corners of a real, flat ground rectangle of `width_m`
+/// × `height_m`, in the order top-left, top-right, bottom-right, bottom-left.
+/// The pipeline solves a homography from this to turn pixel motion into m/s.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct GroundCalib {
+    pub points: [[f32; 2]; 4],
+    pub width_m: f32,
+    pub height_m: f32,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct DetectConfig {
@@ -144,6 +156,10 @@ pub struct DetectConfig {
     /// track whose ground-contact point crosses a line fires a `crossing` event.
     #[serde(default)]
     pub tripwires: Vec<crate::analytics::Tripwire>,
+    /// Optional ground-plane calibration enabling speed estimation (km/h on
+    /// crossing events). `None` = no speed.
+    #[serde(default)]
+    pub ground_calib: Option<GroundCalib>,
     /// Polygon privacy masks: these regions are blacked out of the frame before
     /// motion, detection and snapshots — nothing inside is analyzed or stored.
     /// (Continuous recordings are packet-copied and are not masked.)
@@ -235,6 +251,9 @@ pub struct Event {
     /// Line-crossing direction for a `crossing` event: `"a_to_b"` / `"b_to_a"`.
     #[serde(default)]
     pub direction: Option<String>,
+    /// Estimated ground speed (km/h) on a calibrated crossing event.
+    #[serde(default)]
+    pub speed: Option<f32>,
 }
 
 /// One row of the smart-search corpus: an event's id, its searchable text
@@ -898,6 +917,8 @@ impl Db {
         let _ = conn.execute("ALTER TABLE events ADD COLUMN anomaly_score REAL", []);
         // Line-crossing direction ("a_to_b"/"b_to_a") on tracker `crossing` events.
         let _ = conn.execute("ALTER TABLE events ADD COLUMN direction TEXT", []);
+        // Estimated ground speed (km/h) on a crossing, when the camera is calibrated.
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN speed REAL", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
@@ -1107,12 +1128,13 @@ impl Db {
         zone: Option<&str>,
     ) -> Result<i64> {
         self.add_event_dir(
-            camera_id, ts, label, score, bbox, snapshot, face, plate, gesture, zone, None,
+            camera_id, ts, label, score, bbox, snapshot, face, plate, gesture, zone, None, None,
         )
     }
 
     /// Like [`add_event`](Self::add_event) but also records a line-crossing
-    /// `direction` — used by the tracker-driven analytics for `crossing` events.
+    /// `direction` and an estimated `speed` (km/h) — used by the tracker-driven
+    /// analytics for `crossing` / `wrong_way` events.
     #[allow(clippy::too_many_arguments)]
     pub fn add_event_dir(
         &self,
@@ -1127,14 +1149,15 @@ impl Db {
         gesture: Option<&str>,
         zone: Option<&str>,
         direction: Option<&str>,
+        speed: Option<f32>,
     ) -> Result<i64> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face, plate, gesture, zone, direction)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face, plate, gesture, zone, direction, speed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 camera_id, ts, label, score, bbox[0], bbox[1], bbox[2], bbox[3], snapshot, face,
-                plate, gesture, zone, direction
+                plate, gesture, zone, direction, speed
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -1156,7 +1179,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -1191,7 +1214,7 @@ impl Db {
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                         e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                        e.flagged, e.note, e.anomaly_score, e.direction
+                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
@@ -2208,6 +2231,7 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         note: r.get(18)?,
         anomaly_score: r.get(19)?,
         direction: r.get(20)?,
+        speed: r.get(21)?,
     })
 }
 
@@ -2508,7 +2532,13 @@ mod tests {
                 b: [1.0, 0.5],
                 direction: crate::analytics::CrossDir::AToB,
                 labels: vec!["car".into()],
+                alert_wrong_way: true,
             }],
+            ground_calib: Some(GroundCalib {
+                points: [[0.2, 0.4], [0.8, 0.4], [0.9, 0.9], [0.1, 0.9]],
+                width_m: 6.0,
+                height_m: 12.0,
+            }),
             privacy_masks: vec![vec![[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]]],
             min_area: Some(0.001),
             max_area: Some(0.8),

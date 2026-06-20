@@ -23,6 +23,9 @@ use std::collections::VecDeque;
 
 use serde::Serialize;
 
+mod homography;
+pub use homography::Homography;
+
 /// An axis-aligned box in frame-fraction coordinates (0..1).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct BBox {

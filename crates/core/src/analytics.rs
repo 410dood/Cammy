@@ -9,9 +9,40 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use tracker::{side_of_line, Track};
+use tracker::{side_of_line, Homography, Track};
 
 use crate::db::PolyZone;
+
+/// Trajectory window (secs) over which a track's speed is averaged.
+const SPEED_WINDOW_SECS: i64 = 3;
+
+/// Estimate a track's ground speed (km/h) from its recent trajectory, warped to
+/// the ground plane by `h`. Sums ground distance over the points within the last
+/// [`SPEED_WINDOW_SECS`] and divides by the elapsed time (so a curved path isn't
+/// underestimated). Returns `None` for a too-short/young track or a point behind
+/// the horizon; capped at a plausibility ceiling to reject calibration/IoU noise.
+pub fn track_speed_kmh(t: &Track, h: &Homography) -> Option<f32> {
+    let last_ts = t.history.back()?.0;
+    let pts: Vec<(i64, f32, f32)> = t
+        .history
+        .iter()
+        .filter(|(ts, _, _)| last_ts - *ts <= SPEED_WINDOW_SECS)
+        .filter_map(|(ts, ax, ay)| h.project((*ax, *ay)).map(|(gx, gy)| (*ts, gx, gy)))
+        .collect();
+    if pts.len() < 2 {
+        return None;
+    }
+    let dt = (pts.last()?.0 - pts.first()?.0) as f32;
+    if dt <= 0.0 {
+        return None;
+    }
+    let dist: f32 = pts
+        .windows(2)
+        .map(|w| ((w[1].1 - w[0].1).powi(2) + (w[1].2 - w[0].2).powi(2)).sqrt())
+        .sum();
+    let kmh = (dist / dt) * 3.6;
+    (kmh.is_finite() && kmh <= 320.0).then_some(kmh)
+}
 
 /// Which way across a tripwire counts. The line is directed `a -> b`; a crossing
 /// is classified by the side transition of the object's ground-contact point.
@@ -42,6 +73,11 @@ pub struct Tripwire {
     pub direction: CrossDir,
     /// Object labels this tripwire applies to; empty = any object.
     pub labels: Vec<String>,
+    /// One-way enforcement: when set on a directional tripwire, a crossing in the
+    /// *forbidden* direction fires a `wrong_way` event (instead of being silently
+    /// suppressed). No effect on a `Both`-direction tripwire.
+    #[serde(default)]
+    pub alert_wrong_way: bool,
 }
 
 impl Tripwire {
@@ -80,6 +116,12 @@ pub struct Crossing {
     pub track_id: u64,
     pub label: String,
     pub dir: Dir,
+    /// True if this crossing was against a one-way tripwire's allowed direction
+    /// (a `wrong_way` event) rather than a normal `crossing`.
+    pub wrong_way: bool,
+    /// Estimated ground speed at the crossing (km/h), when the camera has a
+    /// ground-plane calibration; `None` otherwise.
+    pub speed_kmh: Option<f32>,
     /// Ground-contact point at the crossing (frame fractions).
     pub anchor: (f32, f32),
 }
@@ -143,6 +185,7 @@ impl AnalyticsState {
         tracks: &[&Track],
         tripwires: &[Tripwire],
         zones: &[PolyZone],
+        homography: Option<&Homography>,
         now: i64,
     ) -> (Vec<Crossing>, Vec<Loiter>) {
         let mut crossings = Vec::new();
@@ -165,12 +208,20 @@ impl AnalyticsState {
                     // twice as a point grazes the line.
                     if prev != 0.0 && side != 0.0 && (prev > 0.0) != (side > 0.0) {
                         let dir = if prev > 0.0 { Dir::AToB } else { Dir::BToA };
-                        if dir.allowed_by(tw.direction) {
+                        let allowed = dir.allowed_by(tw.direction);
+                        // Allowed direction -> a normal crossing. The forbidden
+                        // direction on a one-way tripwire with alert_wrong_way ->
+                        // a wrong_way crossing. (Both-direction tripwires have no
+                        // forbidden direction, so nothing to alert.)
+                        if allowed || (tw.alert_wrong_way && tw.direction != CrossDir::Both) {
+                            let speed_kmh = homography.and_then(|h| track_speed_kmh(t, h));
                             crossings.push(Crossing {
                                 tripwire: tw.name.clone(),
                                 track_id: t.id,
                                 label: t.label.clone(),
                                 dir,
+                                wrong_way: !allowed,
+                                speed_kmh,
                                 anchor,
                             });
                         }
@@ -281,6 +332,7 @@ mod tests {
             b: [0.5, 1.0],
             direction: dir,
             labels: vec![],
+            alert_wrong_way: false,
         }
     }
 
@@ -303,7 +355,7 @@ mod tests {
         let mut total = Vec::new();
         for (i, x) in xs.iter().enumerate() {
             let t = track_at(1, "person", *x, 0.5);
-            let (cr, _) = st.tick(&[&t], &tw, &[], i as i64);
+            let (cr, _) = st.tick(&[&t], &tw, &[], None, i as i64);
             total.extend(cr);
         }
         assert_eq!(total.len(), 1, "exactly one crossing for one pass");
@@ -319,7 +371,7 @@ mod tests {
         let mut total = Vec::new();
         for (i, x) in xs.iter().enumerate() {
             let t = track_at(1, "person", *x, 0.5);
-            let (cr, _) = st.tick(&[&t], &tw, &[], i as i64);
+            let (cr, _) = st.tick(&[&t], &tw, &[], None, i as i64);
             total.extend(cr);
         }
         assert_eq!(total.len(), 1);
@@ -335,7 +387,7 @@ mod tests {
         let mut total = Vec::new();
         for (i, x) in xs.iter().enumerate() {
             let t = track_at(1, "person", *x, 0.5);
-            let (cr, _) = st.tick(&[&t], &tw, &[], i as i64);
+            let (cr, _) = st.tick(&[&t], &tw, &[], None, i as i64);
             total.extend(cr);
         }
         assert!(total.is_empty(), "wrong-way crossing suppressed");
@@ -349,7 +401,7 @@ mod tests {
         let mut total = Vec::new();
         for (i, x) in xs.iter().enumerate() {
             let t = track_at(1, "person", *x, 0.5);
-            let (cr, _) = st.tick(&[&t], &tw, &[], i as i64);
+            let (cr, _) = st.tick(&[&t], &tw, &[], None, i as i64);
             total.extend(cr);
         }
         assert!(total.is_empty());
@@ -364,7 +416,7 @@ mod tests {
         // A person crosses — should be ignored (tripwire is car-only).
         for (i, x) in [0.3_f32, 0.55].iter().enumerate() {
             let t = track_at(1, "person", *x, 0.5);
-            let (cr, _) = st.tick(&[&t], &tws, &[], i as i64);
+            let (cr, _) = st.tick(&[&t], &tws, &[], None, i as i64);
             assert!(cr.is_empty(), "person ignored by car-only tripwire");
         }
     }
@@ -377,7 +429,7 @@ mod tests {
         let mut total = Vec::new();
         for now in 0..8 {
             let t = track_at(1, "person", 0.5, 0.5);
-            let (_, lo) = st.tick(&[&t], &[], &zones, now);
+            let (_, lo) = st.tick(&[&t], &[], &zones, None, now);
             total.extend(lo);
         }
         assert_eq!(total.len(), 1, "loiter fires exactly once at the threshold");
@@ -393,12 +445,12 @@ mod tests {
         let mut total = Vec::new();
         for now in 0..2 {
             let t = track_at(1, "person", 0.5, 0.5);
-            let (_, lo) = st.tick(&[&t], &[], &zones, now);
+            let (_, lo) = st.tick(&[&t], &[], &zones, None, now);
             total.extend(lo);
         }
         // Track leaves (no longer present) for the rest.
         for now in 2..8 {
-            let (_, lo) = st.tick(&[], &[], &zones, now);
+            let (_, lo) = st.tick(&[], &[], &zones, None, now);
             total.extend(lo);
         }
         assert!(total.is_empty(), "a quick pass-through never loiters");
@@ -414,18 +466,18 @@ mod tests {
         // Inside 0..5 -> accrues ~4s of inside-time (first sample doesn't credit).
         for now in 0..5 {
             let t = track_at(1, "person", 0.5, 0.5);
-            total.extend(st.tick(&[&t], &[], &zones, now).1);
+            total.extend(st.tick(&[&t], &[], &zones, None, now).1);
         }
         // Outside for 2s (within grace) — accrual pauses, state persists.
         for now in 5..7 {
             let t = track_at(1, "person", 0.1, 0.1);
-            total.extend(st.tick(&[&t], &[], &zones, now).1);
+            total.extend(st.tick(&[&t], &[], &zones, None, now).1);
         }
         // Back inside: a couple more inside-seconds push the accumulator past 5
         // (only possible because the prior 4s wasn't reset by the excursion).
         for now in 7..10 {
             let t = track_at(1, "person", 0.5, 0.5);
-            total.extend(st.tick(&[&t], &[], &zones, now).1);
+            total.extend(st.tick(&[&t], &[], &zones, None, now).1);
         }
         assert_eq!(
             total.len(),
@@ -446,7 +498,7 @@ mod tests {
             let inside = now % 3 == 0;
             let (px, py) = if inside { (0.5, 0.5) } else { (0.1, 0.1) };
             let t = track_at(1, "person", px, py);
-            total.extend(st.tick(&[&t], &[], &zones, now).1);
+            total.extend(st.tick(&[&t], &[], &zones, None, now).1);
         }
         assert!(
             total.is_empty(),
@@ -459,10 +511,80 @@ mod tests {
         let mut st = AnalyticsState::default();
         let tw = vec![tripwire("door", CrossDir::Both)];
         let t = track_at(1, "person", 0.3, 0.5);
-        st.tick(&[&t], &tw, &[], 0);
+        st.tick(&[&t], &tw, &[], None, 0);
         assert!(!st.last_side.is_empty());
         // Track gone next frame -> its side state is dropped.
-        st.tick(&[], &tw, &[], 1);
+        st.tick(&[], &tw, &[], None, 1);
         assert!(st.last_side.is_empty(), "state GC'd for retired track");
+    }
+
+    #[test]
+    fn wrong_way_alert_on_forbidden_direction() {
+        let mut st = AnalyticsState::default();
+        let mut tw = tripwire("oneway", CrossDir::AToB);
+        tw.alert_wrong_way = true;
+        let tws = vec![tw];
+        // Cross the FORBIDDEN direction (b_to_a): right -> left.
+        let mut total = Vec::new();
+        for (i, x) in [0.7_f32, 0.55, 0.45].iter().enumerate() {
+            let t = track_at(1, "person", *x, 0.5);
+            total.extend(st.tick(&[&t], &tws, &[], None, i as i64).0);
+        }
+        assert_eq!(
+            total.len(),
+            1,
+            "wrong-way crossing fires when alerting is on"
+        );
+        assert!(total[0].wrong_way, "marked as a wrong-way crossing");
+        assert_eq!(total[0].dir, Dir::BToA);
+    }
+
+    #[test]
+    fn allowed_direction_is_not_wrong_way() {
+        let mut st = AnalyticsState::default();
+        let mut tw = tripwire("oneway", CrossDir::AToB);
+        tw.alert_wrong_way = true;
+        let tws = vec![tw];
+        // Cross the ALLOWED direction (a_to_b): left -> right.
+        let mut total = Vec::new();
+        for (i, x) in [0.3_f32, 0.45, 0.55].iter().enumerate() {
+            let t = track_at(1, "person", *x, 0.5);
+            total.extend(st.tick(&[&t], &tws, &[], None, i as i64).0);
+        }
+        assert_eq!(total.len(), 1);
+        assert!(
+            !total[0].wrong_way,
+            "the allowed direction is a normal crossing"
+        );
+    }
+
+    #[test]
+    fn speed_from_calibrated_track() {
+        use std::collections::VecDeque;
+        use tracker::BBox;
+        // Image square maps to a 20 m x 10 m ground rectangle (axis-aligned ->
+        // affine, so distances are linear and easy to reason about).
+        let h = Homography::from_quad([(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)], 20.0, 10.0)
+            .unwrap();
+        // Anchor moves image x 0.35 -> 0.65 over 2 s: ground 5 m -> 15 m = 10 m
+        // in 2 s = 5 m/s = 18 km/h.
+        let mut history = VecDeque::new();
+        history.push_back((0i64, 0.35f32, 0.5f32));
+        history.push_back((2i64, 0.65f32, 0.5f32));
+        let t = Track {
+            id: 1,
+            label: "car".into(),
+            bbox: BBox::new(0.63, 0.4, 0.67, 0.5),
+            vx: 0.0,
+            vy: 0.0,
+            history,
+            hits: 5,
+            misses: 0,
+            confirmed: true,
+            start_ts: 0,
+            last_ts: 2,
+        };
+        let kmh = track_speed_kmh(&t, &h).unwrap();
+        assert!((kmh - 18.0).abs() < 0.5, "got {kmh} km/h, expected ~18");
     }
 }
