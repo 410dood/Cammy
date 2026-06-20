@@ -57,6 +57,10 @@ pub fn run(
     // settings or per-camera-config change rebuilds it.
     let mut gates: HashMap<i64, (f32, MotionGate)> = HashMap::new();
     let mut last_event: HashMap<(i64, &'static str), i64> = HashMap::new();
+    // Per-camera object tracker + analytics memory (line-crossing, loitering).
+    // Only used on cameras that configure a tripwire or a dwell zone.
+    let mut trackers: HashMap<i64, tracker::Tracker> = HashMap::new();
+    let mut analytics: HashMap<i64, crate::analytics::AnalyticsState> = HashMap::new();
 
     while !shutdown.load(Ordering::Relaxed) {
         let tick = Instant::now();
@@ -75,6 +79,14 @@ pub fn run(
 
         let cameras = db.list_cameras().unwrap_or_default();
         let alarms = db.list_alarms().unwrap_or_default();
+        // Prune per-camera analytics state for cameras that were deleted (ids are
+        // never reused), so a long-running process doesn't hold a tracker +
+        // trajectory buffers for a camera that's gone.
+        {
+            let live: std::collections::HashSet<i64> = cameras.iter().map(|c| c.id).collect();
+            trackers.retain(|k, _| live.contains(k));
+            analytics.retain(|k, _| live.contains(k));
+        }
         for cam in cameras.iter().filter(|c| c.enabled && c.detect) {
             if shutdown.load(Ordering::Relaxed) {
                 break;
@@ -155,10 +167,22 @@ pub fn run(
                 }
             };
             let verdict = gate.update(&frame);
-            if !verdict.is_motion() {
+            // Tracker-driven analytics (line-crossing / loitering) must keep
+            // advancing even on motionless frames: a person standing still
+            // produces no pixel change yet is exactly what a loiter alert
+            // targets. So on cameras that configure a tripwire or a dwell zone,
+            // run the detector even when the motion gate sees no motion (regular
+            // per-object event emission is still suppressed below).
+            let analytics_on = !cam.detect_config.tripwires.is_empty()
+                || cam
+                    .detect_config
+                    .zones
+                    .iter()
+                    .any(|z| z.dwell_secs.unwrap_or(0) > 0);
+            if !verdict.is_motion() && !analytics_on {
                 continue;
             }
-            tracing::debug!(camera = %cam.name, ?verdict, "motion -> running detector");
+            tracing::debug!(camera = %cam.name, ?verdict, "running detector");
 
             let infer_start = Instant::now();
             let dets = match detectors
@@ -199,6 +223,82 @@ pub fn run(
                         .unwrap_or(true)
                 })
                 .collect();
+            // --- tracker-driven analytics: line-crossing + loitering --------
+            // Runs on the full (label/score/zone-filtered) detection set, NOT
+            // the cooldown-throttled `wanted`, so an object trips a tripwire even
+            // while its label is in event cooldown. Active only on cameras that
+            // configure a tripwire or a dwell zone (otherwise the tracker is idle).
+            if analytics_on {
+                let tdets: Vec<tracker::Det> = dets
+                    .iter()
+                    .filter(|d| labels.is_empty() || labels.iter().any(|l| l == d.label))
+                    .filter(|d| d.score >= min_score)
+                    // size-only gate (NOT passes_zones_and_size): zone/tripwire
+                    // membership is handled inside analytics, so a Required/Ignore
+                    // dwell zone must not drop objects from the tracker feed.
+                    .filter(|d| passes_size(d, &cam.detect_config, fw, fh))
+                    .map(|d| tracker::Det {
+                        label: d.label,
+                        score: d.score,
+                        // Normalize pixel boxes to frame fractions (tracks share
+                        // the zone/tripwire coordinate space).
+                        bbox: tracker::BBox::new(d.x1 / fw, d.y1 / fh, d.x2 / fw, d.y2 / fh),
+                    })
+                    .collect();
+                let trk = trackers
+                    .entry(cam.id)
+                    .or_insert_with(|| tracker::Tracker::new(tracker::TrackerConfig::default()));
+                trk.update(&tdets, now);
+                let confirmed: Vec<&tracker::Track> = trk.confirmed().collect();
+                let astate = analytics.entry(cam.id).or_default();
+                let (crossings, loiters) = astate.tick(
+                    &confirmed,
+                    &cam.detect_config.tripwires,
+                    &cam.detect_config.zones,
+                    now,
+                );
+                for c in &crossings {
+                    emit_analytics_event(
+                        &db,
+                        &settings,
+                        &alarms,
+                        &throttle,
+                        &mqtt_tx,
+                        &snapshots_dir,
+                        &frame,
+                        cam,
+                        "crossing",
+                        c.anchor,
+                        Some(&c.tripwire),
+                        Some(c.dir.as_str()),
+                        now,
+                    );
+                }
+                for l in &loiters {
+                    emit_analytics_event(
+                        &db,
+                        &settings,
+                        &alarms,
+                        &throttle,
+                        &mqtt_tx,
+                        &snapshots_dir,
+                        &frame,
+                        cam,
+                        "loiter",
+                        l.anchor,
+                        Some(&l.zone),
+                        None,
+                        now,
+                    );
+                }
+            }
+
+            // A motionless frame ran the tracker/analytics above, but the motion
+            // gate's job is to suppress regular per-object detection events — so
+            // skip the rest of the event path when there was no motion.
+            if !verdict.is_motion() {
+                continue;
+            }
             if wanted.is_empty() {
                 continue;
             }
@@ -654,6 +754,114 @@ fn save_unknown_face(
     Ok(())
 }
 
+/// Emit a tracker-driven analytics event (`crossing` / `loiter`): snapshot the
+/// frame, insert the event (with optional crossing `direction`), and dispatch
+/// the global webhook + MQTT + matching alarm rules — the same notification
+/// machinery a detection event uses, so analytics rides existing alerting (an
+/// alarm rule with `label = "crossing"` fires on any crossing).
+#[allow(clippy::too_many_arguments)]
+fn emit_analytics_event(
+    db: &Db,
+    settings: &crate::db::Settings,
+    alarms: &[crate::db::AlarmRule],
+    throttle: &crate::notify::AlarmThrottle,
+    mqtt_tx: &std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    snapshots_dir: &std::path::Path,
+    frame: &DynamicImage,
+    cam: &crate::db::Camera,
+    label: &str,
+    anchor: (f32, f32),
+    zone: Option<&str>,
+    direction: Option<&str>,
+    now: i64,
+) {
+    let (ax, ay) = anchor;
+    // A small marker box around the ground-contact point for the thumbnail.
+    let bbox = [
+        (ax - 0.03).clamp(0.0, 1.0),
+        (ay - 0.08).clamp(0.0, 1.0),
+        (ax + 0.03).clamp(0.0, 1.0),
+        ay.clamp(0.0, 1.0),
+    ];
+    let snap_rel = format!("{}-{}-{}.jpg", cam.name, now, label);
+    let snap_abs = snapshots_dir.join(&snap_rel);
+    if let Err(e) = frame.save(&snap_abs) {
+        tracing::warn!("analytics snapshot save failed: {e:#}");
+    }
+    let id = match db.add_event_dir(
+        cam.id,
+        now,
+        label,
+        1.0,
+        bbox,
+        Some(&snap_rel),
+        None,
+        None,
+        None,
+        zone,
+        direction,
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!("analytics event insert failed: {e:#}");
+            return;
+        }
+    };
+    tracing::info!(
+        camera = %cam.name, kind = label, zone = zone.unwrap_or("-"),
+        dir = direction.unwrap_or("-"), event = id, "analytics event"
+    );
+    let snap_url = format!("/api/snapshots/{snap_rel}");
+    if !settings.webhook_url.is_empty() {
+        let payload = serde_json::json!({
+            "type": label,
+            "event_id": id,
+            "camera": cam.name,
+            "label": label,
+            "zone": zone,
+            "direction": direction,
+            "ts": now,
+            "snapshot": snap_url,
+        });
+        let _ = ureq::post(&settings.webhook_url)
+            .timeout(Duration::from_secs(3))
+            .send_json(payload);
+    }
+    let _ = mqtt_tx.send(crate::mqtt::EventMsg {
+        event_id: id,
+        camera: cam.name.clone(),
+        label: label.to_string(),
+        score: 1.0,
+        ts: now,
+        snapshot: snap_url.clone(),
+        topic: None,
+    });
+    let alarm_ev = crate::notify::AlarmEvent {
+        event_id: id,
+        camera: &cam.name,
+        label,
+        score: 1.0,
+        ts: now,
+        snapshot_url: &snap_url,
+        snapshot_path: Some(&snap_abs),
+        face: None,
+        plate: None,
+        gesture: None,
+        transcript: None,
+        base_url: &settings.public_base_url,
+        webhook_template: &settings.webhook_template,
+        smtp: crate::notify::smtp_cfg(settings),
+        duress: false,
+    };
+    for rule in alarms.iter().filter(|r| {
+        r.matches(cam.id, label, 1.0, None, None, None, None)
+            && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
+            && crate::notify::ready(r, throttle, now)
+    }) {
+        crate::notify::fire(rule, &alarm_ev, mqtt_tx);
+    }
+}
+
 /// Fire-and-forget event notification (Blue Iris alarm-server style). Runs on
 /// the pipeline thread with a short timeout; a dead listener must never stall
 /// detection, so failures are logged at debug and dropped.
@@ -762,6 +970,19 @@ fn passes_zones_and_size(
         return false;
     }
     true
+}
+
+/// Object-size gate only (fraction of frame area) — used to feed the tracker the
+/// real objects WITHOUT the Required/Ignore zone-membership filter. Zone and
+/// tripwire membership is an analytics concern handled inside
+/// `AnalyticsState::tick` (via `contains`), so a dwell zone drawn as `Ignore`
+/// (or a `Required` zone elsewhere) must not silently drop objects from tracking.
+fn passes_size(d: &detector::Detection, cfg: &crate::db::DetectConfig, fw: f32, fh: f32) -> bool {
+    if cfg.min_area.is_none() && cfg.max_area.is_none() {
+        return true;
+    }
+    let area = ((d.x2 - d.x1).max(0.0) * (d.y2 - d.y1).max(0.0)) / (fw * fh).max(1.0);
+    !(cfg.min_area.is_some_and(|m| area < m) || cfg.max_area.is_some_and(|m| area > m))
 }
 
 /// Human label for the execution provider a detector is using on this OS.
@@ -947,6 +1168,7 @@ mod tests {
                 points: vec![[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]],
                 kind: ZoneKind::Required,
                 labels: vec!["person".into()],
+                dwell_secs: None,
             }],
             ..Default::default()
         };
@@ -980,6 +1202,7 @@ mod tests {
                 points: vec![[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0]],
                 kind: ZoneKind::Ignore,
                 labels: vec![],
+                dwell_secs: None,
             }],
             ..Default::default()
         };

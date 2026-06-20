@@ -50,3 +50,4 @@ facerec = { path = "../facerec" }
 gesture = { path = "../gesture" }
 motion = { path = "../motion" }
 recorder = { path = "../recorder" }
+tracker = { path = "../tracker" }

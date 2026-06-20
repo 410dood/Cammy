@@ -103,6 +103,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/stats", get(stats))
         .route("/api/overview", get(overview))
+        .route("/api/analytics/counts", get(analytics_counts))
         .route("/api/arm", get(get_arm_mode).put(set_arm_mode))
         .route("/api/notifications", get(list_notifications_api))
         .route(
@@ -2243,6 +2244,17 @@ async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>>
 /// Home dashboard aggregator: camera health, today's counts by label, storage,
 /// and the unread-notification count — everything the Overview page needs in one
 /// round-trip. The online rule mirrors `camera_status` / `metrics`.
+/// Tracker-analytics roll-up: true in/out crossing counts (per tripwire +
+/// direction) and loiter counts (per zone) over an optional time range.
+async fn analytics_counts(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let from = q.get("from").and_then(|s| s.parse::<i64>().ok());
+    let to = q.get("to").and_then(|s| s.parse::<i64>().ok());
+    Ok(Json(st.db.analytics_counts(from, to)?))
+}
+
 async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let cameras = st.db.list_cameras()?;
     let board = st.status.snapshot();
@@ -2810,6 +2822,7 @@ mod tests {
             flagged: true,
             note: None,
             anomaly_score: None,
+            direction: None,
         };
         let csv = events_to_csv(std::slice::from_ref(&ev));
         let mut lines = csv.lines();

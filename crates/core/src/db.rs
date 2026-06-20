@@ -81,6 +81,11 @@ pub struct PolyZone {
     pub kind: ZoneKind,
     /// Object labels this zone applies to; empty = every object.
     pub labels: Vec<String>,
+    /// Loitering threshold: if set (>0), a tracked object whose ground-contact
+    /// point dwells inside this zone for this many seconds fires a `loiter`
+    /// event. `None`/0 = not a dwell zone. Requires object tracking.
+    #[serde(default)]
+    pub dwell_secs: Option<u32>,
 }
 
 impl PolyZone {
@@ -134,6 +139,11 @@ pub struct DetectConfig {
     /// `ignore_zones`. A `Required` zone makes detections valid only when their
     /// anchor lands inside one; `Ignore` zones drop them.
     pub zones: Vec<PolyZone>,
+    /// Directed virtual lines for line-crossing analytics (in/out counting,
+    /// perimeter, one-way enforcement). Requires object tracking; a confirmed
+    /// track whose ground-contact point crosses a line fires a `crossing` event.
+    #[serde(default)]
+    pub tripwires: Vec<crate::analytics::Tripwire>,
     /// Polygon privacy masks: these regions are blacked out of the frame before
     /// motion, detection and snapshots — nothing inside is analyzed or stored.
     /// (Continuous recordings are packet-copied and are not masked.)
@@ -222,6 +232,9 @@ pub struct Event {
     /// Anomaly score (0..1) from the anomaly-detection worker; None = unscored.
     #[serde(default)]
     pub anomaly_score: Option<f32>,
+    /// Line-crossing direction for a `crossing` event: `"a_to_b"` / `"b_to_a"`.
+    #[serde(default)]
+    pub direction: Option<String>,
 }
 
 /// One row of the smart-search corpus: an event's id, its searchable text
@@ -883,6 +896,8 @@ impl Db {
         let _ = conn.execute("ALTER TABLE events ADD COLUMN note TEXT", []);
         // B3: anomaly score (0..1) written by the anomaly-detection worker.
         let _ = conn.execute("ALTER TABLE events ADD COLUMN anomaly_score REAL", []);
+        // Line-crossing direction ("a_to_b"/"b_to_a") on tracker `crossing` events.
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN direction TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
@@ -1091,13 +1106,35 @@ impl Db {
         gesture: Option<&str>,
         zone: Option<&str>,
     ) -> Result<i64> {
+        self.add_event_dir(
+            camera_id, ts, label, score, bbox, snapshot, face, plate, gesture, zone, None,
+        )
+    }
+
+    /// Like [`add_event`](Self::add_event) but also records a line-crossing
+    /// `direction` — used by the tracker-driven analytics for `crossing` events.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_event_dir(
+        &self,
+        camera_id: i64,
+        ts: i64,
+        label: &str,
+        score: f32,
+        bbox: [f32; 4],
+        snapshot: Option<&str>,
+        face: Option<&str>,
+        plate: Option<&str>,
+        gesture: Option<&str>,
+        zone: Option<&str>,
+        direction: Option<&str>,
+    ) -> Result<i64> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face, plate, gesture, zone)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face, plate, gesture, zone, direction)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 camera_id, ts, label, score, bbox[0], bbox[1], bbox[2], bbox[3], snapshot, face,
-                plate, gesture, zone
+                plate, gesture, zone, direction
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -1119,7 +1156,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score
+                    e.flagged, e.note, e.anomaly_score, e.direction
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -1154,13 +1191,54 @@ impl Db {
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                         e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                        e.flagged, e.note, e.anomaly_score
+                        e.flagged, e.note, e.anomaly_score, e.direction
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
             )
             .optional()?;
         Ok(ev)
+    }
+
+    /// Tracker-analytics roll-up over `crossing`/`loiter` events in a time range
+    /// (unix secs; `None` = unbounded). Crossings are de-duplicated by the
+    /// tracker (one physical pass = one event), so these are *true* throughput
+    /// counts, not the cooldown-inflated detection tallies. Grouped by tripwire
+    /// + direction (crossings) and by zone (loiters).
+    pub fn analytics_counts(
+        &self,
+        from: Option<i64>,
+        to: Option<i64>,
+    ) -> Result<serde_json::Value> {
+        let conn = self.conn();
+        let mut cs = conn.prepare(
+            "SELECT zone, direction, COUNT(*) FROM events
+             WHERE label = 'crossing' AND (?1 IS NULL OR ts >= ?1) AND (?2 IS NULL OR ts < ?2)
+             GROUP BY zone, direction ORDER BY zone, direction",
+        )?;
+        let crossings: Vec<serde_json::Value> = cs
+            .query_map(params![from, to], |r| {
+                Ok(serde_json::json!({
+                    "tripwire": r.get::<_, Option<String>>(0)?,
+                    "direction": r.get::<_, Option<String>>(1)?,
+                    "count": r.get::<_, i64>(2)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut ls = conn.prepare(
+            "SELECT zone, COUNT(*) FROM events
+             WHERE label = 'loiter' AND (?1 IS NULL OR ts >= ?1) AND (?2 IS NULL OR ts < ?2)
+             GROUP BY zone ORDER BY zone",
+        )?;
+        let loiters: Vec<serde_json::Value> = ls
+            .query_map(params![from, to], |r| {
+                Ok(serde_json::json!({
+                    "zone": r.get::<_, Option<String>>(0)?,
+                    "count": r.get::<_, i64>(1)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(serde_json::json!({ "crossings": crossings, "loiters": loiters }))
     }
 
     // --- alarms --------------------------------------------------------------
@@ -2129,6 +2207,7 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         flagged: r.get::<_, i64>(17)? != 0,
         note: r.get(18)?,
         anomaly_score: r.get(19)?,
+        direction: r.get(20)?,
     })
 }
 
@@ -2421,6 +2500,14 @@ mod tests {
                 points: vec![[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
                 kind: ZoneKind::Required,
                 labels: vec!["person".into()],
+                dwell_secs: Some(30),
+            }],
+            tripwires: vec![crate::analytics::Tripwire {
+                name: "gate".into(),
+                a: [0.0, 0.5],
+                b: [1.0, 0.5],
+                direction: crate::analytics::CrossDir::AToB,
+                labels: vec!["car".into()],
             }],
             privacy_masks: vec![vec![[0.0, 0.0], [0.2, 0.0], [0.2, 0.2], [0.0, 0.2]]],
             min_area: Some(0.001),
