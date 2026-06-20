@@ -79,6 +79,14 @@ pub fn run(
 
         let cameras = db.list_cameras().unwrap_or_default();
         let alarms = db.list_alarms().unwrap_or_default();
+        // Prune per-camera analytics state for cameras that were deleted (ids are
+        // never reused), so a long-running process doesn't hold a tracker +
+        // trajectory buffers for a camera that's gone.
+        {
+            let live: std::collections::HashSet<i64> = cameras.iter().map(|c| c.id).collect();
+            trackers.retain(|k, _| live.contains(k));
+            analytics.retain(|k, _| live.contains(k));
+        }
         for cam in cameras.iter().filter(|c| c.enabled && c.detect) {
             if shutdown.load(Ordering::Relaxed) {
                 break;
@@ -159,10 +167,22 @@ pub fn run(
                 }
             };
             let verdict = gate.update(&frame);
-            if !verdict.is_motion() {
+            // Tracker-driven analytics (line-crossing / loitering) must keep
+            // advancing even on motionless frames: a person standing still
+            // produces no pixel change yet is exactly what a loiter alert
+            // targets. So on cameras that configure a tripwire or a dwell zone,
+            // run the detector even when the motion gate sees no motion (regular
+            // per-object event emission is still suppressed below).
+            let analytics_on = !cam.detect_config.tripwires.is_empty()
+                || cam
+                    .detect_config
+                    .zones
+                    .iter()
+                    .any(|z| z.dwell_secs.unwrap_or(0) > 0);
+            if !verdict.is_motion() && !analytics_on {
                 continue;
             }
-            tracing::debug!(camera = %cam.name, ?verdict, "motion -> running detector");
+            tracing::debug!(camera = %cam.name, ?verdict, "running detector");
 
             let infer_start = Instant::now();
             let dets = match detectors
@@ -208,18 +228,15 @@ pub fn run(
             // the cooldown-throttled `wanted`, so an object trips a tripwire even
             // while its label is in event cooldown. Active only on cameras that
             // configure a tripwire or a dwell zone (otherwise the tracker is idle).
-            let analytics_on = !cam.detect_config.tripwires.is_empty()
-                || cam
-                    .detect_config
-                    .zones
-                    .iter()
-                    .any(|z| z.dwell_secs.unwrap_or(0) > 0);
             if analytics_on {
                 let tdets: Vec<tracker::Det> = dets
                     .iter()
                     .filter(|d| labels.is_empty() || labels.iter().any(|l| l == d.label))
                     .filter(|d| d.score >= min_score)
-                    .filter(|d| passes_zones_and_size(d, &cam.detect_config, fw, fh))
+                    // size-only gate (NOT passes_zones_and_size): zone/tripwire
+                    // membership is handled inside analytics, so a Required/Ignore
+                    // dwell zone must not drop objects from the tracker feed.
+                    .filter(|d| passes_size(d, &cam.detect_config, fw, fh))
                     .map(|d| tracker::Det {
                         label: d.label,
                         score: d.score,
@@ -276,6 +293,12 @@ pub fn run(
                 }
             }
 
+            // A motionless frame ran the tracker/analytics above, but the motion
+            // gate's job is to suppress regular per-object detection events — so
+            // skip the rest of the event path when there was no motion.
+            if !verdict.is_motion() {
+                continue;
+            }
             if wanted.is_empty() {
                 continue;
             }
@@ -947,6 +970,19 @@ fn passes_zones_and_size(
         return false;
     }
     true
+}
+
+/// Object-size gate only (fraction of frame area) — used to feed the tracker the
+/// real objects WITHOUT the Required/Ignore zone-membership filter. Zone and
+/// tripwire membership is an analytics concern handled inside
+/// `AnalyticsState::tick` (via `contains`), so a dwell zone drawn as `Ignore`
+/// (or a `Required` zone elsewhere) must not silently drop objects from tracking.
+fn passes_size(d: &detector::Detection, cfg: &crate::db::DetectConfig, fw: f32, fh: f32) -> bool {
+    if cfg.min_area.is_none() && cfg.max_area.is_none() {
+        return true;
+    }
+    let area = ((d.x2 - d.x1).max(0.0) * (d.y2 - d.y1).max(0.0)) / (fw * fh).max(1.0);
+    !(cfg.min_area.is_some_and(|m| area < m) || cfg.max_area.is_some_and(|m| area > m))
 }
 
 /// Human label for the execution provider a detector is using on this OS.

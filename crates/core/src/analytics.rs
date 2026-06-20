@@ -96,7 +96,16 @@ pub struct Loiter {
 
 #[derive(Clone, Copy, Debug)]
 struct DwellState {
-    start_ts: i64,
+    /// Accumulated *contiguous* time the object has been inside the zone (secs).
+    /// Only inside-time counts: stepping out pauses accrual (and never credits
+    /// time spent outside), but within the grace window it doesn't reset.
+    inside_secs: i64,
+    /// Timestamp of the previous tick this (track, zone) pair was processed.
+    last_ts: i64,
+    /// Was the immediately-previous observation inside? Breaks the contiguous
+    /// run so the gap across an out-excursion isn't mistakenly credited.
+    contiguous: bool,
+    /// Last tick the anchor was actually inside — drives grace-window expiry.
     last_inside_ts: i64,
     fired: bool,
 }
@@ -104,12 +113,14 @@ struct DwellState {
 /// Per-camera analytics memory across frames: each track's last side of every
 /// tripwire (to detect a crossing) and its dwell progress in every zone.
 pub struct AnalyticsState {
-    /// (track_id, tripwire_name) -> last signed side of the line.
-    last_side: HashMap<(u64, String), f32>,
-    /// (track_id, zone_name) -> dwell progress.
-    dwell: HashMap<(u64, String), DwellState>,
-    /// A track briefly lost to occlusion shouldn't reset its dwell timer; only
-    /// reset after it's been continuously outside for this many seconds.
+    /// (track_id, tripwire **index**) -> last signed side of the line. Keyed by
+    /// index, not the user-editable name, so two tripwires that share a name
+    /// can't collide into one cell (which would drop a real crossing).
+    last_side: HashMap<(u64, usize), f32>,
+    /// (track_id, zone **index**) -> dwell progress (same index-keying reason).
+    dwell: HashMap<(u64, usize), DwellState>,
+    /// When a track briefly steps outside, inside-time accrual pauses but the
+    /// dwell state is kept alive for this many seconds before it's forgotten.
     grace_secs: i64,
 }
 
@@ -142,12 +153,12 @@ impl AnalyticsState {
             let anchor = t.anchor();
 
             // --- tripwires ---------------------------------------------------
-            for tw in tripwires {
+            for (ti, tw) in tripwires.iter().enumerate() {
                 if !tw.applies_to(&t.label) {
                     continue;
                 }
                 let side = side_of_line((tw.a[0], tw.a[1]), (tw.b[0], tw.b[1]), anchor);
-                let key = (t.id, tw.name.clone());
+                let key = (t.id, ti);
                 if let Some(&prev) = self.last_side.get(&key) {
                     // A sign flip between consecutive points = a crossing. Guard
                     // against exact-zero (on the line) readings so we don't fire
@@ -171,36 +182,52 @@ impl AnalyticsState {
             }
 
             // --- loitering / dwell ------------------------------------------
-            for z in zones {
+            for (zi, z) in zones.iter().enumerate() {
                 let Some(threshold) = dwell_threshold(z) else {
                     continue;
                 };
                 if !z.applies_to(&t.label) {
                     continue;
                 }
-                let key = (t.id, z.name.clone());
-                let inside = z.contains(anchor.0, anchor.1);
-                if inside {
+                let key = (t.id, zi);
+                if z.contains(anchor.0, anchor.1) {
                     let st = self.dwell.entry(key).or_insert(DwellState {
-                        start_ts: now,
+                        inside_secs: 0,
+                        last_ts: now,
+                        contiguous: false,
                         last_inside_ts: now,
                         fired: false,
                     });
+                    // Credit only contiguous inside-time: add the gap since the
+                    // previous tick *iff* that tick was also inside.
+                    if st.contiguous {
+                        st.inside_secs += (now - st.last_ts).max(0);
+                    }
+                    st.contiguous = true;
+                    st.last_ts = now;
                     st.last_inside_ts = now;
-                    if !st.fired && now - st.start_ts >= threshold as i64 {
+                    if !st.fired && st.inside_secs >= threshold as i64 {
                         st.fired = true;
                         loiters.push(Loiter {
                             zone: z.name.clone(),
                             track_id: t.id,
                             label: t.label.clone(),
-                            dwell_secs: now - st.start_ts,
+                            dwell_secs: st.inside_secs,
                             anchor,
                         });
                     }
-                } else if let Some(st) = self.dwell.get(&key) {
-                    // Outside: only forget the dwell once it's been gone past the
-                    // grace window (so a momentary occlusion doesn't reset it).
-                    if now - st.last_inside_ts > self.grace_secs {
+                } else {
+                    // Outside: break the contiguous run (so the out-excursion gap
+                    // isn't credited), and forget the dwell only once it's been
+                    // gone past the grace window.
+                    let expired = match self.dwell.get_mut(&key) {
+                        Some(st) => {
+                            st.contiguous = false;
+                            now - st.last_inside_ts > self.grace_secs
+                        }
+                        None => false,
+                    };
+                    if expired {
                         self.dwell.remove(&key);
                     }
                 }
@@ -378,32 +405,52 @@ mod tests {
     }
 
     #[test]
-    fn occlusion_within_grace_does_not_reset_dwell() {
+    fn brief_outside_excursion_pauses_but_does_not_reset_dwell() {
+        // Inside-time accrues; a short step outside (within grace) PAUSES the
+        // accumulator but doesn't reset it, so the accrued inside-time survives.
         let mut st = AnalyticsState::default(); // grace = 3s
         let zones = vec![dwell_zone("entry", 5)];
         let mut total = Vec::new();
-        // Inside for 3s.
-        for now in 0..3 {
+        // Inside 0..5 -> accrues ~4s of inside-time (first sample doesn't credit).
+        for now in 0..5 {
             let t = track_at(1, "person", 0.5, 0.5);
-            let (_, lo) = st.tick(&[&t], &[], &zones, now);
-            total.extend(lo);
+            total.extend(st.tick(&[&t], &[], &zones, now).1);
         }
-        // Briefly outside the polygon for 2s (within grace) — dwell must persist.
-        for now in 3..5 {
-            let t = track_at(1, "person", 0.1, 0.1); // outside the zone
-            let (_, lo) = st.tick(&[&t], &[], &zones, now);
-            total.extend(lo);
-        }
-        // Back inside: cumulative dwell from the original start still passes 5s.
+        // Outside for 2s (within grace) — accrual pauses, state persists.
         for now in 5..7 {
+            let t = track_at(1, "person", 0.1, 0.1);
+            total.extend(st.tick(&[&t], &[], &zones, now).1);
+        }
+        // Back inside: a couple more inside-seconds push the accumulator past 5
+        // (only possible because the prior 4s wasn't reset by the excursion).
+        for now in 7..10 {
             let t = track_at(1, "person", 0.5, 0.5);
-            let (_, lo) = st.tick(&[&t], &[], &zones, now);
-            total.extend(lo);
+            total.extend(st.tick(&[&t], &[], &zones, now).1);
         }
         assert_eq!(
             total.len(),
             1,
-            "dwell survived the brief occlusion and fired"
+            "dwell survived the excursion and fired once"
+        );
+    }
+
+    #[test]
+    fn intermittent_presence_does_not_over_count_loiter() {
+        // An object mostly OUTSIDE (in/out faster than it accrues) must not trip
+        // a loiter — wall-clock-since-entry would have falsely fired here.
+        let mut st = AnalyticsState::default();
+        let zones = vec![dwell_zone("entry", 5)];
+        let mut total = Vec::new();
+        // Inside only at t = 0,3,6,9; outside (within grace) in between.
+        for now in 0..12 {
+            let inside = now % 3 == 0;
+            let (px, py) = if inside { (0.5, 0.5) } else { (0.1, 0.1) };
+            let t = track_at(1, "person", px, py);
+            total.extend(st.tick(&[&t], &[], &zones, now).1);
+        }
+        assert!(
+            total.is_empty(),
+            "time spent outside the zone is not credited toward dwell"
         );
     }
 

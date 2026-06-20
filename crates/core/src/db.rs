@@ -1093,7 +1093,6 @@ impl Db {
     // --- events ----------------------------------------------------------
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn add_event(
         &self,
         camera_id: i64,

@@ -12,8 +12,9 @@
 //!      to still-unmatched tracks (rescues partial occlusions). Only same-label
 //!      boxes match.
 //!   3. **Manage lifecycle** with hit/miss hysteresis: a new detection becomes a
-//!      *confirmed* track after `min_hits` consecutive frames; a track survives
-//!      `max_age` missed frames (occlusion) before it is retired.
+//!      *confirmed* track after `min_hits` total matched frames (SORT-style
+//!      cumulative hits, reset of misses on each match); a track survives
+//!      `max_age` consecutive missed frames (occlusion) before it is retired.
 //!
 //! All coordinates are **frame fractions** (0..1, top-left origin) so tracks
 //! live in the same coordinate space as zones and tripwires.
@@ -113,9 +114,17 @@ impl Track {
     pub fn anchor(&self) -> (f32, f32) {
         self.bbox.anchor()
     }
-    /// Predicted box for the next frame (constant-velocity).
+    /// Predicted box for the next association, dead-reckoned by constant
+    /// velocity. Critically this extrapolates *further the longer the track has
+    /// been unmatched* (`misses + 1` steps): the last-observed `bbox` is frozen
+    /// during an occlusion, so a single step would leave the predicted box stuck
+    /// one frame ahead of a stale position and the object — having travelled
+    /// several frames' distance — would fail to re-associate (spawning a
+    /// duplicate ID). Scaling by the gap keeps the prediction near where the
+    /// object actually is when it reappears.
     fn predicted(&self) -> BBox {
-        self.bbox.shifted(self.vx, self.vy)
+        let steps = (self.misses + 1) as f32;
+        self.bbox.shifted(self.vx * steps, self.vy * steps)
     }
 }
 
@@ -126,7 +135,7 @@ pub struct TrackerConfig {
     pub iou_threshold: f32,
     /// Missed frames a track tolerates before retirement (occlusion budget).
     pub max_age: u32,
-    /// Consecutive hits before a tentative track is `confirmed`.
+    /// Cumulative matched frames (hits) before a tentative track is `confirmed`.
     pub min_hits: u32,
     /// Score at/above which a detection is "high confidence" (first pass).
     pub high_score: f32,
@@ -217,8 +226,14 @@ impl Tracker {
                 let (old_cx, old_cy) = (t.bbox.cx(), t.bbox.cy());
                 let (new_cx, new_cy) = (d.bbox.cx(), d.bbox.cy());
                 let s = self.cfg.vel_smooth;
-                t.vx = (1.0 - s) * t.vx + s * (new_cx - old_cx);
-                t.vy = (1.0 - s) * t.vy + s * (new_cy - old_cy);
+                // The centroid moved `new - old` over `misses + 1` ticks (the
+                // track may have been unmatched for a few frames), so normalize
+                // to a per-tick velocity — otherwise a re-acquisition after an
+                // occlusion inflates velocity by ~Nx and over-shoots the next
+                // prediction. (`misses` is still the pre-match count here.)
+                let gap = (t.misses + 1) as f32;
+                t.vx = (1.0 - s) * t.vx + s * (new_cx - old_cx) / gap;
+                t.vy = (1.0 - s) * t.vy + s * (new_cy - old_cy) / gap;
                 t.bbox = d.bbox;
                 t.hits += 1;
                 t.misses = 0;
@@ -425,10 +440,22 @@ mod tests {
         // One frame with no detection (occlusion) — track must persist.
         tr.update(&[], 2);
         assert_eq!(tr.tracks().len(), 1, "track survives a miss within max_age");
-        // Reappears near the predicted position -> same id.
+        // The object reappears one frame later, having kept moving (~2 frames of
+        // travel). It must RE-ASSOCIATE to the same track, not spawn a new id —
+        // assert against tracks() (incl. tentative) so a spawned duplicate would
+        // be caught (the old buggy code left the original frozen + a 2nd track).
         tr.update(&[det("person", mk(0.28))], 3);
-        let again = tr.confirmed().next().unwrap().id;
-        assert_eq!(id, again, "re-associates to the same id after occlusion");
+        assert_eq!(
+            tr.tracks().len(),
+            1,
+            "no duplicate track spawned across the occlusion"
+        );
+        let t = &tr.tracks()[0];
+        assert_eq!(t.id, id, "re-associates to the same id after occlusion");
+        assert!(
+            (t.bbox.x1 - 0.28).abs() < 1e-4,
+            "the track moved to the reappearance position (not frozen at the stale box)"
+        );
     }
 
     #[test]
