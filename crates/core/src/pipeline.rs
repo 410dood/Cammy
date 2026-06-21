@@ -520,6 +520,9 @@ pub fn run(
             }
 
             let mut new_event_ids: Vec<i64> = Vec::new();
+            // (event id, pixel box) for each new event, to embed its object crop
+            // for cross-camera appearance search (Re-ID).
+            let mut crop_jobs: Vec<(i64, [f32; 4])> = Vec::new();
             for (i, d) in wanted.iter().enumerate() {
                 last_event.insert((cam.id, d.label), now);
                 match db.add_event(
@@ -601,6 +604,7 @@ pub fn run(
                             crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
                         }
                         new_event_ids.push(id);
+                        crop_jobs.push((id, [d.x1, d.y1, d.x2, d.y2]));
                     }
                     Err(e) => tracing::warn!("event insert failed: {e:#}"),
                 }
@@ -687,8 +691,10 @@ pub fn run(
                 }
             }
 
-            // Smart search: one CLIP embedding per event frame (shared by its
-            // events) so snapshots become text-searchable.
+            // Smart search + appearance search: one CLIP embedding of the event
+            // frame (shared, makes snapshots text-searchable) PLUS one of each
+            // object's crop (cross-camera Re-ID — find the same person/vehicle on
+            // other cameras). Both reuse the single loaded CLIP session.
             if !new_event_ids.is_empty() && crate::smart::models_present() {
                 if clip.is_none() {
                     match crate::smart::ImageEmbedder::try_new() {
@@ -701,9 +707,11 @@ pub fn run(
                 }
                 if let Some(embedder) = clip.as_mut() {
                     match embedder.embed(&frame) {
-                        Ok(emb) => {
-                            for id in &new_event_ids {
-                                let _ = db.set_event_embedding(*id, &emb);
+                        Ok(frame_emb) => {
+                            for (id, b) in &crop_jobs {
+                                let crop_emb = embed_crop(embedder, &frame, b);
+                                let _ =
+                                    db.set_event_embeddings(*id, &frame_emb, crop_emb.as_deref());
                             }
                         }
                         Err(e) => tracing::debug!("clip embed failed: {e:#}"),
@@ -1065,6 +1073,30 @@ fn passes_size(d: &detector::Detection, cfg: &crate::db::DetectConfig, fw: f32, 
 }
 
 /// Human label for the execution provider a detector is using on this OS.
+/// Embed an object's crop from the frame for cross-camera appearance search.
+/// `b` is a pixel box `[x1, y1, x2, y2]`. Returns `None` when the box is too
+/// small to carry meaningful appearance (a few pixels upscaled to CLIP's 224 is
+/// just noise) or falls outside the frame.
+fn embed_crop(
+    embedder: &mut crate::smart::ImageEmbedder,
+    frame: &DynamicImage,
+    b: &[f32; 4],
+) -> Option<Vec<f32>> {
+    let x = b[0].max(0.0) as u32;
+    let y = b[1].max(0.0) as u32;
+    let w = (b[2] - b[0]).max(0.0) as u32;
+    let h = (b[3] - b[1]).max(0.0) as u32;
+    if w < 24 || h < 24 {
+        return None;
+    }
+    let w = w.min(frame.width().saturating_sub(x));
+    let h = h.min(frame.height().saturating_sub(y));
+    if w < 24 || h < 24 {
+        return None;
+    }
+    embedder.embed(&frame.crop_imm(x, y, w, h)).ok()
+}
+
 fn accel_label(force_cpu: bool) -> &'static str {
     if force_cpu {
         "CPU"

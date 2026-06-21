@@ -1,5 +1,5 @@
 ﻿import { useEffect, useState } from "react";
-import { api, CamEvent, Camera, fmtTime, Segment } from "../api";
+import { api, CamEvent, Camera, fmtTime, Segment, SimilarResult } from "../api";
 import { useToast, useDialog, Modal, RelTime, EmptyState } from "../ui";
 import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil,
@@ -207,6 +207,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
   };
   const [open, setOpen] = useState<CamEvent | null>(null);
   const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
+  const [similar, setSimilar] = useState<{ ev: CamEvent; res: SimilarResult | null } | null>(null);
   const [noClip, setNoClip] = useState<number | null>(null);
 
   // Protect-style playback shortcuts: space pause, arrows seek (shift =
@@ -242,6 +243,18 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
     } catch {
       setNoClip(ev.id);
       setTimeout(() => setNoClip(null), 2500);
+    }
+  };
+
+  // Appearance search: find the same person/vehicle on other cameras/times.
+  const findSimilar = async (ev: CamEvent) => {
+    setSimilar({ ev, res: null }); // open the modal in a loading state
+    try {
+      const res = await api.eventSimilar(ev.id, 24);
+      setSimilar({ ev, res });
+    } catch (e) {
+      toast.error(String(e));
+      setSimilar(null);
     }
   };
 
@@ -657,6 +670,18 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                   >
                     <IconDownload size={14} /> Clip
                   </a>
+                  {ev.snapshot && (
+                    <button
+                      className="btn btn-ghost ev-act"
+                      title="Find this person/vehicle on other cameras (appearance search)"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        findSimilar(ev);
+                      }}
+                    >
+                      <IconUser size={14} /> Similar
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -686,6 +711,73 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
             <span className="muted clock" style={{ marginLeft: "auto" }}>{fmtTime(open.ts)}</span>
           </div>
           {open.transcript && <p className="ev-line" style={{ margin: "10px 0 0" }}><IconMic size={14} /> <span>“{open.transcript}”</span></p>}
+        </Modal>
+      )}
+
+      {similar && (
+        <Modal
+          title={`Similar to this ${similar.ev.label} · ${similar.ev.camera}`}
+          onClose={() => setSimilar(null)}
+        >
+          <div className="row" style={{ alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
+            {similar.ev.snapshot && (
+              <div style={{ flex: "0 0 180px" }}>
+                <img
+                  src={`/api/snapshots/${similar.ev.snapshot}?w=360`}
+                  alt={similar.ev.label}
+                  style={{ width: "100%", borderRadius: 8, border: "2px solid var(--accent-border)" }}
+                />
+                <div className="muted" style={{ fontSize: "0.78rem", marginTop: 4 }}>
+                  query · {fmtTime(similar.ev.ts)}
+                </div>
+              </div>
+            )}
+            <div style={{ flex: "1 1 320px", minWidth: 280 }}>
+              {!similar.res ? (
+                <p className="muted">Searching across cameras…</p>
+              ) : !similar.res.available ? (
+                <p className="muted">
+                  No appearance fingerprint for this event — appearance search needs the smart-search
+                  (CLIP) models installed and applies to object detections.
+                </p>
+              ) : similar.res.results.length === 0 ? (
+                <p className="muted">No similar appearances found on any camera yet.</p>
+              ) : (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+                    gap: 10,
+                  }}
+                >
+                  {similar.res.results.map((m) => (
+                    <button
+                      key={m.event.id}
+                      className="event-card"
+                      style={{ textAlign: "left", cursor: "pointer" }}
+                      onClick={() => {
+                        setSimilar(null);
+                        setOpen(m.event);
+                      }}
+                    >
+                      {m.event.snapshot ? (
+                        <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={m.event.label} loading="lazy" />
+                      ) : (
+                        <div style={{ aspectRatio: "4 / 3", background: "#000" }} />
+                      )}
+                      <div className="meta">
+                        <div className="ev-head">
+                          <span className="badge accent score">{(m.similarity * 100).toFixed(0)}%</span>
+                          <span className="muted">{m.event.camera}</span>
+                        </div>
+                        <RelTime ts={m.event.ts} className="muted ev-time" />
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </Modal>
       )}
 
