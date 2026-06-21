@@ -14,9 +14,53 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 52/52, WAN-hardened auth/TLS, 2026-06-18
+## Current status: v0.3 — competitor matrix 60/60, full tracker analytics suite, 2026-06-20
 
-### This session (later): roadmap feature batch — ALL 16 net-new features from docs/04
+### This session: commercial video-analytics suite (matrix #53–#60) on the object tracker
+
+Researched the commercial NVR/VMS field and built the **multi-object tracker**
+(`crates/tracker`, SORT-lite: velocity-predicted IoU association, ByteTrack
+two-pass, hit/miss hysteresis, persistent IDs + trajectories) — the foundational
+gap that unlocks every flagship analytic — then shipped, on top of it, the whole
+analytics family, each **live-validated + adversarially reviewed + CI-green +
+merged** as its own PR:
+
+- **#53 object tracker** + **#54 line-crossing tripwires** (directed, ByteTrack)
+  + **#55 loitering / dwell** (PR #14): `crates/core/src/analytics.rs`
+  `AnalyticsState::tick` is the pure per-frame engine over confirmed tracks; the
+  pipeline drives it and emits `crossing`/`loiter` events through the existing
+  snapshot+webhook+MQTT+alarm path (alarm rules match by `label`).
+- **#56 speed estimation** + **#57 wrong-way** (PR #15): `crates/tracker/src/homography.rs`
+  (hand-rolled 8×8 Gaussian DLT, `Homography::from_quad` from 4 ground-rectangle
+  corners + real W×H; convex-quad + behind-horizon guards). `track_speed_kmh`
+  warps the trajectory to the ground plane (millisecond timestamps, displacement-
+  based, capped). Per-camera `DetectConfig.ground_calib`; per-tripwire
+  `alert_wrong_way`. New `events.speed` column.
+- **#58 occupancy + capacity alarm** + **#59 people-counting** (PR #16): `tick`
+  also returns per-zone live counts (published to the `StatusBoard`,
+  `GET /api/analytics/occupancy`); per-zone `PolyZone.occupancy_max` arms an
+  **edge-triggered** `occupancy` event (latch keyed by config-shape fingerprint so
+  a zone reorder can't suppress a breach). `db::analytics_counts`
+  (`GET /api/analytics/counts`) rolls crossings into in/out/net throughput.
+- **#60 activity heatmap** (PR #17): `db::heatmap` accumulates each detection's
+  ground-anchor into a grid×grid density map (`GET /api/analytics/heatmap`); a
+  `Heatmap.tsx` canvas overlays it on the camera detail frame. **Review caught a
+  HIGH bug**: detection boxes were persisted in raw PIXELS while everything else
+  used 0..1 fractions — fixed by normalising detection boxes at storage
+  (`pipeline.rs` `add_event` now stores `[d.x1/fw, …]`), restoring the documented
+  invariant; `db::heatmap` skips out-of-[0,1] legacy rows.
+
+GOTCHAs this session: detection events historically stored **pixel** bboxes while
+zones/masks/analytics store **0..1 fractions** — now unified to fractions (legacy
+rows are pixel-scale; the heatmap filters them out). The synthetic `sample.mp4`
+exec source serves a **frozen frame** to go2rtc (motion gate never trips, so
+motion-gated detection *events* don't fire; `analytics_on` cameras still detect on
+the still frame, which is why occupancy/tracks validated but raw events didn't) —
+seed the events table directly to exercise read-side analytics. Adversarial
+review repeatedly caught real bugs unit tests + happy-path live checks missed
+(fail-open auth earlier; the pixel-vs-fraction heatmap bug) — keep running it.
+
+### Earlier this session: roadmap feature batch — ALL 16 net-new features from docs/04
 
 Built and validated **all 16 net-new features** proposed in
 `docs/04-ux-ui-redesign-and-roadmap.md` (A1-A6, B1-B4, C1-C6). **All Rust is
