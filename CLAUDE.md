@@ -14,7 +14,60 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 61/61, full commercial analytics suite, 2026-06-20
+## Current status: v0.3 — competitor matrix 66/66, full commercial analytics suite, 2026-06-21
+
+> Enterprise-auth batch shipped this session, each its own PR branched off `main`
+> (independent; merge in any order): #62 TOTP 2FA (`two-factor-auth`/PR #19), #63
+> camera tamper + #64 gait id (`tamper-and-gait`/PR #20), #65 reverse-proxy SSO
+> (`forward-auth-sso`/PR #21), and **#66 per-camera RBAC scoping**
+> (`rbac-camera-scoping`, branched off `main`). With #65+#66, the enterprise-
+> governance frontier (SSO + per-camera access) is closed.
+
+### This session: per-camera / camera-group access scoping (matrix #66)
+
+Closes the RBAC gap CLAUDE.md flagged: role gating was global — every authed user
+saw every camera. Now a non-admin named user can be restricted to a **camera
+allow-list** (new `user_cameras` table; **empty rows = unrestricted**, so existing
+accounts are unaffected; FK cascade with user/camera). `api::allowed_cameras(p)`
+resolves the set live per request — `None` (unrestricted) for Admin, loopback/
+legacy/token, and unscoped users; `Some(set)` only for a non-admin named user with
+rows; a scoped DB error fails **CLOSED** (`?`, not `.unwrap_or`). `require_camera`
+returns **404 (not 403)** to avoid camera-id enumeration.
+
+Scope was the leak-risk, so I ran a **discovery workflow that exhaustively mapped
+25 camera-scoped endpoints** + keying patterns before implementing, then guarded
+every one: cameras list(retain)/get/patch/delete/frame/ptz, status, events
+list+export(retain)/bookmark/clip/similar, recordings list/at/segment-video,
+smart-search (materialize-then-filter to honor `limit`), **snapshots** (resolved
+to the owning camera via the authoritative events table — `db::camera_for_snapshot`;
+filename prefixes are ambiguous since names allow `-`), the **live-view WS**
+(`db::camera_by_name` on `?src` minus `_sub`), analytics counts (SQL `IN`-list)/
+occupancy/heatmap, and stats+overview (filtered + **recomputed** totals via
+`db::count_events_in` so no global count leaks). notifications/digests are returned
+**empty for scoped users** (leak-safe v1; per-camera notification attribution is
+the documented follow-up). Admin-only mgmt: `GET`/`PUT /api/users/{id}/cameras`
+(already Admin+token_forbidden via the `/api/users` prefix) + a per-user
+camera-scope editor in the Settings Users card.
+
+**Gates:** fmt/clippy `-D warnings` clean (workspace), 77 lib tests, web builds.
+**Live-validated** (`--trusted-proxy`+XFF): a viewer scoped to one camera saw only
+it across cameras/status/events/recordings/snapshots/ws/heatmap/similar/search/
+stats/overview; every forbidden camera → 404 (incl. snapshot of an existing file
+on a forbidden camera, and a real WS upgrade to a forbidden `?src`); admin saw
+all. A 3-lens adversarial leak-hunt then caught **6 real leaks the discovery's
+area list missed — all fixed**: `GET /api/metrics` (every camera's Prometheus
+series + global event count), `POST /api/digests/run` (GET was scoped, the
+generate-and-return POST wasn't), `GET /api/faces` + `/api/faces/unknown/{file}`
+(unknown-face crops from forbidden cameras), `POST /api/gesture` (a scoped
+operator could create events / fire alarms on a forbidden camera), `GET
+/api/alarms` (forbidden cameras' rule ids + watch strings + webhook targets), and
+a `stream_ws` `_sub`-strip bypass (authorized the base while forwarding a distinct
+`{name}_sub`). **Lesson: a checklist-driven scope pass must still leak-hunt
+OUTSIDE the checklist — metrics/digests/faces/gesture/alarms were all camera-
+bearing but not in the original 25.** **GOTCHA when testing:
+events/segments seeded with old timestamps get retention-pruned on startup — use
+current ts.** Composes with SSO (#65): an SSO user matching a scoped account
+inherits its scope (resolves to the same `user_id`).
 
 ### This session: commercial video-analytics suite (matrix #53–#61) on the object tracker
 

@@ -515,6 +515,13 @@ export const api = {
   patchUser: (id: number, patch: { role?: Role; password?: string }) =>
     req<{ id: number }>(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteUser: (id: number) => req<void>(`/api/users/${id}`, { method: "DELETE" }),
+  // Per-camera RBAC scope: the camera ids a user may see (empty = all).
+  userCameras: (id: number) => req<number[]>(`/api/users/${id}/cameras`),
+  setUserCameras: (id: number, camera_ids: number[]) =>
+    req<{ id: number; cameras: number }>(`/api/users/${id}/cameras`, {
+      method: "PUT",
+      body: JSON.stringify({ camera_ids }),
+    }),
   setPassword: (password: string) =>
     req<{ enabled: boolean }>("/api/auth/password", {
       method: "POST",

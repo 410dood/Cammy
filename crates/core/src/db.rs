@@ -1043,6 +1043,17 @@ impl Db {
             "ALTER TABLE api_tokens ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'",
             [],
         );
+        // Per-camera RBAC scoping (#66): a non-admin user may be restricted to a
+        // subset of cameras. No rows for a user = unrestricted (sees all), so
+        // existing accounts are unaffected. Rows cascade-delete with the user or
+        // the camera.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS user_cameras (
+                 user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                 camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+                 PRIMARY KEY (user_id, camera_id)
+             );",
+        )?;
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
@@ -1254,16 +1265,27 @@ impl Db {
         &self,
         from: Option<i64>,
         to: Option<i64>,
+        allowed: Option<&std::collections::HashSet<i64>>,
     ) -> Result<serde_json::Value> {
         let conn = self.conn();
+        // Per-camera RBAC: restrict to the caller's allowed cameras (ids are our
+        // own i64s -> inline IN-list is injection-safe). `None` = unrestricted;
+        // `Some` is always non-empty (allowed_cameras maps empty -> None).
+        let cam = match allowed {
+            Some(ids) if !ids.is_empty() => format!(
+                " AND camera_id IN ({})",
+                ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+            ),
+            _ => String::new(),
+        };
         // Count both normal and wrong-way crossings: a wrong-way pass is still a
         // physical pass through the line, so it must count toward throughput
         // (it also carries a real `direction`). Excluding it under-reports.
-        let mut cs = conn.prepare(
+        let mut cs = conn.prepare(&format!(
             "SELECT zone, direction, COUNT(*) FROM events
-             WHERE label IN ('crossing', 'wrong_way') AND (?1 IS NULL OR ts >= ?1) AND (?2 IS NULL OR ts < ?2)
-             GROUP BY zone, direction ORDER BY zone, direction",
-        )?;
+             WHERE label IN ('crossing', 'wrong_way') AND (?1 IS NULL OR ts >= ?1) AND (?2 IS NULL OR ts < ?2){cam}
+             GROUP BY zone, direction ORDER BY zone, direction"
+        ))?;
         let crossings: Vec<serde_json::Value> = cs
             .query_map(params![from, to], |r| {
                 Ok(serde_json::json!({
@@ -1273,11 +1295,11 @@ impl Db {
                 }))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let mut ls = conn.prepare(
+        let mut ls = conn.prepare(&format!(
             "SELECT zone, COUNT(*) FROM events
-             WHERE label = 'loiter' AND (?1 IS NULL OR ts >= ?1) AND (?2 IS NULL OR ts < ?2)
-             GROUP BY zone ORDER BY zone",
-        )?;
+             WHERE label = 'loiter' AND (?1 IS NULL OR ts >= ?1) AND (?2 IS NULL OR ts < ?2){cam}
+             GROUP BY zone ORDER BY zone"
+        ))?;
         let loiters: Vec<serde_json::Value> = ls
             .query_map(params![from, to], |r| {
                 Ok(serde_json::json!({
@@ -1839,6 +1861,90 @@ impl Db {
         }
         conn.execute("DELETE FROM users WHERE id = ?1", [id])?;
         Ok(DeleteUser::Deleted)
+    }
+
+    // --- per-camera RBAC scoping (#66) -----------------------------------
+
+    /// A user's camera allow-list (camera ids). An **empty** list means the user
+    /// is unrestricted (sees every camera) — so existing accounts are unaffected.
+    pub fn list_user_cameras(&self, user_id: i64) -> Result<Vec<i64>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT camera_id FROM user_cameras WHERE user_id = ?1 ORDER BY camera_id")?;
+        let rows = stmt
+            .query_map([user_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Replace a user's camera allow-list (atomically). An empty slice clears it
+    /// (back to unrestricted). Non-existent camera ids are silently skipped.
+    /// Returns whether the user exists.
+    pub fn set_user_cameras(&self, user_id: i64, camera_ids: &[i64]) -> Result<bool> {
+        let mut conn = self.conn();
+        let exists = conn
+            .query_row("SELECT 1 FROM users WHERE id = ?1", [user_id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if !exists {
+            return Ok(false);
+        }
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM user_cameras WHERE user_id = ?1", [user_id])?;
+        {
+            let mut ins = tx.prepare(
+                "INSERT OR IGNORE INTO user_cameras (user_id, camera_id)
+                 SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM cameras WHERE id = ?2)",
+            )?;
+            for &cid in camera_ids {
+                ins.execute(params![user_id, cid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Resolve a snapshot filename to the camera that produced it, via the
+    /// authoritative events table — camera names allow `-`, so parsing the
+    /// filename prefix is ambiguous. `None` if no event references it (then a
+    /// scoped caller is denied, fail-closed).
+    pub fn camera_for_snapshot(&self, file: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT camera_id FROM events WHERE snapshot = ?1 LIMIT 1",
+                [file],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Camera id for an exact camera name (the `/api/ws?src=` selector).
+    pub fn camera_by_name(&self, name: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT id FROM cameras WHERE name = ?1", [name], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    /// Total events restricted to a set of camera ids (scoped stats/overview).
+    /// Ids are our own i64s, so the IN-list is built inline (injection-safe).
+    pub fn count_events_in(&self, camera_ids: &[i64]) -> Result<i64> {
+        if camera_ids.is_empty() {
+            return Ok(0);
+        }
+        let in_list = camera_ids
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        Ok(self.conn().query_row(
+            &format!("SELECT COUNT(*) FROM events WHERE camera_id IN ({in_list})"),
+            [],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn delete_alarm(&self, id: i64) -> Result<()> {
