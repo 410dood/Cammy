@@ -3,7 +3,7 @@ import { api, ApiToken, AuditEntry, fmtTime, Me, Role, Settings as S, User } fro
 import { useToast, useDialog, RelTime } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
-  IconDownload, IconUpload, IconCheck, IconUser,
+  IconDownload, IconUpload, IconCheck, IconUser, IconShield,
 } from "../icons";
 
 const AUDIT_META: Record<string, { label: string; Icon: (p: IconProps) => JSX.Element; cls: string }> = {
@@ -17,6 +17,10 @@ const AUDIT_META: Record<string, { label: string; Icon: (p: IconProps) => JSX.El
   user_deleted: { label: "user deleted", Icon: IconTrash, cls: "warn" },
   user_role_changed: { label: "role changed", Icon: IconUser, cls: "warn" },
   user_password_changed: { label: "user password reset", Icon: IconKey, cls: "" },
+  "2fa_enabled": { label: "two-factor enabled", Icon: IconShield, cls: "ok" },
+  "2fa_disabled": { label: "two-factor disabled", Icon: IconShield, cls: "warn" },
+  "2fa_recovery_used": { label: "recovery code used", Icon: IconKey, cls: "warn" },
+  "2fa_reset": { label: "two-factor reset (admin)", Icon: IconShield, cls: "warn" },
 };
 
 // Curated security sounds → the EXACT AudioSet display names YAMNet emits
@@ -303,6 +307,206 @@ function AccountCard({ onError }: { onError: (e: string) => void }) {
   );
 }
 
+// Self-service TOTP two-factor enrollment, for the caller's own credential —
+// a named user account or, on the local box / legacy login, the shared password.
+function TwoFactorCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const dialog = useDialog();
+  const [status, setStatus] = useState<{
+    enabled: boolean;
+    pending: boolean;
+    scope: "user" | "shared";
+    account: string;
+  } | null>(null);
+  const [setup, setSetup] = useState<{ secret: string; otpauth_uri: string } | null>(null);
+  const [code, setCode] = useState("");
+  const [recovery, setRecovery] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => api.twofaStatus().then(setStatus).catch(() => {});
+  useEffect(() => {
+    load();
+  }, []);
+
+  if (!status) return null;
+
+  const begin = async () => {
+    setBusy(true);
+    try {
+      const s = await api.twofaSetup();
+      setSetup({ secret: s.secret, otpauth_uri: s.otpauth_uri });
+      setCode("");
+      setRecovery(null);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const enable = async () => {
+    setBusy(true);
+    try {
+      const r = await api.twofaEnable(code.trim());
+      setRecovery(r.recovery_codes);
+      setSetup(null);
+      setCode("");
+      toast.success("Two-factor enabled");
+      load();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const disable = async () => {
+    const c = await dialog.prompt({
+      title: "Disable two-factor",
+      label: "Current authenticator code or a recovery code (leave blank on the server's own machine)",
+    });
+    if (c === null) return;
+    setBusy(true);
+    try {
+      await api.twofaDisable(c.trim());
+      toast.success("Two-factor disabled");
+      setRecovery(null);
+      load();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copyRecovery = () => {
+    if (!recovery) return;
+    navigator.clipboard?.writeText(recovery.join("\n")).then(
+      () => toast.success("Recovery codes copied"),
+      () => {},
+    );
+  };
+
+  return (
+    <div className="card">
+      <h2>Two-factor authentication</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Require a one-time code from an authenticator app (Google Authenticator, Aegis, 1Password, …)
+        on top of {status.scope === "user" ? "your password" : "the shared password"} when logging in
+        remotely.{" "}
+        {status.scope === "shared" &&
+          "Applies to remote logins using the shared password — this computer (localhost) is always exempt, so you can't lock yourself out locally."}
+      </p>
+
+      {recovery && (
+        <div className="card" style={{ background: "var(--surface-hover)", marginBottom: 0 }}>
+          <b>Save your recovery codes</b>
+          <p className="muted" style={{ margin: "4px 0" }}>
+            Each can be used once if you lose your authenticator. They won't be shown again — store
+            them somewhere safe.
+          </p>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 6,
+              fontFamily: "var(--font-mono)",
+              margin: "8px 0",
+            }}
+          >
+            {recovery.map((c) => (
+              <span key={c}>{c}</span>
+            ))}
+          </div>
+          <div className="row">
+            <button type="button" className="btn btn-ghost" onClick={copyRecovery}>
+              Copy codes
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => setRecovery(null)}>
+              I've saved them
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!recovery && status.enabled && (
+        <div className="row" style={{ alignItems: "center" }}>
+          <span className="badge ok">
+            <IconShield size={14} /> Enabled
+          </span>
+          <button type="button" className="btn btn-danger" disabled={busy} onClick={disable}>
+            Disable two-factor
+          </button>
+        </div>
+      )}
+
+      {!recovery && !status.enabled && !setup && (
+        <button type="button" className="btn btn-primary" disabled={busy} onClick={begin}>
+          <IconShield size={15} /> Set up two-factor
+        </button>
+      )}
+
+      {!recovery && !status.enabled && setup && (
+        <div>
+          <p className="muted" style={{ marginBottom: 4 }}>
+            1. In your authenticator app, add an account using <b>“enter a setup key”</b> and type in
+            this key (or import the otpauth link below):
+          </p>
+          <div
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "1.05em",
+              letterSpacing: 1,
+              wordBreak: "break-all",
+              padding: "8px 10px",
+              background: "var(--surface-hover)",
+              borderRadius: 6,
+            }}
+          >
+            {setup.secret}
+          </div>
+          <details style={{ margin: "6px 0" }}>
+            <summary className="muted" style={{ cursor: "pointer" }}>
+              Show otpauth link
+            </summary>
+            <code style={{ wordBreak: "break-all", fontSize: "0.85em" }}>{setup.otpauth_uri}</code>
+          </details>
+          <p className="muted" style={{ marginBottom: 4 }}>
+            2. Enter the 6-digit code it shows to confirm:
+          </p>
+          <div className="row">
+            <input
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="123456"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && code.trim().length >= 6 && enable()}
+            />
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || code.trim().length < 6}
+              onClick={enable}
+            >
+              Enable
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={busy}
+              onClick={() => {
+                setSetup(null);
+                setCode("");
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BackupCard({ onError }: { onError: (e: string) => void }) {
   const toast = useToast();
   const dialog = useDialog();
@@ -421,6 +625,23 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
       onError(String(e));
     }
   };
+  const reset2fa = async (u: User) => {
+    if (
+      !(await dialog.confirm({
+        title: `Reset two-factor for ${u.username}?`,
+        body: "Clears their authenticator + recovery codes so they can sign in with just their password and re-enroll. Use only when they've lost their device.",
+        confirmLabel: "Reset 2FA",
+        danger: true,
+      }))
+    )
+      return;
+    try {
+      await api.patchUser(u.id, { disable_2fa: true });
+      toast.success("Two-factor reset — that user can log in with their password");
+    } catch (e) {
+      onError(String(e));
+    }
+  };
   const remove = async (u: User) => {
     if (!(await dialog.confirm({ title: `Delete ${u.username}?`, confirmLabel: "Delete", danger: true })))
       return;
@@ -492,6 +713,9 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
                 <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                   <button type="button" className="btn btn-ghost ev-act" onClick={() => resetPw(u)}>
                     Reset password
+                  </button>
+                  <button type="button" className="btn btn-ghost ev-act" onClick={() => reset2fa(u)}>
+                    Reset 2FA
                   </button>
                   <button type="button" className="btn btn-danger ev-act" onClick={() => remove(u)}>
                     Delete
@@ -945,6 +1169,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <RemoteAccessCard onError={onError} />
 
         <AccountCard onError={onError} />
+
+        <TwoFactorCard onError={onError} />
 
         <UsersCard onError={onError} />
 

@@ -29,6 +29,7 @@ mod record;
 mod smart;
 mod status;
 pub mod tls;
+mod totp;
 mod transcribe;
 
 use std::net::SocketAddr;

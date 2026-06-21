@@ -31,6 +31,12 @@ use sha2::{Digest, Sha256};
 use crate::api::AppState;
 
 pub const KV_PASSWORD: &str = "password_hash";
+/// Shared single-password 2FA lives in the settings KV (named users keep theirs
+/// in the `users` table). Mirrors the per-user `totp_*` columns.
+pub const KV_TOTP_SECRET: &str = "totp_secret";
+pub const KV_TOTP_ENABLED: &str = "totp_enabled";
+pub const KV_TOTP_RECOVERY: &str = "totp_recovery";
+pub const KV_TOTP_LAST_STEP: &str = "totp_last_step";
 const COOKIE_NAME: &str = "zoomy_session";
 
 /// Wrong passwords from one IP inside [`FAILURE_WINDOW`] before lockout.
@@ -132,10 +138,11 @@ impl Sessions {
 /// mutations need Operator; account / password / token management needs Admin.
 pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
     use axum::http::Method;
-    // A user changing their OWN password only needs to be authenticated (the
-    // handler verifies their current password), so it stays Viewer-reachable —
-    // listed before the POST→Operator default below.
-    if path == "/api/me/password" {
+    // A user changing their OWN password — or managing their OWN 2FA — only
+    // needs to be authenticated (the handler verifies their current password /
+    // a TOTP code), so these stay Viewer-reachable (self-service), listed before
+    // the POST→Operator default below.
+    if path == "/api/me/password" || path.starts_with("/api/2fa") {
         return Role::Viewer;
     }
     // Account/security management AND config snapshots (which embed camera
@@ -317,6 +324,7 @@ fn token_forbidden(method: &axum::http::Method, path: &str) -> bool {
     path == "/api/auth/password"
         || path == "/api/audit"
         || path.starts_with("/api/users") // user/role management is interactive-only (C5)
+        || path.starts_with("/api/2fa") // a leaked token must not touch 2FA enrollment
         || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
 }
 

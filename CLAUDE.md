@@ -14,7 +14,65 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 61/61, full commercial analytics suite, 2026-06-20
+## Current status: v0.3 — competitor matrix 62/62, full commercial analytics suite, 2026-06-21
+
+### This session: TOTP two-factor authentication (matrix #62) — the top WAN-security gap
+
+Driven by a fresh competitor-research workflow (UniFi Protect/Ubiquiti SSO MFA,
+Synology Secure SignIn, Milestone/Genetec) that ranked native 2FA as the #1
+net-new gap — a clear differentiator vs Frigate/Blue Iris, which still need an
+external reverse proxy/SSO for MFA. Built **pure-Rust, no new dependency**: new
+`crates/core/src/totp.rs` implements RFC 6238 TOTP from the in-tree `sha1` crate
+(hand-rolled HMAC-SHA1) + a hand-rolled RFC 4648 base32, unit-tested against the
+**RFC 4226/4648/6238 test vectors** (8 tests). Storage is additive: `users`
+gains `totp_secret`/`totp_enabled`/`totp_recovery`/`totp_last_step` columns, and
+the legacy shared single-password admin keeps the equivalent in the settings KV
+(`auth::KV_TOTP_*`) — both credentials supported by one set of endpoints that
+route on `Principal.user_id`.
+
+The login flow (`api.rs::login`) gains an `otp` field: **after** the password
+verifies, an enrolled credential returns `{ok:false, mfa_required:true}` (a 200,
+deliberately **not** a throttle failure — factor one was correct, no session
+issued) until a valid 6-digit TOTP (±1 step skew) or a one-time recovery code is
+supplied; a **wrong** code records a `LoginThrottle` failure + audits
+`login_failed (bad 2fa)`, so the existing per-IP brute-force lockout covers the
+10^6 code space (validated: 9th wrong → 429). **Replay-hardened**:
+`totp::matched_step` returns the matched step and login refuses any step ≤ the
+stored `totp_last_step` watermark, so a code can't be replayed inside its ~90 s
+window. **Recovery codes**: 10 minted at enable, shown once, stored only as
+SHA-256 hashes, consumed atomically under the DB lock (`db::consume_user_recovery`
+/ `consume_kv_recovery`). Endpoints (self-service, Viewer-reachable, **interactive-
+only — `token_forbidden` blocks all `/api/2fa`** so a leaked Bearer token can't
+touch 2FA): `GET /api/2fa`, `POST /api/2fa/{setup,enable,disable}`. **Lockout-
+safe**, mirroring the "you can never lock yourself out locally" invariant:
+loopback is exempt from 2FA entirely (it never logs in) and may disable shared
+2FA without a code; for a remote user, recovery codes + an admin
+`PATCH /api/users/{id} {disable_2fa:true}` reset are the escape hatches. Frontend:
+a login second-factor step (`App.tsx`), a self-service Settings "Two-factor
+authentication" card (enroll → setup-key + otpauth link → confirm code → one-time
+recovery codes; disable), per-user admin "Reset 2FA", and audit labels.
+
+**Build/clippy/test all green (full workspace CI parity: fmt clean, clippy
+-D warnings clean, 85 core lib tests).** **Live-validated end-to-end (35/35) via
+`--trusted-proxy`+XFF:** enroll, password+code login, wrong-code 401, replay
+rejection, single-use recovery, loopback disable exemption, per-user 2FA, admin
+reset, wrong-OTP→429, unauth remote 401, and a Bearer token 403'd from `/api/2fa`.
+A 3-lens (auth-bypass / TOTP-protocol / correctness-DoS) adversarial security
+review with independent per-finding verification confirmed 4 findings (1
+dismissed) and **both substantive ones are fixed**: (1) the replay-watermark
+check-and-advance was a non-atomic read-then-write (TOCTOU) — now a single atomic
+compare-and-set (`db::advance_user_totp_step` / `advance_kv_totp_step`), proven by
+a concurrency test (12 simultaneous same-code logins → **exactly 1 wins**); (2)
+`twofa_disable` now feeds the same per-IP brute-force throttle as login (a wrong
+disable code → lockout, loopback still exempt). A replayed-but-still-valid code
+intentionally counts as a throttle failure (the conservative choice; the review
+agreed leaving it is acceptable). **NOTE: QR-code rendering was deliberately
+skipped to stay zero-dependency** — enrollment
+shows the base32 setup key + the `otpauth://` URI (every authenticator app
+supports manual "enter a setup key"); a QR is a clean future add (the `qrcode`
+crate is pure-Rust). Shared-password 2FA + named-user 2FA both work; the remaining
+enterprise-auth frontier is unchanged: OIDC/SAML SSO, per-camera/group RBAC
+scoping, multi-site federation.
 
 ### This session: commercial video-analytics suite (matrix #53–#61) on the object tracker
 

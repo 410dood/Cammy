@@ -52,6 +52,8 @@ const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
 function LoginOverlay() {
   const [user, setUser] = useState("");
   const [pw, setPw] = useState("");
+  const [otp, setOtp] = useState("");
+  const [needOtp, setNeedOtp] = useState(false);
   const [err, setErr] = useState("");
   const [hasUsers, setHasUsers] = useState(false);
 
@@ -61,11 +63,23 @@ function LoginOverlay() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErr("");
     try {
-      await api.login(pw, user.trim() || undefined);
+      const res = await api.login(pw, user.trim() || undefined, needOtp ? otp.trim() : undefined);
+      if (res.mfa_required) {
+        // Password accepted; this credential needs a second factor.
+        setNeedOtp(true);
+        return;
+      }
       window.location.reload();
     } catch {
-      setErr(hasUsers ? "wrong username or password" : "wrong password");
+      setErr(
+        needOtp
+          ? "wrong code — try a current authenticator code or a recovery code"
+          : hasUsers
+          ? "wrong username or password"
+          : "wrong password"
+      );
     }
   };
   return (
@@ -74,30 +88,66 @@ function LoginOverlay() {
         <h2 className="login-title">
           <IconLock size={18} /> Cammy
         </h2>
-        <p className="muted">Log in to access this NVR remotely.</p>
-        {hasUsers && (
-          <input
-            type="text"
-            placeholder="username"
-            value={user}
-            autoFocus
-            autoComplete="username"
-            onChange={(e) => setUser(e.target.value)}
-            style={{ width: "100%", marginBottom: 8 }}
-          />
+        {!needOtp ? (
+          <>
+            <p className="muted">Log in to access this NVR remotely.</p>
+            {hasUsers && (
+              <input
+                type="text"
+                placeholder="username"
+                value={user}
+                autoFocus
+                autoComplete="username"
+                onChange={(e) => setUser(e.target.value)}
+                style={{ width: "100%", marginBottom: 8 }}
+              />
+            )}
+            <div className="row">
+              <input
+                type="password"
+                placeholder="password"
+                value={pw}
+                autoFocus={!hasUsers}
+                autoComplete="current-password"
+                onChange={(e) => setPw(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <button className="btn btn-primary">Unlock</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="muted">
+              Two-factor is on. Enter the 6-digit code from your authenticator app, or a recovery
+              code.
+            </p>
+            <div className="row">
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="123456"
+                value={otp}
+                autoFocus
+                autoComplete="one-time-code"
+                onChange={(e) => setOtp(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <button className="btn btn-primary">Verify</button>
+            </div>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              style={{ marginTop: 8 }}
+              onClick={() => {
+                setNeedOtp(false);
+                setOtp("");
+                setErr("");
+              }}
+            >
+              Back
+            </button>
+          </>
         )}
-        <div className="row">
-          <input
-            type="password"
-            placeholder="password"
-            value={pw}
-            autoFocus={!hasUsers}
-            autoComplete="current-password"
-            onChange={(e) => setPw(e.target.value)}
-            style={{ flex: 1 }}
-          />
-          <button className="btn btn-primary">Unlock</button>
-        </div>
         {err && <p style={{ color: "var(--danger)" }}>{err}</p>}
       </form>
     </div>

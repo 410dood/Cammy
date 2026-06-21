@@ -498,10 +498,10 @@ export const api = {
   deleteToken: (id: number) => req<void>(`/api/tokens/${id}`, { method: "DELETE" }),
   audit: (limit = 100) => req<AuditEntry[]>(`/api/audit?limit=${limit}`),
   authStatus: () => req<{ enabled: boolean; users: number }>("/api/auth"),
-  login: (password: string, username?: string) =>
-    req<{ ok: boolean }>("/api/login", {
+  login: (password: string, username?: string, otp?: string) =>
+    req<{ ok: boolean; mfa_required?: boolean }>("/api/login", {
       method: "POST",
-      body: JSON.stringify({ username: username || undefined, password }),
+      body: JSON.stringify({ username: username || undefined, password, otp: otp || undefined }),
     }),
   me: () => req<Me>("/api/me"),
   changeMyPassword: (old_password: string, new_password: string) =>
@@ -509,10 +509,29 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ old_password, new_password }),
     }),
+  // Two-factor authentication (TOTP) for the caller's own credential.
+  twofaStatus: () =>
+    req<{ enabled: boolean; pending: boolean; scope: "user" | "shared"; account: string }>(
+      "/api/2fa"
+    ),
+  twofaSetup: () =>
+    req<{ secret: string; otpauth_uri: string; account: string }>("/api/2fa/setup", {
+      method: "POST",
+    }),
+  twofaEnable: (code: string) =>
+    req<{ ok: boolean; recovery_codes: string[] }>("/api/2fa/enable", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+  twofaDisable: (code?: string) =>
+    req<{ ok: boolean }>("/api/2fa/disable", {
+      method: "POST",
+      body: JSON.stringify({ code: code || "" }),
+    }),
   users: () => req<User[]>("/api/users"),
   createUser: (body: { username: string; password: string; role: Role }) =>
     req<{ id: number }>("/api/users", { method: "POST", body: JSON.stringify(body) }),
-  patchUser: (id: number, patch: { role?: Role; password?: string }) =>
+  patchUser: (id: number, patch: { role?: Role; password?: string; disable_2fa?: boolean }) =>
     req<{ id: number }>(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteUser: (id: number) => req<void>(`/api/users/${id}`, { method: "DELETE" }),
   setPassword: (password: string) =>
