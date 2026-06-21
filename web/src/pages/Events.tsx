@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { api, CamEvent, Camera, fmtTime, Segment, SimilarResult } from "../api";
 import { useToast, useDialog, Modal, RelTime, EmptyState } from "../ui";
 import {
@@ -247,14 +247,20 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
   };
 
   // Appearance search: find the same person/vehicle on other cameras/times.
+  // A token guards against out-of-order responses (and a late response
+  // re-opening a modal the user already closed — the close handler bumps it too).
+  const similarReq = useRef(0);
   const findSimilar = async (ev: CamEvent) => {
+    const token = ++similarReq.current;
     setSimilar({ ev, res: null }); // open the modal in a loading state
     try {
       const res = await api.eventSimilar(ev.id, 24);
-      setSimilar({ ev, res });
+      if (token === similarReq.current) setSimilar({ ev, res });
     } catch (e) {
-      toast.error(String(e));
-      setSimilar(null);
+      if (token === similarReq.current) {
+        toast.error(String(e));
+        setSimilar(null);
+      }
     }
   };
 
@@ -717,7 +723,10 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
       {similar && (
         <Modal
           title={`Similar to this ${similar.ev.label} · ${similar.ev.camera}`}
-          onClose={() => setSimilar(null)}
+          onClose={() => {
+            similarReq.current++; // ignore any in-flight response after close
+            setSimilar(null);
+          }}
         >
           <div className="row" style={{ alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
             {similar.ev.snapshot && (
@@ -754,8 +763,18 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                     <button
                       key={m.event.id}
                       className="event-card"
-                      style={{ textAlign: "left", cursor: "pointer" }}
+                      style={{
+                        textAlign: "left",
+                        cursor: "pointer",
+                        // .event-card was authored for a <div>; reset UA button chrome.
+                        appearance: "none",
+                        font: "inherit",
+                        color: "inherit",
+                        padding: 0,
+                        width: "100%",
+                      }}
                       onClick={() => {
+                        similarReq.current++;
                         setSimilar(null);
                         setOpen(m.event);
                       }}

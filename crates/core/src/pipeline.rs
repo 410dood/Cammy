@@ -708,8 +708,27 @@ pub fn run(
                 if let Some(embedder) = clip.as_mut() {
                     match embedder.embed(&frame) {
                         Ok(frame_emb) => {
-                            for (id, b) in &crop_jobs {
-                                let crop_emb = embed_crop(embedder, &frame, b);
+                            // The frame embedding (one CLIP run, text search) is
+                            // written for every event. The per-object crop
+                            // embedding (Re-ID) costs an extra CLIP run EACH, so
+                            // cap it per frame: a crowded scene must never block
+                            // the single shared detection thread with unbounded
+                            // inferences. `crop_jobs` is in detector (≈score)
+                            // order, so the cap keeps the most confident objects.
+                            const MAX_CROPS_PER_FRAME: usize = 6;
+                            if crop_jobs.len() > MAX_CROPS_PER_FRAME {
+                                tracing::debug!(
+                                    camera = %cam.name,
+                                    objects = crop_jobs.len(),
+                                    "capping Re-ID crop embeddings to {MAX_CROPS_PER_FRAME}"
+                                );
+                            }
+                            for (i, (id, b)) in crop_jobs.iter().enumerate() {
+                                let crop_emb = if i < MAX_CROPS_PER_FRAME {
+                                    embed_crop(embedder, &frame, b)
+                                } else {
+                                    None
+                                };
                                 let _ =
                                     db.set_event_embeddings(*id, &frame_emb, crop_emb.as_deref());
                             }

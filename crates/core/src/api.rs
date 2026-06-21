@@ -1941,14 +1941,21 @@ async fn event_similar(
             serde_json::json!({ "results": [], "available": false }),
         ));
     };
-    let mut scored: Vec<(f32, i64)> = st
-        .db
-        .crop_embeddings()?
-        .into_iter()
-        .filter(|(eid, _)| *eid != id)
-        .map(|(eid, emb)| (crate::smart::cosine(&query_emb, &emb).max(0.0), eid))
-        .collect();
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    // The whole-corpus cosine scan is CPU-bound and unbounded in size, so run it
+    // off the async runtime's worker threads (mirrors smart_search's text embed).
+    let db = st.db.clone();
+    let scored: Vec<(f32, i64)> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let mut scored: Vec<(f32, i64)> = db
+            .crop_embeddings()?
+            .into_iter()
+            .filter(|(eid, _)| *eid != id)
+            .map(|(eid, emb)| (crate::smart::cosine(&query_emb, &emb).max(0.0), eid))
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     let mut results = Vec::new();
     for (score, eid) in scored.into_iter().take(limit) {
         if let Some(ev) = st.db.get_event(eid)? {

@@ -1963,11 +1963,7 @@ impl Db {
                     id: r.get(0)?,
                     transcript: r.get(1)?,
                     caption: r.get(2)?,
-                    embedding: emb.map(|b| {
-                        b.chunks_exact(4)
-                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                            .collect()
-                    }),
+                    embedding: emb.map(bytes_to_f32),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
