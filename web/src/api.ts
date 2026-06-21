@@ -320,6 +320,13 @@ export interface OccupancyReport {
   cameras: { camera_id: number; camera: string; zones: Record<string, number> }[];
 }
 
+/** Activity heatmap: a `grid`×`grid` row-major density map + peak cell value. */
+export interface Heatmap {
+  grid: number;
+  cells: number[];
+  max: number;
+}
+
 export interface Liveview {
   name: string;
   cameras: string[];
@@ -518,6 +525,13 @@ export const api = {
     return req<AnalyticsCounts>(`/api/analytics/counts${qs ? `?${qs}` : ""}`);
   },
   analyticsOccupancy: () => req<OccupancyReport>("/api/analytics/occupancy"),
+  analyticsHeatmap: (camera: number, from?: number, to?: number, grid?: number) => {
+    const p = new URLSearchParams({ camera: String(camera) });
+    if (from != null) p.set("from", String(from));
+    if (to != null) p.set("to", String(to));
+    if (grid != null) p.set("grid", String(grid));
+    return req<Heatmap>(`/api/analytics/heatmap?${p}`);
+  },
   notifications: (q: { unread?: boolean; limit?: number } = {}) => {
     const p = new URLSearchParams();
     if (q.unread) p.set("unread", "true");
