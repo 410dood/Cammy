@@ -69,6 +69,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/gesture", axum::routing::post(record_gesture))
         .route("/api/events/{id}/clip", get(event_clip))
+        .route("/api/events/{id}/similar", get(event_similar))
         .route("/api/search", get(smart_search))
         .route("/api/alarms", get(list_alarms_api).post(add_alarm_api))
         .route(
@@ -1919,6 +1920,51 @@ async fn smart_search(
         "results": results,
         "mode": if clip { "hybrid" } else { "text" },
     })))
+}
+
+/// Cross-camera appearance search ("find this person/vehicle elsewhere"): rank
+/// every other event by CLIP cosine similarity of its object crop against this
+/// event's crop. `available: false` when the event has no crop embedding (it
+/// wasn't an object detection, or smart-search models aren't installed).
+async fn event_similar(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let limit = q
+        .get("limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(24)
+        .min(100);
+    let Some(query_emb) = st.db.crop_embedding_for(id)? else {
+        return Ok(Json(
+            serde_json::json!({ "results": [], "available": false }),
+        ));
+    };
+    // The whole-corpus cosine scan is CPU-bound and unbounded in size, so run it
+    // off the async runtime's worker threads (mirrors smart_search's text embed).
+    let db = st.db.clone();
+    let scored: Vec<(f32, i64)> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let mut scored: Vec<(f32, i64)> = db
+            .crop_embeddings()?
+            .into_iter()
+            .filter(|(eid, _)| *eid != id)
+            .map(|(eid, emb)| (crate::smart::cosine(&query_emb, &emb).max(0.0), eid))
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    let mut results = Vec::new();
+    for (score, eid) in scored.into_iter().take(limit) {
+        if let Some(ev) = st.db.get_event(eid)? {
+            results.push(serde_json::json!({ "similarity": score, "event": ev }));
+        }
+    }
+    Ok(Json(
+        serde_json::json!({ "results": results, "available": true }),
+    ))
 }
 
 // --- faces -------------------------------------------------------------------

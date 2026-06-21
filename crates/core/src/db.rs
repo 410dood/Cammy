@@ -107,6 +107,14 @@ impl PolyZone {
     }
 }
 
+/// Decode a little-endian f32 BLOB (as stored for CLIP embeddings) back to a
+/// vector. Trailing bytes that don't form a whole f32 are ignored.
+fn bytes_to_f32(b: Vec<u8>) -> Vec<f32> {
+    b.chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
 /// Even-odd ray-casting point-in-polygon. Returns false for degenerate
 /// polygons (< 3 vertices).
 pub fn point_in_polygon(poly: &[[f32; 2]], x: f32, y: f32) -> bool {
@@ -999,6 +1007,13 @@ impl Db {
                  created_ts    INTEGER NOT NULL
              );",
         )?;
+        // CLIP embedding of the object CROP (not the full frame) for cross-camera
+        // appearance search / Re-ID. Nullable; only set for object detections.
+        // Must run AFTER the CREATE TABLE batch above (the table is created here).
+        let _ = conn.execute(
+            "ALTER TABLE event_embeddings ADD COLUMN crop_embedding BLOB",
+            [],
+        );
         // Additive migration for pre-schedule alarms tables.
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN schedule_json TEXT", []);
         let _ = conn.execute("ALTER TABLE alarms ADD COLUMN gesture_like TEXT", []);
@@ -1873,13 +1888,56 @@ impl Db {
         Ok(())
     }
 
-    pub fn set_event_embedding(&self, event_id: i64, embedding: &[f32]) -> Result<()> {
-        let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+    /// Store an event's full-frame `embedding` (text smart-search) together with
+    /// the optional object-`crop` embedding (cross-camera appearance search). One
+    /// upsert so the two never race on row creation.
+    pub fn set_event_embeddings(
+        &self,
+        event_id: i64,
+        embedding: &[f32],
+        crop: Option<&[f32]>,
+    ) -> Result<()> {
+        let emb: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let crop_bytes: Option<Vec<u8>> =
+            crop.map(|c| c.iter().flat_map(|f| f.to_le_bytes()).collect());
         self.conn().execute(
-            "INSERT OR REPLACE INTO event_embeddings (event_id, embedding) VALUES (?1, ?2)",
-            params![event_id, bytes],
+            "INSERT OR REPLACE INTO event_embeddings (event_id, embedding, crop_embedding)
+             VALUES (?1, ?2, ?3)",
+            params![event_id, emb, crop_bytes],
         )?;
         Ok(())
+    }
+
+    /// An event's object-crop embedding, if one was stored (appearance search).
+    pub fn crop_embedding_for(&self, event_id: i64) -> Result<Option<Vec<f32>>> {
+        let blob: Option<Vec<u8>> = self
+            .conn()
+            .query_row(
+                "SELECT crop_embedding FROM event_embeddings WHERE event_id = ?1",
+                params![event_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(blob.map(bytes_to_f32))
+    }
+
+    /// All `(event_id, crop_embedding)` pairs for events that have one — the
+    /// candidate corpus for cross-camera appearance search. Retention-bounded
+    /// (deleted events cascade), no row cap so recall isn't truncated.
+    pub fn crop_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT event_id, crop_embedding FROM event_embeddings
+             WHERE crop_embedding IS NOT NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                let b: Vec<u8> = r.get(1)?;
+                Ok((r.get::<_, i64>(0)?, bytes_to_f32(b)))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Every event with its searchable text + (when `with_embeddings`) its CLIP
@@ -1905,11 +1963,7 @@ impl Db {
                     id: r.get(0)?,
                     transcript: r.get(1)?,
                     caption: r.get(2)?,
-                    embedding: emb.map(|b| {
-                        b.chunks_exact(4)
-                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                            .collect()
-                    }),
+                    embedding: emb.map(bytes_to_f32),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2409,6 +2463,71 @@ mod tests {
             3,
             "crossing + audio + pixel row excluded"
         );
+    }
+
+    #[test]
+    fn crop_embeddings_roundtrip_and_corpus() {
+        let db = mem_db();
+        let cam = db.add_camera("yard", "rtsp://x", None, true, true).unwrap();
+        let e1 = db
+            .add_event(
+                cam.id,
+                100,
+                "person",
+                0.9,
+                [0.1, 0.1, 0.2, 0.4],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let e2 = db
+            .add_event(
+                cam.id,
+                110,
+                "person",
+                0.9,
+                [0.5, 0.5, 0.6, 0.8],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let e3 = db
+            .add_event(
+                cam.id,
+                120,
+                "car",
+                0.9,
+                [0.0, 0.0, 0.3, 0.3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        // e1, e2 get a frame + crop embedding; e3 gets a frame embedding only.
+        db.set_event_embeddings(e1, &[1.0, 0.0, 0.0], Some(&[0.0, 1.0, 0.0]))
+            .unwrap();
+        db.set_event_embeddings(e2, &[0.0, 1.0, 0.0], Some(&[0.0, 0.9, 0.1]))
+            .unwrap();
+        db.set_event_embeddings(e3, &[0.5, 0.5, 0.0], None).unwrap();
+
+        assert_eq!(
+            db.crop_embedding_for(e1).unwrap(),
+            Some(vec![0.0, 1.0, 0.0])
+        );
+        assert_eq!(db.crop_embedding_for(e3).unwrap(), None);
+        // The corpus holds only events that have a crop embedding (e1, e2).
+        let corpus = db.crop_embeddings().unwrap();
+        let ids: Vec<i64> = corpus.iter().map(|(id, _)| *id).collect();
+        assert_eq!(corpus.len(), 2);
+        assert!(ids.contains(&e1) && ids.contains(&e2) && !ids.contains(&e3));
     }
 
     #[test]

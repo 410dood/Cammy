@@ -93,6 +93,12 @@ pub fn embed_text(query: &str) -> Result<Vec<f32>> {
 }
 
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    // Dot product of L2-normalized vectors. Different lengths can't be compared
+    // (e.g. embeddings from two different models) — `zip` would silently score on
+    // the shorter prefix, so return "no match" instead of a garbage similarity.
+    if a.len() != b.len() {
+        return 0.0;
+    }
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 

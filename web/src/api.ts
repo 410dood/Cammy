@@ -327,6 +327,20 @@ export interface Heatmap {
   max: number;
 }
 
+/** One cross-camera appearance match (CLIP crop cosine similarity ∈ [0,1]). */
+export interface SimilarMatch {
+  similarity: number;
+  event: CamEvent;
+}
+
+/** Result of an appearance ("find this person/vehicle") search for an event. */
+export interface SimilarResult {
+  results: SimilarMatch[];
+  /** False when the event has no crop embedding (not an object detection, or
+   *  smart-search models aren't installed). */
+  available: boolean;
+}
+
 export interface Liveview {
   name: string;
   cameras: string[];
@@ -525,6 +539,12 @@ export const api = {
     return req<AnalyticsCounts>(`/api/analytics/counts${qs ? `?${qs}` : ""}`);
   },
   analyticsOccupancy: () => req<OccupancyReport>("/api/analytics/occupancy"),
+  eventSimilar: (id: number, limit?: number) => {
+    const p = new URLSearchParams();
+    if (limit != null) p.set("limit", String(limit));
+    const qs = p.toString();
+    return req<SimilarResult>(`/api/events/${id}/similar${qs ? `?${qs}` : ""}`);
+  },
   analyticsHeatmap: (camera: number, from?: number, to?: number, grid?: number) => {
     const p = new URLSearchParams({ camera: String(camera) });
     if (from != null) p.set("from", String(from));
