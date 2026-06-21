@@ -86,6 +86,13 @@ pub struct PolyZone {
     /// event. `None`/0 = not a dwell zone. Requires object tracking.
     #[serde(default)]
     pub dwell_secs: Option<u32>,
+    /// Live-occupancy limit: if set (>0), an `occupancy` event fires when the
+    /// number of confirmed tracks currently inside this zone first exceeds it
+    /// (edge-triggered — one event per rising crossing of the limit, re-armed
+    /// when the count drops back to/below it). `None`/0 = no limit. Requires
+    /// object tracking. The live count is also published to the status board.
+    #[serde(default)]
+    pub occupancy_max: Option<u32>,
 }
 
 impl PolyZone {
@@ -1234,9 +1241,12 @@ impl Db {
         to: Option<i64>,
     ) -> Result<serde_json::Value> {
         let conn = self.conn();
+        // Count both normal and wrong-way crossings: a wrong-way pass is still a
+        // physical pass through the line, so it must count toward throughput
+        // (it also carries a real `direction`). Excluding it under-reports.
         let mut cs = conn.prepare(
             "SELECT zone, direction, COUNT(*) FROM events
-             WHERE label = 'crossing' AND (?1 IS NULL OR ts >= ?1) AND (?2 IS NULL OR ts < ?2)
+             WHERE label IN ('crossing', 'wrong_way') AND (?1 IS NULL OR ts >= ?1) AND (?2 IS NULL OR ts < ?2)
              GROUP BY zone, direction ORDER BY zone, direction",
         )?;
         let crossings: Vec<serde_json::Value> = cs
@@ -2525,6 +2535,7 @@ mod tests {
                 kind: ZoneKind::Required,
                 labels: vec!["person".into()],
                 dwell_secs: Some(30),
+                occupancy_max: Some(5),
             }],
             tripwires: vec![crate::analytics::Tripwire {
                 name: "gate".into(),

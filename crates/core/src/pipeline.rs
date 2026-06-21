@@ -178,7 +178,7 @@ pub fn run(
                     .detect_config
                     .zones
                     .iter()
-                    .any(|z| z.dwell_secs.unwrap_or(0) > 0);
+                    .any(|z| z.dwell_secs.unwrap_or(0) > 0 || z.occupancy_max.unwrap_or(0) > 0);
             if !verdict.is_motion() && !analytics_on {
                 continue;
             }
@@ -271,7 +271,7 @@ pub fn run(
                     )
                 });
                 let astate = analytics.entry(cam.id).or_default();
-                let (crossings, loiters) = astate.tick(
+                let (crossings, loiters, occupancy) = astate.tick(
                     &confirmed,
                     &cam.detect_config.tripwires,
                     &cam.detect_config.zones,
@@ -314,6 +314,50 @@ pub fn run(
                         None,
                         now,
                     );
+                }
+                // Publish the live occupancy gauge to the status board (cleared to
+                // empty when the camera has no zones) and fire an edge-triggered
+                // `occupancy` event for any zone that just exceeded its limit.
+                // Zone names aren't unique, so SUM same-named zones rather than
+                // letting one silently overwrite another, and skip unnamed zones.
+                let mut gauge: std::collections::HashMap<String, u32> =
+                    std::collections::HashMap::new();
+                for o in &occupancy {
+                    if !o.zone.is_empty() {
+                        *gauge.entry(o.zone.clone()).or_insert(0) += o.count;
+                    }
+                }
+                status.set_occupancy(cam.id, gauge);
+                for (zo, zone) in occupancy.iter().zip(cam.detect_config.zones.iter()) {
+                    if zo.over {
+                        // Use the zone's vertex centroid as the snapshot marker.
+                        let anchor = if zone.points.is_empty() {
+                            (0.5, 0.5)
+                        } else {
+                            let n = zone.points.len() as f32;
+                            let (sx, sy) = zone
+                                .points
+                                .iter()
+                                .fold((0.0f32, 0.0f32), |(ax, ay), p| (ax + p[0], ay + p[1]));
+                            (sx / n, sy / n)
+                        };
+                        emit_analytics_event(
+                            &db,
+                            &settings,
+                            &alarms,
+                            &throttle,
+                            &mqtt_tx,
+                            &snapshots_dir,
+                            &frame,
+                            cam,
+                            "occupancy",
+                            anchor,
+                            Some(&zo.zone),
+                            None,
+                            None,
+                            now,
+                        );
+                    }
                 }
             }
 
@@ -1201,6 +1245,7 @@ mod tests {
                 kind: ZoneKind::Required,
                 labels: vec!["person".into()],
                 dwell_secs: None,
+                occupancy_max: None,
             }],
             ..Default::default()
         };
@@ -1235,6 +1280,7 @@ mod tests {
                 kind: ZoneKind::Ignore,
                 labels: vec![],
                 dwell_secs: None,
+                occupancy_max: None,
             }],
             ..Default::default()
         };

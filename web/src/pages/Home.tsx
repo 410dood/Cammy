@@ -7,6 +7,8 @@ import {
   StatusMap,
   Digest,
   Notification,
+  AnalyticsCounts,
+  OccupancyReport,
   fmtBytes,
   fmtTime,
   ArmMode,
@@ -85,6 +87,8 @@ export default function Home({
   const [notes, setNotes] = useState<Notification[]>([]);
   const [arm, setArm] = useState<ArmMode | null>(null);
   const [lightbox, setLightbox] = useState<CamEvent | null>(null);
+  const [throughput, setThroughput] = useState<AnalyticsCounts | null>(null);
+  const [occ, setOcc] = useState<OccupancyReport | null>(null);
 
   useEffect(() => {
     const load = () => {
@@ -92,10 +96,12 @@ export default function Home({
       api.status().then(setStatus).catch(() => {});
       api.armMode().then((r) => setArm(r.arm_mode)).catch(() => {});
       api.events({ limit: 500 }).then(setEvents).catch(() => {});
-      // These two are best-effort: the endpoints exist only once the backend
-      // build ships the digest/notifications features.
+      // These are best-effort: the endpoints exist only once the backend
+      // build ships the digest/notifications/analytics features.
       api.digests(1).then((d) => setDigest(d[0] ?? null)).catch(() => {});
       api.notifications({ limit: 6 }).then(setNotes).catch(() => {});
+      api.analyticsCounts(startOfToday()).then(setThroughput).catch(() => {});
+      api.analyticsOccupancy().then(setOcc).catch(() => {});
     };
     load();
     const t = setInterval(load, 15000);
@@ -127,6 +133,27 @@ export default function Home({
     for (const e of today) acc[e.label] = (acc[e.label] ?? 0) + 1;
     return Object.entries(acc).sort((a, b) => b[1] - a[1]);
   }, [today]);
+
+  // Per-tripwire throughput today: a_to_b = "in", b_to_a = "out", net = in − out.
+  const lines = useMemo(() => {
+    const m = new Map<string, { in: number; out: number }>();
+    for (const c of throughput?.crossings ?? []) {
+      const name = c.tripwire ?? "(unnamed)";
+      const e = m.get(name) ?? { in: 0, out: 0 };
+      if (c.direction === "a_to_b") e.in += c.count;
+      else if (c.direction === "b_to_a") e.out += c.count;
+      m.set(name, e);
+    }
+    return [...m.entries()].map(([name, v]) => ({ name, ...v, net: v.in - v.out }));
+  }, [throughput]);
+
+  // Live occupancy rows (one per camera+zone), busiest first.
+  const occRows = useMemo(() => {
+    const rows: { camera: string; zone: string; count: number }[] = [];
+    for (const c of occ?.cameras ?? [])
+      for (const [zone, count] of Object.entries(c.zones)) rows.push({ camera: c.camera, zone, count });
+    return rows.sort((a, b) => b.count - a.count);
+  }, [occ]);
 
   const lastPerson = events.find((e) => e.label === "person");
   const lastVehicle = events.find((e) => VEHICLES.includes(e.label));
@@ -281,6 +308,47 @@ export default function Home({
           )}
         </div>
       </div>
+
+      {(lines.length > 0 || occRows.length > 0) && (
+        <div className="home-cols">
+          {lines.length > 0 && (
+            <div className="card">
+              <h2>Throughput today</h2>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div className="muted" style={{ display: "flex", fontSize: "0.75rem" }}>
+                  <span style={{ flex: 1 }}>Line</span>
+                  <span style={{ width: 48, textAlign: "right" }}>In</span>
+                  <span style={{ width: 48, textAlign: "right" }}>Out</span>
+                  <span style={{ width: 56, textAlign: "right" }}>Net</span>
+                </div>
+                {lines.map((l) => (
+                  <div key={l.name} style={{ display: "flex", alignItems: "center" }}>
+                    <span style={{ flex: 1 }}>{l.name}</span>
+                    <span className="tnum" style={{ width: 48, textAlign: "right" }}>{l.in}</span>
+                    <span className="tnum" style={{ width: 48, textAlign: "right" }}>{l.out}</span>
+                    <b className="tnum" style={{ width: 56, textAlign: "right" }}>
+                      {l.net >= 0 ? `+${l.net}` : l.net}
+                    </b>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {occRows.length > 0 && (
+            <div className="card">
+              <h2>Live occupancy</h2>
+              <div className="row" style={{ flexWrap: "wrap" }}>
+                {occRows.map((r) => (
+                  <span key={`${r.camera}-${r.zone}`} className="badge accent">
+                    {r.zone} <b className="tnum">{r.count}</b>
+                    <span className="muted"> · {r.camera}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {notes.length > 0 && (
         <div className="card">

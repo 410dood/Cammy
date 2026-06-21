@@ -16,6 +16,9 @@ export interface PolyZone {
   labels: string[];
   /** Loitering threshold in seconds (requires tracking); null/0 = not a dwell zone. */
   dwell_secs?: number | null;
+  /** Live-occupancy limit: an `occupancy` event fires when the count inside first
+   *  exceeds this (edge-triggered). null/0 = no limit. Requires tracking. */
+  occupancy_max?: number | null;
 }
 
 export type CrossDir = "both" | "a_to_b" | "b_to_a";
@@ -306,6 +309,17 @@ export interface Overview {
   arm_mode: ArmMode;
 }
 
+/** Historical throughput roll-up from the crossing/wrong_way + loiter events. */
+export interface AnalyticsCounts {
+  crossings: { tripwire: string | null; direction: string | null; count: number }[];
+  loiters: { zone: string | null; count: number }[];
+}
+
+/** Live per-camera, per-zone occupancy (current # of tracks inside each zone). */
+export interface OccupancyReport {
+  cameras: { camera_id: number; camera: string; zones: Record<string, number> }[];
+}
+
 export interface Liveview {
   name: string;
   cameras: string[];
@@ -496,6 +510,14 @@ export const api = {
   saveSettings: (s: Settings) =>
     req<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
   overview: () => req<Overview>("/api/overview"),
+  analyticsCounts: (from?: number, to?: number) => {
+    const p = new URLSearchParams();
+    if (from != null) p.set("from", String(from));
+    if (to != null) p.set("to", String(to));
+    const qs = p.toString();
+    return req<AnalyticsCounts>(`/api/analytics/counts${qs ? `?${qs}` : ""}`);
+  },
+  analyticsOccupancy: () => req<OccupancyReport>("/api/analytics/occupancy"),
   notifications: (q: { unread?: boolean; limit?: number } = {}) => {
     const p = new URLSearchParams();
     if (q.unread) p.set("unread", "true");
