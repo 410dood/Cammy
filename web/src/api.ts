@@ -167,6 +167,13 @@ export interface Settings {
   smtp_pass: string;
   smtp_from: string;
   smtp_to: string;
+  /** Reverse-proxy SSO (forward auth): header carrying the authenticated user
+   *  (e.g. "Remote-User"). Empty = off. Only honored with --trusted-proxy. */
+  auth_proxy_header: string;
+  /** Optional header carrying the user's role/group (admin/operator/viewer). */
+  auth_proxy_role_header: string;
+  /** Role for an SSO user with no role header + no matching account. */
+  auth_proxy_default_role: string;
 }
 
 export interface CamStorage {

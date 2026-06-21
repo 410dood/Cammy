@@ -14,7 +14,43 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 62/62, full commercial analytics suite, 2026-06-21
+## Current status: v0.3 — competitor matrix 65/65, full commercial analytics suite, 2026-06-21
+
+> Three PRs in flight from this session, each stacked on `two-factor-auth`/PR #19:
+> #19 = TOTP 2FA (#62); PR #20 (`tamper-and-gait`) = camera tamper (#63) + gait
+> identification (#64); PR for `forward-auth-sso` = reverse-proxy SSO (#65).
+
+### This session: reverse-proxy SSO / forward auth (matrix #65)
+
+Lets Cammy sit behind an auth proxy (Authelia / oauth2-proxy / Cloudflare Access /
+Tailscale) that authenticates the user and passes an authenticated-user header —
+SSO with no Cammy password. The standard self-hosted SSO mechanism (the research's
+"OIDC/SSO + proxy-header auth" gap). **Pure-Rust, no new dependency.** Three
+`Settings` fields (`auth_proxy_header`, `auth_proxy_role_header`,
+`auth_proxy_default_role`). `auth::middleware` gains forward-auth as a principal
+source (session cookie → **forward-auth** → bearer): `proxy_user` reads the header
+**only when `via_proxy`** (the request carried `X-Forwarded-For`, i.e. came through
+the trusted proxy) so a bypassing connection can't spoof it; role precedence is
+role-header > matched Cammy account's role > default; a matching account
+contributes its id+role. Honored **only** under `--trusted-proxy` (same sole-
+ingress trust the existing XFF client-IP/throttle assume; the proxy must set+strip
+the headers — documented in the UI), and `auth_on` now also activates when SSO is
+configured (fail-closed: a remote request without the header → 401). Loopback
+stays admin and skips the per-request settings read. `proxy_user` + `forward_auth_role`
+unit-tested. **Live-validated via `--trusted-proxy`+XFF:** header→authed, role
+header→admin, matched-account→its role+`named`, role gating (viewer 200/403/403;
+admin 200 users), proxied-no-header→401. A 2-lens adversarial review found 4
+issues, **all fixed**: (HIGH ×2, same root) a forward-auth principal skipped the
+`token_forbidden` gate and an unmatched SSO user (`user_id=None`) fell through to
+the **shared-admin KV** in `/api/2fa` — a remote SSO viewer could recon/plant a
+TOTP on the shared admin (and read `/api/audit`) → forward-auth callers are now
+subject to `token_forbidden`; (LOW) case-sensitive username match downgraded a
+pre-created account's role → normalize to lower-case before matching; (LOW) the
+SSO header without `--trusted-proxy` flipped auth on with no working remote
+credential (lockout footgun) → `auth_on` counts SSO only under `--trusted-proxy`.
+**GOTCHA**: forward-auth is the standard "proxy is the sole ingress + strips
+client-supplied auth headers" model — same assumption as `--trusted-proxy` XFF
+trust; not a new trust surface.
 
 ### This session: TOTP two-factor authentication (matrix #62) — the top WAN-security gap
 
