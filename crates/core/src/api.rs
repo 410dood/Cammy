@@ -2261,20 +2261,41 @@ async fn analytics_counts(
 
 /// Live per-camera, per-zone occupancy from the status board — the current count
 /// of confirmed tracks inside each zone (cameras with no occupancy are omitted).
+/// The gauge is only published while a camera is being ticked, so a stale count
+/// would otherwise linger after a camera goes offline or has its zones removed.
+/// Guard against that: report only enabled, online cameras and only zones that
+/// still exist in the camera's current config.
 async fn analytics_occupancy(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let board = st.status.snapshot();
     let cameras = st.db.list_cameras()?;
+    let now = chrono::Local::now().timestamp();
+    let window = crate::status::freshness_window(st.db.settings().poll_ms);
     let rows: Vec<serde_json::Value> = cameras
         .iter()
         .filter_map(|c| {
-            let occ = board.get(&c.id).map(|h| &h.occupancy)?;
-            if occ.is_empty() {
+            let h = board.get(&c.id)?;
+            if !c.enabled || !h.is_online(c.detect, now, window) {
+                return None;
+            }
+            // Drop any cached zone whose name is no longer in the live config.
+            let current: std::collections::HashSet<&str> = c
+                .detect_config
+                .zones
+                .iter()
+                .map(|z| z.name.as_str())
+                .collect();
+            let zones: std::collections::HashMap<&String, &u32> = h
+                .occupancy
+                .iter()
+                .filter(|(name, _)| current.contains(name.as_str()))
+                .collect();
+            if zones.is_empty() {
                 return None;
             }
             Some(serde_json::json!({
                 "camera_id": c.id,
                 "camera": c.name,
-                "zones": occ,
+                "zones": zones,
             }))
         })
         .collect();

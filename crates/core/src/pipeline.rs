@@ -318,10 +318,15 @@ pub fn run(
                 // Publish the live occupancy gauge to the status board (cleared to
                 // empty when the camera has no zones) and fire an edge-triggered
                 // `occupancy` event for any zone that just exceeded its limit.
-                let gauge: std::collections::HashMap<String, u32> = occupancy
-                    .iter()
-                    .map(|o| (o.zone.clone(), o.count))
-                    .collect();
+                // Zone names aren't unique, so SUM same-named zones rather than
+                // letting one silently overwrite another, and skip unnamed zones.
+                let mut gauge: std::collections::HashMap<String, u32> =
+                    std::collections::HashMap::new();
+                for o in &occupancy {
+                    if !o.zone.is_empty() {
+                        *gauge.entry(o.zone.clone()).or_insert(0) += o.count;
+                    }
+                }
                 status.set_occupancy(cam.id, gauge);
                 for (zo, zone) in occupancy.iter().zip(cam.detect_config.zones.iter()) {
                     if zo.over {

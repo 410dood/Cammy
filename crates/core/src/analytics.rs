@@ -180,6 +180,13 @@ pub struct AnalyticsState {
     /// tick. Drives edge-triggering of the occupancy alarm (fire only on the
     /// false->true transition). Per-zone, not per-track (occupancy is a count).
     over: HashMap<usize, bool>,
+    /// Fingerprint (ordered tripwire + zone names) of the analytics layout the
+    /// index-keyed state above was built against. When the camera's config
+    /// changes (a zone/tripwire is added, removed, reordered or renamed), every
+    /// index -> identity binding is stale, so the state is cleared. Without this
+    /// a deleted zone could leave its edge-latch bound to whatever zone shifts
+    /// into its old index, suppressing that zone's next real breach.
+    shape: Vec<String>,
     /// When a track briefly steps outside, inside-time accrual pauses but the
     /// dwell state is kept alive for this many seconds before it's forgotten.
     grace_secs: i64,
@@ -191,6 +198,7 @@ impl Default for AnalyticsState {
             last_side: HashMap::new(),
             dwell: HashMap::new(),
             over: HashMap::new(),
+            shape: Vec::new(),
             grace_secs: 3,
         }
     }
@@ -210,6 +218,20 @@ impl AnalyticsState {
     ) -> (Vec<Crossing>, Vec<Loiter>, Vec<ZoneOccupancy>) {
         let mut crossings = Vec::new();
         let mut loiters = Vec::new();
+        // If the tripwire/zone layout changed since last tick, the index-keyed
+        // state is stale (an index now points at a different tripwire/zone), so
+        // drop it before processing this frame.
+        let shape: Vec<String> = tripwires
+            .iter()
+            .map(|t| format!("t:{}", t.name))
+            .chain(zones.iter().map(|z| format!("z:{}", z.name)))
+            .collect();
+        if self.shape != shape {
+            self.last_side.clear();
+            self.dwell.clear();
+            self.over.clear();
+            self.shape = shape;
+        }
         // Per-zone live occupancy accumulated across all tracks this frame.
         let mut occ = vec![0u32; zones.len()];
         let live: HashSet<u64> = tracks.iter().map(|t| t.id).collect();
@@ -331,7 +353,12 @@ impl AnalyticsState {
                     self.over.insert(zi, now_over);
                     now_over && !was_over
                 }
-                _ => false,
+                // No (or zero) limit: clear any stale latch so that re-enabling a
+                // limit later starts disarmed and the first breach fires.
+                _ => {
+                    self.over.remove(&zi);
+                    false
+                }
             };
             occupancy.push(ZoneOccupancy {
                 zone: z.name.clone(),
@@ -339,8 +366,6 @@ impl AnalyticsState {
                 over,
             });
         }
-        // Drop latch state for zones that no longer exist (index-keyed).
-        self.over.retain(|zi, _| *zi < zones.len());
 
         (crossings, loiters, occupancy)
     }
@@ -725,5 +750,43 @@ mod tests {
         let (_, _, o) = st.tick(&[&car, &person], &[], &zones, None, 0);
         assert_eq!(o[0].count, 1); // only the car
         assert!(!o[0].over); // max 0 => no alarm
+    }
+
+    #[test]
+    fn occupancy_latch_resets_on_zone_layout_change() {
+        // Two same-area zones a,b both over their limit -> both latch over.
+        let mut st = AnalyticsState::default();
+        let t1 = track_at(1, "person", 0.5, 0.5);
+        let t2 = track_at(2, "person", 0.45, 0.55);
+        let t3 = track_at(3, "person", 0.55, 0.45);
+        let zones = [occ_zone("a", 2), occ_zone("b", 2)];
+        let (_, _, o) = st.tick(&[&t1, &t2, &t3], &[], &zones, None, 0);
+        assert!(o[0].over && o[1].over);
+
+        // Remove "a": "b" shifts into index 0. Its first-breach must still fire,
+        // NOT be suppressed by "a"'s stale latch left at index 0.
+        let zones2 = [occ_zone("b", 2)];
+        let (_, _, o) = st.tick(&[&t1, &t2, &t3], &[], &zones2, None, 1);
+        assert_eq!(o.len(), 1);
+        assert!(o[0].over, "b's breach must fire after the layout changed");
+    }
+
+    #[test]
+    fn occupancy_latch_clears_when_limit_removed() {
+        let mut st = AnalyticsState::default();
+        let t1 = track_at(1, "person", 0.5, 0.5);
+        let t2 = track_at(2, "person", 0.45, 0.55);
+        let t3 = track_at(3, "person", 0.55, 0.45);
+        // Breach fires.
+        let (_, _, o) = st.tick(&[&t1, &t2, &t3], &[], &[occ_zone("z", 2)], None, 0);
+        assert!(o[0].over);
+        // Limit cleared (same name, no layout change) -> latch dropped.
+        let mut no_limit = occ_zone("z", 2);
+        no_limit.occupancy_max = None;
+        let (_, _, o) = st.tick(&[&t1, &t2, &t3], &[], &[no_limit], None, 1);
+        assert!(!o[0].over);
+        // Re-enable while still over -> first breach must fire again.
+        let (_, _, o) = st.tick(&[&t1, &t2, &t3], &[], &[occ_zone("z", 2)], None, 2);
+        assert!(o[0].over, "re-enabling the limit must re-fire the breach");
     }
 }
