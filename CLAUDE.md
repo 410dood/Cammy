@@ -14,9 +14,21 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 60/60, full tracker analytics suite, 2026-06-20
+## Current status: v0.3 — competitor matrix 61/61, full commercial analytics suite, 2026-06-20
 
-### This session: commercial video-analytics suite (matrix #53–#60) on the object tracker
+### This session: commercial video-analytics suite (matrix #53–#61) on the object tracker
+
+Capped by **#61 cross-camera appearance search / Re-ID** (PR #18) — "find this
+person/vehicle everywhere": each object detection's CROP is CLIP-embedded at
+detection time (reusing the existing CLIP session, **no new model**; capped 6
+crops/frame so a crowd can't stall the shared detection thread) and stored in
+`event_embeddings.crop_embedding`; `GET /api/events/{id}/similar` cosine-ranks
+crops across all cameras+time (in `spawn_blocking`); an Events "Similar" button
+opens a ranked modal. Validated cross-camera on two cams (0.91–0.97 matches vs
+0.11–0.22 distractors). The remaining frontier is the **enterprise-governance
+track**: OIDC/SAML SSO+MFA, **per-camera/group RBAC scoping** (today RBAC gates
+method+path GLOBALLY — every authenticated user sees every camera), multi-site
+federation.
 
 Researched the commercial NVR/VMS field and built the **multi-object tracker**
 (`crates/tracker`, SORT-lite: velocity-predicted IoU association, ByteTrack
