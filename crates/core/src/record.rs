@@ -54,9 +54,20 @@ pub fn run(
         };
 
         // --- reconcile: stop unwanted, start missing/dead ----------------
+        // A per-camera recording schedule (#67) gates continuous recording by
+        // day/time: outside its window the camera drops out of `desired`, so the
+        // stop logic below finalizes its current segment and parks the recorder
+        // until the window reopens. `None` = always record.
         let desired: HashMap<i64, String> = cameras
             .iter()
             .filter(|c| c.enabled && c.record)
+            .filter(|c| {
+                c.detect_config
+                    .record_schedule
+                    .as_ref()
+                    .map(|s| s.active_now())
+                    .unwrap_or(true)
+            })
             .map(|c| (c.id, c.name.clone()))
             .collect();
 

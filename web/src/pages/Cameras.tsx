@@ -36,6 +36,7 @@ function TuneModal({
     face_recognize: camera.detect_config.face_recognize ?? null,
     two_way_audio: camera.detect_config.two_way_audio ?? false,
     retention_days: camera.detect_config.retention_days ?? null,
+    record_schedule: camera.detect_config.record_schedule ?? null,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -249,6 +250,85 @@ function TuneModal({
               }
             />
           </label>
+          <div
+            className="field"
+            style={{ minWidth: 320, flex: 1 }}
+            title="Record continuously only during these days/times (Blue Iris-style schedule). Off = always record. Detection and event clips are unaffected."
+          >
+            <label className="toggle" style={{ marginBottom: 4 }}>
+              recording schedule
+              <input
+                type="checkbox"
+                checked={dc.record_schedule != null}
+                onChange={(e) =>
+                  setDc({
+                    ...dc,
+                    record_schedule: e.target.checked
+                      ? { days: [], start_hhmm: "08:00", end_hhmm: "18:00" }
+                      : null,
+                  })
+                }
+              />
+            </label>
+            {dc.record_schedule && (
+              <div>
+                <div className="row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                  {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d, i) => {
+                    const on = dc.record_schedule!.days.includes(i);
+                    return (
+                      <button
+                        key={d}
+                        type="button"
+                        className={`btn ${on ? "btn-primary" : "btn-ghost"}`}
+                        style={{ padding: "2px 8px", fontSize: "0.72rem" }}
+                        onClick={() =>
+                          setDc({
+                            ...dc,
+                            record_schedule: {
+                              ...dc.record_schedule!,
+                              days: on
+                                ? dc.record_schedule!.days.filter((x) => x !== i)
+                                : [...dc.record_schedule!.days, i].sort((a, b) => a - b),
+                            },
+                          })
+                        }
+                      >
+                        {d}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <span className="muted">from</span>
+                  <input
+                    type="time"
+                    value={dc.record_schedule.start_hhmm ?? ""}
+                    onChange={(e) =>
+                      setDc({
+                        ...dc,
+                        record_schedule: { ...dc.record_schedule!, start_hhmm: e.target.value || null },
+                      })
+                    }
+                  />
+                  <span className="muted">to</span>
+                  <input
+                    type="time"
+                    value={dc.record_schedule.end_hhmm ?? ""}
+                    onChange={(e) =>
+                      setDc({
+                        ...dc,
+                        record_schedule: { ...dc.record_schedule!, end_hhmm: e.target.value || null },
+                      })
+                    }
+                  />
+                </div>
+                <p className="muted" style={{ fontSize: "0.72rem", marginTop: 4 }}>
+                  No days selected = every day. End before start = overnight (e.g. 22:00→06:00).
+                  Outside the window this camera stops recording; detection &amp; event clips still run.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
         <h2 style={{ marginTop: 18 }}>Zones &amp; privacy masks</h2>

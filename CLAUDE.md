@@ -14,9 +14,30 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 61/61, full commercial analytics suite, 2026-06-20
+## Current status: v0.3 — competitor matrix 62/62 (+ #62–#66 on in-flight auth branches), 2026-06-21
 
-### This session: commercial video-analytics suite (matrix #53–#61) on the object tracker
+### Latest: per-camera recording schedules (matrix #67)
+
+Blue Iris "profiles/schedules" — continuous recording now runs only during a
+per-camera **day-of-week + time-of-day window** (overnight-aware). A new
+`DetectConfig.record_schedule: Option<Schedule>` gates the recorder's `desired`
+set in `record.rs`: outside the window the camera drops out, the existing stop
+logic finalizes its current segment and parks ffmpeg, and it re-enters when the
+window reopens. **Detection, event clips, and analytics are unaffected — this
+gates the *continuous* packet-copy recorder only.** Reuses the exact day/time
+math the alarm schedules (#24) already use — extracted into a shared pure
+`db::window_active` (`AlarmRule::armed_at` now delegates to it, behavior-
+preserving) + a reusable `db::Schedule { days, start_hhmm, end_hhmm }` with
+`active_now` (chrono::Local). `None` = always record (opt-in; existing cameras
+unaffected); JSON blob, no migration. Per-camera editor on the Cameras tuning
+page (day chips + from/to time pickers). `window_active`/`Schedule::active_at`
+unit-tested (in/out/overnight/day-filter/boundaries/empty/bad-hhmm); config
+round-trip live-validated (weekday/overnight/clear-to-null). Pure-Rust, no new
+dep. On branch **`recording-schedules`** off `main` (independent of the auth
+PRs). **NOTE: full recorder-honors-schedule E2E needs a live stream (the gating
+logic is unit-tested; the recorder integration is a one-line filter over it).**
+
+### Earlier this session: commercial video-analytics suite (matrix #53–#61) on the object tracker
 
 Capped by **#61 cross-camera appearance search / Re-ID** (PR #18) — "find this
 person/vehicle everywhere": each object detection's CROP is CLIP-embedded at

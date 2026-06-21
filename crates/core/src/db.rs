@@ -223,6 +223,13 @@ pub struct DetectConfig {
     /// total-disk guarantee.
     #[serde(default)]
     pub retention_days: Option<u32>,
+    /// Per-camera recording schedule (#67, Blue Iris "profiles/schedules"): when
+    /// set, continuous recording runs ONLY during the window (day-of-week +
+    /// time-of-day, overnight-aware). `None` = always record (the default).
+    /// Event/clip capture and detection are unaffected — this gates the
+    /// continuous packet-copy recorder only.
+    #[serde(default)]
+    pub record_schedule: Option<Schedule>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -462,6 +469,72 @@ fn parse_hhmm(s: &str) -> Option<u16> {
     (h < 24 && m < 60).then_some(h * 60 + m)
 }
 
+/// Whether a day+time window is active at `weekday` (0 = Sunday) / `minute` of
+/// day. Empty `days` = every day; absent start/end = open-ended; start > end is
+/// an overnight window (e.g. 22:00–06:00). Shared by alarm-rule schedules and
+/// per-camera recording schedules.
+pub fn window_active(
+    days: &[u8],
+    start_hhmm: Option<&str>,
+    end_hhmm: Option<&str>,
+    weekday: u8,
+    minute: u16,
+) -> bool {
+    if !days.is_empty() && !days.contains(&weekday) {
+        return false;
+    }
+    match (
+        start_hhmm.and_then(parse_hhmm),
+        end_hhmm.and_then(parse_hhmm),
+    ) {
+        (None, None) => true,
+        (Some(s), None) => minute >= s,
+        (None, Some(e)) => minute <= e,
+        (Some(s), Some(e)) if s <= e => minute >= s && minute <= e,
+        (Some(s), Some(e)) => minute >= s || minute <= e, // overnight
+    }
+}
+
+/// Current local `(weekday 0=Sun, minute-of-day)` — the clock for schedules.
+fn now_weekday_minute() -> (u8, u16) {
+    use chrono::{Datelike as _, Timelike as _};
+    let now = chrono::Local::now();
+    (
+        now.weekday().num_days_from_sunday() as u8,
+        (now.hour() * 60 + now.minute()) as u16,
+    )
+}
+
+/// A reusable day+time-of-day schedule (the shape alarm rules already use),
+/// applied to per-camera **recording** windows (#67): record only when active.
+/// Empty `days` + no start/end = always active (the default, so it's opt-in).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Schedule {
+    /// Weekdays it applies on (0 = Sunday); empty = every day.
+    #[serde(default)]
+    pub days: Vec<u8>,
+    #[serde(default)]
+    pub start_hhmm: Option<String>,
+    #[serde(default)]
+    pub end_hhmm: Option<String>,
+}
+
+impl Schedule {
+    pub fn active_at(&self, weekday: u8, minute: u16) -> bool {
+        window_active(
+            &self.days,
+            self.start_hhmm.as_deref(),
+            self.end_hhmm.as_deref(),
+            weekday,
+            minute,
+        )
+    }
+    pub fn active_now(&self) -> bool {
+        let (wd, min) = now_weekday_minute();
+        self.active_at(wd, min)
+    }
+}
+
 impl AlarmRule {
     /// The rule's action list, always non-empty: the explicit `actions` scene
     /// if set, otherwise a single Action synthesized from the legacy
@@ -480,19 +553,13 @@ impl AlarmRule {
 
     /// Is the rule armed on this weekday (0 = Sunday) at this minute of day?
     pub fn armed_at(&self, weekday: u8, minute: u16) -> bool {
-        if !self.days.is_empty() && !self.days.contains(&weekday) {
-            return false;
-        }
-        let start = self.start_hhmm.as_deref().and_then(parse_hhmm);
-        let end = self.end_hhmm.as_deref().and_then(parse_hhmm);
-        match (start, end) {
-            (None, None) => true,
-            (Some(s), None) => minute >= s,
-            (None, Some(e)) => minute <= e,
-            (Some(s), Some(e)) if s <= e => minute >= s && minute <= e,
-            // Overnight window, e.g. 22:00–06:00.
-            (Some(s), Some(e)) => minute >= s || minute <= e,
-        }
+        window_active(
+            &self.days,
+            self.start_hhmm.as_deref(),
+            self.end_hhmm.as_deref(),
+            weekday,
+            minute,
+        )
     }
 
     fn armed_now(&self) -> bool {
@@ -2820,6 +2887,11 @@ mod tests {
             face_recognize: Some(true),
             two_way_audio: true,
             retention_days: Some(14),
+            record_schedule: Some(Schedule {
+                days: vec![1, 2, 3, 4, 5],
+                start_hhmm: Some("08:00".into()),
+                end_hhmm: Some("18:00".into()),
+            }),
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
@@ -3058,6 +3130,40 @@ mod tests {
         assert!(db.delete_plate(id).unwrap());
         assert!(db.list_plates().unwrap().is_empty());
         assert!(!db.delete_plate(id).unwrap());
+    }
+
+    #[test]
+    fn schedule_window_active_cases() {
+        // Empty schedule = always active (the opt-in default).
+        let always = Schedule::default();
+        assert!(always.active_at(0, 0));
+        assert!(always.active_at(3, 1439));
+        // Daytime window 08:00–18:00 on weekdays (Mon=1..Fri=5).
+        let day = Schedule {
+            days: vec![1, 2, 3, 4, 5],
+            start_hhmm: Some("08:00".into()),
+            end_hhmm: Some("18:00".into()),
+        };
+        assert!(day.active_at(3, 12 * 60)); // Wed noon
+        assert!(!day.active_at(3, 7 * 60)); // Wed 07:00 (before)
+        assert!(!day.active_at(3, 19 * 60)); // Wed 19:00 (after)
+        assert!(!day.active_at(0, 12 * 60)); // Sunday excluded
+                                             // Boundaries inclusive.
+        assert!(day.active_at(1, 8 * 60));
+        assert!(day.active_at(5, 18 * 60));
+        // Overnight window 22:00–06:00 (any day).
+        let night = Schedule {
+            days: vec![],
+            start_hhmm: Some("22:00".into()),
+            end_hhmm: Some("06:00".into()),
+        };
+        assert!(night.active_at(2, 23 * 60));
+        assert!(night.active_at(2, 5 * 60));
+        assert!(!night.active_at(2, 12 * 60));
+        // Open-ended (start only / end only) + bad hhmm ignored.
+        assert!(window_active(&[], Some("09:00"), None, 0, 10 * 60));
+        assert!(!window_active(&[], Some("09:00"), None, 0, 8 * 60));
+        assert!(window_active(&[], Some("25:99"), Some("99:99"), 0, 12 * 60)); // unparsable -> open
     }
 
     #[test]
