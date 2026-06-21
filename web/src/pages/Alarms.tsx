@@ -2,7 +2,11 @@
 import { api, AlarmRule, Action, ActionKind, ArmMode, Camera } from "../api";
 import { IconStranger, IconMoon, IconPlus, IconX } from "../icons";
 
-const LABELS = ["person", "car", "truck", "bus", "bicycle", "motorcycle", "dog", "cat"];
+const LABELS = [
+  "person", "car", "truck", "bus", "bicycle", "motorcycle", "dog", "cat",
+  // Tracker-driven analytics events fire alarms via the same label match.
+  "crossing", "wrong_way", "loiter", "occupancy",
+];
 const GESTURES = ["open_palm", "fist", "victory", "point", "thumb_up", "thumb_down", "love", "ok", "call_me"];
 const ARM_OPTS: { id: ArmMode; label: string }[] = [
   { id: "home", label: "Home" },

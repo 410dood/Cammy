@@ -104,6 +104,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stats", get(stats))
         .route("/api/overview", get(overview))
         .route("/api/analytics/counts", get(analytics_counts))
+        .route("/api/analytics/occupancy", get(analytics_occupancy))
         .route("/api/arm", get(get_arm_mode).put(set_arm_mode))
         .route("/api/notifications", get(list_notifications_api))
         .route(
@@ -2256,6 +2257,28 @@ async fn analytics_counts(
     let from = q.get("from").and_then(|s| s.parse::<i64>().ok());
     let to = q.get("to").and_then(|s| s.parse::<i64>().ok());
     Ok(Json(st.db.analytics_counts(from, to)?))
+}
+
+/// Live per-camera, per-zone occupancy from the status board — the current count
+/// of confirmed tracks inside each zone (cameras with no occupancy are omitted).
+async fn analytics_occupancy(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let board = st.status.snapshot();
+    let cameras = st.db.list_cameras()?;
+    let rows: Vec<serde_json::Value> = cameras
+        .iter()
+        .filter_map(|c| {
+            let occ = board.get(&c.id).map(|h| &h.occupancy)?;
+            if occ.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({
+                "camera_id": c.id,
+                "camera": c.name,
+                "zones": occ,
+            }))
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "cameras": rows })))
 }
 
 async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {

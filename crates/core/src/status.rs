@@ -22,6 +22,10 @@ pub struct CamHealth {
     pub accelerator: Option<String>,
     /// Model file the camera's detector loaded.
     pub model: Option<String>,
+    /// Live per-zone occupancy (zone name -> # of confirmed tracks currently
+    /// inside) from the most recent analytics tick. Empty when the camera runs
+    /// no tracker-driven analytics. Surfaced at `GET /api/analytics/occupancy`.
+    pub occupancy: HashMap<String, u32>,
 }
 
 /// Seconds within which a camera must have delivered a frame to count as
@@ -81,6 +85,11 @@ impl StatusBoard {
         e.inference_ms = Some(ms);
         e.accelerator = Some(accelerator.to_string());
         e.model = Some(model.to_string());
+    }
+
+    /// Publish the latest per-zone live occupancy for a camera (zone -> count).
+    pub fn set_occupancy(&self, camera_id: i64, occupancy: HashMap<String, u32>) {
+        self.write().entry(camera_id).or_default().occupancy = occupancy;
     }
 
     /// Drop state for cameras that no longer exist.

@@ -140,6 +140,17 @@ pub struct Loiter {
     pub anchor: (f32, f32),
 }
 
+/// Live occupancy of a zone this frame: how many confirmed tracks (honouring the
+/// zone's label scope) are currently inside it. `over` is set on the rising edge
+/// where `count` first exceeds the zone's `occupancy_max` (edge-triggered so a
+/// capacity alarm fires once per breach, not every frame the zone stays full).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ZoneOccupancy {
+    pub zone: String,
+    pub count: u32,
+    pub over: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct DwellState {
     /// Accumulated *contiguous* time the object has been inside the zone (secs).
@@ -165,6 +176,10 @@ pub struct AnalyticsState {
     last_side: HashMap<(u64, usize), f32>,
     /// (track_id, zone **index**) -> dwell progress (same index-keying reason).
     dwell: HashMap<(u64, usize), DwellState>,
+    /// zone **index** -> was the zone over its occupancy limit on the previous
+    /// tick. Drives edge-triggering of the occupancy alarm (fire only on the
+    /// false->true transition). Per-zone, not per-track (occupancy is a count).
+    over: HashMap<usize, bool>,
     /// When a track briefly steps outside, inside-time accrual pauses but the
     /// dwell state is kept alive for this many seconds before it's forgotten.
     grace_secs: i64,
@@ -175,6 +190,7 @@ impl Default for AnalyticsState {
         Self {
             last_side: HashMap::new(),
             dwell: HashMap::new(),
+            over: HashMap::new(),
             grace_secs: 3,
         }
     }
@@ -191,9 +207,11 @@ impl AnalyticsState {
         zones: &[PolyZone],
         homography: Option<&Homography>,
         now: i64,
-    ) -> (Vec<Crossing>, Vec<Loiter>) {
+    ) -> (Vec<Crossing>, Vec<Loiter>, Vec<ZoneOccupancy>) {
         let mut crossings = Vec::new();
         let mut loiters = Vec::new();
+        // Per-zone live occupancy accumulated across all tracks this frame.
+        let mut occ = vec![0u32; zones.len()];
         let live: HashSet<u64> = tracks.iter().map(|t| t.id).collect();
 
         for t in tracks {
@@ -236,8 +254,15 @@ impl AnalyticsState {
                 }
             }
 
-            // --- loitering / dwell ------------------------------------------
+            // --- occupancy + loitering / dwell ------------------------------
             for (zi, z) in zones.iter().enumerate() {
+                // Live occupancy counts every zone (not just dwell zones), within
+                // the zone's label scope. Computed once and reused for dwell below
+                // (dwell's own membership test is identical past its label guard).
+                let inside = z.applies_to(&t.label) && z.contains(anchor.0, anchor.1);
+                if inside {
+                    occ[zi] += 1;
+                }
                 let Some(threshold) = dwell_threshold(z) else {
                     continue;
                 };
@@ -245,7 +270,7 @@ impl AnalyticsState {
                     continue;
                 }
                 let key = (t.id, zi);
-                if z.contains(anchor.0, anchor.1) {
+                if inside {
                     let st = self.dwell.entry(key).or_insert(DwellState {
                         inside_secs: 0,
                         last_ts: now,
@@ -293,7 +318,31 @@ impl AnalyticsState {
         self.last_side.retain(|(id, _), _| live.contains(id));
         self.dwell.retain(|(id, _), _| live.contains(id));
 
-        (crossings, loiters)
+        // Build the per-zone occupancy gauge and edge-trigger the capacity alarm:
+        // `over` is true only on the frame the count first rises above the limit,
+        // and the latch re-arms once the count drops back to/below it.
+        let mut occupancy = Vec::with_capacity(zones.len());
+        for (zi, z) in zones.iter().enumerate() {
+            let count = occ[zi];
+            let over = match z.occupancy_max {
+                Some(max) if max > 0 => {
+                    let now_over = count > max;
+                    let was_over = self.over.get(&zi).copied().unwrap_or(false);
+                    self.over.insert(zi, now_over);
+                    now_over && !was_over
+                }
+                _ => false,
+            };
+            occupancy.push(ZoneOccupancy {
+                zone: z.name.clone(),
+                count,
+                over,
+            });
+        }
+        // Drop latch state for zones that no longer exist (index-keyed).
+        self.over.retain(|zi, _| *zi < zones.len());
+
+        (crossings, loiters, occupancy)
     }
 }
 
@@ -347,6 +396,7 @@ mod tests {
             kind: crate::db::ZoneKind::Required,
             labels: vec![],
             dwell_secs: Some(secs),
+            occupancy_max: None,
         }
     }
 
@@ -359,7 +409,7 @@ mod tests {
         let mut total = Vec::new();
         for (i, x) in xs.iter().enumerate() {
             let t = track_at(1, "person", *x, 0.5);
-            let (cr, _) = st.tick(&[&t], &tw, &[], None, i as i64);
+            let (cr, _, _) = st.tick(&[&t], &tw, &[], None, i as i64);
             total.extend(cr);
         }
         assert_eq!(total.len(), 1, "exactly one crossing for one pass");
@@ -375,7 +425,7 @@ mod tests {
         let mut total = Vec::new();
         for (i, x) in xs.iter().enumerate() {
             let t = track_at(1, "person", *x, 0.5);
-            let (cr, _) = st.tick(&[&t], &tw, &[], None, i as i64);
+            let (cr, _, _) = st.tick(&[&t], &tw, &[], None, i as i64);
             total.extend(cr);
         }
         assert_eq!(total.len(), 1);
@@ -391,7 +441,7 @@ mod tests {
         let mut total = Vec::new();
         for (i, x) in xs.iter().enumerate() {
             let t = track_at(1, "person", *x, 0.5);
-            let (cr, _) = st.tick(&[&t], &tw, &[], None, i as i64);
+            let (cr, _, _) = st.tick(&[&t], &tw, &[], None, i as i64);
             total.extend(cr);
         }
         assert!(total.is_empty(), "wrong-way crossing suppressed");
@@ -405,7 +455,7 @@ mod tests {
         let mut total = Vec::new();
         for (i, x) in xs.iter().enumerate() {
             let t = track_at(1, "person", *x, 0.5);
-            let (cr, _) = st.tick(&[&t], &tw, &[], None, i as i64);
+            let (cr, _, _) = st.tick(&[&t], &tw, &[], None, i as i64);
             total.extend(cr);
         }
         assert!(total.is_empty());
@@ -420,7 +470,7 @@ mod tests {
         // A person crosses — should be ignored (tripwire is car-only).
         for (i, x) in [0.3_f32, 0.55].iter().enumerate() {
             let t = track_at(1, "person", *x, 0.5);
-            let (cr, _) = st.tick(&[&t], &tws, &[], None, i as i64);
+            let (cr, _, _) = st.tick(&[&t], &tws, &[], None, i as i64);
             assert!(cr.is_empty(), "person ignored by car-only tripwire");
         }
     }
@@ -433,7 +483,7 @@ mod tests {
         let mut total = Vec::new();
         for now in 0..8 {
             let t = track_at(1, "person", 0.5, 0.5);
-            let (_, lo) = st.tick(&[&t], &[], &zones, None, now);
+            let (_, lo, _) = st.tick(&[&t], &[], &zones, None, now);
             total.extend(lo);
         }
         assert_eq!(total.len(), 1, "loiter fires exactly once at the threshold");
@@ -449,12 +499,12 @@ mod tests {
         let mut total = Vec::new();
         for now in 0..2 {
             let t = track_at(1, "person", 0.5, 0.5);
-            let (_, lo) = st.tick(&[&t], &[], &zones, None, now);
+            let (_, lo, _) = st.tick(&[&t], &[], &zones, None, now);
             total.extend(lo);
         }
         // Track leaves (no longer present) for the rest.
         for now in 2..8 {
-            let (_, lo) = st.tick(&[], &[], &zones, None, now);
+            let (_, lo, _) = st.tick(&[], &[], &zones, None, now);
             total.extend(lo);
         }
         assert!(total.is_empty(), "a quick pass-through never loiters");
@@ -616,5 +666,64 @@ mod tests {
             last_ts: 5000,
         };
         assert!(track_speed_kmh(&t, &h).is_none());
+    }
+
+    fn occ_zone(name: &str, max: u32) -> PolyZone {
+        PolyZone {
+            name: name.to_string(),
+            points: vec![[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]],
+            kind: crate::db::ZoneKind::Required,
+            labels: vec![],
+            dwell_secs: None,
+            occupancy_max: Some(max),
+        }
+    }
+
+    #[test]
+    fn occupancy_counts_and_edge_triggers() {
+        let zones = [occ_zone("lobby", 2)];
+        let mut st = AnalyticsState::default();
+        let t1 = track_at(1, "person", 0.5, 0.5);
+        let t2 = track_at(2, "person", 0.45, 0.55);
+        let t3 = track_at(3, "person", 0.55, 0.45);
+        let outside = track_at(99, "person", 0.9, 0.9);
+
+        // 2 inside == limit -> counted but not over.
+        let (_, _, o) = st.tick(&[&t1, &t2, &outside], &[], &zones, None, 0);
+        assert_eq!(o[0].count, 2);
+        assert!(!o[0].over);
+
+        // 3 inside > limit -> rising edge fires exactly once.
+        let (_, _, o) = st.tick(&[&t1, &t2, &t3], &[], &zones, None, 1);
+        assert_eq!(o[0].count, 3);
+        assert!(o[0].over);
+
+        // Still 3 inside -> latched, does NOT re-fire.
+        let (_, _, o) = st.tick(&[&t1, &t2, &t3], &[], &zones, None, 2);
+        assert_eq!(o[0].count, 3);
+        assert!(!o[0].over);
+
+        // Drop back to the limit -> latch re-arms (still not "over").
+        let (_, _, o) = st.tick(&[&t1, &t2], &[], &zones, None, 3);
+        assert!(!o[0].over);
+
+        // Over the limit again -> fires again.
+        let (_, _, o) = st.tick(&[&t1, &t2, &t3], &[], &zones, None, 4);
+        assert!(o[0].over);
+    }
+
+    #[test]
+    fn occupancy_honors_label_scope() {
+        // A zone scoped to "car" with no alarm limit (0): counts only cars,
+        // never fires.
+        let mut z = occ_zone("cars", 0);
+        z.labels = vec!["car".into()];
+        let zones = [z];
+        let mut st = AnalyticsState::default();
+        let car = track_at(1, "car", 0.5, 0.5);
+        let person = track_at(2, "person", 0.5, 0.5);
+        let (_, _, o) = st.tick(&[&car, &person], &[], &zones, None, 0);
+        assert_eq!(o[0].count, 1); // only the car
+        assert!(!o[0].over); // max 0 => no alarm
     }
 }

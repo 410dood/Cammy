@@ -396,6 +396,25 @@ export default function ZoneEditor({
                   )
                 }
               />
+              <input
+                type="number"
+                min="0"
+                step="1"
+                placeholder="max #"
+                title="Occupancy limit: an occupancy event fires when the live count of objects inside this zone first exceeds this number (blank/0 = off, needs tracking)"
+                style={{ width: 76 }}
+                value={z.occupancy_max ?? ""}
+                onChange={(e) =>
+                  onChange(
+                    zones.map((x, j) =>
+                      j === i
+                        ? { ...x, occupancy_max: e.target.value === "" ? null : Number(e.target.value) }
+                        : x
+                    ),
+                    masks
+                  )
+                }
+              />
               <button
                 type="button"
                 className="danger"
