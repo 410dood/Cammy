@@ -527,7 +527,10 @@ pub fn run(
                     now,
                     d.label,
                     d.score,
-                    [d.x1, d.y1, d.x2, d.y2],
+                    // Store the box as 0..1 frame fractions (like zones, masks and
+                    // analytics events) so it survives resolution/sub-stream
+                    // changes and is directly comparable across the events table.
+                    [d.x1 / fw, d.y1 / fh, d.x2 / fw, d.y2 / fh],
                     Some(&snap_rel),
                     face_names[i].as_deref(),
                     plates[i].as_deref(),

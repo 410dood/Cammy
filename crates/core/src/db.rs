@@ -1274,6 +1274,58 @@ impl Db {
         Ok(serde_json::json!({ "crossings": crossings, "loiters": loiters }))
     }
 
+    /// Accumulate object-detection footprints into a `grid`×`grid` activity
+    /// density map for a camera over an optional time range (row-major, length
+    /// `grid*grid`). Each qualifying event contributes its ground-anchor
+    /// (bottom-centre of the box) to one cell — a "foot-traffic" heatmap of where
+    /// objects actually stood. Synthetic analytics-marker events
+    /// (crossing/wrong_way/loiter/occupancy/gesture) and degenerate (zero-area)
+    /// boxes — e.g. audio events — are excluded so the map reflects real object
+    /// presence. `grid` is clamped to a sane range.
+    pub fn heatmap(
+        &self,
+        camera_id: i64,
+        from: Option<i64>,
+        to: Option<i64>,
+        grid: usize,
+    ) -> Result<Vec<u32>> {
+        let grid = grid.clamp(8, 128);
+        let mut cells = vec![0u32; grid * grid];
+        let conn = self.conn();
+        let mut q = conn.prepare(
+            "SELECT x1, y1, x2, y2 FROM events
+             WHERE camera_id = ?1
+               AND (?2 IS NULL OR ts >= ?2) AND (?3 IS NULL OR ts < ?3)
+               AND label NOT IN ('crossing', 'wrong_way', 'loiter', 'occupancy', 'gesture')",
+        )?;
+        let rows = q.query_map(params![camera_id, from, to], |r| {
+            Ok((
+                r.get::<_, f64>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, f64>(2)?,
+                r.get::<_, f64>(3)?,
+            ))
+        })?;
+        let g = grid as f64;
+        for row in rows {
+            let (x1, y1, x2, y2) = row?;
+            // Skip degenerate boxes (audio / synthetic events with no real area)
+            // and any box not in 0..1 frame fractions — i.e. legacy rows written
+            // before detection boxes were normalised, which hold raw pixel coords
+            // and would otherwise all collapse into the bottom-right cell.
+            if x2 <= x1 || y2 <= y1 || x1 < 0.0 || y1 < 0.0 || x2 > 1.0 || y2 > 1.0 {
+                continue;
+            }
+            // Ground-contact anchor: bottom-centre of the box.
+            let ax = ((x1 + x2) / 2.0).clamp(0.0, 0.999_999);
+            let ay = y2.clamp(0.0, 0.999_999);
+            let cx = (ax * g) as usize;
+            let cy = (ay * g) as usize;
+            cells[cy * grid + cx] += 1;
+        }
+        Ok(cells)
+    }
+
     // --- alarms --------------------------------------------------------------
 
     pub fn add_alarm(&self, r: &AlarmRule) -> Result<i64> {
@@ -2271,6 +2323,92 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("zoomy-db-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Db::open(&dir.join(format!("t-{:?}.db", std::time::Instant::now()))).unwrap()
+    }
+
+    #[test]
+    fn heatmap_accumulates_anchors_excluding_synthetic() {
+        let db = mem_db();
+        let cam = db.add_camera("yard", "rtsp://x", None, true, true).unwrap();
+        // Two people standing at anchor (0.5, 0.8).
+        for ts in [100, 110] {
+            db.add_event(
+                cam.id,
+                ts,
+                "person",
+                0.9,
+                [0.45, 0.6, 0.55, 0.8],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        // One car at anchor (0.1, 0.2).
+        db.add_event(
+            cam.id,
+            120,
+            "car",
+            0.9,
+            [0.05, 0.0, 0.15, 0.2],
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // A synthetic analytics marker (excluded by label) and a degenerate
+        // zero-area box (an audio event, excluded by area) must NOT accumulate.
+        db.add_event(
+            cam.id,
+            130,
+            "crossing",
+            1.0,
+            [0.4, 0.4, 0.6, 0.6],
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        db.add_event(
+            cam.id, 140, "Speech", 0.9, [0.0; 4], None, None, None, None, None,
+        )
+        .unwrap();
+        // A legacy row in raw PIXEL coordinates (pre-normalisation): any coord > 1
+        // must be excluded, not collapsed into the corner cell.
+        db.add_event(
+            cam.id,
+            150,
+            "person",
+            0.9,
+            [230.0, 600.0, 290.0, 967.0],
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let grid = 10;
+        let cells = db.heatmap(cam.id, None, None, grid).unwrap();
+        assert_eq!(cells.len(), grid * grid);
+        assert_eq!(cells[8 * grid + 5], 2, "two people at (0.5,0.8)");
+        assert_eq!(cells[2 * grid + 1], 1, "one car at (0.1,0.2)");
+        assert_eq!(
+            cells[grid * grid - 1],
+            0,
+            "legacy pixel row not collapsed into corner"
+        );
+        assert_eq!(
+            cells.iter().sum::<u32>(),
+            3,
+            "crossing + audio + pixel row excluded"
+        );
     }
 
     #[test]

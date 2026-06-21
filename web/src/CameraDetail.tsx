@@ -4,6 +4,7 @@ import { RelTime, Modal } from "./ui";
 import Timeline from "./Timeline";
 import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
+import Heatmap from "./Heatmap";
 import {
   IconX, IconMic, IconUser, IconCar,
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight, IconPlus, IconMinus,
@@ -150,6 +151,13 @@ export default function CameraDetail({
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 14 }}>
+        <h2 style={{ margin: "0 0 10px", fontSize: "0.78rem", textTransform: "uppercase", color: "var(--muted)" }}>
+          Activity heatmap
+        </h2>
+        <Heatmap camera={camera} />
       </div>
 
       {playing && (

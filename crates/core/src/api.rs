@@ -105,6 +105,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/overview", get(overview))
         .route("/api/analytics/counts", get(analytics_counts))
         .route("/api/analytics/occupancy", get(analytics_occupancy))
+        .route("/api/analytics/heatmap", get(analytics_heatmap))
         .route("/api/arm", get(get_arm_mode).put(set_arm_mode))
         .route("/api/notifications", get(list_notifications_api))
         .route(
@@ -2300,6 +2301,32 @@ async fn analytics_occupancy(State(st): State<AppState>) -> ApiResult<Json<serde
         })
         .collect();
     Ok(Json(serde_json::json!({ "cameras": rows })))
+}
+
+/// Activity heatmap for one camera: a `grid`×`grid` row-major density map of
+/// object ground-anchors over an optional time range (`from`/`to` unix secs),
+/// plus the peak cell value for client-side normalisation.
+async fn analytics_heatmap(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let camera = q
+        .get("camera")
+        .and_then(|s| s.parse::<i64>().ok())
+        .ok_or_else(|| bad_request("camera id required"))?;
+    let from = q.get("from").and_then(|s| s.parse::<i64>().ok());
+    let to = q.get("to").and_then(|s| s.parse::<i64>().ok());
+    let grid = q
+        .get("grid")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(32);
+    let cells = st.db.heatmap(camera, from, to, grid)?;
+    let max = cells.iter().copied().max().unwrap_or(0);
+    // The DB clamps grid, so report the actual side length back to the client.
+    let side = (cells.len() as f64).sqrt().round() as usize;
+    Ok(Json(
+        serde_json::json!({ "grid": side, "cells": cells, "max": max }),
+    ))
 }
 
 async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
