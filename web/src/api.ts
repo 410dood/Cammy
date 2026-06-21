@@ -62,6 +62,10 @@ export interface DetectConfig {
   poll_ms: number | null;
   face_recognize: boolean | null;
   two_way_audio: boolean;
+  /** Camera tamper/defocus/scene-change detection (#63). */
+  tamper_detect: boolean;
+  /** Gait analysis & identification on person tracks (#64). */
+  gait_identify: boolean;
   /** Per-camera retention override in days; null inherits the global setting. */
   retention_days: number | null;
 }
@@ -96,6 +100,16 @@ export interface CamEvent {
   transcript: string | null;
   flagged: boolean;
   note: string | null;
+  /** Attributed gait identity (#64): an enrolled name or "?" (unknown walker). */
+  gait?: string | null;
+}
+
+export interface GaitProfile {
+  id: number;
+  name: string;
+  samples: number;
+  created_ts: number;
+  updated_ts: number;
 }
 
 export interface Segment {
@@ -263,6 +277,8 @@ export interface CamStatus {
   inference_ms: number | null;
   accelerator: string | null;
   model: string | null;
+  /** Active tamper kind (blackout/defocus/scene_change) if compromised (#63). */
+  tamper?: string | null;
 }
 
 export type StatusMap = Record<string, CamStatus>;
@@ -478,6 +494,16 @@ export const api = {
       body: JSON.stringify({ name, unknown_file }),
     }),
   deleteFace: (id: number) => req<void>(`/api/faces/${id}`, { method: "DELETE" }),
+  // Gait identification (#64): enrolled profiles + unknown-walker candidates.
+  gait: () => req<{ profiles: GaitProfile[]; candidates: CamEvent[] }>("/api/gait"),
+  enrollGait: (event_id: number, name: string) =>
+    req<{ id: number; name: string }>("/api/gait", {
+      method: "POST",
+      body: JSON.stringify({ event_id, name }),
+    }),
+  renameGait: (id: number, name: string) =>
+    req<void>(`/api/gait/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteGait: (id: number) => req<void>(`/api/gait/${id}`, { method: "DELETE" }),
   renameFace: (id: number, name: string) =>
     req<void>(`/api/faces/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   plates: () => req<PlateEntry[]>("/api/plates"),

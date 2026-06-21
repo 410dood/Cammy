@@ -594,7 +594,7 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                     </span>
                   )}
                 </div>
-                {(ev.face || ev.plate || ev.gesture || ev.zone) && (
+                {(ev.face || ev.plate || ev.gesture || ev.zone || ev.gait) && (
                   <div className="ev-chips">
                     {ev.face === "?" ? (
                       <span className="badge warn" title="A face was seen but matched nobody enrolled">
@@ -618,6 +618,15 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
                     )}
                     {ev.gesture && <span className="badge accent"><IconHand size={13} /> {ev.gesture}</span>}
                     {ev.zone && <span className="badge"><IconZone size={13} /> {ev.zone}</span>}
+                    {ev.gait === "?" ? (
+                      <span className="badge warn" title="Tracked walking but matched no enrolled gait">
+                        <IconStranger size={13} /> unknown walk
+                      </span>
+                    ) : ev.gait ? (
+                      <span className="badge ok" title="Identified by gait (how they walk)">
+                        <IconUser size={13} /> {ev.gait} · gait
+                      </span>
+                    ) : null}
                   </div>
                 )}
                 {ev.caption && <div className="ev-caption">“{ev.caption}”</div>}

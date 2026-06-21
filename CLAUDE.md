@@ -14,7 +14,57 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 62/62, full commercial analytics suite, 2026-06-21
+## Current status: v0.3 — competitor matrix 64/64, full commercial analytics suite, 2026-06-21
+
+### This session: camera tamper detection (#63) + gait identification (#64)
+
+Two analytics features on top of the 2FA work, both **pure-Rust, no new
+dependency**, built on the existing pipeline + object tracker (#53) and heavily
+unit-tested (the analytics-suite pattern). On branch `tamper-and-gait` (stacked
+on `two-factor-auth`/PR #19).
+
+**#63 Camera tamper / defocus / scene-change detection** (`crates/core/src/tamper.rs`):
+the optical-integrity watchdog Axis/Bosch/Hanwha/Hikvision all ship. A stateful
+`TamperGate` on a 32×32 grayscale thumbnail flags **Blackout** (near-uniform +
+very dark/bright = lens covered), **Defocus** (Laplacian-variance sharpness drops
+below a fraction of the camera's own learned baseline), and **SceneChange**
+(mean-abs-diff vs an EMA reference — camera moved). Runs on the **raw** frame
+(before privacy masks) and **regardless of motion**; hysteresis to fire/clear;
+baselines learned **only on healthy frames** so a tampered frame can't poison the
+reference. Per-camera opt-in (`DetectConfig.tamper_detect`); a transition fires a
+`tamper` event (kind in the zone slot, via `emit_analytics_event` → alarm/webhook/
+MQTT) + an in-app notification + ntfy push, and publishes `CamHealth.tamper` to
+`/api/status`. 8 unit tests.
+
+**#64 Gait analysis & identification** (`crates/core/src/gait.rs`): identify a
+person by **how they walk** (Verkada/Watrix-class), at distance / when the face
+isn't visible. A **scale- and position-invariant 7-dim signature** from a person
+track's bbox trajectory (aspect mean/std, body-relative bob & sway, height
+variation, normalized pace, straightness) → `distance` (normalized RMS) →
+`best_match`. Per-camera opt-in (`gait_identify`) runs the tracker for person
+tracks (`tracker_on = analytics_on || gait_on`); a `GaitState` accumulates capped
+per-track samples; each person event is correlated to its best-IoU confirmed
+track and tagged `events.gait` = an enrolled name or the `?` unknown sentinel
+(raw `gait_sig` JSON kept server-side, **never serialized**). Enrollment mirrors
+faces: `GET/POST/PATCH/DELETE /api/gait` (enroll from a stored event signature,
+running-average merge into `gait_profiles`), a People-page "Gait identities" card,
+and an Events `· gait` chip. **HONEST SCOPE (documented in-code + UI):** at ~1 fps
+this is a *coarse body-and-motion re-ID aid*, NOT forensic step-cadence gait.
+6 unit tests (scale-invariance, same-vs-different separation, stationary
+rejection, GaitState cap/retire).
+
+**Gates:** fmt/clippy `-D warnings` clean (full workspace), **98 lib tests**, web
+builds. **Live-validated:** DetectConfig flags round-trip; `/api/status` tamper
+field exposed; the full gait enroll lifecycle (inject unknown-walker events →
+enroll → samples merge → reserved-name guard → rename → delete). A 3-lens
+(correctness / security-privacy / perf) adversarial review confirmed 4 findings,
+**all fixed**: (1) SceneChange tamper latched forever after a camera was re-aimed
+(the frozen reference never re-baselined) — added a settle-and-re-baseline
+recovery path (+test); (2) the gait-profile load ran a per-frame DB query on the
+detection thread — hoisted to once/tick; (3) the tamper snapshot was saved from
+the raw pre-privacy-mask frame — now masks a clone for the snapshot while the gate
+still analyzes the raw frame; (4) the new per-camera state maps weren't pruned —
+added deletion-retain + gait-disable cleanup.
 
 ### This session: TOTP two-factor authentication (matrix #62) — the top WAN-security gap
 

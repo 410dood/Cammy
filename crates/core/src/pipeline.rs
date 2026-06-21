@@ -26,6 +26,11 @@ use crate::status::StatusBoard;
 /// Cap on a fetched JPEG frame (sanity guard, not a real limit).
 const MAX_FRAME_BYTES: u64 = 32 * 1024 * 1024;
 
+/// Gait (#64): bounded per-track body-sample buffer and how long a track lingers
+/// in the gait map after the tracker stops reporting it.
+const GAIT_SAMPLE_CAP: usize = 64;
+const GAIT_RETIRE_MS: i64 = 30_000;
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     db: Db,
@@ -61,6 +66,11 @@ pub fn run(
     // Only used on cameras that configure a tripwire or a dwell zone.
     let mut trackers: HashMap<i64, tracker::Tracker> = HashMap::new();
     let mut analytics: HashMap<i64, crate::analytics::AnalyticsState> = HashMap::new();
+    // Per-camera tamper / defocus / scene-change gate (#63), on cameras opted
+    // into `tamper_detect`.
+    let mut tamper_gates: HashMap<i64, crate::tamper::TamperGate> = HashMap::new();
+    // Per-camera gait accumulation (#64), on cameras opted into `gait_identify`.
+    let mut gait_states: HashMap<i64, crate::gait::GaitState> = HashMap::new();
 
     while !shutdown.load(Ordering::Relaxed) {
         let tick = Instant::now();
@@ -86,7 +96,29 @@ pub fn run(
             let live: std::collections::HashSet<i64> = cameras.iter().map(|c| c.id).collect();
             trackers.retain(|k, _| live.contains(k));
             analytics.retain(|k, _| live.contains(k));
+            tamper_gates.retain(|k, _| live.contains(k));
+            gait_states.retain(|k, _| live.contains(k));
         }
+        // Gait (#64): load enrolled profiles once per tick (not per camera/frame)
+        // when any camera uses gait, parsed to fixed-length signatures for matching.
+        let gait_profiles: Vec<(String, crate::gait::GaitSignature)> = if cameras
+            .iter()
+            .any(|c| c.enabled && c.detect && c.detect_config.gait_identify)
+        {
+            db.gait_profile_sigs()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(n, v)| {
+                    <[f32; crate::gait::GAIT_DIMS]>::try_from(v)
+                        .ok()
+                        .map(|s| (n, s))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let gait_prof_sigs: Vec<crate::gait::GaitSignature> =
+            gait_profiles.iter().map(|(_, s)| *s).collect();
         for cam in cameras.iter().filter(|c| c.enabled && c.detect) {
             if shutdown.load(Ordering::Relaxed) {
                 break;
@@ -146,6 +178,65 @@ pub fn run(
                 }
             };
 
+            // Tamper / defocus / scene-change watchdog (#63). Runs on the RAW
+            // frame (before privacy masks, so a large mask can't read as a
+            // blackout) and regardless of motion (a covered lens produces no
+            // motion). On a state transition it fires a `tamper` event + an
+            // in-app/phone notification.
+            if cam.detect_config.tamper_detect {
+                let thumb = crate::tamper::thumb_of(&frame);
+                let gate = tamper_gates
+                    .entry(cam.id)
+                    .or_insert_with(|| crate::tamper::TamperGate::new(Default::default()));
+                if let Some(ev) = gate.update(&thumb) {
+                    // The gate analyzes the RAW frame, but the saved snapshot must
+                    // honor privacy masks — so mask a clone for the snapshot when
+                    // any mask is set (transitions are rare, so the clone is cheap).
+                    let now_ts = chrono::Local::now().timestamp();
+                    if cam.detect_config.privacy_masks.is_empty() {
+                        handle_tamper_event(
+                            &db,
+                            &settings,
+                            &alarms,
+                            &throttle,
+                            &mqtt_tx,
+                            &snapshots_dir,
+                            &frame,
+                            cam,
+                            ev,
+                            now_ts,
+                        );
+                    } else {
+                        let mut masked = frame.clone();
+                        apply_privacy_masks(&mut masked, &cam.detect_config.privacy_masks);
+                        handle_tamper_event(
+                            &db,
+                            &settings,
+                            &alarms,
+                            &throttle,
+                            &mqtt_tx,
+                            &snapshots_dir,
+                            &masked,
+                            cam,
+                            ev,
+                            now_ts,
+                        );
+                    }
+                }
+                // Publish the live tamper state so /api/status + the UI can show it.
+                status.set_tamper(cam.id, gate.state().map(|k| k.as_str().to_string()));
+            } else if tamper_gates.remove(&cam.id).is_some() {
+                // Tamper just turned off: forget stale state so re-enabling
+                // re-learns the baseline, and clear the status indicator.
+                status.set_tamper(cam.id, None);
+            }
+            // Gait (#64): forget a camera's accumulated walking state the moment
+            // gait is turned off (mirrors the tamper disable-cleanup above; the
+            // per-tick deletion-retain only covers removed cameras).
+            if !cam.detect_config.gait_identify {
+                gait_states.remove(&cam.id);
+            }
+
             // Privacy masks: black out the polygons before anything looks at the
             // frame — motion gate, detector and snapshot all see the masked view.
             if !cam.detect_config.privacy_masks.is_empty() {
@@ -179,7 +270,11 @@ pub fn run(
                     .zones
                     .iter()
                     .any(|z| z.dwell_secs.unwrap_or(0) > 0 || z.occupancy_max.unwrap_or(0) > 0);
-            if !verdict.is_motion() && !analytics_on {
+            // Gait identification (#64) also needs the tracker running for person
+            // tracks (even across motionless frames, to keep the trajectory).
+            let gait_on = cam.detect_config.gait_identify;
+            let tracker_on = analytics_on || gait_on;
+            if !verdict.is_motion() && !tracker_on {
                 continue;
             }
             tracing::debug!(camera = %cam.name, ?verdict, "running detector");
@@ -223,12 +318,16 @@ pub fn run(
                         .unwrap_or(true)
                 })
                 .collect();
-            // --- tracker-driven analytics: line-crossing + loitering --------
+            // --- tracker-driven analytics + gait ----------------------------
             // Runs on the full (label/score/zone-filtered) detection set, NOT
             // the cooldown-throttled `wanted`, so an object trips a tripwire even
-            // while its label is in event cooldown. Active only on cameras that
-            // configure a tripwire or a dwell zone (otherwise the tracker is idle).
-            if analytics_on {
+            // while its label is in event cooldown. Active on cameras that
+            // configure a tripwire / dwell zone OR opt into gait.
+            // Confirmed person tracks with a computed gait signature, as
+            // `(frame-fraction box, identity, signature_json)`, for attributing
+            // the gait identity to this frame's person events below.
+            let mut gait_attr: Vec<(tracker::BBox, String, Option<String>)> = Vec::new();
+            if tracker_on {
                 let tdets: Vec<tracker::Det> = dets
                     .iter()
                     .filter(|d| labels.is_empty() || labels.iter().any(|l| l == d.label))
@@ -256,91 +355,76 @@ pub fn run(
                 let now_ms = chrono::Local::now().timestamp_millis();
                 trk.update(&tdets, now_ms);
                 let confirmed: Vec<&tracker::Track> = trk.confirmed().collect();
-                // Build the ground-plane homography from the camera's optional
-                // calibration (cheap 8x8 solve; rebuilt each processed frame).
-                let homography = cam.detect_config.ground_calib.as_ref().and_then(|c| {
-                    tracker::Homography::from_quad(
-                        [
-                            (c.points[0][0], c.points[0][1]),
-                            (c.points[1][0], c.points[1][1]),
-                            (c.points[2][0], c.points[2][1]),
-                            (c.points[3][0], c.points[3][1]),
-                        ],
-                        c.width_m,
-                        c.height_m,
-                    )
-                });
-                let astate = analytics.entry(cam.id).or_default();
-                let (crossings, loiters, occupancy) = astate.tick(
-                    &confirmed,
-                    &cam.detect_config.tripwires,
-                    &cam.detect_config.zones,
-                    homography.as_ref(),
-                    now,
-                );
-                for c in &crossings {
-                    let label = if c.wrong_way { "wrong_way" } else { "crossing" };
-                    emit_analytics_event(
-                        &db,
-                        &settings,
-                        &alarms,
-                        &throttle,
-                        &mqtt_tx,
-                        &snapshots_dir,
-                        &frame,
-                        cam,
-                        label,
-                        c.anchor,
-                        Some(&c.tripwire),
-                        Some(c.dir.as_str()),
-                        c.speed_kmh,
-                        now,
-                    );
-                }
-                for l in &loiters {
-                    emit_analytics_event(
-                        &db,
-                        &settings,
-                        &alarms,
-                        &throttle,
-                        &mqtt_tx,
-                        &snapshots_dir,
-                        &frame,
-                        cam,
-                        "loiter",
-                        l.anchor,
-                        Some(&l.zone),
-                        None,
-                        None,
-                        now,
-                    );
-                }
-                // Publish the live occupancy gauge to the status board (cleared to
-                // empty when the camera has no zones) and fire an edge-triggered
-                // `occupancy` event for any zone that just exceeded its limit.
-                // Zone names aren't unique, so SUM same-named zones rather than
-                // letting one silently overwrite another, and skip unnamed zones.
-                let mut gauge: std::collections::HashMap<String, u32> =
-                    std::collections::HashMap::new();
-                for o in &occupancy {
-                    if !o.zone.is_empty() {
-                        *gauge.entry(o.zone.clone()).or_insert(0) += o.count;
+
+                // Gait identification (#64): accumulate body samples for each
+                // confirmed person track and attribute an identity (an enrolled
+                // name, or the `?` unknown sentinel) once enough walking is seen.
+                if gait_on {
+                    let gst = gait_states.entry(cam.id).or_default();
+                    for t in &confirmed {
+                        if t.label == "person" {
+                            gst.observe(
+                                t.id,
+                                [t.bbox.x1, t.bbox.y1, t.bbox.x2, t.bbox.y2],
+                                now_ms,
+                                GAIT_SAMPLE_CAP,
+                            );
+                        }
+                    }
+                    gst.retire_stale(now_ms, GAIT_RETIRE_MS);
+                    let params = crate::gait::GaitParams::default();
+                    for t in &confirmed {
+                        if t.label != "person" {
+                            continue;
+                        }
+                        let Some(buf) = gst.get(t.id) else { continue };
+                        let Some(sig) = crate::gait::signature(&buf.samples, &params) else {
+                            continue;
+                        };
+                        let name = match crate::gait::best_match(
+                            &sig,
+                            &gait_prof_sigs,
+                            params.match_threshold,
+                        ) {
+                            Some((i, _)) => gait_profiles[i].0.clone(),
+                            None => crate::db::UNKNOWN_GAIT.to_string(),
+                        };
+                        if let Some(b) = gst.get_mut(t.id) {
+                            b.identity = Some(name.clone());
+                        }
+                        let sig_json = serde_json::to_string(&sig.to_vec()).ok();
+                        gait_attr.push((t.bbox, name, sig_json));
                     }
                 }
-                status.set_occupancy(cam.id, gauge);
-                for (zo, zone) in occupancy.iter().zip(cam.detect_config.zones.iter()) {
-                    if zo.over {
-                        // Use the zone's vertex centroid as the snapshot marker.
-                        let anchor = if zone.points.is_empty() {
-                            (0.5, 0.5)
-                        } else {
-                            let n = zone.points.len() as f32;
-                            let (sx, sy) = zone
-                                .points
-                                .iter()
-                                .fold((0.0f32, 0.0f32), |(ax, ay), p| (ax + p[0], ay + p[1]));
-                            (sx / n, sy / n)
-                        };
+
+                // Analytics emits (line-crossing / loiter / occupancy) only when
+                // the camera actually configures them; the tracker above may have
+                // run solely for gait.
+                if analytics_on {
+                    // Build the ground-plane homography from the camera's optional
+                    // calibration (cheap 8x8 solve; rebuilt each processed frame).
+                    let homography = cam.detect_config.ground_calib.as_ref().and_then(|c| {
+                        tracker::Homography::from_quad(
+                            [
+                                (c.points[0][0], c.points[0][1]),
+                                (c.points[1][0], c.points[1][1]),
+                                (c.points[2][0], c.points[2][1]),
+                                (c.points[3][0], c.points[3][1]),
+                            ],
+                            c.width_m,
+                            c.height_m,
+                        )
+                    });
+                    let astate = analytics.entry(cam.id).or_default();
+                    let (crossings, loiters, occupancy) = astate.tick(
+                        &confirmed,
+                        &cam.detect_config.tripwires,
+                        &cam.detect_config.zones,
+                        homography.as_ref(),
+                        now,
+                    );
+                    for c in &crossings {
+                        let label = if c.wrong_way { "wrong_way" } else { "crossing" };
                         emit_analytics_event(
                             &db,
                             &settings,
@@ -350,16 +434,78 @@ pub fn run(
                             &snapshots_dir,
                             &frame,
                             cam,
-                            "occupancy",
-                            anchor,
-                            Some(&zo.zone),
+                            label,
+                            c.anchor,
+                            Some(&c.tripwire),
+                            Some(c.dir.as_str()),
+                            c.speed_kmh,
+                            now,
+                        );
+                    }
+                    for l in &loiters {
+                        emit_analytics_event(
+                            &db,
+                            &settings,
+                            &alarms,
+                            &throttle,
+                            &mqtt_tx,
+                            &snapshots_dir,
+                            &frame,
+                            cam,
+                            "loiter",
+                            l.anchor,
+                            Some(&l.zone),
                             None,
                             None,
                             now,
                         );
                     }
-                }
-            }
+                    // Publish the live occupancy gauge to the status board (cleared to
+                    // empty when the camera has no zones) and fire an edge-triggered
+                    // `occupancy` event for any zone that just exceeded its limit.
+                    // Zone names aren't unique, so SUM same-named zones rather than
+                    // letting one silently overwrite another, and skip unnamed zones.
+                    let mut gauge: std::collections::HashMap<String, u32> =
+                        std::collections::HashMap::new();
+                    for o in &occupancy {
+                        if !o.zone.is_empty() {
+                            *gauge.entry(o.zone.clone()).or_insert(0) += o.count;
+                        }
+                    }
+                    status.set_occupancy(cam.id, gauge);
+                    for (zo, zone) in occupancy.iter().zip(cam.detect_config.zones.iter()) {
+                        if zo.over {
+                            // Use the zone's vertex centroid as the snapshot marker.
+                            let anchor = if zone.points.is_empty() {
+                                (0.5, 0.5)
+                            } else {
+                                let n = zone.points.len() as f32;
+                                let (sx, sy) = zone
+                                    .points
+                                    .iter()
+                                    .fold((0.0f32, 0.0f32), |(ax, ay), p| (ax + p[0], ay + p[1]));
+                                (sx / n, sy / n)
+                            };
+                            emit_analytics_event(
+                                &db,
+                                &settings,
+                                &alarms,
+                                &throttle,
+                                &mqtt_tx,
+                                &snapshots_dir,
+                                &frame,
+                                cam,
+                                "occupancy",
+                                anchor,
+                                Some(&zo.zone),
+                                None,
+                                None,
+                                now,
+                            );
+                        }
+                    }
+                } // if analytics_on
+            } // if tracker_on
 
             // A motionless frame ran the tracker/analytics above, but the motion
             // gate's job is to suppress regular per-object detection events — so
@@ -602,6 +748,22 @@ pub fn run(
                                 && crate::notify::ready(r, &throttle, now)
                         }) {
                             crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
+                        }
+                        // Gait (#64): attribute an identity to this person event
+                        // from the best-overlapping confirmed person track.
+                        if gait_on && d.label == "person" && !gait_attr.is_empty() {
+                            let dbox =
+                                tracker::BBox::new(d.x1 / fw, d.y1 / fh, d.x2 / fw, d.y2 / fh);
+                            let best = gait_attr
+                                .iter()
+                                .map(|(b, name, sj)| (b.iou(&dbox), name, sj))
+                                .filter(|(iou, _, _)| *iou > 0.3)
+                                .max_by(|a, b| {
+                                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                            if let Some((_, name, sj)) = best {
+                                let _ = db.set_event_gait(id, Some(name), sj.as_deref());
+                            }
                         }
                         new_event_ids.push(id);
                         crop_jobs.push((id, [d.x1, d.y1, d.x2, d.y2]));
@@ -874,7 +1036,7 @@ fn emit_analytics_event(
     direction: Option<&str>,
     speed: Option<f32>,
     now: i64,
-) {
+) -> Option<i64> {
     let (ax, ay) = anchor;
     // A small marker box around the ground-contact point for the thumbnail.
     let bbox = [
@@ -905,7 +1067,7 @@ fn emit_analytics_event(
         Ok(id) => id,
         Err(e) => {
             tracing::warn!("analytics event insert failed: {e:#}");
-            return;
+            return None;
         }
     };
     tracing::info!(
@@ -964,6 +1126,68 @@ fn emit_analytics_event(
             && crate::notify::ready(r, throttle, now)
     }) {
         crate::notify::fire(rule, &alarm_ev, mqtt_tx);
+    }
+    Some(id)
+}
+
+/// Handle a camera-tamper state transition (#63): on entry, create a `tamper`
+/// event (riding the alarm/webhook/MQTT machinery) and a notification + phone
+/// push; on recovery, just notify. The `tamper` kind is carried in the event's
+/// zone field and the notification text.
+#[allow(clippy::too_many_arguments)]
+fn handle_tamper_event(
+    db: &Db,
+    settings: &crate::db::Settings,
+    alarms: &[crate::db::AlarmRule],
+    throttle: &crate::notify::AlarmThrottle,
+    mqtt_tx: &std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    snapshots_dir: &std::path::Path,
+    frame: &DynamicImage,
+    cam: &crate::db::Camera,
+    ev: crate::tamper::TamperEvent,
+    now: i64,
+) {
+    let kind = ev.kind.as_str();
+    let kind_label = match ev.kind {
+        crate::tamper::TamperKind::Blackout => "lens covered / blacked out",
+        crate::tamper::TamperKind::Defocus => "image defocused / smeared",
+        crate::tamper::TamperKind::SceneChange => "camera moved / redirected",
+    };
+    if ev.entered {
+        tracing::warn!(camera = %cam.name, kind, "camera tamper detected");
+        // Event + alarm/webhook/MQTT, with the kind in the zone slot.
+        let event_id = emit_analytics_event(
+            db,
+            settings,
+            alarms,
+            throttle,
+            mqtt_tx,
+            snapshots_dir,
+            frame,
+            cam,
+            "tamper",
+            (0.5, 0.5),
+            Some(kind),
+            None,
+            None,
+            now,
+        );
+        let title = "Camera tampering";
+        let msg = format!("{}: {kind_label}", cam.name);
+        let _ = db.add_notification(now, "tamper", title, Some(&msg), event_id);
+        let url = settings.health_ntfy_url.trim();
+        if !url.is_empty() {
+            crate::notify::ntfy_text(url, title, &msg, "rotating_light");
+        }
+    } else {
+        tracing::info!(camera = %cam.name, kind, "camera recovered from tamper");
+        let title = "Camera tampering cleared";
+        let msg = format!("{} recovered ({kind_label})", cam.name);
+        let _ = db.add_notification(now, "tamper_cleared", title, Some(&msg), None);
+        let url = settings.health_ntfy_url.trim();
+        if !url.is_empty() {
+            crate::notify::ntfy_text(url, title, &msg, "white_check_mark");
+        }
     }
 }
 

@@ -35,6 +35,8 @@ function TuneModal({
     poll_ms: camera.detect_config.poll_ms ?? null,
     face_recognize: camera.detect_config.face_recognize ?? null,
     two_way_audio: camera.detect_config.two_way_audio ?? false,
+    tamper_detect: camera.detect_config.tamper_detect ?? false,
+    gait_identify: camera.detect_config.gait_identify ?? false,
     retention_days: camera.detect_config.retention_days ?? null,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
@@ -173,6 +175,28 @@ function TuneModal({
               type="checkbox"
               checked={dc.gesture_detect}
               onChange={() => setDc({ ...dc, gesture_detect: !dc.gesture_detect })}
+            />
+          </label>
+          <label
+            className="toggle field"
+            title="Watch this camera's optical integrity: alert when the lens is covered/blacked out, defocused, or the camera is moved/redirected."
+          >
+            tamper detection
+            <input
+              type="checkbox"
+              checked={dc.tamper_detect}
+              onChange={() => setDc({ ...dc, tamper_detect: !dc.tamper_detect })}
+            />
+          </label>
+          <label
+            className="toggle field"
+            title="Build a walking-signature for each person tracked here and attribute the event to an enrolled gait identity (works at distance / when the face isn't visible). Enroll on the People page."
+          >
+            gait identification
+            <input
+              type="checkbox"
+              checked={dc.gait_identify}
+              onChange={() => setDc({ ...dc, gait_identify: !dc.gait_identify })}
             />
           </label>
           <label className="field" title="Per-camera model override (e.g. a specialized .onnx). Empty inherits the global model.">
