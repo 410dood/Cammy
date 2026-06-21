@@ -42,11 +42,16 @@ export default function Heatmap({ camera }: { camera: Camera }) {
   const [range, setRange] = useState(0);
   const [data, setData] = useState<HeatmapData | null>(null);
   const [err, setErr] = useState(false);
+  // The native frame aspect ratio, so the canvas overlay (which spans the whole
+  // box in normalized 0..1 space) lines up with the contain-fitted frame even for
+  // non-16:9 cameras. Set from the frame image's natural size on load.
+  const [aspect, setAspect] = useState(16 / 9);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     let alive = true;
     setErr(false);
+    setData(null); // clear the previous camera/range's map while the next loads
     api
       .analyticsHeatmap(camera.id, RANGES[range].from(), undefined, 32)
       .then((d) => alive && setData(d))
@@ -80,6 +85,7 @@ export default function Heatmap({ camera }: { camera: Camera }) {
     ctx.putImageData(img, 0, 0);
   }, [data]);
 
+  const loading = !err && data == null;
   const empty = !err && data != null && data.max === 0;
 
   return (
@@ -105,7 +111,8 @@ export default function Heatmap({ camera }: { camera: Camera }) {
           position: "relative",
           width: "100%",
           maxWidth: 720,
-          aspectRatio: "16 / 9",
+          // Match the frame's true aspect ratio so the overlay registers exactly.
+          aspectRatio: String(aspect),
           background: "#000",
           borderRadius: 8,
           overflow: "hidden",
@@ -114,7 +121,12 @@ export default function Heatmap({ camera }: { camera: Camera }) {
         <img
           src={`/api/cameras/${camera.id}/frame.jpg`}
           alt=""
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", opacity: 0.5 }}
+          onLoad={(e) => {
+            const im = e.currentTarget;
+            if (im.naturalWidth > 0 && im.naturalHeight > 0)
+              setAspect(im.naturalWidth / im.naturalHeight);
+          }}
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "fill", opacity: 0.5 }}
         />
         <canvas
           ref={canvasRef}
@@ -127,9 +139,9 @@ export default function Heatmap({ camera }: { camera: Camera }) {
             pointerEvents: "none",
           }}
         />
-        {(empty || err) && (
+        {(loading || empty || err) && (
           <div className="muted" style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}>
-            {err ? "Heatmap unavailable." : "No activity in this range yet."}
+            {err ? "Heatmap unavailable." : loading ? "Loading…" : "No activity in this range yet."}
           </div>
         )}
       </div>

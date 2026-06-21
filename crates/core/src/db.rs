@@ -1309,8 +1309,11 @@ impl Db {
         let g = grid as f64;
         for row in rows {
             let (x1, y1, x2, y2) = row?;
-            // Skip degenerate boxes (audio / synthetic events with no real area).
-            if x2 <= x1 || y2 <= y1 {
+            // Skip degenerate boxes (audio / synthetic events with no real area)
+            // and any box not in 0..1 frame fractions — i.e. legacy rows written
+            // before detection boxes were normalised, which hold raw pixel coords
+            // and would otherwise all collapse into the bottom-right cell.
+            if x2 <= x1 || y2 <= y1 || x1 < 0.0 || y1 < 0.0 || x2 > 1.0 || y2 > 1.0 {
                 continue;
             }
             // Ground-contact anchor: bottom-centre of the box.
@@ -2375,13 +2378,37 @@ mod tests {
             cam.id, 140, "Speech", 0.9, [0.0; 4], None, None, None, None, None,
         )
         .unwrap();
+        // A legacy row in raw PIXEL coordinates (pre-normalisation): any coord > 1
+        // must be excluded, not collapsed into the corner cell.
+        db.add_event(
+            cam.id,
+            150,
+            "person",
+            0.9,
+            [230.0, 600.0, 290.0, 967.0],
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         let grid = 10;
         let cells = db.heatmap(cam.id, None, None, grid).unwrap();
         assert_eq!(cells.len(), grid * grid);
         assert_eq!(cells[8 * grid + 5], 2, "two people at (0.5,0.8)");
         assert_eq!(cells[2 * grid + 1], 1, "one car at (0.1,0.2)");
-        assert_eq!(cells.iter().sum::<u32>(), 3, "crossing + audio excluded");
+        assert_eq!(
+            cells[grid * grid - 1],
+            0,
+            "legacy pixel row not collapsed into corner"
+        );
+        assert_eq!(
+            cells.iter().sum::<u32>(),
+            3,
+            "crossing + audio + pixel row excluded"
+        );
     }
 
     #[test]
