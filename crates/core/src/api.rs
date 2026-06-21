@@ -1274,7 +1274,7 @@ fn csv_field(s: &str) -> String {
 /// Render events as an RFC 4180 CSV (one header row + a row per event).
 fn events_to_csv(events: &[crate::db::Event]) -> String {
     let mut out = String::from(
-        "id,time,camera,label,score,face,plate,gesture,zone,flagged,note,caption,transcript\n",
+        "id,time,camera,label,score,face,plate,gesture,zone,direction,speed,flagged,note,caption,transcript\n",
     );
     for e in events {
         let time = chrono::DateTime::from_timestamp(e.ts, 0)
@@ -1294,6 +1294,8 @@ fn events_to_csv(events: &[crate::db::Event]) -> String {
             e.plate.clone().unwrap_or_default(),
             e.gesture.clone().unwrap_or_default(),
             e.zone.clone().unwrap_or_default(),
+            e.direction.clone().unwrap_or_default(),
+            e.speed.map(|s| format!("{s:.0}")).unwrap_or_default(),
             if e.flagged {
                 "yes".into()
             } else {
@@ -1534,6 +1536,7 @@ async fn record_gesture(
             plate: None,
             gesture: Some(&gesture_owned),
             transcript: None,
+            speed: None,
             base_url: &base_url,
             webhook_template: &webhook_template,
             smtp: smtp_owned
@@ -2822,17 +2825,19 @@ mod tests {
             flagged: true,
             note: None,
             anomaly_score: None,
-            direction: None,
+            direction: Some("a_to_b".into()),
+            speed: Some(32.4),
         };
         let csv = events_to_csv(std::slice::from_ref(&ev));
         let mut lines = csv.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "id,time,camera,label,score,face,plate,gesture,zone,flagged,note,caption,transcript"
+            "id,time,camera,label,score,face,plate,gesture,zone,direction,speed,flagged,note,caption,transcript"
         );
         let row = lines.next().unwrap();
         assert!(row.starts_with("7,"));
         assert!(row.contains(",porch,person,0.912,Bob,"));
+        assert!(row.contains(",a_to_b,32,")); // direction + rounded speed
         assert!(row.contains(",yes,")); // flagged
         assert!(row.ends_with(",\"help, fire\"")); // transcript quoted
     }

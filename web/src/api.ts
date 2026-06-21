@@ -27,6 +27,16 @@ export interface Tripwire {
   b: [number, number];
   direction: CrossDir;
   labels: string[];
+  /** One-way enforcement: a crossing in the forbidden direction fires wrong_way. */
+  alert_wrong_way?: boolean;
+}
+
+/** Ground-plane calibration for speed estimation: 4 image corners (fractions)
+ *  of a real ground rectangle, top-left/top-right/bottom-right/bottom-left. */
+export interface GroundCalib {
+  points: [[number, number], [number, number], [number, number], [number, number]];
+  width_m: number;
+  height_m: number;
 }
 
 export interface DetectConfig {
@@ -36,6 +46,7 @@ export interface DetectConfig {
   ignore_zones: Zone[];
   zones: PolyZone[];
   tripwires: Tripwire[];
+  ground_calib?: GroundCalib | null;
   privacy_masks: [number, number][][];
   min_area: number | null;
   max_area: number | null;

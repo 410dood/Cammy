@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Camera, CrossDir, PolyZone, Tripwire, ZoneKind } from "./api";
+import { Camera, CrossDir, GroundCalib, PolyZone, Tripwire, ZoneKind } from "./api";
 import { IconRefresh } from "./icons";
 
 type Mask = [number, number][];
@@ -7,6 +7,7 @@ type Draw =
   | { kind: "zone"; zoneKind: ZoneKind; points: Mask }
   | { kind: "mask"; points: Mask }
   | { kind: "tripwire"; points: Mask }
+  | { kind: "calib"; points: Mask }
   | null;
 
 const COLORS: Record<string, string> = {
@@ -14,6 +15,7 @@ const COLORS: Record<string, string> = {
   ignore: "#f87272",
   mask: "#a3a3a3",
   tripwire: "#38bdf8",
+  calib: "#fbbf24",
 };
 
 /**
@@ -26,15 +28,19 @@ export default function ZoneEditor({
   zones,
   masks,
   tripwires,
+  calib,
   onChange,
   onTripwires,
+  onCalib,
 }: {
   camera: Camera;
   zones: PolyZone[];
   masks: Mask[];
   tripwires: Tripwire[];
+  calib: GroundCalib | null;
   onChange: (zones: PolyZone[], masks: Mask[]) => void;
   onTripwires: (t: Tripwire[]) => void;
+  onCalib: (c: GroundCalib | null) => void;
 }) {
   const [draw, setDraw] = useState<Draw>(null);
   // Frame loading is resilient: go2rtc may be mid-restart or waiting for a
@@ -65,15 +71,17 @@ export default function ZoneEditor({
 
   const addPoint = (e: React.MouseEvent) => {
     if (!draw) return;
-    // A tripwire is exactly a 2-point segment; ignore extra clicks.
+    // A tripwire is exactly a 2-point segment; a calibration quad is 4 points.
     if (draw.kind === "tripwire" && draw.points.length >= 2) return;
+    if (draw.kind === "calib" && draw.points.length >= 4) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
     setDraw({ ...draw, points: [...draw.points, [Number(x.toFixed(4)), Number(y.toFixed(4))]] });
   };
 
-  const minPts = (d: NonNullable<Draw>) => (d.kind === "tripwire" ? 2 : 3);
+  const minPts = (d: NonNullable<Draw>) =>
+    d.kind === "tripwire" ? 2 : d.kind === "calib" ? 4 : 3;
 
   const finish = () => {
     if (!draw || draw.points.length < minPts(draw)) {
@@ -97,8 +105,15 @@ export default function ZoneEditor({
           b: draw.points[1],
           direction: "both",
           labels: [],
+          alert_wrong_way: false,
         },
       ]);
+    } else if (draw.kind === "calib") {
+      onCalib({
+        points: [draw.points[0], draw.points[1], draw.points[2], draw.points[3]],
+        width_m: 5,
+        height_m: 5,
+      });
     } else {
       onChange(zones, [...masks, draw.points]);
     }
@@ -189,6 +204,17 @@ export default function ZoneEditor({
               vectorEffect="non-scaling-stroke"
             />
           ))}
+          {calib && calib.points.length === 4 && (
+            <polygon
+              points={polyStr(calib.points)}
+              fill={COLORS.calib}
+              fillOpacity={0.12}
+              stroke={COLORS.calib}
+              strokeWidth={2}
+              strokeDasharray="3 2"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
           {tripwires.map((tw, i) => (
             <g key={`tw${i}`}>
               {/* Fractional stroke (viewBox units), NOT non-scaling-stroke: a
@@ -217,7 +243,9 @@ export default function ZoneEditor({
                     ? COLORS.mask
                     : draw.kind === "tripwire"
                       ? COLORS.tripwire
-                      : COLORS[draw.zoneKind]
+                      : draw.kind === "calib"
+                        ? COLORS.calib
+                        : COLORS[draw.zoneKind]
                 }
                 strokeWidth={2}
                 strokeDasharray="4 3"
@@ -258,8 +286,18 @@ export default function ZoneEditor({
             >
               + tripwire
             </button>
+            {!calib && (
+              <button
+                type="button"
+                className="ghost"
+                title="Calibrate the ground plane for speed estimation: click the 4 corners of a known rectangle on the ground, then enter its real size."
+                onClick={() => setDraw({ kind: "calib", points: [] })}
+              >
+                + ground calibration
+              </button>
+            )}
             <span className="muted">
-              draw a polygon (zones/masks) or click 2 points for a tripwire line, then Finish
+              polygon (zones/masks), 2 points for a tripwire, or 4 ground corners for speed — then Finish
             </span>
           </>
         ) : (
@@ -270,7 +308,9 @@ export default function ZoneEditor({
                 ? "privacy mask"
                 : draw.kind === "tripwire"
                   ? "tripwire"
-                  : `${draw.zoneKind} zone`}{" "}
+                  : draw.kind === "calib"
+                    ? "ground calibration"
+                    : `${draw.zoneKind} zone`}{" "}
               · {draw.points.length} pts
             </span>
             <button
@@ -430,6 +470,22 @@ export default function ZoneEditor({
                   )
                 }
               />
+              <label
+                className="toggle field"
+                title="One-way enforcement: a crossing against the chosen direction fires a wrong_way alert (only with a one-way direction)."
+              >
+                wrong-way
+                <input
+                  type="checkbox"
+                  checked={!!tw.alert_wrong_way}
+                  disabled={tw.direction === "both"}
+                  onChange={(e) =>
+                    onTripwires(
+                      tripwires.map((x, j) => (j === i ? { ...x, alert_wrong_way: e.target.checked } : x))
+                    )
+                  }
+                />
+              </label>
               <button
                 type="button"
                 className="danger"
@@ -439,6 +495,43 @@ export default function ZoneEditor({
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {calib && (
+        <div style={{ marginTop: 10 }}>
+          <div className="muted" style={{ fontSize: "0.8rem", marginBottom: 4 }}>
+            Ground calibration — speed estimation. The 4 marked corners are a real ground
+            rectangle; enter its size so pixel motion becomes km/h on crossing events.
+          </div>
+          <div className="row" style={{ alignItems: "center" }}>
+            <span className="dot" style={{ background: COLORS.calib }} />
+            <label className="field">
+              width (m)
+              <input
+                type="number"
+                min="0.1"
+                step="0.5"
+                style={{ width: 90 }}
+                value={calib.width_m}
+                onChange={(e) => onCalib({ ...calib, width_m: Number(e.target.value) })}
+              />
+            </label>
+            <label className="field">
+              length (m)
+              <input
+                type="number"
+                min="0.1"
+                step="0.5"
+                style={{ width: 90 }}
+                value={calib.height_m}
+                onChange={(e) => onCalib({ ...calib, height_m: Number(e.target.value) })}
+              />
+            </label>
+            <button type="button" className="danger" onClick={() => onCalib(null)}>
+              remove
+            </button>
+          </div>
         </div>
       )}
     </div>

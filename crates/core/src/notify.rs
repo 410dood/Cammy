@@ -56,6 +56,9 @@ pub struct AlarmEvent<'a> {
     /// Speech-to-text transcript (for spoken-keyword alarms) — carried in the
     /// webhook payload and shown in the push so the receiver sees what was said.
     pub transcript: Option<&'a str>,
+    /// Estimated ground speed (km/h) for a calibrated traffic-analytics event;
+    /// `None` for events without a ground calibration. Exposed as `{{speed}}`.
+    pub speed: Option<f32>,
     /// Public base URL (e.g. "https://nvr.example.com"); when set, pushes carry
     /// tap-through "View clip" / "Snapshot" action links. Empty = no links.
     pub base_url: &'a str,
@@ -88,7 +91,7 @@ fn json_escape(s: &str) -> String {
 /// Render a webhook body template, substituting `{{key}}` placeholders with the
 /// event's fields (JSON-escaped). Unknown placeholders are left untouched.
 pub fn render_template(tpl: &str, ev: &AlarmEvent) -> String {
-    let fields: [(&str, String); 10] = [
+    let fields: [(&str, String); 11] = [
         ("event_id", ev.event_id.to_string()),
         ("camera", json_escape(ev.camera)),
         ("label", json_escape(ev.label)),
@@ -99,6 +102,10 @@ pub fn render_template(tpl: &str, ev: &AlarmEvent) -> String {
         ("plate", json_escape(ev.plate.unwrap_or(""))),
         ("gesture", json_escape(ev.gesture.unwrap_or(""))),
         ("transcript", json_escape(ev.transcript.unwrap_or(""))),
+        (
+            "speed",
+            ev.speed.map(|s| format!("{s:.0}")).unwrap_or_default(),
+        ),
     ];
     let mut out = tpl.to_string();
     for (k, v) in &fields {
@@ -505,6 +512,7 @@ mod tests {
             gesture: None,
             // Embeds a control char (vertical tab) to prove it's \u-escaped.
             transcript: Some("help\u{000b}me"),
+            speed: None,
             base_url: "",
             webhook_template: "",
             smtp: None,

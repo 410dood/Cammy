@@ -257,6 +257,7 @@ pub fn run(
                             plate: None,
                             gesture: None,
                             transcript: None,
+                            speed: None,
                             base_url: &settings.public_base_url,
                             webhook_template: &settings.webhook_template,
                             smtp: crate::notify::smtp_cfg(&settings),

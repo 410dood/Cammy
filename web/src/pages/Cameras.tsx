@@ -22,6 +22,7 @@ function TuneModal({
     ignore_zones: [...camera.detect_config.ignore_zones],
     zones: camera.detect_config.zones ? [...camera.detect_config.zones] : [],
     tripwires: camera.detect_config.tripwires ? [...camera.detect_config.tripwires] : [],
+    ground_calib: camera.detect_config.ground_calib ?? null,
     privacy_masks: camera.detect_config.privacy_masks ? [...camera.detect_config.privacy_masks] : [],
     min_area: camera.detect_config.min_area ?? null,
     max_area: camera.detect_config.max_area ?? null,
@@ -262,8 +263,10 @@ function TuneModal({
           zones={dc.zones}
           masks={dc.privacy_masks}
           tripwires={dc.tripwires ?? []}
+          calib={dc.ground_calib ?? null}
           onChange={(zones, masks) => setDc({ ...dc, zones, privacy_masks: masks })}
           onTripwires={(tripwires) => setDc({ ...dc, tripwires })}
+          onCalib={(ground_calib) => setDc({ ...dc, ground_calib })}
         />
 
         <h2 style={{ marginTop: 18 }}>Ignore zones (legacy rectangles)</h2>

@@ -249,6 +249,7 @@ fn fire_transcript_alarms(
         plate: ev.plate.as_deref(),
         gesture: ev.gesture.as_deref(),
         transcript: Some(transcript),
+        speed: None,
         base_url: &s.public_base_url,
         webhook_template: &s.webhook_template,
         smtp: crate::notify::smtp_cfg(&s),

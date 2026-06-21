@@ -248,16 +248,38 @@ pub fn run(
                 let trk = trackers
                     .entry(cam.id)
                     .or_insert_with(|| tracker::Tracker::new(tracker::TrackerConfig::default()));
-                trk.update(&tdets, now);
+                // Feed the tracker millisecond timestamps so speed estimation has
+                // a continuous time base (whole-second `now` would quantise dt and
+                // skew km/h at ~1 fps). Track lifecycle is hit/miss-count based, so
+                // the unit is irrelevant to confirmation/retirement; only history
+                // (consumed by `track_speed_kmh`) cares, and it wants millis.
+                let now_ms = chrono::Local::now().timestamp_millis();
+                trk.update(&tdets, now_ms);
                 let confirmed: Vec<&tracker::Track> = trk.confirmed().collect();
+                // Build the ground-plane homography from the camera's optional
+                // calibration (cheap 8x8 solve; rebuilt each processed frame).
+                let homography = cam.detect_config.ground_calib.as_ref().and_then(|c| {
+                    tracker::Homography::from_quad(
+                        [
+                            (c.points[0][0], c.points[0][1]),
+                            (c.points[1][0], c.points[1][1]),
+                            (c.points[2][0], c.points[2][1]),
+                            (c.points[3][0], c.points[3][1]),
+                        ],
+                        c.width_m,
+                        c.height_m,
+                    )
+                });
                 let astate = analytics.entry(cam.id).or_default();
                 let (crossings, loiters) = astate.tick(
                     &confirmed,
                     &cam.detect_config.tripwires,
                     &cam.detect_config.zones,
+                    homography.as_ref(),
                     now,
                 );
                 for c in &crossings {
+                    let label = if c.wrong_way { "wrong_way" } else { "crossing" };
                     emit_analytics_event(
                         &db,
                         &settings,
@@ -267,10 +289,11 @@ pub fn run(
                         &snapshots_dir,
                         &frame,
                         cam,
-                        "crossing",
+                        label,
                         c.anchor,
                         Some(&c.tripwire),
                         Some(c.dir.as_str()),
+                        c.speed_kmh,
                         now,
                     );
                 }
@@ -287,6 +310,7 @@ pub fn run(
                         "loiter",
                         l.anchor,
                         Some(&l.zone),
+                        None,
                         None,
                         now,
                     );
@@ -509,6 +533,7 @@ pub fn run(
                             plate: plates[i].as_deref(),
                             gesture: None,
                             transcript: None,
+                            speed: None,
                             base_url: &settings.public_base_url,
                             webhook_template: &settings.webhook_template,
                             smtp: crate::notify::smtp_cfg(&settings),
@@ -773,6 +798,7 @@ fn emit_analytics_event(
     anchor: (f32, f32),
     zone: Option<&str>,
     direction: Option<&str>,
+    speed: Option<f32>,
     now: i64,
 ) {
     let (ax, ay) = anchor;
@@ -800,6 +826,7 @@ fn emit_analytics_event(
         None,
         zone,
         direction,
+        speed,
     ) {
         Ok(id) => id,
         Err(e) => {
@@ -809,7 +836,9 @@ fn emit_analytics_event(
     };
     tracing::info!(
         camera = %cam.name, kind = label, zone = zone.unwrap_or("-"),
-        dir = direction.unwrap_or("-"), event = id, "analytics event"
+        dir = direction.unwrap_or("-"),
+        speed = speed.map(|s| format!("{s:.0}km/h")).unwrap_or_else(|| "-".into()),
+        event = id, "analytics event"
     );
     let snap_url = format!("/api/snapshots/{snap_rel}");
     if !settings.webhook_url.is_empty() {
@@ -820,6 +849,7 @@ fn emit_analytics_event(
             "label": label,
             "zone": zone,
             "direction": direction,
+            "speed": speed,
             "ts": now,
             "snapshot": snap_url,
         });
@@ -848,6 +878,7 @@ fn emit_analytics_event(
         plate: None,
         gesture: None,
         transcript: None,
+        speed,
         base_url: &settings.public_base_url,
         webhook_template: &settings.webhook_template,
         smtp: crate::notify::smtp_cfg(settings),
@@ -903,6 +934,7 @@ fn post_webhook(
             plate: None,
             gesture: None,
             transcript: None,
+            speed: None,
             base_url: "",
             webhook_template: template,
             smtp: None,
