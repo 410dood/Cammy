@@ -37,6 +37,14 @@ impl Homography {
 
     /// General 4-point DLT: solve the homography mapping `src[i] -> dst[i]`.
     pub fn from_correspondences(src: [(f32, f32); 4], dst: [(f32, f32); 4]) -> Option<Homography> {
+        // The image quad must be a simple convex quadrilateral in consistent
+        // winding order. A self-intersecting ("bowtie") order — e.g. the user
+        // clicks the corners as a Z instead of a ring — is still full-rank, so
+        // the linear solve would succeed and silently produce a homography that
+        // maps interior points to finite garbage. Reject it up front.
+        if !is_convex_quad(src) {
+            return None;
+        }
         // For each pair (x,y)->(X,Y), with h8 fixed to 1:
         //   h0 x + h1 y + h2 - h6 xX - h7 yX = X
         //   h3 x + h4 y + h5 - h6 xY - h7 yY = Y
@@ -74,7 +82,11 @@ impl Homography {
     pub fn project(&self, p: (f32, f32)) -> Option<(f32, f32)> {
         let (x, y) = p;
         let w = self.m[6] * x + self.m[7] * y + self.m[8];
-        if w.abs() < 1e-9 {
+        // Reject points at or behind the horizon. The calibration corners all map
+        // with w > 0 by construction (quad in front of the camera, h8 = 1), so an
+        // in-front ground point has w > 0; w <= 0 is the vanishing line or beyond
+        // and would yield a mirror-flipped garbage coordinate.
+        if w <= 1e-9 {
             return None;
         }
         let gx = (self.m[0] * x + self.m[1] * y + self.m[2]) / w;
@@ -85,6 +97,36 @@ impl Homography {
             None
         }
     }
+}
+
+/// Is `p` a simple (non-self-intersecting) convex quadrilateral? True iff every
+/// consecutive edge turns the same way (all cross-products share a sign). This
+/// rejects both the collinear/degenerate case (no non-zero turn → sign stays 0)
+/// and the bowtie case (mixed signs), independent of clockwise/counter-clockwise
+/// winding.
+fn is_convex_quad(p: [(f32, f32); 4]) -> bool {
+    let mut sign = 0i32;
+    for i in 0..4 {
+        let a = p[i];
+        let b = p[(i + 1) % 4];
+        let c = p[(i + 2) % 4];
+        let cross = (b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0);
+        let s = if cross > 1e-9 {
+            1
+        } else if cross < -1e-9 {
+            -1
+        } else {
+            0
+        };
+        if s != 0 {
+            if sign == 0 {
+                sign = s;
+            } else if sign != s {
+                return false;
+            }
+        }
+    }
+    sign != 0
 }
 
 /// Solve an 8×8 linear system `A·x = b` by Gaussian elimination with partial
@@ -186,11 +228,35 @@ mod tests {
 
     #[test]
     fn degenerate_quad_is_rejected() {
-        // All four points collinear -> singular system -> None.
+        // All four points collinear -> not convex -> None.
         let img = [(0.1, 0.1), (0.2, 0.2), (0.3, 0.3), (0.4, 0.4)];
         assert!(Homography::from_quad(img, 10.0, 4.0).is_none());
         // Non-positive dimensions rejected.
         let ok = [(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)];
         assert!(Homography::from_quad(ok, 0.0, 4.0).is_none());
+    }
+
+    #[test]
+    fn bowtie_quad_is_rejected() {
+        // The same four points wound as a self-intersecting Z (last two swapped)
+        // is full-rank but not a simple quad -> must be rejected, not silently
+        // accepted into a garbage homography.
+        let bowtie = [(0.2, 0.2), (0.8, 0.2), (0.2, 0.8), (0.8, 0.8)];
+        assert!(Homography::from_quad(bowtie, 10.0, 4.0).is_none());
+    }
+
+    #[test]
+    fn behind_horizon_point_is_rejected() {
+        // project() must reject points at/behind the horizon (w <= 0) rather than
+        // return a mirror-flipped garbage coordinate. Construct a homography whose
+        // perspective denominator is w = 1 - 2y, so the horizon is the line
+        // y = 0.5: a point below it (w > 0) projects, one above it (w <= 0) is
+        // rejected. (With the old `w.abs() < 1e-9` guard the w = -0.4 case would
+        // have sailed through and returned garbage.)
+        let h = Homography {
+            m: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -2.0, 1.0],
+        };
+        assert!(h.project((0.3, 0.7)).is_none()); // w = 1 - 1.4 = -0.4
+        assert!(h.project((0.3, 0.3)).is_some()); // w = 1 - 0.6 =  0.4
     }
 }

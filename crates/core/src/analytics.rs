@@ -13,33 +13,37 @@ use tracker::{side_of_line, Homography, Track};
 
 use crate::db::PolyZone;
 
-/// Trajectory window (secs) over which a track's speed is averaged.
+/// Trajectory window over which a track's speed is averaged.
 const SPEED_WINDOW_SECS: i64 = 3;
 
 /// Estimate a track's ground speed (km/h) from its recent trajectory, warped to
-/// the ground plane by `h`. Sums ground distance over the points within the last
-/// [`SPEED_WINDOW_SECS`] and divides by the elapsed time (so a curved path isn't
-/// underestimated). Returns `None` for a too-short/young track or a point behind
-/// the horizon; capped at a plausibility ceiling to reject calibration/IoU noise.
+/// the ground plane by `h`. Track history timestamps are in **milliseconds**, so
+/// the elapsed-time denominator is continuous — at ~1 fps sampling, whole-second
+/// timestamps would quantise `dt` and give up to ~2× speed error. Speed is the
+/// straight-line ground **displacement** over the window divided by elapsed time:
+/// using displacement (not a summed segment path) means detection jitter — which
+/// never cancels in a sum and always inflates a path length — can't pump up the
+/// estimate; over the short crossing window a real track is effectively straight.
+/// Returns `None` for a too-short/young track or one whose anchor is at/behind the
+/// horizon; capped at a plausibility ceiling to reject calibration/IoU noise.
 pub fn track_speed_kmh(t: &Track, h: &Homography) -> Option<f32> {
     let last_ts = t.history.back()?.0;
     let pts: Vec<(i64, f32, f32)> = t
         .history
         .iter()
-        .filter(|(ts, _, _)| last_ts - *ts <= SPEED_WINDOW_SECS)
+        .filter(|(ts, _, _)| last_ts - *ts <= SPEED_WINDOW_SECS * 1000)
         .filter_map(|(ts, ax, ay)| h.project((*ax, *ay)).map(|(gx, gy)| (*ts, gx, gy)))
         .collect();
     if pts.len() < 2 {
         return None;
     }
-    let dt = (pts.last()?.0 - pts.first()?.0) as f32;
+    let first = *pts.first()?;
+    let last = *pts.last()?;
+    let dt = (last.0 - first.0) as f32 / 1000.0; // ms -> s
     if dt <= 0.0 {
         return None;
     }
-    let dist: f32 = pts
-        .windows(2)
-        .map(|w| ((w[1].1 - w[0].1).powi(2) + (w[1].2 - w[0].2).powi(2)).sqrt())
-        .sum();
+    let dist = ((last.1 - first.1).powi(2) + (last.2 - first.2).powi(2)).sqrt();
     let kmh = (dist / dt) * 3.6;
     (kmh.is_finite() && kmh <= 320.0).then_some(kmh)
 }
@@ -566,11 +570,11 @@ mod tests {
         // affine, so distances are linear and easy to reason about).
         let h = Homography::from_quad([(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)], 20.0, 10.0)
             .unwrap();
-        // Anchor moves image x 0.35 -> 0.65 over 2 s: ground 5 m -> 15 m = 10 m
-        // in 2 s = 5 m/s = 18 km/h.
+        // Anchor moves image x 0.35 -> 0.65 over 2 s (history ts are millis):
+        // ground 5 m -> 15 m = 10 m in 2 s = 5 m/s = 18 km/h.
         let mut history = VecDeque::new();
         history.push_back((0i64, 0.35f32, 0.5f32));
-        history.push_back((2i64, 0.65f32, 0.5f32));
+        history.push_back((2000i64, 0.65f32, 0.5f32));
         let t = Track {
             id: 1,
             label: "car".into(),
@@ -582,9 +586,35 @@ mod tests {
             misses: 0,
             confirmed: true,
             start_ts: 0,
-            last_ts: 2,
+            last_ts: 2000,
         };
         let kmh = track_speed_kmh(&t, &h).unwrap();
         assert!((kmh - 18.0).abs() < 0.5, "got {kmh} km/h, expected ~18");
+    }
+
+    #[test]
+    fn speed_none_when_all_timestamps_collapse() {
+        use std::collections::VecDeque;
+        use tracker::BBox;
+        let h = Homography::from_quad([(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)], 20.0, 10.0)
+            .unwrap();
+        // Two points at the same instant (dt == 0) must yield None, not NaN.
+        let mut history = VecDeque::new();
+        history.push_back((5000i64, 0.35f32, 0.5f32));
+        history.push_back((5000i64, 0.65f32, 0.5f32));
+        let t = Track {
+            id: 1,
+            label: "car".into(),
+            bbox: BBox::new(0.63, 0.4, 0.67, 0.5),
+            vx: 0.0,
+            vy: 0.0,
+            history,
+            hits: 5,
+            misses: 0,
+            confirmed: true,
+            start_ts: 5000,
+            last_ts: 5000,
+        };
+        assert!(track_speed_kmh(&t, &h).is_none());
     }
 }

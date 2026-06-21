@@ -248,7 +248,13 @@ pub fn run(
                 let trk = trackers
                     .entry(cam.id)
                     .or_insert_with(|| tracker::Tracker::new(tracker::TrackerConfig::default()));
-                trk.update(&tdets, now);
+                // Feed the tracker millisecond timestamps so speed estimation has
+                // a continuous time base (whole-second `now` would quantise dt and
+                // skew km/h at ~1 fps). Track lifecycle is hit/miss-count based, so
+                // the unit is irrelevant to confirmation/retirement; only history
+                // (consumed by `track_speed_kmh`) cares, and it wants millis.
+                let now_ms = chrono::Local::now().timestamp_millis();
+                trk.update(&tdets, now_ms);
                 let confirmed: Vec<&tracker::Track> = trk.confirmed().collect();
                 // Build the ground-plane homography from the camera's optional
                 // calibration (cheap 8x8 solve; rebuilt each processed frame).
@@ -527,6 +533,7 @@ pub fn run(
                             plate: plates[i].as_deref(),
                             gesture: None,
                             transcript: None,
+                            speed: None,
                             base_url: &settings.public_base_url,
                             webhook_template: &settings.webhook_template,
                             smtp: crate::notify::smtp_cfg(&settings),
@@ -871,6 +878,7 @@ fn emit_analytics_event(
         plate: None,
         gesture: None,
         transcript: None,
+        speed,
         base_url: &settings.public_base_url,
         webhook_template: &settings.webhook_template,
         smtp: crate::notify::smtp_cfg(settings),
@@ -926,6 +934,7 @@ fn post_webhook(
             plate: None,
             gesture: None,
             transcript: None,
+            speed: None,
             base_url: "",
             webhook_template: template,
             smtp: None,
