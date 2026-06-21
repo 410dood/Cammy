@@ -76,6 +76,118 @@ function AuditCard() {
   );
 }
 
+// base64url (no padding) → Uint8Array, for the VAPID applicationServerKey.
+function urlBase64ToUint8Array(base64url: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64url.length % 4)) % 4);
+  const base64 = (base64url + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
+function PushCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const supported =
+    "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const [subscribed, setSubscribed] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!supported) return;
+    navigator.serviceWorker.ready
+      .then((reg) => reg.pushManager.getSubscription())
+      .then((sub) => setSubscribed(!!sub))
+      .catch(() => {});
+  }, [supported]);
+
+  const enable = async () => {
+    setBusy(true);
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        onError("Notification permission was not granted.");
+        return;
+      }
+      const { public_key } = await api.pushVapid();
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(public_key).buffer as ArrayBuffer,
+      });
+      await api.pushSubscribe(sub.toJSON());
+      setSubscribed(true);
+      toast.success("Push notifications enabled on this device.");
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    setBusy(true);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await api.pushUnsubscribe(sub.endpoint).catch(() => {});
+        await sub.unsubscribe();
+      }
+      setSubscribed(false);
+      toast.success("Push notifications disabled on this device.");
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const test = async () => {
+    try {
+      const r = await api.pushTest();
+      toast.success(
+        `Test push sent to ${r.sent} device${r.sent === 1 ? "" : "s"}` +
+          (r.failed ? ` (${r.failed} failed)` : ""),
+      );
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+
+  return (
+    <div className="card">
+      <h2>Push notifications</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Get native notifications on this device when alarms fire or a camera goes offline — even
+        when Cammy isn&apos;t open. Encrypted and delivered straight from your own server (VAPID /
+        Web Push); no third-party push service or account.
+      </p>
+      {!supported ? (
+        <p className="muted">This browser doesn&apos;t support Web Push.</p>
+      ) : (
+        <div className="row">
+          <span className={`pill ${subscribed ? "on" : ""}`}>{subscribed ? "enabled" : "off"}</span>
+          {subscribed ? (
+            <>
+              <button type="button" className="danger" disabled={busy} onClick={disable}>
+                Disable
+              </button>
+              <button type="button" disabled={busy} onClick={test}>
+                Send test
+              </button>
+            </>
+          ) : (
+            <button type="button" className="primary" disabled={busy} onClick={enable}>
+              Enable on this device
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
   const [enabled, setEnabled] = useState(false);
   const [pw, setPw] = useState("");
@@ -943,6 +1055,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <RemoteAccessCard onError={onError} />
+
+        <PushCard onError={onError} />
 
         <AccountCard onError={onError} />
 

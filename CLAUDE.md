@@ -14,9 +14,44 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 61/61, full commercial analytics suite, 2026-06-20
+## Current status: v0.3 — competitor matrix 62/62 (+ #62–#67 on in-flight branches), 2026-06-21
 
-### This session: commercial video-analytics suite (matrix #53–#61) on the object tracker
+### Latest: native browser push notifications (matrix #68)
+
+Self-contained **Web Push** — phone/desktop notifications with **no third-party
+push service**, built entirely on `ring` (already in-tree for TLS, so **zero new
+crates** — `Cargo.lock` unchanged). `crates/core/src/webpush.rs` holds the whole
+stack: VAPID (RFC 8292) server identity = a persistent P-256 keypair (PKCS#8 in
+the `kv` table), each request carrying an ES256 JWT (`Authorization: vapid
+t=<jwt>, k=<pubkey>`); payload encryption (RFC 8291 `aes128gcm`) = a per-message
+**ephemeral** P-256 ECDH against the subscription's `p256dh`, mixed with its
+`auth` secret via HKDF-SHA256 (hand-rolled over `ring::hmac`), then AES-128-GCM in
+RFC 8188 framing. `crates/core/src/push.rs` is a polling worker: it watches the
+`notifications` table — the single sink every alert source (alarms, camera
+offline/online, anomaly, digest) already writes to — and fans each new row out to
+all `push_subscriptions`, **auto-pruning** any endpoint that 404/410s. Endpoints
+`GET /api/push/vapid` + `POST /api/push/{subscribe,unsubscribe,test}`
+(Viewer-reachable per `min_role_for`); `sw.js` gains `push` + `notificationclick`
+handlers; a Settings "Push notifications" card subscribes/tests this browser.
+**Crypto PROVEN: `derive_keys`+`build_body` reproduce the RFC 8291 Appendix A
+vector BYTE-FOR-BYTE (unit test); the VAPID JWT signs+verifies (unit test). Live:
+a real FCM endpoint returned 404 (token unknown), i.e. it ACCEPTED our VAPID auth
++ `aes128gcm` encoding (a bad JWT → 401, a bad body → 400); Gone→auto-prune
+confirmed.** GOTCHA: the only piece automation can't validate is the browser
+"Allow notifications" gesture + a real push token (the chrome MCP can't grant the
+native permission prompt) — so the RFC-vector byte-match is the authoritative
+crypto proof. A 3-lens adversarial review (crypto/security/worker) caught **1
+HIGH + 1 MED + 2 LOW, ALL fixed**: HIGH **SSRF** (the endpoint is attacker-
+influenced and the worker makes server-side requests to it) → `webpush::
+validate_endpoint` now requires https + rejects loopback/private/link-local/
+v4-mapped/`.local`/`localhost` hosts (live-validated: `169.254.169.254`,
+`127.0.0.1`, `192.168.*`, `http://` all 400) and `send` disables redirects;
+MED unbounded `push_subscriptions` growth + fan-out starvation → 512-row cap +
+subscribe-time key validation (malformed keys never stored) + per-send shutdown
+checks; LOW single-record size guard + title/body clamp. On branch
+**`native-webpush`** off `main`.
+
+### Earlier this session: commercial video-analytics suite (matrix #53–#61) on the object tracker
 
 Capped by **#61 cross-camera appearance search / Re-ID** (PR #18) — "find this
 person/vehicle everywhere": each object detection's CROP is CLIP-embedded at

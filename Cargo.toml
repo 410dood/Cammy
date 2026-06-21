@@ -68,6 +68,11 @@ whisper-rs = "0.16"
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+# Native WebPush (VAPID ES256 JWT + RFC 8291 aes128gcm). ring is ALREADY in-tree
+# (rustls/ureq/rcgen pull it); declaring it direct adds no new crate to the build
+# graph, just lets us call its ECDSA/ECDH/HKDF/AEAD primitives. Pinned to the
+# in-tree version so the graph doesn't change.
+ring = "0.17"
 
 [workspace.package]
 edition = "2021"

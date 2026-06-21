@@ -1005,6 +1005,13 @@ impl Db {
                  password_hash TEXT NOT NULL,
                  role          TEXT NOT NULL DEFAULT 'viewer',
                  created_ts    INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS push_subscriptions (
+                 id         INTEGER PRIMARY KEY,
+                 endpoint   TEXT NOT NULL UNIQUE,
+                 p256dh     TEXT NOT NULL,
+                 auth       TEXT NOT NULL,
+                 created_ts INTEGER NOT NULL
              );",
         )?;
         // CLIP embedding of the object CROP (not the full frame) for cross-camera
@@ -1671,6 +1678,93 @@ impl Db {
             [],
             |r| r.get(0),
         )?)
+    }
+
+    /// The highest notification id (0 if none) — the WebPush worker starts from
+    /// here so a fresh subscriber doesn't get the whole backlog pushed at once.
+    pub fn max_notification_id(&self) -> i64 {
+        self.conn()
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM notifications", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(0)
+    }
+
+    /// Notifications created after `id`, oldest-first (for ordered fan-out).
+    pub fn notifications_after(&self, id: i64, limit: u32) -> Result<Vec<Notification>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, kind, title, body, event_id, read FROM notifications
+             WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![id, limit], |r| {
+                Ok(Notification {
+                    id: r.get(0)?,
+                    ts: r.get(1)?,
+                    kind: r.get(2)?,
+                    title: r.get(3)?,
+                    body: r.get(4)?,
+                    event_id: r.get(5)?,
+                    read: r.get::<_, i64>(6)? != 0,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    // --- WebPush subscriptions (#68) ----------------------------------------
+
+    /// Store (or refresh) a browser push subscription, keyed by its endpoint.
+    pub fn add_push_subscription(&self, endpoint: &str, p256dh: &str, auth: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_ts)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(endpoint) DO UPDATE SET p256dh = ?2, auth = ?3",
+            params![endpoint, p256dh, auth, chrono::Local::now().timestamp()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_push_subscriptions(&self) -> Result<Vec<crate::webpush::PushSub>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(crate::webpush::PushSub {
+                    endpoint: r.get(0)?,
+                    p256dh: r.get(1)?,
+                    auth: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Remove a subscription by endpoint; returns whether a row existed.
+    pub fn delete_push_subscription(&self, endpoint: &str) -> Result<bool> {
+        let n = self.conn().execute(
+            "DELETE FROM push_subscriptions WHERE endpoint = ?1",
+            [endpoint],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn count_push_subscriptions(&self) -> i64 {
+        self.conn()
+            .query_row("SELECT COUNT(*) FROM push_subscriptions", [], |r| r.get(0))
+            .unwrap_or(0)
+    }
+
+    pub fn push_subscription_exists(&self, endpoint: &str) -> bool {
+        self.conn()
+            .query_row(
+                "SELECT 1 FROM push_subscriptions WHERE endpoint = ?1",
+                [endpoint],
+                |_| Ok(()),
+            )
+            .is_ok()
     }
 
     /// Mark one notification read; returns whether it existed.

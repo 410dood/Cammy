@@ -38,6 +38,7 @@ argon2.workspace = true
 axum-server.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
+ring.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 whisper-rs.workspace = true

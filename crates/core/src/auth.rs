@@ -138,6 +138,11 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
     if path == "/api/me/password" {
         return Role::Viewer;
     }
+    // Push subscriptions are per-browser/per-user; a Viewer must be able to
+    // enable notifications (and test/unsubscribe) for their own device.
+    if path.starts_with("/api/push") {
+        return Role::Viewer;
+    }
     // Account/security management AND config snapshots (which embed camera
     // rtsp://user:pass credentials) require Admin — note /api/backup is a GET, so
     // it must be listed explicitly or the GET default would expose secrets.

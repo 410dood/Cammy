@@ -25,11 +25,13 @@ mod notify;
 mod pipeline;
 mod proc;
 mod ptz;
+mod push;
 mod record;
 mod smart;
 mod status;
 pub mod tls;
 mod transcribe;
+mod webpush;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -178,6 +180,15 @@ pub async fn run(
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || anomaly::run(db, stop)
     })?;
+    // Generate/persist the VAPID keypair eagerly so the public key handed to
+    // subscribing browsers is stable, then run the WebPush fan-out worker.
+    if let Err(e) = webpush::vapid_keys(&db) {
+        tracing::warn!("WebPush VAPID init failed: {e:#}");
+    }
+    let push_thread = std::thread::Builder::new().name("push".into()).spawn({
+        let (db, stop) = (db.clone(), workers_stop.clone());
+        move || push::run(db, stop)
+    })?;
     let audio_thread = std::thread::Builder::new().name("audio".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -304,6 +315,7 @@ pub async fn run(
         let _ = transcribe_thread.join();
         let _ = digest_thread.join();
         let _ = anomaly_thread.join();
+        let _ = push_thread.join();
     })
     .await;
     go2rtc.stop();

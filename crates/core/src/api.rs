@@ -119,6 +119,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/digests", get(list_digests_api))
         .route("/api/digests/run", axum::routing::post(run_digest_api))
+        .route("/api/push/vapid", get(push_vapid))
+        .route("/api/push/subscribe", axum::routing::post(push_subscribe))
+        .route(
+            "/api/push/unsubscribe",
+            axum::routing::post(push_unsubscribe),
+        )
+        .route("/api/push/test", axum::routing::post(push_test))
         .route("/api/metrics", get(metrics))
         .route("/api/backup", get(backup))
         .route("/api/restore", axum::routing::post(restore))
@@ -2570,6 +2577,99 @@ async fn run_digest_api(State(st): State<AppState>) -> ApiResult<Json<crate::db:
     let text = crate::digest::summarize(&events);
     let id = st.db.add_digest(now, &text)?;
     Ok(Json(crate::db::Digest { id, ts: now, text }))
+}
+
+// --- WebPush (#68) -----------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct PushSubKeys {
+    p256dh: String,
+    auth: String,
+}
+#[derive(serde::Deserialize)]
+struct PushSubBody {
+    endpoint: String,
+    keys: PushSubKeys,
+}
+#[derive(serde::Deserialize)]
+struct PushUnsubBody {
+    endpoint: String,
+}
+
+/// The VAPID public key the browser subscribes with (`applicationServerKey`).
+/// Not secret — it's the server's public identity.
+async fn push_vapid(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let keys = crate::webpush::vapid_keys(&st.db)?;
+    Ok(Json(
+        serde_json::json!({ "public_key": keys.public_b64url() }),
+    ))
+}
+
+/// Cap on stored subscriptions — bounds table growth + per-tick worker fan-out
+/// even if an authenticated low-privilege user tries to register many.
+const MAX_PUSH_SUBSCRIPTIONS: i64 = 512;
+
+/// Register (or refresh) this browser's push subscription.
+async fn push_subscribe(
+    State(st): State<AppState>,
+    Json(body): Json<PushSubBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let endpoint = body.endpoint.trim();
+    // Validate the endpoint (https + no SSRF to private hosts) and the keys
+    // (well-formed point + 16-byte auth) up front, so malformed/abusive
+    // subscriptions never enter the table.
+    crate::webpush::validate_subscription(endpoint, &body.keys.p256dh, &body.keys.auth)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    // Bound total subscriptions; still allow refreshing one that already exists.
+    if st.db.count_push_subscriptions() >= MAX_PUSH_SUBSCRIPTIONS
+        && !st.db.push_subscription_exists(endpoint)
+    {
+        return Err(ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "push subscription limit reached".into(),
+        ));
+    }
+    st.db
+        .add_push_subscription(endpoint, &body.keys.p256dh, &body.keys.auth)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Drop this browser's subscription (the user turned push off).
+async fn push_unsubscribe(
+    State(st): State<AppState>,
+    Json(body): Json<PushUnsubBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let removed = st.db.delete_push_subscription(body.endpoint.trim())?;
+    Ok(Json(serde_json::json!({ "removed": removed })))
+}
+
+/// Send a test push to every subscription right now (the "Send test" button).
+async fn push_test(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<(usize, usize)> {
+        let keys = crate::webpush::vapid_keys(&st.db)?;
+        let subs = st.db.list_push_subscriptions()?;
+        let payload = serde_json::json!({
+            "title": "Cammy test notification",
+            "body": "Push notifications are working on this device.",
+            "kind": "test",
+        })
+        .to_string();
+        let (mut sent, mut failed) = (0usize, 0usize);
+        for sub in &subs {
+            match crate::webpush::send(&keys, sub, payload.as_bytes(), 3600) {
+                Ok(()) => sent += 1,
+                Err(crate::webpush::SendError::Gone) => {
+                    let _ = st.db.delete_push_subscription(&sub.endpoint);
+                    failed += 1;
+                }
+                Err(_) => failed += 1,
+            }
+        }
+        Ok((sent, failed))
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(serde_json::json!({ "sent": res.0, "failed": res.1 })))
 }
 
 // --- Prometheus metrics ------------------------------------------------------
