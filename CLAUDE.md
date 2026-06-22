@@ -59,19 +59,30 @@ the same camera within the window — glass-vs-dishes, fall+thud); `confirm_ok` 
 `db.has_recent_event`, AND-ed at every alarm site, **fails open** so it never
 suppresses a real alert; Alarms "confirmed by" UI; unit-tested.
 
-**Remaining residential batches:** the **pose tier** (rollover / climb-out /
-covered-face / accurate fall) is **BLOCKED on a product decision** — today's
-MediaPipe path is browser-foreground-only (one open tab), useless for 24/7 safety;
-it needs a **headless server-side pose runtime** (a new ONNX pose model + inference
-worker) or it ships as "only while you're watching". Still buildable + lower-risk:
-**pet vertical** (multi-pet Re-ID enrollment, eat/drink/litter dwell, pet diary +
-time-lapse), Residential **"Modes" dashboards** (Baby/Pet/Pool/Aging) + the
-motion-based **sleep dashboard**. **Privacy/safety gating** (skeleton-only/no-clip
-mode, offsite-backup #70 exclusion for bedroom/bathroom/child zones, consent
-screens, miss-mode surfacing) partly depends on the pose runtime + the offsite
-branch. The infra ring-buffer (sub-second audio transients) + burst aggregator
-were scoped out of batch 3 as risky working-path / cooldown-entangled changes.
-All detailed in `docs/05`.
+**Batch 4 — server-side pose tier SHIPPED** (`d2fbd0c` + `17675f6`; the user chose
+the headless server runtime over the browser-only path). New pure **`crates/pose`**
+turns 17-keypoint COCO output into a posture (standing/sitting/lying/unknown +
+face-visible + confidence; unit-tested). New **`detector::PoseEstimator`** runs a
+YOLOv8-pose ONNX model on the same per-OS EP and decodes `[1,56,8400]`
+(decode + NMS unit-tested). New **`crates/core/src/posture.rs`** worker (spawned
+beside audio, opt-in per camera via `DetectConfig.pose_detect`, gated on
+`Settings.pose_model` existing) runs 24/7 headless and emits **fall** (lying low,
+held), **standing** (in a zone — crib climb-out) and **covered_face** (body present
++ no face in a zone — rollover/blanket) through the normal Alarm path (zone_ok +
+confirm_ok + cooldown). Per-camera "body pose monitoring (assistive*)" toggle +
+Settings pose-model path + alarm labels; all disclaimed assistive/not-medical.
+**Live E2E needs the (uncommitted) `yolov8n-pose.onnx` model** — build-validated +
+decode unit-tested only.
+
+**Remaining residential batches:** **pet vertical** (multi-pet Re-ID enrollment,
+eat/drink/litter dwell, pet diary + time-lapse), Residential **"Modes" dashboards**
+(Baby/Pet/Pool/Aging) + motion-based **sleep dashboard** — the user-friendly
+capstone that surfaces all the shipped backend in one place. **Privacy/safety
+gating** (skeleton-only/no-clip mode, offsite-backup #70 exclusion for
+bedroom/bathroom/child zones, consent screens, miss-mode surfacing) partly depends
+on the offsite branch (stashed). The infra ring-buffer (sub-second audio transients)
++ burst aggregator stay scoped out as risky working-path / cooldown-entangled
+changes. All detailed in `docs/05`.
 
 **GOTCHA (this session): an uncommitted offsite #70 WIP was in the working tree at
 start** (not ours); preserved as `git stash@{0}` "offsite #70 WIP (pre-existing…)"
