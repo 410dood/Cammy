@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, AuditEntry, fmtTime, Me, Role, Settings as S, User } from "../api";
+import { api, ApiToken, AuditEntry, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
@@ -360,6 +360,68 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
         </label>
         {msg && <span style={{ color: "var(--ok)" }}>{msg}</span>}
       </div>
+    </div>
+  );
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+}
+
+/// Live offsite-backup sync readout. Polls every 5s; read-only (no secrets).
+function OffsiteStatusReadout() {
+  const [st, setSt] = useState<OffsiteStatus | null>(null);
+  useEffect(() => {
+    let live = true;
+    const poll = () => api.offsiteStatus().then((s) => live && setSt(s)).catch(() => {});
+    poll();
+    const t = setInterval(poll, 5000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, []);
+  if (!st || !st.enabled) return null;
+  return (
+    <div className="row" style={{ gap: 16, marginTop: 4, flexWrap: "wrap", fontSize: 13 }}>
+      <span className="muted">
+        Status:{" "}
+        {!st.configured ? (
+          <b style={{ color: "var(--warn)" }}>not fully configured</b>
+        ) : st.backlog > 0 ? (
+          <b style={{ color: "var(--warn)" }}>{st.backlog} segment(s) pending</b>
+        ) : (
+          <b style={{ color: "var(--ok)" }}>up to date</b>
+        )}
+      </span>
+      <span className="muted">{st.done} uploaded</span>
+      <span className="muted">{fmtBytes(st.bytes_total)} total</span>
+      {st.last_success_ts && (
+        <span className="muted">
+          last <RelTime ts={st.last_success_ts} />
+        </span>
+      )}
+      {st.skipped + st.gaveup > 0 && (
+        <span
+          style={{ color: "var(--warn)" }}
+          title="Segments removed locally (retention) before they could be backed up, or abandoned after repeated failures. Increase retention or check the backup target."
+        >
+          {st.skipped + st.gaveup} dropped before backup
+        </span>
+      )}
+      {st.last_error && (
+        <span style={{ color: "var(--danger)" }} title={st.last_error}>
+          last error: {st.last_error.slice(0, 80)}
+        </span>
+      )}
     </div>
   );
 }
@@ -953,6 +1015,86 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <AuditCard />
 
         <BackupCard onError={onError} />
+
+        <div className="card">
+          <h2>Offsite backup</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Mirror recordings to S3-compatible object storage (AWS S3, Backblaze B2, Wasabi,
+            Cloudflare R2, or a self-hosted MinIO/NAS) so your footage survives if this machine is
+            stolen or its disk fails. Sealed segments upload in the background; the secret key is
+            write-only (never sent back; leave blank to keep it). A private/LAN endpoint is fine.
+          </p>
+          <label className="row" style={{ alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={s.offsite_backup_enabled}
+              onChange={() => set({ offsite_backup_enabled: !s.offsite_backup_enabled })}
+            />
+            Enable offsite backup
+          </label>
+          <div className="row">
+            <label className="field" style={{ flex: 1, minWidth: 300 }}>
+              endpoint URL
+              <input
+                type="text"
+                placeholder="https://s3.us-east-1.amazonaws.com"
+                value={s.offsite_endpoint}
+                onChange={(e) => set({ offsite_endpoint: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              region
+              <input
+                type="text"
+                placeholder="us-east-1"
+                value={s.offsite_region}
+                onChange={(e) => set({ offsite_region: e.target.value })}
+              />
+            </label>
+          </div>
+          <div className="row">
+            <label className="field" style={{ flex: 1, minWidth: 200 }}>
+              bucket
+              <input
+                type="text"
+                placeholder="my-camera-backups"
+                value={s.offsite_bucket}
+                onChange={(e) => set({ offsite_bucket: e.target.value })}
+              />
+            </label>
+            <label className="field" style={{ flex: 1, minWidth: 200 }}>
+              key prefix (optional)
+              <input
+                type="text"
+                placeholder="cammy"
+                value={s.offsite_prefix}
+                onChange={(e) => set({ offsite_prefix: e.target.value })}
+              />
+            </label>
+          </div>
+          <div className="row">
+            <label className="field" style={{ flex: 1, minWidth: 200 }}>
+              access key ID
+              <input
+                type="text"
+                autoComplete="off"
+                value={s.offsite_access_key}
+                onChange={(e) => set({ offsite_access_key: e.target.value })}
+              />
+            </label>
+            <label className="field" style={{ flex: 1, minWidth: 200 }}>
+              secret access key
+              <input
+                type="password"
+                autoComplete="new-password"
+                placeholder={s.offsite_access_key ? "•••••• (unchanged)" : ""}
+                value={s.offsite_secret_key}
+                onChange={(e) => set({ offsite_secret_key: e.target.value })}
+              />
+            </label>
+          </div>
+          <OffsiteStatusReadout />
+        </div>
 
         <div className="card">
           <h2>Email (SMTP)</h2>

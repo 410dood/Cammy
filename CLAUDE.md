@@ -14,9 +14,53 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 61/61, full commercial analytics suite, 2026-06-20
+## Current status: v0.3 — competitor matrix 61/61 on main + offsite S3 backup (#70), 2026-06-21
 
-### This session: commercial video-analytics suite (matrix #53–#61) on the object tracker
+### Latest: offsite / cloud backup of recordings to S3-compatible storage (matrix #70)
+
+Disaster-recovery / evidence-preservation — **"if the recorder is stolen or its
+disk dies, the footage survives."** A competitor-research workflow ranked this the
+top un-built self-hosted-DR gap (Blue Iris=FTP, Frigate=external rclone glue,
+UniFi/Scrypted=local-only). A new opt-in background worker (`crates/core/src/
+offsite.rs`, off by default, spawned/joined in `lib.rs` beside digest/anomaly)
+mirrors sealed recording segments to **any S3-compatible bucket** (AWS S3,
+Backblaze B2, Wasabi, Cloudflare R2, or a self-hosted MinIO/NAS). Requests are
+signed with a **hand-rolled AWS SigV4** (`crates/core/src/sigv4.rs`, HMAC-SHA256
+over the in-tree `hmac`+`sha2` — **no AWS SDK, no new C dep**; the established
+"hand-roll crypto on in-tree primitives" pattern, like the VAPID/WebPush work),
+unit-tested against AWS's published canonical-request hash + a clean-room Python
+reference signature (byte-for-byte) + RFC 4231. Upload state lives in a new
+`offsite_uploads` table so restarts resume **idempotently**; per-tick work is
+bounded (≤25/30s) so a backlog can't starve detection/recording; failures retry
+with **capped exponential backoff** and a poison/oversize segment goes terminal
+`gaveup` (never-attempted segments sort ahead of failed so they can't be
+head-of-line-blocked). New `DetectConfig`-adjacent `Settings.offsite_*` fields
+(JSON blob, no migration); `offsite_secret_key` is **write-only** (blanked in
+GET /api/settings, preserved on blank save) like `smtp_pass`, Admin-gated;
+endpoint/bucket/keys reject control chars; object keys sanitised to
+`[A-Za-z0-9._/-]`. **CRITICAL design note: private/LAN endpoints are
+intentionally ALLOWED here** (the opposite of the WebPush SSRF block) because
+bring-your-own MinIO/NAS is the whole point — Admin-only config, scheme+control-
+char validated. Health surfaces via `GET /api/offsite/status`, five
+`zoomy_backup_*` Prometheus gauges (backlog/bytes/last-success + `skipped`·
+`gaveup` terminal-loss counters), an edge-triggered stale-backup notification,
+and a Settings "Offsite backup" card + live sync readout. **Live-validated E2E
+vs MinIO in Docker:** upload + key layout, byte-integrity (S3 verifies
+`x-amz-content-sha256`), idempotency (survives restart), graceful failure on
+MinIO-down (no crash, backlog rises), auto-drain on recovery, secret hygiene
+(API + Chrome). A **4-lens adversarial review** (SigV4/security/worker/quality)
+found **0 HIGH**; fixed 3 MED (retention-prunes-before-backup → now surfaced via
+skipped/gaveup counters+metrics rather than silent; failed-row head-of-line
+block → never-attempted-first ordering + max-attempts giveup; orphan
+offsite_uploads rows on prune → deleted with the segment) + 1 LOW (oversize-
+segment OOM guard) + NITs (3xx-as-success guard, region/secret control-char
+validation, endpoint-userinfo strip, SigV4 header-whitespace collapse, prefix
+sanitisation). **GOTCHA: `ring::hmac` is NOT callable from `crates/core`** (only
+transitive via rustls, which doesn't re-export it) — added the pure-Rust
+RustCrypto `hmac` crate over the in-tree `sha2` instead (zero new C). On branch
+**`offsite-backup`** off `main`.
+
+### Earlier this session: commercial video-analytics suite (matrix #53–#61) on the object tracker
 
 Capped by **#61 cross-camera appearance search / Re-ID** (PR #18) — "find this
 person/vehicle everywhere": each object detection's CROP is CLIP-embedded at

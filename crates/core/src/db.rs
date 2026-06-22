@@ -627,6 +627,48 @@ pub struct SegmentRow {
     pub path: String,
 }
 
+/// After this many failed offsite-upload attempts a segment is given up on
+/// (terminal `gaveup`) so a permanently-failing object stops being retried
+/// forever. With the worker's capped backoff this is well over a day of
+/// transient outage first (matrix #70).
+pub const OFFSITE_MAX_ATTEMPTS: i64 = 20;
+
+/// A recording segment still awaiting offsite backup (matrix #70). `attempts`
+/// and `last_ts` drive the worker's exponential backoff for previously-failed
+/// uploads (0 = never attempted).
+#[derive(Clone, Debug)]
+pub struct PendingUpload {
+    pub path: String,
+    pub camera: String,
+    pub start_ts: i64,
+    pub bytes: u64,
+    pub attempts: i64,
+    pub last_ts: i64,
+}
+
+/// Aggregate offsite-backup health for `GET /api/offsite/status` + metrics.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct OffsiteStats {
+    /// Newest successful-upload timestamp, if any.
+    pub last_success_ts: Option<i64>,
+    /// Sealed segments not yet uploaded (pending or failed).
+    pub backlog: i64,
+    /// Total bytes successfully uploaded.
+    pub bytes_total: i64,
+    /// Successfully-uploaded segment count.
+    pub done: i64,
+    /// Segments whose last attempt failed (will retry).
+    pub failed: i64,
+    /// Segments whose local file was pruned before backup (terminal loss).
+    pub skipped: i64,
+    /// Segments that exhausted retries / were oversize (terminal loss).
+    pub gaveup: i64,
+    /// Most recent upload error, if any (no secrets — S3 error text only).
+    pub last_error: Option<String>,
+    /// Bytes uploaded per camera (camera, bytes).
+    pub per_camera: Vec<(String, i64)>,
+}
+
 /// All tunables, stored as one JSON blob so adding a knob is not a migration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -770,10 +812,36 @@ pub struct Settings {
     /// Default recipient(s) (comma-separated) for email actions whose target is blank.
     #[serde(default)]
     pub smtp_to: String,
+    /// Matrix #70 — offsite backup of recordings to S3-compatible object
+    /// storage. Off by default; a background worker mirrors sealed segments to
+    /// the configured bucket. `offsite_secret_key` is write-only (blanked in
+    /// GET /api/settings, preserved on a blank save) like `smtp_pass`.
+    #[serde(default)]
+    pub offsite_backup_enabled: bool,
+    /// S3 endpoint origin, e.g. "https://s3.us-east-1.amazonaws.com" or a
+    /// bring-your-own "http://192.168.1.10:9000" (MinIO/NAS — private endpoints
+    /// are intentionally allowed). Path-style addressing.
+    #[serde(default)]
+    pub offsite_endpoint: String,
+    #[serde(default = "default_offsite_region")]
+    pub offsite_region: String,
+    #[serde(default)]
+    pub offsite_bucket: String,
+    /// Optional key prefix (folder) inside the bucket. Empty = bucket root.
+    #[serde(default)]
+    pub offsite_prefix: String,
+    #[serde(default)]
+    pub offsite_access_key: String,
+    #[serde(default)]
+    pub offsite_secret_key: String,
 }
 
 fn default_arm_mode() -> String {
     "away".into()
+}
+
+fn default_offsite_region() -> String {
+    "us-east-1".into()
 }
 
 impl Default for Settings {
@@ -866,6 +934,13 @@ impl Default for Settings {
             smtp_pass: String::new(),
             smtp_from: String::new(),
             smtp_to: String::new(),
+            offsite_backup_enabled: false,
+            offsite_endpoint: String::new(),
+            offsite_region: default_offsite_region(),
+            offsite_bucket: String::new(),
+            offsite_prefix: String::new(),
+            offsite_access_key: String::new(),
+            offsite_secret_key: String::new(),
         }
     }
 }
@@ -1005,6 +1080,16 @@ impl Db {
                  password_hash TEXT NOT NULL,
                  role          TEXT NOT NULL DEFAULT 'viewer',
                  created_ts    INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS offsite_uploads (
+                 path        TEXT PRIMARY KEY,
+                 camera      TEXT NOT NULL,
+                 key         TEXT NOT NULL,
+                 bytes       INTEGER NOT NULL DEFAULT 0,
+                 status      TEXT NOT NULL,
+                 attempts    INTEGER NOT NULL DEFAULT 0,
+                 last_error  TEXT,
+                 updated_ts  INTEGER NOT NULL
              );",
         )?;
         // CLIP embedding of the object CROP (not the full frame) for cross-camera
@@ -2121,8 +2206,13 @@ impl Db {
     }
 
     pub fn delete_segment_by_path(&self, path: &str) -> Result<()> {
-        self.conn()
-            .execute("DELETE FROM segments WHERE path = ?1", [path])?;
+        let conn = self.conn();
+        conn.execute("DELETE FROM segments WHERE path = ?1", [path])?;
+        // Drop any offsite-backup record for this path too, so the table can't
+        // grow without bound (one orphan row per ever-recorded segment) and a
+        // later segment written to a reused path (e.g. a backward clock step)
+        // isn't silently skipped by a stale 'done'/'skipped' row (#70).
+        conn.execute("DELETE FROM offsite_uploads WHERE path = ?1", [path])?;
         Ok(())
     }
 
@@ -2206,6 +2296,190 @@ impl Db {
             )
             .optional()?;
         Ok(row)
+    }
+
+    // --- offsite backup (matrix #70) -------------------------------------
+
+    /// Sealed segments still awaiting offsite backup (no terminal `done`/
+    /// `skipped`/`gaveup` row — only never-attempted or retryable `failed`).
+    /// Returns more than the worker sends per tick so rows still inside their
+    /// backoff window don't head-of-line-block fresh ones — and orders
+    /// **never-attempted segments ahead of previously-failed ones** so a backlog
+    /// of failing rows can't starve brand-new segments out of the window.
+    pub fn pending_offsite(&self, limit: u32) -> Result<Vec<PendingUpload>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT s.path, c.name, s.start_ts, s.bytes,
+                    COALESCE(o.attempts, 0), COALESCE(o.updated_ts, 0)
+             FROM segments s JOIN cameras c ON c.id = s.camera_id
+             LEFT JOIN offsite_uploads o ON o.path = s.path
+             WHERE o.status IS NULL OR o.status = 'failed'
+             ORDER BY (o.status IS NOT NULL) ASC, s.start_ts ASC LIMIT ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok(PendingUpload {
+                    path: r.get(0)?,
+                    camera: r.get(1)?,
+                    start_ts: r.get(2)?,
+                    bytes: r.get::<_, i64>(3)? as u64,
+                    attempts: r.get(4)?,
+                    last_ts: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Record a verified successful upload (idempotent on `path`).
+    pub fn mark_offsite_done(
+        &self,
+        path: &str,
+        camera: &str,
+        key: &str,
+        bytes: u64,
+        now: i64,
+    ) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO offsite_uploads (path, camera, key, bytes, status, attempts, last_error, updated_ts)
+             VALUES (?1, ?2, ?3, ?4, 'done', 1, NULL, ?5)
+             ON CONFLICT(path) DO UPDATE SET
+                 camera = excluded.camera, key = excluded.key, bytes = excluded.bytes,
+                 status = 'done', attempts = offsite_uploads.attempts + 1,
+                 last_error = NULL, updated_ts = excluded.updated_ts",
+            params![path, camera, key, bytes as i64, now],
+        )?;
+        Ok(())
+    }
+
+    /// Record a failed attempt (increments `attempts`; drives backoff). Once
+    /// `attempts` reaches [`OFFSITE_MAX_ATTEMPTS`] the row flips to the terminal
+    /// `gaveup` status so a permanently-failing ("poison") segment stops being
+    /// retried and leaves the active candidate set / backlog count (#70).
+    pub fn mark_offsite_failed(
+        &self,
+        path: &str,
+        camera: &str,
+        key: &str,
+        bytes: u64,
+        err: &str,
+        now: i64,
+    ) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO offsite_uploads (path, camera, key, bytes, status, attempts, last_error, updated_ts)
+             VALUES (?1, ?2, ?3, ?4,
+                     CASE WHEN 1 >= ?7 THEN 'gaveup' ELSE 'failed' END, 1, ?5, ?6)
+             ON CONFLICT(path) DO UPDATE SET
+                 camera = excluded.camera, key = excluded.key, bytes = excluded.bytes,
+                 status = CASE WHEN offsite_uploads.attempts + 1 >= ?7 THEN 'gaveup' ELSE 'failed' END,
+                 attempts = offsite_uploads.attempts + 1,
+                 last_error = excluded.last_error, updated_ts = excluded.updated_ts",
+            params![path, camera, key, bytes as i64, err, now, OFFSITE_MAX_ATTEMPTS],
+        )?;
+        Ok(())
+    }
+
+    /// Mark a segment as terminally given-up (won't be retried) with a reason —
+    /// e.g. it's too large to back up. Leaves the active candidate set/backlog.
+    pub fn mark_offsite_gaveup(
+        &self,
+        path: &str,
+        camera: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO offsite_uploads (path, camera, key, bytes, status, attempts, last_error, updated_ts)
+             VALUES (?1, ?2, '', 0, 'gaveup',
+                     COALESCE((SELECT attempts FROM offsite_uploads WHERE path = ?1), 0), ?3, ?4)
+             ON CONFLICT(path) DO UPDATE SET
+                 status = 'gaveup', last_error = excluded.last_error, updated_ts = excluded.updated_ts",
+            params![path, camera, reason, now],
+        )?;
+        Ok(())
+    }
+
+    /// Mark a segment whose local file vanished (retention pruned it before
+    /// backup) so it isn't retried forever or counted as actionable backlog.
+    pub fn mark_offsite_skipped(&self, path: &str, camera: &str, now: i64) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO offsite_uploads (path, camera, key, bytes, status, attempts, last_error, updated_ts)
+             VALUES (?1, ?2, '', 0, 'skipped', COALESCE((SELECT attempts FROM offsite_uploads WHERE path = ?1), 0), 'source file removed before backup', ?3)
+             ON CONFLICT(path) DO UPDATE SET status = 'skipped', updated_ts = excluded.updated_ts",
+            params![path, camera, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn offsite_stats(&self) -> Result<OffsiteStats> {
+        let conn = self.conn();
+        let last_success_ts: Option<i64> = conn.query_row(
+            "SELECT MAX(updated_ts) FROM offsite_uploads WHERE status = 'done'",
+            [],
+            |r| r.get(0),
+        )?;
+        let backlog: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM segments s LEFT JOIN offsite_uploads o ON o.path = s.path
+             WHERE o.status IS NULL OR o.status = 'failed'",
+            [],
+            |r| r.get(0),
+        )?;
+        let bytes_total: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(bytes), 0) FROM offsite_uploads WHERE status = 'done'",
+            [],
+            |r| r.get(0),
+        )?;
+        let done: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM offsite_uploads WHERE status = 'done'",
+            [],
+            |r| r.get(0),
+        )?;
+        let failed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM offsite_uploads WHERE status = 'failed'",
+            [],
+            |r| r.get(0),
+        )?;
+        // Terminal not-backed-up losses, surfaced so they're never silent:
+        // `skipped` = the local file was pruned (retention/byte-cap) before the
+        // worker reached it; `gaveup` = exceeded max retries or oversize (#70).
+        let skipped: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM offsite_uploads WHERE status = 'skipped'",
+            [],
+            |r| r.get(0),
+        )?;
+        let gaveup: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM offsite_uploads WHERE status = 'gaveup'",
+            [],
+            |r| r.get(0),
+        )?;
+        let last_error: Option<String> = conn
+            .query_row(
+                "SELECT last_error FROM offsite_uploads
+                 WHERE status = 'failed' AND last_error IS NOT NULL
+                 ORDER BY updated_ts DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let mut stmt = conn.prepare(
+            "SELECT camera, COALESCE(SUM(bytes), 0) FROM offsite_uploads
+             WHERE status = 'done' GROUP BY camera ORDER BY camera",
+        )?;
+        let per_camera = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(OffsiteStats {
+            last_success_ts,
+            backlog,
+            bytes_total,
+            done,
+            failed,
+            skipped,
+            gaveup,
+            last_error,
+            per_camera,
+        })
     }
 
     // --- stats -----------------------------------------------------------
