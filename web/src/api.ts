@@ -255,6 +255,11 @@ export interface AlarmRule {
   /** Residential: scope the rule to a named detection zone (substring,
    *  case-insensitive) — "person in the Pool zone". null = any zone. */
   zone_like: string | null;
+  /** Cross-modal confirmation: only fire when an event of this label also
+   *  occurred on the same camera within confirm_within_secs (glass-vs-dishes).
+   *  null = no confirmation. Fails open; don't gate life-safety rules on it. */
+  confirm_label: string | null;
+  confirm_within_secs: number | null;
   min_score: number;
   /** Legacy single action; kept in sync with actions[0]. Prefer `actions`. */
   action: string;

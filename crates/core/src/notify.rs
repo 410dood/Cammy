@@ -432,6 +432,8 @@ mod tests {
             transcript_like: None,
             face_unknown: false,
             zone_like: None,
+            confirm_label: None,
+            confirm_within_secs: None,
             min_score: 0.0,
             action: "ntfy".into(),
             target: "t".into(),

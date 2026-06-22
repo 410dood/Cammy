@@ -643,6 +643,7 @@ pub fn run(
                                 None,
                                 None,
                             ) && r.zone_ok(ev_zone.as_deref())
+                                && r.confirm_ok(&db, cam.id, now)
                                 && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
                                 && crate::notify::ready(r, &throttle, now)
                         }) {
@@ -1006,6 +1007,7 @@ fn emit_analytics_event(
     for rule in alarms.iter().filter(|r| {
         r.matches(cam.id, label, 1.0, None, None, None, None)
             && r.zone_ok(zone)
+            && r.confirm_ok(db, cam.id, now)
             && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
             && crate::notify::ready(r, throttle, now)
     }) {

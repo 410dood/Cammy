@@ -49,6 +49,8 @@ export default function Alarms({
   const [gestureLike, setGestureLike] = useState("");
   const [transcriptLike, setTranscriptLike] = useState("");
   const [zoneLike, setZoneLike] = useState("");
+  const [confirmLabel, setConfirmLabel] = useState("");
+  const [confirmWithin, setConfirmWithin] = useState(10);
   const [faceUnknown, setFaceUnknown] = useState(false);
   const [actions, setActions] = useState<Action[]>([{ kind: "webhook", target: "", priority: 0 }]);
   const [modes, setModes] = useState<ArmMode[]>([]);
@@ -93,6 +95,8 @@ export default function Alarms({
         gesture_like: gestureLike || null,
         transcript_like: transcriptLike.trim() || null,
         zone_like: zoneLike.trim() || null,
+        confirm_label: confirmLabel.trim() || null,
+        confirm_within_secs: confirmLabel.trim() ? confirmWithin : null,
         face_unknown: faceUnknown,
         min_score: 0,
         // Legacy single-action mirror (kept in sync with actions[0] server-side too).
@@ -115,6 +119,8 @@ export default function Alarms({
       setGestureLike("");
       setTranscriptLike("");
       setZoneLike("");
+      setConfirmLabel("");
+      setConfirmWithin(10);
       setFaceUnknown(false);
       setCooldown(0);
       setDays([]);
@@ -149,6 +155,7 @@ export default function Alarms({
       r.gesture_like ? `signal ${r.gesture_like}` : null,
       r.transcript_like ? `said "${r.transcript_like}"` : null,
       r.zone_like ? `in zone ~ "${r.zone_like}"` : null,
+      r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
       sched ? `armed ${sched}` : null,
       (r.modes ?? []).length > 0 ? `modes ${(r.modes ?? []).join("/")}` : null,
       r.cooldown_secs > 0 ? `cooldown ${r.cooldown_secs}s` : null,
@@ -272,6 +279,30 @@ export default function Alarms({
                 placeholder='e.g. "Pool"'
               />
             </label>
+            <label className="field" title="Cross-modal confirmation: only fire when an event of THIS label also happened on the same camera recently — e.g. a Glass sound confirmed by a 'person' (glass-vs-dishes). Fails open (fires) on any error, so don't use it to gate a life-safety rule.">
+              confirmed by (optional)
+              <select value={confirmLabel} onChange={(e) => setConfirmLabel(e.target.value)}>
+                <option value="">none</option>
+                {LABELS.map((l) => (
+                  <option key={l} value={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {confirmLabel && (
+              <label className="field" title="Time window (seconds) the confirming event must fall within.">
+                within (s)
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  style={{ width: 80 }}
+                  value={confirmWithin}
+                  onChange={(e) => setConfirmWithin(Math.max(1, Number(e.target.value) || 1))}
+                />
+              </label>
+            )}
           </div>
           <div className="row" style={{ marginBottom: 12 }}>
             <span className="muted">…armed (optional):</span>

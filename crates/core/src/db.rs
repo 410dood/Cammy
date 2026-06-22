@@ -461,6 +461,18 @@ pub struct AlarmRule {
     /// "person in the Pool zone", "dog on the Couch zone". `None` = any zone.
     #[serde(default)]
     pub zone_like: Option<String>,
+    /// Cross-modal confirmation: only fire when an event of THIS label also
+    /// occurred on the same camera within `confirm_within_secs` — e.g. a "Glass"
+    /// audio event confirmed by a "person" within 10 s (glass-vs-dishes), or a
+    /// "fall" confirmed by a "Screaming". `None` = no confirmation required.
+    /// Opt-in and precision-oriented; **fails open** (fires) on any lookup error
+    /// so an infra glitch never silently suppresses a real alert. Do NOT gate a
+    /// life-safety rule on it — see docs/05 (confirmation should escalate, not gate).
+    #[serde(default)]
+    pub confirm_label: Option<String>,
+    /// Window (seconds) for `confirm_label`. `None`/0 disables confirmation.
+    #[serde(default)]
+    pub confirm_within_secs: Option<i64>,
     #[serde(default)]
     pub min_score: f32,
     /// Legacy single action: "webhook" / "mqtt" / "ntfy". Superseded by
@@ -574,6 +586,27 @@ impl AlarmRule {
             Some(want) => zone
                 .map(|z| z.to_lowercase().contains(&want.to_lowercase()))
                 .unwrap_or(false),
+        }
+    }
+
+    /// Cross-modal confirmation gate. Returns true (allow the rule to fire) unless
+    /// both `confirm_label` and a positive `confirm_within_secs` are set AND no
+    /// event of that label exists on this camera within the window. **Fails OPEN**
+    /// (returns true) on any DB error so an infrastructure glitch can never
+    /// silently suppress an alert — confirmation is for precision, not gating
+    /// life-safety. AND-ed with [`AlarmRule::matches`] at every alarm call site.
+    pub fn confirm_ok(&self, db: &Db, camera_id: i64, now: i64) -> bool {
+        match (
+            self.confirm_label
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty()),
+            self.confirm_within_secs,
+        ) {
+            (Some(lbl), Some(w)) if w > 0 => db
+                .has_recent_event(camera_id, lbl, now - w)
+                .unwrap_or(true),
+            _ => true,
         }
     }
 
@@ -1424,8 +1457,11 @@ impl Db {
     pub fn add_alarm(&self, r: &AlarmRule) -> Result<i64> {
         let schedule = serde_json::json!({
             "days": r.days, "start": r.start_hhmm, "end": r.end_hhmm, "modes": r.modes,
-            // Residential zone scope rides the schedule blob (no migration), like modes.
-            "zone_like": r.zone_like
+            // Residential zone scope + cross-modal confirmation ride the schedule
+            // blob (no migration), like modes.
+            "zone_like": r.zone_like,
+            "confirm_label": r.confirm_label,
+            "confirm_within": r.confirm_within_secs
         })
         .to_string();
         // Persist the full scene, and dual-write the legacy action/target/priority
@@ -1514,6 +1550,8 @@ impl Db {
                     plate_like: r.get(6)?,
                     gesture_like: r.get(12)?,
                     zone_like: sched["zone_like"].as_str().map(str::to_string),
+                    confirm_label: sched["confirm_label"].as_str().map(str::to_string),
+                    confirm_within_secs: sched["confirm_within"].as_i64(),
                     min_score: r.get(7)?,
                     action,
                     target,
@@ -2371,6 +2409,18 @@ impl Db {
 
     // --- settings --------------------------------------------------------
 
+    /// Does an event of `label` exist on `camera_id` at or after `since` (unix
+    /// secs)? The cross-modal confirmation lookup (`AlarmRule::confirm_ok`).
+    pub fn has_recent_event(&self, camera_id: i64, label: &str, since: i64) -> Result<bool> {
+        let n: i64 = self.conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM events
+             WHERE camera_id = ?1 AND label = ?2 AND ts >= ?3)",
+            params![camera_id, label, since],
+            |r| r.get(0),
+        )?;
+        Ok(n != 0)
+    }
+
     pub fn settings(&self) -> Settings {
         let json: Option<String> = self
             .conn()
@@ -2965,6 +3015,8 @@ mod tests {
             transcript_like: None,
             face_unknown: false,
             zone_like: None,
+            confirm_label: None,
+            confirm_within_secs: None,
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
@@ -3069,7 +3121,9 @@ mod tests {
                 gesture_like: None,
                 transcript_like: Some("help".into()),
                 face_unknown: true,
-                zone_like: None,
+                zone_like: Some("Door".into()),
+                confirm_label: Some("person".into()),
+                confirm_within_secs: Some(10),
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
@@ -3092,6 +3146,22 @@ mod tests {
         assert_eq!(back.priority, 4);
         assert_eq!(back.transcript_like.as_deref(), Some("help"));
         assert!(back.face_unknown);
+        // zone_like + cross-modal confirmation ride the schedule blob and round-trip.
+        assert_eq!(back.zone_like.as_deref(), Some("Door"));
+        assert_eq!(back.confirm_label.as_deref(), Some("person"));
+        assert_eq!(back.confirm_within_secs, Some(10));
+        // confirm_ok: needs a co-occurring "person" event on the same camera in 10 s.
+        // Fails open only on DB error; a clean "no such event" correctly suppresses.
+        let rule = back.clone();
+        let cam = db
+            .add_camera("confirm-cam", "rtsp://x", None, true, true)
+            .unwrap();
+        assert!(!rule.confirm_ok(&db, cam.id, 1_000_000), "no companion event -> not confirmed");
+        db.add_event(cam.id, 1_000_000 - 5, "person", 0.9, [0.0; 4], None, None, None, None, None)
+            .unwrap();
+        assert!(rule.confirm_ok(&db, cam.id, 1_000_000), "companion person within window");
+        assert!(!rule.confirm_ok(&db, cam.id, 1_000_000 + 100), "companion now outside the window");
+        assert!(!rule.confirm_ok(&db, cam.id + 1, 1_000_000), "companion is on a different camera");
         // A legacy rule (no explicit scene) reads back as a 1-action scene
         // synthesized from the legacy action/target/priority columns.
         assert_eq!(back.actions.len(), 1);
@@ -3175,6 +3245,8 @@ mod tests {
             transcript_like: None,
             face_unknown: false,
             zone_like: None,
+            confirm_label: None,
+            confirm_within_secs: None,
             min_score: 0.0,
             action: "webhook".into(),
             target: "http://x".into(),

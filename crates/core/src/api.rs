@@ -1503,6 +1503,7 @@ async fn record_gesture(
         .filter(|r| {
             r.matches(cam.id, "gesture", score, None, None, Some(canonical), None)
                 && r.zone_ok(None)
+                && r.confirm_ok(&st.db, cam.id, now)
                 // Panic/duress gestures fire regardless of arm mode.
                 && (is_duress || crate::notify::armed_in_mode(&r.modes, &settings.arm_mode))
                 && crate::notify::ready(r, &st.alarm_throttle, now)
