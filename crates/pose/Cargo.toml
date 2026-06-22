@@ -1,0 +1,11 @@
+[package]
+name = "pose"
+version = "0.1.0"
+description = "Body-posture taxonomy + geometric classifier over the 17-keypoint COCO layout"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true

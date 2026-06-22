@@ -17,6 +17,7 @@ members = [
     "crates/facerec",
     "crates/gesture",
     "crates/motion",
+    "crates/pose",
     "crates/recorder",
     "crates/tracker",
     "crates/core",
