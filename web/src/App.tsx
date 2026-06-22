@@ -11,6 +11,7 @@ import Signals from "./pages/Signals";
 import Faces from "./pages/Faces";
 import Recordings from "./pages/Recordings";
 import FloorPlanPage from "./pages/FloorPlan";
+import Family from "./pages/Family";
 import Settings from "./pages/Settings";
 import {
   IconLive,
@@ -29,17 +30,19 @@ import {
   IconSearch,
   IconHome,
   IconMap,
+  IconShield,
 } from "./icons";
 import CommandPalette, { Command } from "./CommandPalette";
 import { getTheme, toggleTheme, Theme } from "./theme";
 
-const PAGES = ["Home", "Live", "Events", "Signals", "Recordings", "People", "Alarms", "Cameras", "Map", "Settings"] as const;
+const PAGES = ["Home", "Live", "Events", "Family", "Signals", "Recordings", "People", "Alarms", "Cameras", "Map", "Settings"] as const;
 type Page = (typeof PAGES)[number];
 
 const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
   Home: IconHome,
   Live: IconLive,
   Events: IconBell,
+  Family: IconShield,
   Signals: IconHand,
   Recordings: IconFilm,
   People: IconUser,
@@ -291,6 +294,7 @@ export default function App() {
           />
         )}
         {page === "Events" && <Events cameras={cameras} />}
+        {page === "Family" && <Family cameras={cameras} />}
         {page === "Signals" && <Signals cameras={cameras} />}
         {page === "Recordings" && <Recordings cameras={cameras} />}
         {page === "People" && <Faces onError={setError} />}
