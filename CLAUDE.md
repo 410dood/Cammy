@@ -45,17 +45,38 @@ best-effort, disclaimed — never "drowning detection", never a medical/SIDS
 device; child split is fragile + calibration-gated. 8 unit tests; `cargo test`
 85 pass, `clippy -D warnings` clean, web `tsc`+`vite` clean.
 
-**Remaining residential batches (planned on the same branch/PR):** auto-arm/disarm
-scheduler · audio "Family & Safety Sounds" preset UI · doorbell/visitor +
-known-vehicle packaging · wildlife · the infra primitives the critic flagged
-(cross-modal audio+video confirmation, temporal/burst aggregator, audio
-ring-buffer for sub-second transients) · the **pose tier** (rollover / climb-out /
-covered-face / accurate fall — **blocked on a server-side pose-runtime decision**;
-the existing MediaPipe path is browser-foreground-only, useless for 24/7 safety) ·
-pet vertical (multi-pet Re-ID, eat/drink/litter dwell, pet diary) · Residential
-"Modes" UI · **privacy/safety gating** (skeleton-only/no-clip mode,
-offsite-backup #70 exclusion for bedroom/bathroom/child zones, consent screens,
-miss-mode surfacing) — all detailed in `docs/05`.
+**Also shipped this session — batch 2** (`9f85bcf`): auto-arm/disarm **scheduler**
+(`crates/core/src/schedule.rs`, `Settings.arm_schedule`, flips the authoritative
+`arm_mode` KV on a day+time schedule + notifies; idempotent + once-per-minute
+guarded; Settings "Modes schedule" card) · audio **"Family & Safety Sounds"**
+(added Cat meow + Child crying to the existing YAMNet chip set — baby-cry/bark/
+smoke/glass/doorbell already shipped) · **wildlife** animal COCO labels
+(bird/bear/horse/sheep/cow) in the alarm dropdown. Doorbell/visitor + known-vehicle
+need no new code (YAMNet Doorbell/Knock + person + `zone_like`; LPR `plate_like`).
+**Batch 3** (`47047f0`): **cross-modal confirmation** — `AlarmRule.confirm_label`
++ `confirm_within_secs` (a rule fires only if a companion event of that label hit
+the same camera within the window — glass-vs-dishes, fall+thud); `confirm_ok` +
+`db.has_recent_event`, AND-ed at every alarm site, **fails open** so it never
+suppresses a real alert; Alarms "confirmed by" UI; unit-tested.
+
+**Remaining residential batches:** the **pose tier** (rollover / climb-out /
+covered-face / accurate fall) is **BLOCKED on a product decision** — today's
+MediaPipe path is browser-foreground-only (one open tab), useless for 24/7 safety;
+it needs a **headless server-side pose runtime** (a new ONNX pose model + inference
+worker) or it ships as "only while you're watching". Still buildable + lower-risk:
+**pet vertical** (multi-pet Re-ID enrollment, eat/drink/litter dwell, pet diary +
+time-lapse), Residential **"Modes" dashboards** (Baby/Pet/Pool/Aging) + the
+motion-based **sleep dashboard**. **Privacy/safety gating** (skeleton-only/no-clip
+mode, offsite-backup #70 exclusion for bedroom/bathroom/child zones, consent
+screens, miss-mode surfacing) partly depends on the pose runtime + the offsite
+branch. The infra ring-buffer (sub-second audio transients) + burst aggregator
+were scoped out of batch 3 as risky working-path / cooldown-entangled changes.
+All detailed in `docs/05`.
+
+**GOTCHA (this session): an uncommitted offsite #70 WIP was in the working tree at
+start** (not ours); preserved as `git stash@{0}` "offsite #70 WIP (pre-existing…)"
+so residential could branch cleanly off `main`. **Recover with**
+`git checkout offsite-backup && git stash pop`.
 
 ### Earlier this session: commercial video-analytics suite (matrix #53–#61) on the object tracker
 
