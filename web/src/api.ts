@@ -87,6 +87,9 @@ export interface DetectConfig {
   /** Server-side 24/7 body-pose monitoring (fall posture, crib standing/rollover,
    *  covered-face). Runs a YOLOv8-pose model. Opt-in + ASSISTIVE only. */
   pose_detect?: boolean;
+  /** Privacy: residential + pose safety events on this camera fire WITHOUT saving
+   *  a snapshot image (nursery/bedroom/bathroom dignity). Off by default. */
+  no_clip?: boolean;
 }
 
 export interface Camera {

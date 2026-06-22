@@ -259,8 +259,12 @@ fn emit(
         (ax + 0.04).clamp(0.0, 1.0),
         ay.clamp(0.0, 1.0),
     ];
+    // Privacy/dignity: on a no-clip camera (nursery/bedroom/bathroom) fire the
+    // alert WITHOUT writing any image to disk.
     let snap_rel = format!("{}-{}-{}.jpg", cam.name, now, label);
-    let snapshot = {
+    let snapshot = if cam.detect_config.no_clip {
+        None
+    } else {
         std::fs::create_dir_all(snapshots_dir).ok();
         frame.save(snapshots_dir.join(&snap_rel)).ok().map(|_| snap_rel.clone())
     };
@@ -285,7 +289,10 @@ fn emit(
     };
     tracing::info!(camera = %cam.name, posture = label, zone = zone.unwrap_or("-"), event = id, "pose event");
 
-    let snap_url = format!("/api/snapshots/{snap_rel}");
+    let snap_url = snapshot
+        .as_ref()
+        .map(|s| format!("/api/snapshots/{s}"))
+        .unwrap_or_default();
     let _ = mqtt_tx.send(crate::mqtt::EventMsg {
         event_id: id,
         camera: cam.name.clone(),

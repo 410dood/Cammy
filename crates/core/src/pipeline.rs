@@ -929,18 +929,28 @@ fn emit_analytics_event(
         (ax + 0.03).clamp(0.0, 1.0),
         ay.clamp(0.0, 1.0),
     ];
+    // Privacy/dignity: a no-clip camera (nursery/bedroom/bathroom) fires the alert
+    // without writing any image — no snapshot on disk, in MQTT or in email.
     let snap_rel = format!("{}-{}-{}.jpg", cam.name, now, label);
     let snap_abs = snapshots_dir.join(&snap_rel);
-    if let Err(e) = frame.save(&snap_abs) {
-        tracing::warn!("analytics snapshot save failed: {e:#}");
-    }
+    let snapshot: Option<String> = if cam.detect_config.no_clip {
+        None
+    } else {
+        match frame.save(&snap_abs) {
+            Ok(()) => Some(snap_rel.clone()),
+            Err(e) => {
+                tracing::warn!("analytics snapshot save failed: {e:#}");
+                None
+            }
+        }
+    };
     let id = match db.add_event_dir(
         cam.id,
         now,
         label,
         1.0,
         bbox,
-        Some(&snap_rel),
+        snapshot.as_deref(),
         None,
         None,
         None,
@@ -960,7 +970,10 @@ fn emit_analytics_event(
         speed = speed.map(|s| format!("{s:.0}km/h")).unwrap_or_else(|| "-".into()),
         event = id, "analytics event"
     );
-    let snap_url = format!("/api/snapshots/{snap_rel}");
+    let snap_url = snapshot
+        .as_ref()
+        .map(|s| format!("/api/snapshots/{s}"))
+        .unwrap_or_default();
     if !settings.webhook_url.is_empty() {
         let payload = serde_json::json!({
             "type": label,
@@ -993,7 +1006,7 @@ fn emit_analytics_event(
         score: 1.0,
         ts: now,
         snapshot_url: &snap_url,
-        snapshot_path: Some(&snap_abs),
+        snapshot_path: snapshot.as_ref().map(|_| snap_abs.as_path()),
         face: None,
         plate: None,
         gesture: None,

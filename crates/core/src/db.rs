@@ -264,6 +264,13 @@ pub struct DetectConfig {
     /// only — see `posture.rs` + `docs/05`. Off by default.
     #[serde(default)]
     pub pose_detect: bool,
+    /// Privacy / dignity for sensitive cameras (nursery, bedroom, bathroom): when
+    /// on, residential + pose safety events on this camera fire WITHOUT saving a
+    /// snapshot image — you still get the alert (label + zone + time), but no
+    /// picture is written to disk (or sent to webhook/MQTT with an image). Pairs
+    /// with privacy masks for live view. Off by default.
+    #[serde(default)]
+    pub no_clip: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2974,6 +2981,7 @@ mod tests {
             fall_detect: true,
             child_height_frac: Some(0.45),
             pose_detect: true,
+            no_clip: false,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();

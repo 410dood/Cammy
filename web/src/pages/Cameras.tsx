@@ -39,6 +39,7 @@ function TuneModal({
     fall_detect: camera.detect_config.fall_detect ?? false,
     child_height_frac: camera.detect_config.child_height_frac ?? null,
     pose_detect: camera.detect_config.pose_detect ?? false,
+    no_clip: camera.detect_config.no_clip ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -272,6 +273,17 @@ function TuneModal({
               type="checkbox"
               checked={dc.pose_detect}
               onChange={() => setDc({ ...dc, pose_detect: !dc.pose_detect })}
+            />
+          </label>
+          <label
+            className="toggle field"
+            title="Privacy / dignity for a sensitive camera (nursery, bedroom, bathroom): residential + pose safety events still fire (you get the alert — label, zone, time), but NO snapshot image is saved to disk or sent to webhook/MQTT/email. Pair with a privacy mask for live view."
+          >
+            no snapshot on safety events (privacy)
+            <input
+              type="checkbox"
+              checked={dc.no_clip}
+              onChange={() => setDc({ ...dc, no_clip: !dc.no_clip })}
             />
           </label>
           <label
