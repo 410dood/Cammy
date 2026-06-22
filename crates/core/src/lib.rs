@@ -27,6 +27,7 @@ mod proc;
 mod ptz;
 mod record;
 mod residential;
+mod schedule;
 mod smart;
 mod status;
 pub mod tls;
@@ -179,6 +180,12 @@ pub async fn run(
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || anomaly::run(db, stop)
     })?;
+    // Auto-arm/disarm scheduler (residential modes automation); idles unless
+    // Settings.arm_schedule has entries. Re-reads config each tick.
+    let schedule_thread = std::thread::Builder::new().name("schedule".into()).spawn({
+        let (db, stop) = (db.clone(), workers_stop.clone());
+        move || schedule::run(db, stop)
+    })?;
     let audio_thread = std::thread::Builder::new().name("audio".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -305,6 +312,7 @@ pub async fn run(
         let _ = transcribe_thread.join();
         let _ = digest_thread.join();
         let _ = anomaly_thread.join();
+        let _ = schedule_thread.join();
     })
     .await;
     go2rtc.stop();

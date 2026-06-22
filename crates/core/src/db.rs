@@ -385,6 +385,17 @@ pub enum DeleteUser {
     LastAdmin,
 }
 
+/// One auto-arm/disarm schedule entry (residential "modes" automation): at
+/// `hhmm` local time on the given `days` (0 = Sunday; empty = every day), set the
+/// system to `mode` ("home" | "away" | "disarmed"). Driven by `schedule.rs`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArmScheduleEntry {
+    pub days: Vec<u8>,
+    pub hhmm: String,
+    pub mode: String,
+}
+
 /// A saved named camera layout (A6 Liveviews), persisted in `Settings`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Liveview {
@@ -817,6 +828,10 @@ pub struct Settings {
     /// which alarm rules fire — see `notify::armed_in_mode`.
     #[serde(default = "default_arm_mode")]
     pub arm_mode: String,
+    /// Auto-arm/disarm schedule (residential "modes" automation): each entry
+    /// flips `arm_mode` at a day+time. Empty = no automation. See `schedule.rs`.
+    #[serde(default)]
+    pub arm_schedule: Vec<ArmScheduleEntry>,
     /// SMTP for the "email" alarm action. `smtp_url` is "smtps://host:465"
     /// (implicit TLS) / "smtp://host:587" (STARTTLS) / "host[:port]"; creds go in
     /// `smtp_user`/`smtp_pass`. `smtp_pass` is write-only — blanked in
@@ -923,6 +938,7 @@ impl Default for Settings {
             liveviews: Vec::new(),
             floorplan: String::new(),
             arm_mode: default_arm_mode(),
+            arm_schedule: Vec::new(),
             smtp_url: String::new(),
             smtp_user: String::new(),
             smtp_pass: String::new(),

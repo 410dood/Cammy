@@ -187,6 +187,16 @@ export interface Settings {
   smtp_pass: string;
   smtp_from: string;
   smtp_to: string;
+  /** Auto-arm/disarm schedule (residential "modes" automation). Empty = off. */
+  arm_schedule: ArmScheduleEntry[];
+}
+
+/** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every
+ *  day), set the system to `mode`. Driven by the schedule worker. */
+export interface ArmScheduleEntry {
+  days: number[];
+  hhmm: string;
+  mode: ArmMode;
 }
 
 export interface CamStorage {

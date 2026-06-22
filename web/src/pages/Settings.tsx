@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, AuditEntry, fmtTime, Me, Role, Settings as S, User } from "../api";
+import { api, ApiToken, ArmMode, AuditEntry, fmtTime, Me, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
@@ -31,10 +31,15 @@ const AUDIO_SOUNDS: { label: string; values: string[] }[] = [
   { label: "Car alarm", values: ["Car alarm"] },
   { label: "Alarm / buzzer", values: ["Alarm"] },
   { label: "Dog bark", values: ["Bark"] },
+  { label: "Cat meow", values: ["Meow", "Cat"] },
   { label: "Doorbell", values: ["Doorbell"] },
   { label: "Knock", values: ["Knock"] },
   { label: "Baby cry", values: ["Baby cry, infant cry"] },
+  { label: "Child crying", values: ["Crying, sobbing"] },
 ];
+
+// Day-of-week labels for the auto-arm schedule (0 = Sunday, matches the worker).
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function AuditCard() {
   const [rows, setRows] = useState<AuditEntry[]>([]);
@@ -859,9 +864,11 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <div className="card">
           <h2>Audio detection</h2>
           <p className="muted" style={{ marginTop: 0 }}>
-            The bundled YAMNet model listens for specific sounds and raises an audio event
-            you can alarm on (glass break, smoke alarm, scream, baby cry…). Enable it per
-            camera with <b>audio detection</b> on the Cameras page; nothing leaves this machine.
+            The bundled YAMNet model listens for specific sounds — both <b>home-safety</b>{" "}
+            (glass break, smoke/fire alarm, gunshot, scream) and <b>family</b> (baby cry,
+            child crying, dog bark, cat meow, doorbell) — and raises an audio event you can
+            alarm on. Enable it per camera with <b>audio detection</b> on the Cameras page;
+            nothing leaves this machine.
           </p>
           <label className="field" style={{ maxWidth: 460 }}>
             sensitivity — higher fires fewer, more confident triggers (
@@ -899,6 +906,90 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           <small className="muted" style={{ display: "block", marginTop: 8 }}>
             {s.audio_labels.length} AudioSet label(s) active. Chips map to exact YAMNet
             class names so detection fires reliably.
+          </small>
+        </div>
+
+        <div className="card">
+          <h2>Modes schedule (auto-arm / disarm)</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Automatically switch the system mode on a schedule — e.g. <b>Away</b> at 08:00 on
+            weekdays, <b>Home</b> at 18:00, <b>Disarmed</b> on weekends. The mode gates which
+            alarm rules fire, so this also cuts daytime false alerts. Empty = no automation;
+            you can still change the mode manually any time.
+          </p>
+          {(s.arm_schedule ?? []).map((row, i) => (
+            <div
+              className="row"
+              key={i}
+              style={{ marginBottom: 6, flexWrap: "wrap", alignItems: "center", gap: 6 }}
+            >
+              {DOW.map((d, di) => (
+                <span
+                  key={di}
+                  className={`pill toggle ${row.days.includes(di) ? "on" : ""}`}
+                  onClick={() =>
+                    set({
+                      arm_schedule: s.arm_schedule.map((r, j) =>
+                        j === i
+                          ? {
+                              ...r,
+                              days: r.days.includes(di)
+                                ? r.days.filter((x) => x !== di)
+                                : [...r.days, di].sort((a, b) => a - b),
+                            }
+                          : r
+                      ),
+                    })
+                  }
+                >
+                  {d}
+                </span>
+              ))}
+              <input
+                type="time"
+                value={row.hhmm}
+                onChange={(e) =>
+                  set({
+                    arm_schedule: s.arm_schedule.map((r, j) =>
+                      j === i ? { ...r, hhmm: e.target.value } : r
+                    ),
+                  })
+                }
+              />
+              <select
+                value={row.mode}
+                onChange={(e) =>
+                  set({
+                    arm_schedule: s.arm_schedule.map((r, j) =>
+                      j === i ? { ...r, mode: e.target.value as ArmMode } : r
+                    ),
+                  })
+                }
+              >
+                <option value="home">Home</option>
+                <option value="away">Away</option>
+                <option value="disarmed">Disarmed</option>
+              </select>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => set({ arm_schedule: s.arm_schedule.filter((_, j) => j !== i) })}
+              >
+                remove
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="ghost"
+            onClick={() =>
+              set({ arm_schedule: [...(s.arm_schedule ?? []), { days: [], hhmm: "08:00", mode: "away" }] })
+            }
+          >
+            + add schedule
+          </button>
+          <small className="muted" style={{ display: "block", marginTop: 8 }}>
+            No days selected = every day. The change applies at the start of the matching minute.
           </small>
         </div>
 

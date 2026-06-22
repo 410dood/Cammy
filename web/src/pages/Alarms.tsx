@@ -4,6 +4,9 @@ import { IconStranger, IconMoon, IconPlus, IconX } from "../icons";
 
 const LABELS = [
   "person", "car", "truck", "bus", "bicycle", "motorcycle", "dog", "cat",
+  // Wildlife / nuisance-animal (COCO classes the detector knows — add them to
+  // detect labels in Settings to enable). Raccoon/deer aren't COCO; use smart search.
+  "bird", "bear", "horse", "sheep", "cow",
   // Tracker-driven analytics events fire alarms via the same label match.
   "crossing", "wrong_way", "loiter", "occupancy",
   // Residential analytics events (see ZoneEditor + per-camera detect config).
