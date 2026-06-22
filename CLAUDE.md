@@ -14,7 +14,7 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — commercial suite 61/61 + residential suite (batch 1) underway, 2026-06-22
+## Current status: v0.3 — commercial suite 61/61 + residential suite (batches 1-7, PR #27), 2026-06-22
 
 ### Latest: residential / consumer-camera analytics suite — batch 1 (PR #27, branch `residential-analytics` off main)
 
@@ -74,15 +74,31 @@ Settings pose-model path + alarm labels; all disclaimed assistive/not-medical.
 **Live E2E needs the (uncommitted) `yolov8n-pose.onnx` model** — build-validated +
 decode unit-tested only.
 
-**Remaining residential batches:** **pet vertical** (multi-pet Re-ID enrollment,
-eat/drink/litter dwell, pet diary + time-lapse), Residential **"Modes" dashboards**
-(Baby/Pet/Pool/Aging) + motion-based **sleep dashboard** — the user-friendly
-capstone that surfaces all the shipped backend in one place. **Privacy/safety
-gating** (skeleton-only/no-clip mode, offsite-backup #70 exclusion for
-bedroom/bathroom/child zones, consent screens, miss-mode surfacing) partly depends
-on the offsite branch (stashed). The infra ring-buffer (sub-second audio transients)
-+ burst aggregator stay scoped out as risky working-path / cooldown-entangled
-changes. All detailed in `docs/05`.
+**Batch 6 — Family Safety hub SHIPPED** (`011107b`): a new **"Family"** nav page
+(user-friendly capstone) with four plain-language guided **modes** — Baby & nursery,
+Pets, Pool & water safety, Aging in place — each a recipe that ties together the
+camera toggles / zones / sounds / alarm rules from batches 1-4, with step-by-step
+setup, recent matching events, and per-mode safety disclaimers + a top "these are
+assistive aids, not safety devices" banner. Pure frontend over existing APIs.
+
+**Batch 7 — no-clip privacy SHIPPED** (`4c069a9`): `DetectConfig.no_clip` — on a
+sensitive camera (nursery/bedroom/bathroom) the residential + pose safety events
+still fire (alert + label + zone + time) but **write NO snapshot** to disk / MQTT /
+webhook / email (both `emit_analytics_event` and the pose worker honor it).
+Per-camera toggle. Pairs with privacy masks.
+
+**The one substantial item left: the pet Re-ID vertical** (multi-pet *identity*
+enrollment via CLIP Re-ID #61 + per-pet diary) — deferred as its own focused effort
+(pet *detection*, off-limits zones, bark, escape and a diary-via-digest already work
+with shipped primitives + the Family hub describes them). **Deferred sub-items**
+(docs/05): offsite-backup #70 exclusion for sensitive zones (needs the offsite
+branch — currently stashed), a full skeleton-only pose render, the audio ring-buffer
+for sub-second transients, and the burst/rate aggregator (cooldown-entangled).
+
+**Net this session: the residential suite shipped as 8 commits on `residential-analytics`
+(PR #27), all `cargo test` + `clippy -D warnings` + web `tsc`/`vite` green.** New
+crates `pose`; new core modules `residential.rs`, `schedule.rs`, `posture.rs`; new
+`detector::PoseEstimator`. Live E2E for the pose tier needs `yolov8n-pose.onnx`.
 
 **GOTCHA (this session): an uncommitted offsite #70 WIP was in the working tree at
 start** (not ours); preserved as `git stash@{0}` "offsite #70 WIP (pre-existing…)"
