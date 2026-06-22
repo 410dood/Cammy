@@ -14,9 +14,50 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 61/61, full commercial analytics suite, 2026-06-20
+## Current status: v0.3 — commercial suite 61/61 + residential suite (batch 1) underway, 2026-06-22
 
-### This session: commercial video-analytics suite (matrix #53–#61) on the object tracker
+### Latest: residential / consumer-camera analytics suite — batch 1 (PR #27, branch `residential-analytics` off main)
+
+The consumer-camera parallel to the commercial suite — baby / pet / pool / kid /
+aging-in-place — researched + ranked in `docs/05-residential-analytics-suite.md`
+(12-agent competitor study of Cubo Ai / Nanit / Furbo / Petcube / Nest / Ring /
+Nobi / AltumView + adversarial critic). **Thesis: ~70–80% of the field needs no
+new ML model** — re-scope the tracker, zones, face rec, CLIP, and the YAMNet
+521-class audio engine (which already classifies + fires on baby-cry / bark /
+smoke-alarm / glass / scream via `settings.audio_labels` — the default set
+already includes them). **Batch 1 shipped** (commit `a38800d`): new
+`crates/core/src/residential.rs` `ResidentialState::tick` (driven beside
+`AnalyticsState`) emits **zone_enter** (edge-triggered "person in the Pool",
+"pet on the Couch" via the `alert_enter` zone flag), **child / child_alone** (a
+bbox-height child/adult heuristic gated on per-camera `DetectConfig.child_height_frac`
+→ child-in-restricted-zone `child_watch` + unattended-no-adult `supervise`),
+**fall** (assistive motionless-in-lower-band, `fall_detect`, dwell-based not
+aspect-flip), and **still_water** (EXPERIMENTAL motionless-in-water, zone `water`
+flag). New **`AlarmRule.zone_like`** + `zone_ok()` AND-ed at every alarm site
+(detection/analytics/audio/gesture/transcript) scopes a rule to a named zone
+("person in the Pool zone") — rides `schedule_json`, **no migration**. Residential
+events flow through `emit_analytics_event`, so they get snapshot + webhook + ntfy
++ MQTT + Alarm Manager for free. Frontend: `zone_like` field + residential event
+labels (Alarms), enter/child*/alone*/water* per-zone toggles (ZoneEditor),
+fall-detect + child-calibration (Cameras) — all with **liability tooltips +
+asterisks**. **SAFETY framing (in code + UI):** every output is assistive,
+best-effort, disclaimed — never "drowning detection", never a medical/SIDS
+device; child split is fragile + calibration-gated. 8 unit tests; `cargo test`
+85 pass, `clippy -D warnings` clean, web `tsc`+`vite` clean.
+
+**Remaining residential batches (planned on the same branch/PR):** auto-arm/disarm
+scheduler · audio "Family & Safety Sounds" preset UI · doorbell/visitor +
+known-vehicle packaging · wildlife · the infra primitives the critic flagged
+(cross-modal audio+video confirmation, temporal/burst aggregator, audio
+ring-buffer for sub-second transients) · the **pose tier** (rollover / climb-out /
+covered-face / accurate fall — **blocked on a server-side pose-runtime decision**;
+the existing MediaPipe path is browser-foreground-only, useless for 24/7 safety) ·
+pet vertical (multi-pet Re-ID, eat/drink/litter dwell, pet diary) · Residential
+"Modes" UI · **privacy/safety gating** (skeleton-only/no-clip mode,
+offsite-backup #70 exclusion for bedroom/bathroom/child zones, consent screens,
+miss-mode surfacing) — all detailed in `docs/05`.
+
+### Earlier this session: commercial video-analytics suite (matrix #53–#61) on the object tracker
 
 Capped by **#61 cross-camera appearance search / Re-ID** (PR #18) — "find this
 person/vehicle everywhere": each object detection's CROP is CLIP-embedded at
