@@ -61,6 +61,8 @@ pub fn run(
     // Only used on cameras that configure a tripwire or a dwell zone.
     let mut trackers: HashMap<i64, tracker::Tracker> = HashMap::new();
     let mut analytics: HashMap<i64, crate::analytics::AnalyticsState> = HashMap::new();
+    // Per-camera parcel presence (package-delivered / -removed monitoring).
+    let mut packages: HashMap<i64, crate::parcel::PackageState> = HashMap::new();
 
     while !shutdown.load(Ordering::Relaxed) {
         let tick = Instant::now();
@@ -86,6 +88,15 @@ pub fn run(
             let live: std::collections::HashSet<i64> = cameras.iter().map(|c| c.id).collect();
             trackers.retain(|k, _| live.contains(k));
             analytics.retain(|k, _| live.contains(k));
+            // Drop parcel state for cameras that are gone OR have package
+            // detection off, so toggling it back on starts from a clean slate
+            // (a stale `present` state would otherwise fire a spurious
+            // `package_removed` on the first absent frame after re-enabling).
+            packages.retain(|k, _| {
+                cameras
+                    .iter()
+                    .any(|c| c.id == *k && c.detect_config.package_detect)
+            });
         }
         for cam in cameras.iter().filter(|c| c.enabled && c.detect) {
             if shutdown.load(Ordering::Relaxed) {
@@ -179,7 +190,11 @@ pub fn run(
                     .zones
                     .iter()
                     .any(|z| z.dwell_secs.unwrap_or(0) > 0 || z.occupancy_max.unwrap_or(0) > 0);
-            if !verdict.is_motion() && !analytics_on {
+            // Parcel monitoring must also keep sampling motionless frames: a
+            // package sits perfectly still, and we still need to notice it appear
+            // (delivered) and later vanish (removed).
+            let package_on = cam.detect_config.package_detect;
+            if !verdict.is_motion() && !analytics_on && !package_on {
                 continue;
             }
             tracing::debug!(camera = %cam.name, ?verdict, "running detector");
@@ -358,6 +373,63 @@ pub fn run(
                             now,
                         );
                     }
+                }
+            }
+
+            // --- parcel monitoring: package delivered / removed -------------
+            // Runs on the full detection set (independent of motion + cooldown):
+            // a parcel-like object that persists in the zone fires `package`, and
+            // one that then disappears fires `package_removed`.
+            if package_on {
+                let cfg = &cam.detect_config;
+                // A degenerate polygon (<3 points) can't contain anything, so
+                // treat it as "no zone" (whole frame) rather than silently
+                // disabling detection.
+                let zone = cfg.package_zone.as_deref().filter(|z| z.len() >= 3);
+                let mut anchor: Option<(f32, f32)> = None;
+                let in_zone = dets.iter().any(|d| {
+                    if !crate::parcel::matches_package(d.label, &cfg.package_labels)
+                        || d.score < min_score
+                    {
+                        return false;
+                    }
+                    let c = ((d.x1 + d.x2) / 2.0 / fw, (d.y1 + d.y2) / 2.0 / fh);
+                    let inside = zone.is_none_or(|z| crate::db::point_in_polygon(z, c.0, c.1));
+                    if inside && anchor.is_none() {
+                        anchor = Some(c);
+                    }
+                    inside
+                });
+                let pstate = packages.entry(cam.id).or_default();
+                if let Some(ev) = pstate.update(
+                    in_zone,
+                    now,
+                    crate::parcel::CONFIRM_SECS,
+                    crate::parcel::GONE_SECS,
+                ) {
+                    let label = match ev {
+                        crate::parcel::PackageEvent::Delivered => "package",
+                        crate::parcel::PackageEvent::Removed => "package_removed",
+                    };
+                    // Mark the parcel (delivered) or, since it's already gone on
+                    // removal, the zone centroid.
+                    let mark = anchor.unwrap_or_else(|| zone_centroid(zone));
+                    emit_analytics_event(
+                        &db,
+                        &settings,
+                        &alarms,
+                        &throttle,
+                        &mqtt_tx,
+                        &snapshots_dir,
+                        &frame,
+                        cam,
+                        label,
+                        mark,
+                        None,
+                        None,
+                        None,
+                        now,
+                    );
                 }
             }
 
@@ -858,6 +930,20 @@ fn save_unknown_face(
 /// the global webhook + MQTT + matching alarm rules — the same notification
 /// machinery a detection event uses, so analytics rides existing alerting (an
 /// alarm rule with `label = "crossing"` fires on any crossing).
+/// Vertex centroid of a polygon (0..1 fractions), defaulting to frame center.
+fn zone_centroid(poly: Option<&[[f32; 2]]>) -> (f32, f32) {
+    match poly {
+        Some(p) if !p.is_empty() => {
+            let n = p.len() as f32;
+            let (sx, sy) = p
+                .iter()
+                .fold((0.0f32, 0.0f32), |(ax, ay), q| (ax + q[0], ay + q[1]));
+            (sx / n, sy / n)
+        }
+        _ => (0.5, 0.5),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_analytics_event(
     db: &Db,

@@ -36,6 +36,9 @@ function TuneModal({
     face_recognize: camera.detect_config.face_recognize ?? null,
     two_way_audio: camera.detect_config.two_way_audio ?? false,
     retention_days: camera.detect_config.retention_days ?? null,
+    package_detect: camera.detect_config.package_detect ?? false,
+    package_zone: camera.detect_config.package_zone ?? null,
+    package_labels: camera.detect_config.package_labels ?? [],
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -249,6 +252,40 @@ function TuneModal({
               }
             />
           </label>
+          <label
+            className="toggle field"
+            title="Porch-piracy alerts: fire a 'package' event when a parcel-like object sits in view for a while, and 'package_removed' when it's taken. Watches the whole frame (a package zone is API-settable). Make alarm rules with label 'package' / 'package_removed'."
+          >
+            package detection
+            <input
+              type="checkbox"
+              checked={dc.package_detect ?? false}
+              onChange={() => setDc({ ...dc, package_detect: !dc.package_detect })}
+            />
+          </label>
+          {dc.package_detect && (
+            <label
+              className="field"
+              title="Labels that count as a parcel (comma-separated). Blank uses the defaults: suitcase, backpack, handbag. Add 'package' if your model has that class."
+            >
+              package labels (blank = default)
+              <input
+                type="text"
+                style={{ width: 220 }}
+                placeholder="suitcase, backpack, handbag"
+                value={(dc.package_labels ?? []).join(", ")}
+                onChange={(e) =>
+                  setDc({
+                    ...dc,
+                    package_labels: e.target.value
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  })
+                }
+              />
+            </label>
+          )}
         </div>
 
         <h2 style={{ marginTop: 18 }}>Zones &amp; privacy masks</h2>

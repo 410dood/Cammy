@@ -64,6 +64,12 @@ export interface DetectConfig {
   two_way_audio: boolean;
   /** Per-camera retention override in days; null inherits the global setting. */
   retention_days: number | null;
+  /** Package/parcel monitoring (#69): emit package / package_removed events. */
+  package_detect?: boolean;
+  /** Optional polygon (0..1) the parcel must sit in; null = whole frame. */
+  package_zone?: [number, number][] | null;
+  /** Labels counting as a parcel; empty = suitcase/backpack/handbag. */
+  package_labels?: string[];
 }
 
 export interface Camera {

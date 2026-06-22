@@ -14,9 +14,41 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 61/61, full commercial analytics suite, 2026-06-20
+## Current status: v0.3 — competitor matrix 62/62 (+ #62–#68 on in-flight branches), 2026-06-21
 
-### This session: commercial video-analytics suite (matrix #53–#61) on the object tracker
+### Latest: package / parcel detection (matrix #69)
+
+Porch-piracy alerts — **delivered + removed** — with **no new model**. A parcel is
+any detection whose label is in the configurable package set (default the COCO
+carry-item classes `suitcase`/`backpack`/`handbag`, the Frigate proxy; add a real
+`package` label if a future model has one). `crates/core/src/parcel.rs` holds a
+pure `PackageState::update(in_zone, ts, confirm_secs, gone_secs)` that turns the
+per-frame "parcel in zone?" signal into two **edge** events: persists
+`confirm_secs`(15) → `package` (delivered); a confirmed parcel absent for
+`gone_secs`(15) → `package_removed` (taken) — with brief detector-gap tolerance in
+**both** phases (a flicker neither falsely confirms nor falsely clears). The
+pipeline runs it **independent of the motion gate** (a still parcel makes no
+motion) and the per-object cooldown, scoped to an optional per-camera
+`package_zone` polygon (whole frame by default; pixel boxes normalised to 0..1 for
+`db::point_in_polygon`), and emits via the same `emit_analytics_event` path as
+crossing/loiter (alarms match by the `package`/`package_removed` label). New
+`DetectConfig.package_detect`/`package_zone`/`package_labels` (JSON blob, no
+migration); per-camera toggle + labels editor on the Cameras tuning page. UI zone
+picker is API-only for v1. `PackageState`+`matches_package` unit-tested (6 cases).
+**Live-validated E2E**: a synthetic person-stream with `package_labels=[person]`
+fired `package` ~15s after the object persisted, `package_removed` ~15s after it
+vanished — one of each, no flap. A 2-lens adversarial review caught **3 real
+defects (2 MED + 1 LOW), all fixed**: (1) confirming "delivered" across an
+*unobserved* detector gap (the pipeline skips a camera on poll-throttle/fetch/
+inference errors, so `update` never sees `in_zone=false`) → the in_zone branch now
+restarts the streak when the last *observed* sighting is older than `gone_secs`
+(observed continuity, not elapsed time; regression-tested); (2) stale state across
+a `package_detect` OFF→ON toggle firing a spurious `package_removed` → the prune
+now drops state for any camera with detection off, so re-enabling starts clean;
+(3) a degenerate `package_zone` (<3 pts) silently disabling detection → now falls
+back to whole-frame. On branch **`package-detection`** off `main`.
+
+### Earlier this session: commercial video-analytics suite (matrix #53–#61) on the object tracker
 
 Capped by **#61 cross-camera appearance search / Re-ID** (PR #18) — "find this
 person/vehicle everywhere": each object detection's CROP is CLIP-embedded at
