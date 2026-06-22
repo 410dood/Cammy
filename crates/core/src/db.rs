@@ -258,6 +258,12 @@ pub struct DetectConfig {
     /// per-camera setup — bbox height depends on the camera angle/distance.
     #[serde(default)]
     pub child_height_frac: Option<f32>,
+    /// Server-side body-pose monitoring (24/7, headless) for the residential
+    /// safety tier: fall posture, crib standing/rollover, covered-face. Runs a
+    /// YOLOv8-pose model (Settings.pose_model) on this camera. Opt-in + ASSISTIVE
+    /// only — see `posture.rs` + `docs/05`. Off by default.
+    #[serde(default)]
+    pub pose_detect: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -865,6 +871,11 @@ pub struct Settings {
     /// flips `arm_mode` at a day+time. Empty = no automation. See `schedule.rs`.
     #[serde(default)]
     pub arm_schedule: Vec<ArmScheduleEntry>,
+    /// Path to the YOLOv8-pose ONNX model used by the server-side pose worker
+    /// (downloaded, not committed — like the YOLO/YAMNet models). The pose worker
+    /// idles until this file exists AND a camera has `pose_detect` on.
+    #[serde(default = "default_pose_model")]
+    pub pose_model: String,
     /// SMTP for the "email" alarm action. `smtp_url` is "smtps://host:465"
     /// (implicit TLS) / "smtp://host:587" (STARTTLS) / "host[:port]"; creds go in
     /// `smtp_user`/`smtp_pass`. `smtp_pass` is write-only — blanked in
@@ -884,6 +895,10 @@ pub struct Settings {
 
 fn default_arm_mode() -> String {
     "away".into()
+}
+
+fn default_pose_model() -> String {
+    "yolov8n-pose.onnx".into()
 }
 
 impl Default for Settings {
@@ -972,6 +987,7 @@ impl Default for Settings {
             floorplan: String::new(),
             arm_mode: default_arm_mode(),
             arm_schedule: Vec::new(),
+            pose_model: default_pose_model(),
             smtp_url: String::new(),
             smtp_user: String::new(),
             smtp_pass: String::new(),
@@ -2957,6 +2973,7 @@ mod tests {
             retention_days: Some(14),
             fall_detect: true,
             child_height_frac: Some(0.45),
+            pose_detect: true,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();

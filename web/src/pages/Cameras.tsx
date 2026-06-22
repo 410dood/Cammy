@@ -38,6 +38,7 @@ function TuneModal({
     retention_days: camera.detect_config.retention_days ?? null,
     fall_detect: camera.detect_config.fall_detect ?? false,
     child_height_frac: camera.detect_config.child_height_frac ?? null,
+    pose_detect: camera.detect_config.pose_detect ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -260,6 +261,17 @@ function TuneModal({
               type="checkbox"
               checked={dc.fall_detect}
               onChange={() => setDc({ ...dc, fall_detect: !dc.fall_detect })}
+            />
+          </label>
+          <label
+            className="toggle field"
+            title="Server-side 24/7 body-pose monitoring for the nursery/elder camera: emits 'fall' (lying on the floor), 'standing' (a child standing up in a crib zone — climb-out) and 'covered_face' (body present but face not visible in a zone — rollover / blanket). Runs a YOLOv8-pose model on the server (download yolov8n-pose.onnx; set the path in Settings). ASSISTIVE only — not a medical/SIDS device, draw a crib/bed zone for standing + covered-face."
+          >
+            body pose monitoring (assistive*)
+            <input
+              type="checkbox"
+              checked={dc.pose_detect}
+              onChange={() => setDc({ ...dc, pose_detect: !dc.pose_detect })}
             />
           </label>
           <label

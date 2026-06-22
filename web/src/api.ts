@@ -84,6 +84,9 @@ export interface DetectConfig {
    *  is ≤ this fraction is treated as a "child". null disables child features
    *  (the default). FRAGILE without per-camera setup. */
   child_height_frac?: number | null;
+  /** Server-side 24/7 body-pose monitoring (fall posture, crib standing/rollover,
+   *  covered-face). Runs a YOLOv8-pose model. Opt-in + ASSISTIVE only. */
+  pose_detect?: boolean;
 }
 
 export interface Camera {
@@ -189,6 +192,9 @@ export interface Settings {
   smtp_to: string;
   /** Auto-arm/disarm schedule (residential "modes" automation). Empty = off. */
   arm_schedule: ArmScheduleEntry[];
+  /** Path to the YOLOv8-pose ONNX model for the server-side pose worker
+   *  (downloaded, not committed). The worker idles until it exists. */
+  pose_model: string;
 }
 
 /** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every

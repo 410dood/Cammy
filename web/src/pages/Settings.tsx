@@ -1265,6 +1265,18 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(e) => set({ model_path: e.target.value })}
               />
             </label>
+            <label
+              className="field"
+              title="YOLOv8-pose model for the server-side body-pose worker (fall / crib standing / covered-face). Download yolov8n-pose.onnx and put it beside the detector model; the worker idles until it exists and a camera turns on 'body pose monitoring'."
+            >
+              pose model path (body pose monitoring)
+              <input
+                type="text"
+                value={s.pose_model ?? ""}
+                placeholder="yolov8n-pose.onnx"
+                onChange={(e) => set({ pose_model: e.target.value })}
+              />
+            </label>
             <label className="toggle field">
               record audio (AAC)
               <input

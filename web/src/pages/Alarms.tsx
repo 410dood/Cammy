@@ -11,6 +11,8 @@ const LABELS = [
   "crossing", "wrong_way", "loiter", "occupancy",
   // Residential analytics events (see ZoneEditor + per-camera detect config).
   "child", "child_alone", "fall", "still_water",
+  // Server-side pose events (enable "body pose monitoring" on the camera).
+  "standing", "covered_face",
 ];
 const GESTURES = ["open_palm", "fist", "victory", "point", "thumb_up", "thumb_down", "love", "ok", "call_me"];
 const ARM_OPTS: { id: ArmMode; label: string }[] = [
