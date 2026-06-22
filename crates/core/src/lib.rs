@@ -26,6 +26,7 @@ mod pipeline;
 mod proc;
 mod ptz;
 mod record;
+mod residential;
 mod smart;
 mod status;
 pub mod tls;

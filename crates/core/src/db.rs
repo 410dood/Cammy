@@ -93,6 +93,29 @@ pub struct PolyZone {
     /// object tracking. The live count is also published to the status board.
     #[serde(default)]
     pub occupancy_max: Option<u32>,
+    /// Residential: fire a `zone_enter` event (its label is the object's class)
+    /// the first frame a label-scoped track enters this zone — edge-triggered,
+    /// once per entry. Powers "person enters the pool", "pet on the couch".
+    /// Off by default. Requires object tracking. See `residential.rs`.
+    #[serde(default)]
+    pub alert_enter: bool,
+    /// Residential: if a *child*-classified person (see
+    /// `DetectConfig.child_height_frac`) enters this zone, fire a `child` event —
+    /// child-in-restricted-zone (stairs / kitchen / driveway). Requires per-camera
+    /// child calibration. ASSISTIVE — a detection aid, not guaranteed coverage.
+    #[serde(default)]
+    pub child_watch: bool,
+    /// Residential: fire a `child_alone` event when a child is in this zone with
+    /// NO adult present (edge-triggered) — the unattended-child-near-pool framing.
+    /// Requires child calibration. ASSISTIVE — never a substitute for supervision
+    /// or a pool fence; can miss a child if the height heuristic misreads them.
+    #[serde(default)]
+    pub supervise: bool,
+    /// Residential: this zone is water (a pool). A person who goes motionless in
+    /// it fires an EXPERIMENTAL `still_water` hint. This is NOT drowning
+    /// detection — an above-water camera cannot see a submerged body. Off by default.
+    #[serde(default)]
+    pub water: bool,
 }
 
 impl PolyZone {
@@ -223,6 +246,18 @@ pub struct DetectConfig {
     /// total-disk guarantee.
     #[serde(default)]
     pub retention_days: Option<u32>,
+    /// Residential ASSISTIVE fall hint: when true, a tracked person who goes
+    /// motionless low in the frame fires a `fall` event. Best-effort at ~1 fps —
+    /// misses occluded / soft / slow falls. NOT a medical-alert device; pair with
+    /// a pendant. See `residential.rs` + `docs/05`.
+    #[serde(default)]
+    pub fall_detect: bool,
+    /// Residential child/adult calibration: a tracked person whose normalized
+    /// bbox height is at/below this fraction is treated as a "child". `None`
+    /// disables all child features on this camera (the default). FRAGILE without
+    /// per-camera setup — bbox height depends on the camera angle/distance.
+    #[serde(default)]
+    pub child_height_frac: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -409,6 +444,12 @@ pub struct AlarmRule {
     /// face is the `UNKNOWN_FACE` sentinel). Mutually exclusive with `face_like`.
     #[serde(default)]
     pub face_unknown: bool,
+    /// Substring match (case-insensitive) on the event's detection ZONE name —
+    /// fire only when the object is in a named zone, e.g. `zone_like = "Pool"`.
+    /// Combined with a `label` this expresses the residential primitives
+    /// "person in the Pool zone", "dog on the Couch zone". `None` = any zone.
+    #[serde(default)]
+    pub zone_like: Option<String>,
     #[serde(default)]
     pub min_score: f32,
     /// Legacy single action: "webhook" / "mqtt" / "ntfy". Superseded by
@@ -502,6 +543,27 @@ impl AlarmRule {
             now.weekday().num_days_from_sunday() as u8,
             (now.hour() * 60 + now.minute()) as u16,
         )
+    }
+
+    /// Does the event's detection zone satisfy this rule's optional `zone_like`
+    /// filter? `None`/blank matches anything; otherwise a case-insensitive
+    /// substring match on the event's zone (an event with no zone never matches a
+    /// zone-scoped rule). Checked alongside [`AlarmRule::matches`] at every call
+    /// site so a zone-scoped residential rule (e.g. "person in Pool") fires only
+    /// in its zone. Kept separate from `matches` to avoid churning its many
+    /// call sites; AND the two together.
+    pub fn zone_ok(&self, zone: Option<&str>) -> bool {
+        match self
+            .zone_like
+            .as_deref()
+            .map(str::trim)
+            .filter(|z| !z.is_empty())
+        {
+            None => true,
+            Some(want) => zone
+                .map(|z| z.to_lowercase().contains(&want.to_lowercase()))
+                .unwrap_or(false),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1345,7 +1407,9 @@ impl Db {
 
     pub fn add_alarm(&self, r: &AlarmRule) -> Result<i64> {
         let schedule = serde_json::json!({
-            "days": r.days, "start": r.start_hhmm, "end": r.end_hhmm, "modes": r.modes
+            "days": r.days, "start": r.start_hhmm, "end": r.end_hhmm, "modes": r.modes,
+            // Residential zone scope rides the schedule blob (no migration), like modes.
+            "zone_like": r.zone_like
         })
         .to_string();
         // Persist the full scene, and dual-write the legacy action/target/priority
@@ -1433,6 +1497,7 @@ impl Db {
                     face_like: r.get(5)?,
                     plate_like: r.get(6)?,
                     gesture_like: r.get(12)?,
+                    zone_like: sched["zone_like"].as_str().map(str::to_string),
                     min_score: r.get(7)?,
                     action,
                     target,
@@ -2793,6 +2858,10 @@ mod tests {
                 labels: vec!["person".into()],
                 dwell_secs: Some(30),
                 occupancy_max: Some(5),
+                alert_enter: true,
+                child_watch: true,
+                supervise: true,
+                water: false,
             }],
             tripwires: vec![crate::analytics::Tripwire {
                 name: "gate".into(),
@@ -2820,6 +2889,8 @@ mod tests {
             face_recognize: Some(true),
             two_way_audio: true,
             retention_days: Some(14),
+            fall_detect: true,
+            child_height_frac: Some(0.45),
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
@@ -2877,6 +2948,7 @@ mod tests {
             gesture_like: None,
             transcript_like: None,
             face_unknown: false,
+            zone_like: None,
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
@@ -2952,6 +3024,18 @@ mod tests {
         assert!(stranger_rule.matches(3, "person", 1.0, Some(UNKNOWN_FACE), None, None, None));
         assert!(!stranger_rule.matches(3, "person", 1.0, Some("Alice"), None, None, None));
         assert!(!stranger_rule.matches(3, "person", 1.0, None, None, None, None));
+
+        // zone_like scopes a residential rule to a named detection zone (e.g.
+        // "person in the Pool zone") via a case-insensitive substring match.
+        let zoned = AlarmRule {
+            zone_like: Some("Pool".into()),
+            ..rule.clone()
+        };
+        assert!(zoned.zone_ok(Some("Backyard Pool")));
+        assert!(!zoned.zone_ok(Some("Driveway")));
+        assert!(!zoned.zone_ok(None), "a zone-scoped rule needs a zoned event");
+        assert!(rule.zone_ok(None), "an unscoped rule matches any/no zone");
+        assert!(rule.zone_ok(Some("Pool")));
     }
 
     #[test]
@@ -2969,6 +3053,7 @@ mod tests {
                 gesture_like: None,
                 transcript_like: Some("help".into()),
                 face_unknown: true,
+                zone_like: None,
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
@@ -3073,6 +3158,7 @@ mod tests {
             gesture_like: None,
             transcript_like: None,
             face_unknown: false,
+            zone_like: None,
             min_score: 0.0,
             action: "webhook".into(),
             target: "http://x".into(),

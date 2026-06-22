@@ -36,6 +36,8 @@ function TuneModal({
     face_recognize: camera.detect_config.face_recognize ?? null,
     two_way_audio: camera.detect_config.two_way_audio ?? false,
     retention_days: camera.detect_config.retention_days ?? null,
+    fall_detect: camera.detect_config.fall_detect ?? false,
+    child_height_frac: camera.detect_config.child_height_frac ?? null,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -249,7 +251,46 @@ function TuneModal({
               }
             />
           </label>
+          <label
+            className="toggle field"
+            title="Residential ASSISTIVE fall hint: a tracked person who goes motionless low in the frame fires a 'fall' event. Best-effort at ~1 fps — it MISSES occluded, soft, or slow falls. NOT a medical-alert device; pair it with a pendant and never auto-dial emergency services off a single visual trigger."
+          >
+            fall detection (assistive*)
+            <input
+              type="checkbox"
+              checked={dc.fall_detect}
+              onChange={() => setDc({ ...dc, fall_detect: !dc.fall_detect })}
+            />
+          </label>
+          <label
+            className="field"
+            title="Residential child calibration: a tracked person whose normalized bbox HEIGHT (0..1 of the frame) is at/below this fraction is treated as a 'child', enabling the child / child-alone zone rules. Blank disables child features. FRAGILE — bbox height depends on camera angle/distance; tune per camera and treat results as a detection aid only."
+          >
+            child height ≤ (frac, blank = off*)
+            <input
+              type="number"
+              step="0.05"
+              min="0"
+              max="1"
+              style={{ width: 110 }}
+              placeholder="off"
+              value={dc.child_height_frac ?? ""}
+              onChange={(e) =>
+                setDc({
+                  ...dc,
+                  child_height_frac:
+                    e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)),
+                })
+              }
+            />
+          </label>
         </div>
+        <p className="muted" style={{ fontSize: 12, marginTop: -4 }}>
+          * Fall detection and child classification are <b>assistive, best-effort</b>{" "}
+          safety aids — not medical devices and not guaranteed. They can miss events
+          and must never replace supervision or a personal alarm. See the zone editor
+          below to arm child / unattended / pool-water hints.
+        </p>
 
         <h2 style={{ marginTop: 18 }}>Zones &amp; privacy masks</h2>
         <p className="muted" style={{ marginTop: 0 }}>

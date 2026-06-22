@@ -270,6 +270,7 @@ fn fire_transcript_alarms(
                 ev.gesture.as_deref(),
                 Some(transcript),
             )
+            && r.zone_ok(ev.zone.as_deref())
             && crate::notify::armed_in_mode(&r.modes, &s.arm_mode)
             && crate::notify::ready(r, throttle, now)
     }) {

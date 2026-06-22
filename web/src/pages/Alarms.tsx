@@ -6,6 +6,8 @@ const LABELS = [
   "person", "car", "truck", "bus", "bicycle", "motorcycle", "dog", "cat",
   // Tracker-driven analytics events fire alarms via the same label match.
   "crossing", "wrong_way", "loiter", "occupancy",
+  // Residential analytics events (see ZoneEditor + per-camera detect config).
+  "child", "child_alone", "fall", "still_water",
 ];
 const GESTURES = ["open_palm", "fist", "victory", "point", "thumb_up", "thumb_down", "love", "ok", "call_me"];
 const ARM_OPTS: { id: ArmMode; label: string }[] = [
@@ -43,6 +45,7 @@ export default function Alarms({
   const [plateLike, setPlateLike] = useState("");
   const [gestureLike, setGestureLike] = useState("");
   const [transcriptLike, setTranscriptLike] = useState("");
+  const [zoneLike, setZoneLike] = useState("");
   const [faceUnknown, setFaceUnknown] = useState(false);
   const [actions, setActions] = useState<Action[]>([{ kind: "webhook", target: "", priority: 0 }]);
   const [modes, setModes] = useState<ArmMode[]>([]);
@@ -86,6 +89,7 @@ export default function Alarms({
         plate_like: plateLike.trim() || null,
         gesture_like: gestureLike || null,
         transcript_like: transcriptLike.trim() || null,
+        zone_like: zoneLike.trim() || null,
         face_unknown: faceUnknown,
         min_score: 0,
         // Legacy single-action mirror (kept in sync with actions[0] server-side too).
@@ -107,6 +111,7 @@ export default function Alarms({
       setPlateLike("");
       setGestureLike("");
       setTranscriptLike("");
+      setZoneLike("");
       setFaceUnknown(false);
       setCooldown(0);
       setDays([]);
@@ -140,6 +145,7 @@ export default function Alarms({
       r.plate_like ? `plate ~ "${r.plate_like}"` : null,
       r.gesture_like ? `signal ${r.gesture_like}` : null,
       r.transcript_like ? `said "${r.transcript_like}"` : null,
+      r.zone_like ? `in zone ~ "${r.zone_like}"` : null,
       sched ? `armed ${sched}` : null,
       (r.modes ?? []).length > 0 ? `modes ${(r.modes ?? []).join("/")}` : null,
       r.cooldown_secs > 0 ? `cooldown ${r.cooldown_secs}s` : null,
@@ -252,6 +258,15 @@ export default function Alarms({
                 value={transcriptLike}
                 onChange={(e) => setTranscriptLike(e.target.value)}
                 placeholder='e.g. "help"'
+              />
+            </label>
+            <label className="field" title="Fire only when the object is inside a named detection zone (substring, case-insensitive) — e.g. a 'Pool' zone for 'person in the Pool'. Draw zones on the camera's detect config.">
+              in zone (optional)
+              <input
+                type="text"
+                value={zoneLike}
+                onChange={(e) => setZoneLike(e.target.value)}
+                placeholder='e.g. "Pool"'
               />
             </label>
           </div>

@@ -422,6 +422,7 @@ mod tests {
             labels: vec![],
             dwell_secs: Some(secs),
             occupancy_max: None,
+            ..Default::default()
         }
     }
 
@@ -701,6 +702,7 @@ mod tests {
             labels: vec![],
             dwell_secs: None,
             occupancy_max: Some(max),
+            ..Default::default()
         }
     }
 

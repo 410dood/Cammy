@@ -415,6 +415,46 @@ export default function ZoneEditor({
                   )
                 }
               />
+              <label className="muted" title="Residential: fire a zone_enter event (labelled with the object's class) when a tracked object enters — e.g. 'person enters the Pool', 'pet on the Couch'. Needs object tracking.">
+                <input
+                  type="checkbox"
+                  checked={!!z.alert_enter}
+                  onChange={(e) =>
+                    onChange(zones.map((x, j) => (j === i ? { ...x, alert_enter: e.target.checked } : x)), masks)
+                  }
+                />{" "}
+                enter
+              </label>
+              <label className="muted" title="Residential ASSISTIVE: a child-classified person entering fires a 'child' event (stairs/kitchen/driveway). Requires per-camera child calibration on the detect config — a detection aid, NOT guaranteed coverage.">
+                <input
+                  type="checkbox"
+                  checked={!!z.child_watch}
+                  onChange={(e) =>
+                    onChange(zones.map((x, j) => (j === i ? { ...x, child_watch: e.target.checked } : x)), masks)
+                  }
+                />{" "}
+                child*
+              </label>
+              <label className="muted" title="Residential ASSISTIVE: fire 'child_alone' when a child is here with NO adult present (unattended-near-pool). Requires child calibration. NOT a substitute for active supervision or a pool fence; can miss a child if the height heuristic misreads them.">
+                <input
+                  type="checkbox"
+                  checked={!!z.supervise}
+                  onChange={(e) =>
+                    onChange(zones.map((x, j) => (j === i ? { ...x, supervise: e.target.checked } : x)), masks)
+                  }
+                />{" "}
+                alone*
+              </label>
+              <label className="muted" title="Residential EXPERIMENTAL: mark this zone as water (a pool); a motionless person in it fires a 'still_water' hint. This is NOT drowning detection — an above-water camera cannot see a submerged body. Supplement, never a replacement, for supervision/fencing.">
+                <input
+                  type="checkbox"
+                  checked={!!z.water}
+                  onChange={(e) =>
+                    onChange(zones.map((x, j) => (j === i ? { ...x, water: e.target.checked } : x)), masks)
+                  }
+                />{" "}
+                water*
+              </label>
               <button
                 type="button"
                 className="danger"
@@ -424,6 +464,13 @@ export default function ZoneEditor({
               </button>
             </div>
           ))}
+          {zones.some((z) => z.child_watch || z.supervise || z.water) && (
+            <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              * Assistive / experimental safety hints — best-effort only, not a
+              medical device or drowning detection. child/alone need per-camera child
+              calibration (below). Never rely on them in place of supervision or a fence.
+            </p>
+          )}
           {masks.map((_, i) => (
             <div className="row" key={`mr${i}`} style={{ marginBottom: 6, alignItems: "center" }}>
               <span className="dot" style={{ background: COLORS.mask }} />

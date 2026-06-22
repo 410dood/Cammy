@@ -431,6 +431,7 @@ mod tests {
             gesture_like: None,
             transcript_like: None,
             face_unknown: false,
+            zone_like: None,
             min_score: 0.0,
             action: "ntfy".into(),
             target: "t".into(),
