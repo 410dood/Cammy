@@ -317,13 +317,13 @@ fn put_object(target: &Target, key: &str, data: &[u8]) -> anyhow::Result<()> {
         Ok(r) if (200..300).contains(&r.status()) => Ok(()),
         Ok(r) => {
             let code = r.status();
-            let body = r.into_string().unwrap_or_default();
+            let body = redact(&r.into_string().unwrap_or_default(), &target.access_key);
             anyhow::bail!("S3 PUT unexpected status {code}: {}", truncate(&body, 300))
         }
         // ureq treats >=400 as Err(Status(..)); surface S3's error body (it
         // explains SignatureDoesNotMatch etc.) but bound its length.
         Err(ureq::Error::Status(code, r)) => {
-            let body = r.into_string().unwrap_or_default();
+            let body = redact(&r.into_string().unwrap_or_default(), &target.access_key);
             anyhow::bail!("S3 PUT {code}: {}", truncate(&body, 300))
         }
         Err(e) => Err(anyhow::anyhow!("S3 PUT transport error: {e}")),
@@ -336,6 +336,20 @@ fn truncate(s: &str, max: usize) -> String {
         s.chars().take(max).collect::<String>() + "…"
     } else {
         s.to_string()
+    }
+}
+
+/// Scrub the configured Access Key ID out of an S3 error body before it is
+/// persisted to `last_error` — that field is surfaced by the Viewer-reachable
+/// `GET /api/offsite/status` (and the stale-backup notification), which both
+/// deliberately omit the access key. S3/MinIO echo `<AWSAccessKeyId>…</…>` in
+/// the common wrong-credential 403, so without this the id leaks straight back.
+/// The secret is never in the body; this guards the id (an identifier) anyway.
+fn redact(body: &str, access_key: &str) -> String {
+    if access_key.is_empty() {
+        body.to_string()
+    } else {
+        body.replace(access_key, "[REDACTED-KEY]")
     }
 }
 

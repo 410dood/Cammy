@@ -229,6 +229,64 @@ mod tests {
     }
 
     #[test]
+    fn s3_put_object_with_body_authorization_matches_reference() {
+        // The production path (offsite::put_object) signs a PUT whose payload
+        // hash is the real segment SHA-256 — used BOTH as x-amz-content-sha256
+        // and as the canonical-request hashed-payload line. The GET test above
+        // only covers the empty-payload case, so this pins the with-body PUT
+        // path: a future encode_path / header-collapse / canonical-assembly tweak
+        // that broke it would otherwise regress into a silent 403 only against
+        // real S3/MinIO, never in CI. Inputs are AWS's documented "single chunk"
+        // PUT example (test$file.text, "Welcome to Amazon S3."); the expected
+        // signature is from a clean-room Python SigV4 reference that reproduces
+        // the AWS GET vector asserted above (i.e. the same trusted oracle).
+        let payload = b"Welcome to Amazon S3.";
+        let payload_hash = sha256_hex(payload);
+        assert_eq!(
+            payload_hash,
+            "44ce7dd67c959e0d3524ffac1771dfbba87d2b6b4b4e99e42034a8b803f8b072"
+        );
+        // The `$` in the key is reserved, so encode_path %-encodes it; the signed
+        // canonical URI must match the wire path exactly.
+        let uri = encode_path("/test$file.text");
+        assert_eq!(uri, "/test%24file.text");
+        let headers = vec![
+            ("date".to_string(), "Fri, 24 May 2013 00:00:00 GMT".to_string()),
+            (
+                "host".to_string(),
+                "examplebucket.s3.amazonaws.com".to_string(),
+            ),
+            ("x-amz-content-sha256".to_string(), payload_hash.clone()),
+            ("x-amz-date".to_string(), "20130524T000000Z".to_string()),
+            (
+                "x-amz-storage-class".to_string(),
+                "REDUCED_REDUNDANCY".to_string(),
+            ),
+        ];
+        let req = Request {
+            method: "PUT",
+            canonical_uri: &uri,
+            canonical_query: "",
+            headers: &headers,
+            payload_hash_hex: &payload_hash,
+        };
+        let cred = Credentials {
+            access_key: "AKIAIOSFODNN7EXAMPLE",
+            secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+            region: "us-east-1",
+            service: "s3",
+        };
+        let authz = authorization(&req, &cred, "20130524T000000Z", "20130524");
+        assert_eq!(
+            authz,
+            "AWS4-HMAC-SHA256 \
+             Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, \
+             SignedHeaders=date;host;x-amz-content-sha256;x-amz-date;x-amz-storage-class, \
+             Signature=7c0f3caf24a16d5948905b8ebf67d29fb415e93fddaed9ca6aeb5ac2348cfee4"
+        );
+    }
+
+    #[test]
     fn path_encoding() {
         assert_eq!(encode_path("/test.txt"), "/test.txt");
         assert_eq!(

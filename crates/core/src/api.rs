@@ -1005,7 +1005,13 @@ async fn restore(
 /// the Settings "Offsite backup" card. The secret key is never returned here.
 async fn offsite_status(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let s = st.db.settings();
-    let stats = st.db.offsite_stats()?;
+    // When backup is off the readout is hidden client-side, so skip the stats
+    // scan entirely — a feature-off deployment pays nothing for the 5 s poll.
+    let stats = if s.offsite_backup_enabled {
+        st.db.offsite_stats()?
+    } else {
+        crate::db::OffsiteStats::default()
+    };
     let configured = !s.offsite_endpoint.trim().is_empty()
         && !s.offsite_bucket.trim().is_empty()
         && !s.offsite_access_key.trim().is_empty()
@@ -1013,15 +1019,10 @@ async fn offsite_status(State(st): State<AppState>) -> ApiResult<Json<serde_json
     Ok(Json(serde_json::json!({
         "enabled": s.offsite_backup_enabled,
         "configured": configured,
-        "endpoint": s.offsite_endpoint,
-        "bucket": s.offsite_bucket,
-        "prefix": s.offsite_prefix,
-        "region": s.offsite_region,
         "last_success_ts": stats.last_success_ts,
         "backlog": stats.backlog,
         "bytes_total": stats.bytes_total,
         "done": stats.done,
-        "failed": stats.failed,
         "skipped": stats.skipped,
         "gaveup": stats.gaveup,
         "last_error": stats.last_error,
@@ -2872,7 +2873,13 @@ async fn metrics(State(st): State<AppState>) -> ApiResult<impl IntoResponse> {
     let disk_free = fs2::available_space(&rec_root)
         .or_else(|_| fs2::available_space(std::path::Path::new(".")))
         .unwrap_or(0);
-    let bstats = st.db.offsite_stats().unwrap_or_default();
+    // Only pay for the backup stats scan when the feature is on — otherwise
+    // every Prometheus scrape would needlessly walk segments + offsite_uploads.
+    let bstats = if settings.offsite_backup_enabled {
+        st.db.offsite_stats().unwrap_or_default()
+    } else {
+        crate::db::OffsiteStats::default()
+    };
     let backup = BackupMetric {
         enabled: settings.offsite_backup_enabled,
         last_success_age: bstats.last_success_ts.map(|t| (now - t).max(0)),

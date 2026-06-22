@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, AuditEntry, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { api, ApiToken, AuditEntry, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
@@ -364,18 +364,6 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
   );
 }
 
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
-}
-
 /// Live offsite-backup sync readout. Polls every 5s; read-only (no secrets).
 function OffsiteStatusReadout() {
   const [st, setSt] = useState<OffsiteStatus | null>(null);
@@ -398,8 +386,12 @@ function OffsiteStatusReadout() {
           <b style={{ color: "var(--warn)" }}>not fully configured</b>
         ) : st.backlog > 0 ? (
           <b style={{ color: "var(--warn)" }}>{st.backlog} segment(s) pending</b>
-        ) : (
+        ) : st.done > 0 ? (
           <b style={{ color: "var(--ok)" }}>up to date</b>
+        ) : (
+          // Configured + nothing pending but nothing uploaded yet: don't claim a
+          // confident green — the creds/bucket aren't proven until a real PUT.
+          <span>waiting for the first sealed segment…</span>
         )}
       </span>
       <span className="muted">{st.done} uploaded</span>

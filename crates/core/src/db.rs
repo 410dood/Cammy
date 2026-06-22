@@ -657,8 +657,6 @@ pub struct OffsiteStats {
     pub bytes_total: i64,
     /// Successfully-uploaded segment count.
     pub done: i64,
-    /// Segments whose last attempt failed (will retry).
-    pub failed: i64,
     /// Segments whose local file was pruned before backup (terminal loss).
     pub skipped: i64,
     /// Segments that exhausted retries / were oversize (terminal loss).
@@ -1090,7 +1088,17 @@ impl Db {
                  attempts    INTEGER NOT NULL DEFAULT 0,
                  last_error  TEXT,
                  updated_ts  INTEGER NOT NULL
-             );",
+             );
+             CREATE INDEX IF NOT EXISTS idx_offsite_status ON offsite_uploads(status);
+             -- Keep offsite_uploads strictly bounded by the live segment set: any
+             -- segment delete drops its upload row. This is the single source of
+             -- truth for cleanup — it fires on a direct DELETE (retention) AND on
+             -- the cameras->segments ON DELETE CASCADE (camera removal), which a
+             -- bare DELETE FROM cameras would otherwise leave orphaned, silently
+             -- inflating the status/Prometheus counts forever (#70).
+             CREATE TRIGGER IF NOT EXISTS trg_offsite_seg_del
+                 AFTER DELETE ON segments
+                 BEGIN DELETE FROM offsite_uploads WHERE path = OLD.path; END;",
         )?;
         // CLIP embedding of the object CROP (not the full frame) for cross-camera
         // appearance search / Re-ID. Nullable; only set for object detections.
@@ -2206,13 +2214,11 @@ impl Db {
     }
 
     pub fn delete_segment_by_path(&self, path: &str) -> Result<()> {
-        let conn = self.conn();
-        conn.execute("DELETE FROM segments WHERE path = ?1", [path])?;
-        // Drop any offsite-backup record for this path too, so the table can't
-        // grow without bound (one orphan row per ever-recorded segment) and a
-        // later segment written to a reused path (e.g. a backward clock step)
-        // isn't silently skipped by a stale 'done'/'skipped' row (#70).
-        conn.execute("DELETE FROM offsite_uploads WHERE path = ?1", [path])?;
+        // The trg_offsite_seg_del trigger drops the matching offsite_uploads row
+        // (so the table stays bounded by the live segment set, and a path reused
+        // after a backward clock step isn't skipped by a stale 'done' row) — #70.
+        self.conn()
+            .execute("DELETE FROM segments WHERE path = ?1", [path])?;
         Ok(())
     }
 
@@ -2413,45 +2419,49 @@ impl Db {
 
     pub fn offsite_stats(&self) -> Result<OffsiteStats> {
         let conn = self.conn();
-        let last_success_ts: Option<i64> = conn.query_row(
-            "SELECT MAX(updated_ts) FROM offsite_uploads WHERE status = 'done'",
-            [],
-            |r| r.get(0),
-        )?;
+        // Backlog = sealed segments with no terminal row yet (never-attempted or
+        // retryable 'failed'). Needs the segments join, so it stays its own query;
+        // note it deliberately does NOT subtract done/skipped/gaveup arithmetic.
         let backlog: i64 = conn.query_row(
             "SELECT COUNT(*) FROM segments s LEFT JOIN offsite_uploads o ON o.path = s.path
              WHERE o.status IS NULL OR o.status = 'failed'",
             [],
             |r| r.get(0),
         )?;
-        let bytes_total: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(bytes), 0) FROM offsite_uploads WHERE status = 'done'",
-            [],
-            |r| r.get(0),
-        )?;
-        let done: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM offsite_uploads WHERE status = 'done'",
-            [],
-            |r| r.get(0),
-        )?;
-        let failed: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM offsite_uploads WHERE status = 'failed'",
-            [],
-            |r| r.get(0),
-        )?;
-        // Terminal not-backed-up losses, surfaced so they're never silent:
-        // `skipped` = the local file was pruned (retention/byte-cap) before the
-        // worker reached it; `gaveup` = exceeded max retries or oversize (#70).
-        let skipped: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM offsite_uploads WHERE status = 'skipped'",
-            [],
-            |r| r.get(0),
-        )?;
-        let gaveup: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM offsite_uploads WHERE status = 'gaveup'",
-            [],
-            |r| r.get(0),
-        )?;
+        // One pass over offsite_uploads for every per-status aggregate. `done`
+        // carries bytes_total + last_success_ts (its MAX(updated_ts)); the
+        // terminal losses `skipped` (local file pruned before backup) and
+        // `gaveup` (retries exhausted / oversize) are surfaced so they're never
+        // silent. 'failed' rows fold into `backlog` and aren't counted here (#70).
+        let (mut last_success_ts, mut bytes_total, mut done, mut skipped, mut gaveup) =
+            (None, 0i64, 0i64, 0i64, 0i64);
+        {
+            let mut stmt = conn.prepare(
+                "SELECT status, COUNT(*), COALESCE(SUM(bytes), 0), MAX(updated_ts)
+                 FROM offsite_uploads GROUP BY status",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                ))
+            })?;
+            for row in rows {
+                let (status, count, bytes, max_ts) = row?;
+                match status.as_str() {
+                    "done" => {
+                        done = count;
+                        bytes_total = bytes;
+                        last_success_ts = max_ts;
+                    }
+                    "skipped" => skipped = count,
+                    "gaveup" => gaveup = count,
+                    _ => {}
+                }
+            }
+        }
         let last_error: Option<String> = conn
             .query_row(
                 "SELECT last_error FROM offsite_uploads
@@ -2474,7 +2484,6 @@ impl Db {
             backlog,
             bytes_total,
             done,
-            failed,
             skipped,
             gaveup,
             last_error,

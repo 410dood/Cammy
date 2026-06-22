@@ -181,15 +181,10 @@ export interface Settings {
 export interface OffsiteStatus {
   enabled: boolean;
   configured: boolean;
-  endpoint: string;
-  bucket: string;
-  prefix: string;
-  region: string;
   last_success_ts: number | null;
   backlog: number;
   bytes_total: number;
   done: number;
-  failed: number;
   skipped: number;
   gaveup: number;
   last_error: string | null;
@@ -634,4 +629,10 @@ export function relTime(ts: number, nowMs: number = Date.now()): string {
   });
 }
 export const fmtBytes = (b: number) =>
-  b > 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.round(b / 1e3)} KB`;
+  b > 1e12
+    ? `${(b / 1e12).toFixed(2)} TB`
+    : b > 1e9
+      ? `${(b / 1e9).toFixed(2)} GB`
+      : b > 1e6
+        ? `${(b / 1e6).toFixed(1)} MB`
+        : `${Math.round(b / 1e3)} KB`;
