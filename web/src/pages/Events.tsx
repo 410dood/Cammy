@@ -176,6 +176,9 @@ export default function Events({
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [grouped, setGrouped] = useState(false);
   const [interpreted, setInterpreted] = useState<string[]>([]);
+  // Bulk triage: select multiple events, then bookmark/unbookmark them at once.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   const runSearch = async () => {
     const raw = query.trim();
@@ -319,6 +322,54 @@ export default function Events({
       toast.error(`Couldn't update bookmark: ${e}`);
     }
   };
+  const toggleSelect = (id: number) =>
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const exitSelect = () => {
+    setSelectMode(false);
+    setSelected(new Set());
+  };
+  const bulkBookmark = async (flag: boolean) => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    if (
+      !flag &&
+      !(await dialog.confirm({
+        title: `Remove bookmark from ${ids.length} event${ids.length === 1 ? "" : "s"}?`,
+        body: "Any notes are deleted and the events can be pruned at retention.",
+        confirmLabel: "Remove",
+        danger: true,
+      }))
+    )
+      return;
+    // Preserve each event's existing note when saving (the endpoint always sends
+    // a note, so pass the current one rather than clearing it).
+    const byId = new Map<number, CamEvent>(
+      [...events, ...(searchResults ?? [])].map((e) => [e.id, e]),
+    );
+    let ok = 0;
+    for (const id of ids) {
+      const note = flag ? byId.get(id)?.note ?? null : null;
+      try {
+        await api.bookmarkEvent(id, flag, note);
+        applyBookmark(id, flag, note);
+        ok++;
+      } catch {
+        /* keep going; report the count below */
+      }
+    }
+    toast[ok === ids.length ? "success" : "info"](
+      `${flag ? "Saved" : "Unsaved"} ${ok} event${ok === 1 ? "" : "s"}${
+        ok < ids.length ? ` · ${ids.length - ok} failed` : ""
+      }`,
+    );
+    setSelected(new Set());
+  };
+
   const editNote = async (ev: CamEvent) => {
     const note = await dialog.prompt({
       title: ev.note ? "Edit note" : "Add note",
@@ -491,6 +542,14 @@ export default function Events({
         >
           <IconLayers size={15} /> Group
         </button>
+        <button
+          className={`btn ${selectMode ? "btn-primary" : "btn-ghost"}`}
+          onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}
+          title="Select multiple events to bookmark in bulk"
+          aria-pressed={selectMode}
+        >
+          <IconCheck size={15} /> {selectMode ? "Done" : "Select"}
+        </button>
         <select value={cameraId} onChange={(e) => setCameraId(e.target.value === "" ? "" : Number(e.target.value))}>
           <option value="">all cameras</option>
           {cameras.map((c) => (
@@ -604,6 +663,42 @@ export default function Events({
         </div>
       )}
 
+      {selectMode && (
+        <div className="select-bar">
+          <span className="select-count">
+            <b>{selected.size}</b> selected
+          </span>
+          <button
+            className="btn btn-ghost ev-act"
+            onClick={() => setSelected(new Set(list.map(({ ev }) => ev.id)))}
+          >
+            Select all ({list.length})
+          </button>
+          <button
+            className="btn btn-ghost ev-act"
+            onClick={() => setSelected(new Set())}
+            disabled={selected.size === 0}
+          >
+            Clear
+          </button>
+          <span className="spacer" />
+          <button
+            className="btn btn-primary ev-act"
+            onClick={() => bulkBookmark(true)}
+            disabled={selected.size === 0}
+          >
+            <IconStar size={14} /> Save
+          </button>
+          <button
+            className="btn btn-ghost ev-act"
+            onClick={() => bulkBookmark(false)}
+            disabled={selected.size === 0}
+          >
+            Unsave
+          </button>
+        </div>
+      )}
+
       {list.length === 0 ? (
         loadError && !searchResults ? (
           <ErrorState what="events" message={loadError} onRetry={load} />
@@ -622,23 +717,36 @@ export default function Events({
         )
       ) : (
         <div className="event-grid">
-          {list.map(({ ev, cluster }) => (
+          {list.map(({ ev, cluster }) => {
+            const isSel = selected.has(ev.id);
+            const activate = () => (selectMode ? toggleSelect(ev.id) : setOpen(ev));
+            return (
             <div
-              className="event-card"
+              className={`event-card ${selectMode && isSel ? "selected" : ""}`}
               key={ev.id}
               role="button"
               tabIndex={0}
-              aria-label={`Open ${ev.label} event from ${ev.camera}`}
-              onClick={() => setOpen(ev)}
+              aria-pressed={selectMode ? isSel : undefined}
+              aria-label={
+                selectMode
+                  ? `${isSel ? "Deselect" : "Select"} ${ev.label} from ${ev.camera}`
+                  : `Open ${ev.label} event from ${ev.camera}`
+              }
+              onClick={activate}
               onKeyDown={(e) => {
-                // Enter/Space open the event, but only when the card itself is
+                // Enter/Space act on the card, but only when the card itself is
                 // focused — not when a nested action button has focus.
                 if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
                   e.preventDefault();
-                  setOpen(ev);
+                  activate();
                 }
               }}
             >
+              {selectMode && (
+                <span className={`event-check ${isSel ? "on" : ""}`} aria-hidden="true">
+                  {isSel && <IconCheck size={14} />}
+                </span>
+              )}
               {ev.snapshot ? (
                 <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={ev.label} loading="lazy" />
               ) : (
@@ -761,7 +869,8 @@ export default function Events({
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
