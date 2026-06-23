@@ -19,6 +19,19 @@ export interface PolyZone {
   /** Live-occupancy limit: an `occupancy` event fires when the count inside first
    *  exceeds this (edge-triggered). null/0 = no limit. Requires tracking. */
   occupancy_max?: number | null;
+  /** Residential: fire a `zone_enter` event (labelled with the object's class)
+   *  when a tracked object enters — "person in the pool", "pet on the couch". */
+  alert_enter?: boolean;
+  /** Residential: fire a `child` event when a child-classified person enters
+   *  (stairs/kitchen/driveway). Requires child calibration. ASSISTIVE. */
+  child_watch?: boolean;
+  /** Residential: fire `child_alone` when a child is here with no adult present
+   *  (unattended-near-pool). Requires child calibration. ASSISTIVE — not a
+   *  substitute for supervision/fencing. */
+  supervise?: boolean;
+  /** Residential: this zone is water (a pool); a motionless person fires an
+   *  EXPERIMENTAL `still_water` hint. NOT drowning detection. */
+  water?: boolean;
 }
 
 export type CrossDir = "both" | "a_to_b" | "b_to_a";
@@ -64,6 +77,19 @@ export interface DetectConfig {
   two_way_audio: boolean;
   /** Per-camera retention override in days; null inherits the global setting. */
   retention_days: number | null;
+  /** Residential ASSISTIVE fall hint: a person who goes motionless low in frame
+   *  fires a `fall` event. Best-effort at ~1 fps; NOT a medical-alert device. */
+  fall_detect?: boolean;
+  /** Residential child/adult calibration: a person whose normalized bbox height
+   *  is ≤ this fraction is treated as a "child". null disables child features
+   *  (the default). FRAGILE without per-camera setup. */
+  child_height_frac?: number | null;
+  /** Server-side 24/7 body-pose monitoring (fall posture, crib standing/rollover,
+   *  covered-face). Runs a YOLOv8-pose model. Opt-in + ASSISTIVE only. */
+  pose_detect?: boolean;
+  /** Privacy: residential + pose safety events on this camera fire WITHOUT saving
+   *  a snapshot image (nursery/bedroom/bathroom dignity). Off by default. */
+  no_clip?: boolean;
 }
 
 export interface Camera {
@@ -167,6 +193,19 @@ export interface Settings {
   smtp_pass: string;
   smtp_from: string;
   smtp_to: string;
+  /** Auto-arm/disarm schedule (residential "modes" automation). Empty = off. */
+  arm_schedule: ArmScheduleEntry[];
+  /** Path to the YOLOv8-pose ONNX model for the server-side pose worker
+   *  (downloaded, not committed). The worker idles until it exists. */
+  pose_model: string;
+}
+
+/** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every
+ *  day), set the system to `mode`. Driven by the schedule worker. */
+export interface ArmScheduleEntry {
+  days: number[];
+  hhmm: string;
+  mode: ArmMode;
 }
 
 export interface CamStorage {
@@ -222,6 +261,14 @@ export interface AlarmRule {
   gesture_like: string | null;
   transcript_like: string | null;
   face_unknown: boolean;
+  /** Residential: scope the rule to a named detection zone (substring,
+   *  case-insensitive) — "person in the Pool zone". null = any zone. */
+  zone_like: string | null;
+  /** Cross-modal confirmation: only fire when an event of this label also
+   *  occurred on the same camera within confirm_within_secs (glass-vs-dishes).
+   *  null = no confirmation. Fails open; don't gate life-safety rules on it. */
+  confirm_label: string | null;
+  confirm_within_secs: number | null;
   min_score: number;
   /** Legacy single action; kept in sync with actions[0]. Prefer `actions`. */
   action: string;

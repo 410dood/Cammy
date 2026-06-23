@@ -14,9 +14,98 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — competitor matrix 61/61, full commercial analytics suite, 2026-06-20
+## Current status: v0.3 — commercial suite 61/61 + residential suite (batches 1-7, PR #27), 2026-06-22
 
-### This session: commercial video-analytics suite (matrix #53–#61) on the object tracker
+### Latest: residential / consumer-camera analytics suite — batch 1 (PR #27, branch `residential-analytics` off main)
+
+The consumer-camera parallel to the commercial suite — baby / pet / pool / kid /
+aging-in-place — researched + ranked in `docs/05-residential-analytics-suite.md`
+(12-agent competitor study of Cubo Ai / Nanit / Furbo / Petcube / Nest / Ring /
+Nobi / AltumView + adversarial critic). **Thesis: ~70–80% of the field needs no
+new ML model** — re-scope the tracker, zones, face rec, CLIP, and the YAMNet
+521-class audio engine (which already classifies + fires on baby-cry / bark /
+smoke-alarm / glass / scream via `settings.audio_labels` — the default set
+already includes them). **Batch 1 shipped** (commit `a38800d`): new
+`crates/core/src/residential.rs` `ResidentialState::tick` (driven beside
+`AnalyticsState`) emits **zone_enter** (edge-triggered "person in the Pool",
+"pet on the Couch" via the `alert_enter` zone flag), **child / child_alone** (a
+bbox-height child/adult heuristic gated on per-camera `DetectConfig.child_height_frac`
+→ child-in-restricted-zone `child_watch` + unattended-no-adult `supervise`),
+**fall** (assistive motionless-in-lower-band, `fall_detect`, dwell-based not
+aspect-flip), and **still_water** (EXPERIMENTAL motionless-in-water, zone `water`
+flag). New **`AlarmRule.zone_like`** + `zone_ok()` AND-ed at every alarm site
+(detection/analytics/audio/gesture/transcript) scopes a rule to a named zone
+("person in the Pool zone") — rides `schedule_json`, **no migration**. Residential
+events flow through `emit_analytics_event`, so they get snapshot + webhook + ntfy
++ MQTT + Alarm Manager for free. Frontend: `zone_like` field + residential event
+labels (Alarms), enter/child*/alone*/water* per-zone toggles (ZoneEditor),
+fall-detect + child-calibration (Cameras) — all with **liability tooltips +
+asterisks**. **SAFETY framing (in code + UI):** every output is assistive,
+best-effort, disclaimed — never "drowning detection", never a medical/SIDS
+device; child split is fragile + calibration-gated. 8 unit tests; `cargo test`
+85 pass, `clippy -D warnings` clean, web `tsc`+`vite` clean.
+
+**Also shipped this session — batch 2** (`9f85bcf`): auto-arm/disarm **scheduler**
+(`crates/core/src/schedule.rs`, `Settings.arm_schedule`, flips the authoritative
+`arm_mode` KV on a day+time schedule + notifies; idempotent + once-per-minute
+guarded; Settings "Modes schedule" card) · audio **"Family & Safety Sounds"**
+(added Cat meow + Child crying to the existing YAMNet chip set — baby-cry/bark/
+smoke/glass/doorbell already shipped) · **wildlife** animal COCO labels
+(bird/bear/horse/sheep/cow) in the alarm dropdown. Doorbell/visitor + known-vehicle
+need no new code (YAMNet Doorbell/Knock + person + `zone_like`; LPR `plate_like`).
+**Batch 3** (`47047f0`): **cross-modal confirmation** — `AlarmRule.confirm_label`
++ `confirm_within_secs` (a rule fires only if a companion event of that label hit
+the same camera within the window — glass-vs-dishes, fall+thud); `confirm_ok` +
+`db.has_recent_event`, AND-ed at every alarm site, **fails open** so it never
+suppresses a real alert; Alarms "confirmed by" UI; unit-tested.
+
+**Batch 4 — server-side pose tier SHIPPED** (`d2fbd0c` + `17675f6`; the user chose
+the headless server runtime over the browser-only path). New pure **`crates/pose`**
+turns 17-keypoint COCO output into a posture (standing/sitting/lying/unknown +
+face-visible + confidence; unit-tested). New **`detector::PoseEstimator`** runs a
+YOLOv8-pose ONNX model on the same per-OS EP and decodes `[1,56,8400]`
+(decode + NMS unit-tested). New **`crates/core/src/posture.rs`** worker (spawned
+beside audio, opt-in per camera via `DetectConfig.pose_detect`, gated on
+`Settings.pose_model` existing) runs 24/7 headless and emits **fall** (lying low,
+held), **standing** (in a zone — crib climb-out) and **covered_face** (body present
++ no face in a zone — rollover/blanket) through the normal Alarm path (zone_ok +
+confirm_ok + cooldown). Per-camera "body pose monitoring (assistive*)" toggle +
+Settings pose-model path + alarm labels; all disclaimed assistive/not-medical.
+**Live E2E needs the (uncommitted) `yolov8n-pose.onnx` model** — build-validated +
+decode unit-tested only.
+
+**Batch 6 — Family Safety hub SHIPPED** (`011107b`): a new **"Family"** nav page
+(user-friendly capstone) with four plain-language guided **modes** — Baby & nursery,
+Pets, Pool & water safety, Aging in place — each a recipe that ties together the
+camera toggles / zones / sounds / alarm rules from batches 1-4, with step-by-step
+setup, recent matching events, and per-mode safety disclaimers + a top "these are
+assistive aids, not safety devices" banner. Pure frontend over existing APIs.
+
+**Batch 7 — no-clip privacy SHIPPED** (`4c069a9`): `DetectConfig.no_clip` — on a
+sensitive camera (nursery/bedroom/bathroom) the residential + pose safety events
+still fire (alert + label + zone + time) but **write NO snapshot** to disk / MQTT /
+webhook / email (both `emit_analytics_event` and the pose worker honor it).
+Per-camera toggle. Pairs with privacy masks.
+
+**The one substantial item left: the pet Re-ID vertical** (multi-pet *identity*
+enrollment via CLIP Re-ID #61 + per-pet diary) — deferred as its own focused effort
+(pet *detection*, off-limits zones, bark, escape and a diary-via-digest already work
+with shipped primitives + the Family hub describes them). **Deferred sub-items**
+(docs/05): offsite-backup #70 exclusion for sensitive zones (needs the offsite
+branch — currently stashed), a full skeleton-only pose render, the audio ring-buffer
+for sub-second transients, and the burst/rate aggregator (cooldown-entangled).
+
+**Net this session: the residential suite shipped as 8 commits on `residential-analytics`
+(PR #27), all `cargo test` + `clippy -D warnings` + web `tsc`/`vite` green.** New
+crates `pose`; new core modules `residential.rs`, `schedule.rs`, `posture.rs`; new
+`detector::PoseEstimator`. Live E2E for the pose tier needs `yolov8n-pose.onnx`.
+
+**GOTCHA (this session): an uncommitted offsite #70 WIP was in the working tree at
+start** (not ours); preserved as `git stash@{0}` "offsite #70 WIP (pre-existing…)"
+so residential could branch cleanly off `main`. **Recover with**
+`git checkout offsite-backup && git stash pop`.
+
+### Earlier this session: commercial video-analytics suite (matrix #53–#61) on the object tracker
 
 Capped by **#61 cross-camera appearance search / Re-ID** (PR #18) — "find this
 person/vehicle everywhere": each object detection's CROP is CLIP-embedded at

@@ -23,9 +23,12 @@ pub mod lpr;
 mod mqtt;
 mod notify;
 mod pipeline;
+mod posture;
 mod proc;
 mod ptz;
 mod record;
+mod residential;
+mod schedule;
 mod smart;
 mod status;
 pub mod tls;
@@ -117,6 +120,7 @@ pub async fn run(
     let (mqtt_tx, mqtt_rx) = std::sync::mpsc::channel::<mqtt::EventMsg>();
     let mqtt_tx2 = mqtt_tx.clone();
     let mqtt_tx_tr = mqtt_tx.clone();
+    let mqtt_tx_pose = mqtt_tx.clone();
     let mqtt_tx_api = mqtt_tx.clone();
     // Shared per-rule cooldown clock across pipeline / audio / API dispatch.
     let alarm_throttle: notify::AlarmThrottle = Arc::new(std::sync::Mutex::new(Default::default()));
@@ -178,6 +182,12 @@ pub async fn run(
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || anomaly::run(db, stop)
     })?;
+    // Auto-arm/disarm scheduler (residential modes automation); idles unless
+    // Settings.arm_schedule has entries. Re-reads config each tick.
+    let schedule_thread = std::thread::Builder::new().name("schedule".into()).spawn({
+        let (db, stop) = (db.clone(), workers_stop.clone());
+        move || schedule::run(db, stop)
+    })?;
     let audio_thread = std::thread::Builder::new().name("audio".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -200,6 +210,19 @@ pub async fn run(
                 stop,
             )
         }
+    })?;
+    // Server-side body-pose worker (residential safety tier: fall / crib standing
+    // / covered-face). Idles unless a camera has pose_detect on AND the pose model
+    // exists; re-reads config each tick.
+    let pose_thread = std::thread::Builder::new().name("pose".into()).spawn({
+        let (db, go2rtc, dir, stop) = (
+            db.clone(),
+            go2rtc.clone(),
+            snapshots_dir.clone(),
+            workers_stop.clone(),
+        );
+        let (tx, throttle) = (mqtt_tx_pose, alarm_throttle.clone());
+        move || posture::run(db, go2rtc, dir, tx, throttle, stop)
     })?;
 
     // go2rtc watchdog.
@@ -304,6 +327,8 @@ pub async fn run(
         let _ = transcribe_thread.join();
         let _ = digest_thread.join();
         let _ = anomaly_thread.join();
+        let _ = schedule_thread.join();
+        let _ = pose_thread.join();
     })
     .await;
     go2rtc.stop();

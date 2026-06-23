@@ -49,5 +49,6 @@ detector = { path = "../detector" }
 facerec = { path = "../facerec" }
 gesture = { path = "../gesture" }
 motion = { path = "../motion" }
+pose = { path = "../pose" }
 recorder = { path = "../recorder" }
 tracker = { path = "../tracker" }

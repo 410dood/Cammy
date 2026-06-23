@@ -265,6 +265,8 @@ pub fn run(
                         };
                         for rule in alarms.iter().filter(|r| {
                             r.matches(cam.id, &label, score, None, None, None, None)
+                                && r.zone_ok(None)
+                                && r.confirm_ok(&db, cam.id, now)
                                 && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
                                 && crate::notify::ready(r, &throttle, now)
                         }) {

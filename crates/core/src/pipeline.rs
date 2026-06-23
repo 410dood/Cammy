@@ -61,6 +61,9 @@ pub fn run(
     // Only used on cameras that configure a tripwire or a dwell zone.
     let mut trackers: HashMap<i64, tracker::Tracker> = HashMap::new();
     let mut analytics: HashMap<i64, crate::analytics::AnalyticsState> = HashMap::new();
+    // Per-camera residential analytics memory (zone-enter, child/adult, fall,
+    // still-in-water). Same lifecycle as `analytics`.
+    let mut residential: HashMap<i64, crate::residential::ResidentialState> = HashMap::new();
 
     while !shutdown.load(Ordering::Relaxed) {
         let tick = Instant::now();
@@ -86,6 +89,7 @@ pub fn run(
             let live: std::collections::HashSet<i64> = cameras.iter().map(|c| c.id).collect();
             trackers.retain(|k, _| live.contains(k));
             analytics.retain(|k, _| live.contains(k));
+            residential.retain(|k, _| live.contains(k));
         }
         for cam in cameras.iter().filter(|c| c.enabled && c.detect) {
             if shutdown.load(Ordering::Relaxed) {
@@ -174,11 +178,18 @@ pub fn run(
             // run the detector even when the motion gate sees no motion (regular
             // per-object event emission is still suppressed below).
             let analytics_on = !cam.detect_config.tripwires.is_empty()
-                || cam
-                    .detect_config
-                    .zones
-                    .iter()
-                    .any(|z| z.dwell_secs.unwrap_or(0) > 0 || z.occupancy_max.unwrap_or(0) > 0);
+                || cam.detect_config.fall_detect
+                || cam.detect_config.zones.iter().any(|z| {
+                    z.dwell_secs.unwrap_or(0) > 0
+                        || z.occupancy_max.unwrap_or(0) > 0
+                        // Residential zone flags also need the tracker running, even
+                        // on motionless frames (a child standing still in a danger
+                        // zone, a person lying motionless after a fall).
+                        || z.alert_enter
+                        || z.child_watch
+                        || z.supervise
+                        || z.water
+                });
             if !verdict.is_motion() && !analytics_on {
                 continue;
             }
@@ -359,6 +370,36 @@ pub fn run(
                         );
                     }
                 }
+
+                // --- residential analytics (zone-enter, child/adult, fall,
+                // still-in-water). Each ResEvent rides the same emit path, so its
+                // label + zone flow through Alarm Manager (zone_like), webhook and
+                // MQTT exactly like a crossing/loiter/occupancy event.
+                let rstate = residential.entry(cam.id).or_default();
+                for ev in rstate.tick(
+                    &confirmed,
+                    &cam.detect_config.zones,
+                    cam.detect_config.child_height_frac,
+                    cam.detect_config.fall_detect,
+                    now,
+                ) {
+                    emit_analytics_event(
+                        &db,
+                        &settings,
+                        &alarms,
+                        &throttle,
+                        &mqtt_tx,
+                        &snapshots_dir,
+                        &frame,
+                        cam,
+                        &ev.label,
+                        ev.anchor,
+                        ev.zone.as_deref(),
+                        None,
+                        None,
+                        now,
+                    );
+                }
             }
 
             // A motionless frame ran the tracker/analytics above, but the motion
@@ -525,6 +566,9 @@ pub fn run(
             let mut crop_jobs: Vec<(i64, [f32; 4])> = Vec::new();
             for (i, d) in wanted.iter().enumerate() {
                 last_event.insert((cam.id, d.label), now);
+                // The (required) zone this detection sits in, computed once and
+                // reused for both the event record and the alarm `zone_like` gate.
+                let ev_zone = zone_for(d, &cam.detect_config, fw, fh);
                 match db.add_event(
                     cam.id,
                     now,
@@ -538,7 +582,7 @@ pub fn run(
                     face_names[i].as_deref(),
                     plates[i].as_deref(),
                     None,
-                    zone_for(d, &cam.detect_config, fw, fh).as_deref(),
+                    ev_zone.as_deref(),
                 ) {
                     Ok(id) => {
                         tracing::info!(
@@ -598,7 +642,9 @@ pub fn run(
                                 plates[i].as_deref(),
                                 None,
                                 None,
-                            ) && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
+                            ) && r.zone_ok(ev_zone.as_deref())
+                                && r.confirm_ok(&db, cam.id, now)
+                                && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
                                 && crate::notify::ready(r, &throttle, now)
                         }) {
                             crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
@@ -883,18 +929,28 @@ fn emit_analytics_event(
         (ax + 0.03).clamp(0.0, 1.0),
         ay.clamp(0.0, 1.0),
     ];
+    // Privacy/dignity: a no-clip camera (nursery/bedroom/bathroom) fires the alert
+    // without writing any image — no snapshot on disk, in MQTT or in email.
     let snap_rel = format!("{}-{}-{}.jpg", cam.name, now, label);
     let snap_abs = snapshots_dir.join(&snap_rel);
-    if let Err(e) = frame.save(&snap_abs) {
-        tracing::warn!("analytics snapshot save failed: {e:#}");
-    }
+    let snapshot: Option<String> = if cam.detect_config.no_clip {
+        None
+    } else {
+        match frame.save(&snap_abs) {
+            Ok(()) => Some(snap_rel.clone()),
+            Err(e) => {
+                tracing::warn!("analytics snapshot save failed: {e:#}");
+                None
+            }
+        }
+    };
     let id = match db.add_event_dir(
         cam.id,
         now,
         label,
         1.0,
         bbox,
-        Some(&snap_rel),
+        snapshot.as_deref(),
         None,
         None,
         None,
@@ -914,7 +970,10 @@ fn emit_analytics_event(
         speed = speed.map(|s| format!("{s:.0}km/h")).unwrap_or_else(|| "-".into()),
         event = id, "analytics event"
     );
-    let snap_url = format!("/api/snapshots/{snap_rel}");
+    let snap_url = snapshot
+        .as_ref()
+        .map(|s| format!("/api/snapshots/{s}"))
+        .unwrap_or_default();
     if !settings.webhook_url.is_empty() {
         let payload = serde_json::json!({
             "type": label,
@@ -947,7 +1006,7 @@ fn emit_analytics_event(
         score: 1.0,
         ts: now,
         snapshot_url: &snap_url,
-        snapshot_path: Some(&snap_abs),
+        snapshot_path: snapshot.as_ref().map(|_| snap_abs.as_path()),
         face: None,
         plate: None,
         gesture: None,
@@ -960,6 +1019,8 @@ fn emit_analytics_event(
     };
     for rule in alarms.iter().filter(|r| {
         r.matches(cam.id, label, 1.0, None, None, None, None)
+            && r.zone_ok(zone)
+            && r.confirm_ok(db, cam.id, now)
             && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
             && crate::notify::ready(r, throttle, now)
     }) {
@@ -1300,6 +1361,7 @@ mod tests {
                 labels: vec!["person".into()],
                 dwell_secs: None,
                 occupancy_max: None,
+                ..Default::default()
             }],
             ..Default::default()
         };
@@ -1335,6 +1397,7 @@ mod tests {
                 labels: vec![],
                 dwell_secs: None,
                 occupancy_max: None,
+                ..Default::default()
             }],
             ..Default::default()
         };

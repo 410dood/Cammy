@@ -37,6 +37,63 @@ pub struct Detector {
     iou: f32,
 }
 
+/// Number of COCO body keypoints a YOLOv8-pose model emits.
+pub const POSE_KEYPOINTS: usize = 17;
+
+/// One detected person with their body keypoints (YOLOv8-pose). Box in
+/// original-image pixels; `keypoints[i] = [x, y, conf]` (x,y also pixels).
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct PersonPose {
+    pub score: f32,
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
+    pub keypoints: [[f32; 3]; POSE_KEYPOINTS],
+}
+
+/// A loaded YOLOv8-**pose** model (single "person" class + 17 keypoints). Same
+/// ONNX-Runtime / execution-provider machinery as [`Detector`]; used by the
+/// server-side pose worker for the residential safety tier (fall, crib posture).
+pub struct PoseEstimator {
+    session: Session,
+    conf: f32,
+    iou: f32,
+}
+
+impl PoseEstimator {
+    pub fn new(model_path: &str, force_cpu: bool, conf: f32, iou: f32) -> Result<Self> {
+        let session = build_ort_session(model_path, force_cpu)?;
+        Ok(Self { session, conf, iou })
+    }
+
+    /// Run pose estimation on one image. Returns people (box + keypoints) in
+    /// original-image pixel coordinates, after NMS.
+    pub fn estimate(&mut self, img: &image::DynamicImage) -> Result<Vec<PersonPose>> {
+        let (orig_w, orig_h) = img.dimensions();
+        let (input, scale, pad_x, pad_y) = letterbox_to_tensor(img);
+        let outputs = self
+            .session
+            .run(ort::inputs!["images" => input])
+            .context("pose inference failed")?;
+        let (_name, output) = outputs.iter().next().context("model produced no outputs")?;
+        let (shape, data) = output
+            .try_extract_tensor::<f32>()
+            .context("output was not an f32 tensor")?;
+        let poses = decode_yolov8_pose(
+            data,
+            shape,
+            self.conf,
+            scale,
+            pad_x,
+            pad_y,
+            orig_w as f32,
+            orig_h as f32,
+        );
+        Ok(pose_nms(poses, self.iou))
+    }
+}
+
 /// Build an ONNX Runtime session with the best execution provider for this OS
 /// (DirectML / CoreML / CUDA) and CPU fallback. Shared by every model we run
 /// (YOLO objects, face detection, face embeddings).
@@ -205,6 +262,97 @@ fn decode_yolov8(
     dets
 }
 
+/// Decode raw YOLOv8-pose output [1, 56, 8400] into people in ORIGINAL image
+/// coordinates. Layout: 56 = 4 box (cx,cy,w,h) + 1 person score + 17*3 keypoints
+/// (x,y,conf each); 8400 anchors. Keypoint x,y are in the same 640 letterbox
+/// space as the box, so they map back identically.
+#[allow(clippy::too_many_arguments)]
+fn decode_yolov8_pose(
+    data: &[f32],
+    shape: &[i64],
+    conf: f32,
+    scale: f32,
+    pad_x: f32,
+    pad_y: f32,
+    orig_w: f32,
+    orig_h: f32,
+) -> Vec<PersonPose> {
+    let features = shape[1] as usize; // 56
+    let anchors = shape[2] as usize; // 8400
+                                     // Guard: must have at least the box + score + 17*3 keypoint channels.
+    if features < 5 + POSE_KEYPOINTS * 3 {
+        return Vec::new();
+    }
+    let at = |f: usize, a: usize| data[f * anchors + a];
+    let unpad = |v: f32, pad: f32| (v - pad) / scale;
+
+    let mut out = Vec::new();
+    for a in 0..anchors {
+        let score = at(4, a);
+        if score < conf {
+            continue;
+        }
+        let (cx, cy, bw, bh) = (at(0, a), at(1, a), at(2, a), at(3, a));
+        let x1 = unpad(cx - bw / 2.0, pad_x).clamp(0.0, orig_w);
+        let y1 = unpad(cy - bh / 2.0, pad_y).clamp(0.0, orig_h);
+        let x2 = unpad(cx + bw / 2.0, pad_x).clamp(0.0, orig_w);
+        let y2 = unpad(cy + bh / 2.0, pad_y).clamp(0.0, orig_h);
+
+        let mut keypoints = [[0.0f32; 3]; POSE_KEYPOINTS];
+        for (k, kp) in keypoints.iter_mut().enumerate() {
+            let base = 5 + k * 3;
+            kp[0] = unpad(at(base, a), pad_x).clamp(0.0, orig_w);
+            kp[1] = unpad(at(base + 1, a), pad_y).clamp(0.0, orig_h);
+            kp[2] = at(base + 2, a);
+        }
+        out.push(PersonPose {
+            score,
+            x1,
+            y1,
+            x2,
+            y2,
+            keypoints,
+        });
+    }
+    out
+}
+
+/// Greedy NMS over people (single class) by their boxes.
+fn pose_nms(mut poses: Vec<PersonPose>, iou_thresh: f32) -> Vec<PersonPose> {
+    poses.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut keep: Vec<PersonPose> = Vec::new();
+    'outer: for p in poses {
+        for k in &keep {
+            if box_iou((p.x1, p.y1, p.x2, p.y2), (k.x1, k.y1, k.x2, k.y2)) > iou_thresh {
+                continue 'outer;
+            }
+        }
+        keep.push(p);
+    }
+    keep
+}
+
+/// IoU of two `(x1,y1,x2,y2)` boxes.
+fn box_iou(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> f32 {
+    let ix1 = a.0.max(b.0);
+    let iy1 = a.1.max(b.1);
+    let ix2 = a.2.min(b.2);
+    let iy2 = a.3.min(b.3);
+    let inter = (ix2 - ix1).max(0.0) * (iy2 - iy1).max(0.0);
+    let area_a = (a.2 - a.0).max(0.0) * (a.3 - a.1).max(0.0);
+    let area_b = (b.2 - b.0).max(0.0) * (b.3 - b.1).max(0.0);
+    let union = area_a + area_b - inter;
+    if union <= 0.0 {
+        0.0
+    } else {
+        inter / union
+    }
+}
+
 /// Standard greedy non-max suppression, per class.
 fn non_max_suppression(mut dets: Vec<Detection>, iou_thresh: f32) -> Vec<Detection> {
     dets.sort_by(|a, b| {
@@ -369,6 +517,32 @@ mod tests {
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[0].score, 0.9);
         assert_eq!(kept[1].class, 2);
+    }
+
+    #[test]
+    fn decode_pose_maps_box_and_keypoints() {
+        // One anchor, person score 0.99. 56 features = 4 box + 1 score + 17*3 kpts.
+        // Box cx,cy,w,h = (320,320,100,100) in 640-space; set the NOSE keypoint
+        // (index 0) at (320, 300) conf 0.9, leave the rest zero.
+        let mut data = vec![0.0f32; 56];
+        data[0] = 320.0;
+        data[1] = 320.0;
+        data[2] = 100.0;
+        data[3] = 100.0;
+        data[4] = 0.99; // person score
+        data[5] = 320.0; // nose x
+        data[6] = 300.0; // nose y
+        data[7] = 0.9; // nose conf
+        let shape = [1i64, 56, 1];
+        // Original 1280x640 -> scale 0.5, pad_y = 160.
+        let poses = decode_yolov8_pose(&data, &shape, 0.5, 0.5, 0.0, 160.0, 1280.0, 640.0);
+        assert_eq!(poses.len(), 1);
+        let p = &poses[0];
+        assert!((p.x1 - 540.0).abs() < 1e-3 && (p.y1 - 220.0).abs() < 1e-3);
+        // Nose maps back: x = (320-0)/0.5 = 640; y = (300-160)/0.5 = 280.
+        assert!((p.keypoints[0][0] - 640.0).abs() < 1e-3);
+        assert!((p.keypoints[0][1] - 280.0).abs() < 1e-3);
+        assert!((p.keypoints[0][2] - 0.9).abs() < 1e-6);
     }
 
     #[test]

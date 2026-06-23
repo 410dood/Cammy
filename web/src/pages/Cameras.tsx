@@ -36,6 +36,10 @@ function TuneModal({
     face_recognize: camera.detect_config.face_recognize ?? null,
     two_way_audio: camera.detect_config.two_way_audio ?? false,
     retention_days: camera.detect_config.retention_days ?? null,
+    fall_detect: camera.detect_config.fall_detect ?? false,
+    child_height_frac: camera.detect_config.child_height_frac ?? null,
+    pose_detect: camera.detect_config.pose_detect ?? false,
+    no_clip: camera.detect_config.no_clip ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
 
@@ -249,7 +253,68 @@ function TuneModal({
               }
             />
           </label>
+          <label
+            className="toggle field"
+            title="Residential ASSISTIVE fall hint: a tracked person who goes motionless low in the frame fires a 'fall' event. Best-effort at ~1 fps — it MISSES occluded, soft, or slow falls. NOT a medical-alert device; pair it with a pendant and never auto-dial emergency services off a single visual trigger."
+          >
+            fall detection (assistive*)
+            <input
+              type="checkbox"
+              checked={dc.fall_detect}
+              onChange={() => setDc({ ...dc, fall_detect: !dc.fall_detect })}
+            />
+          </label>
+          <label
+            className="toggle field"
+            title="Server-side 24/7 body-pose monitoring for the nursery/elder camera: emits 'fall' (lying on the floor), 'standing' (a child standing up in a crib zone — climb-out) and 'covered_face' (body present but face not visible in a zone — rollover / blanket). Runs a YOLOv8-pose model on the server (download yolov8n-pose.onnx; set the path in Settings). ASSISTIVE only — not a medical/SIDS device, draw a crib/bed zone for standing + covered-face."
+          >
+            body pose monitoring (assistive*)
+            <input
+              type="checkbox"
+              checked={dc.pose_detect}
+              onChange={() => setDc({ ...dc, pose_detect: !dc.pose_detect })}
+            />
+          </label>
+          <label
+            className="toggle field"
+            title="Privacy / dignity for a sensitive camera (nursery, bedroom, bathroom): residential + pose safety events still fire (you get the alert — label, zone, time), but NO snapshot image is saved to disk or sent to webhook/MQTT/email. Pair with a privacy mask for live view."
+          >
+            no snapshot on safety events (privacy)
+            <input
+              type="checkbox"
+              checked={dc.no_clip}
+              onChange={() => setDc({ ...dc, no_clip: !dc.no_clip })}
+            />
+          </label>
+          <label
+            className="field"
+            title="Residential child calibration: a tracked person whose normalized bbox HEIGHT (0..1 of the frame) is at/below this fraction is treated as a 'child', enabling the child / child-alone zone rules. Blank disables child features. FRAGILE — bbox height depends on camera angle/distance; tune per camera and treat results as a detection aid only."
+          >
+            child height ≤ (frac, blank = off*)
+            <input
+              type="number"
+              step="0.05"
+              min="0"
+              max="1"
+              style={{ width: 110 }}
+              placeholder="off"
+              value={dc.child_height_frac ?? ""}
+              onChange={(e) =>
+                setDc({
+                  ...dc,
+                  child_height_frac:
+                    e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)),
+                })
+              }
+            />
+          </label>
         </div>
+        <p className="muted" style={{ fontSize: 12, marginTop: -4 }}>
+          * Fall detection and child classification are <b>assistive, best-effort</b>{" "}
+          safety aids — not medical devices and not guaranteed. They can miss events
+          and must never replace supervision or a personal alarm. See the zone editor
+          below to arm child / unattended / pool-water hints.
+        </p>
 
         <h2 style={{ marginTop: 18 }}>Zones &amp; privacy masks</h2>
         <p className="muted" style={{ marginTop: 0 }}>

@@ -93,6 +93,29 @@ pub struct PolyZone {
     /// object tracking. The live count is also published to the status board.
     #[serde(default)]
     pub occupancy_max: Option<u32>,
+    /// Residential: fire a `zone_enter` event (its label is the object's class)
+    /// the first frame a label-scoped track enters this zone — edge-triggered,
+    /// once per entry. Powers "person enters the pool", "pet on the couch".
+    /// Off by default. Requires object tracking. See `residential.rs`.
+    #[serde(default)]
+    pub alert_enter: bool,
+    /// Residential: if a *child*-classified person (see
+    /// `DetectConfig.child_height_frac`) enters this zone, fire a `child` event —
+    /// child-in-restricted-zone (stairs / kitchen / driveway). Requires per-camera
+    /// child calibration. ASSISTIVE — a detection aid, not guaranteed coverage.
+    #[serde(default)]
+    pub child_watch: bool,
+    /// Residential: fire a `child_alone` event when a child is in this zone with
+    /// NO adult present (edge-triggered) — the unattended-child-near-pool framing.
+    /// Requires child calibration. ASSISTIVE — never a substitute for supervision
+    /// or a pool fence; can miss a child if the height heuristic misreads them.
+    #[serde(default)]
+    pub supervise: bool,
+    /// Residential: this zone is water (a pool). A person who goes motionless in
+    /// it fires an EXPERIMENTAL `still_water` hint. This is NOT drowning
+    /// detection — an above-water camera cannot see a submerged body. Off by default.
+    #[serde(default)]
+    pub water: bool,
 }
 
 impl PolyZone {
@@ -223,6 +246,31 @@ pub struct DetectConfig {
     /// total-disk guarantee.
     #[serde(default)]
     pub retention_days: Option<u32>,
+    /// Residential ASSISTIVE fall hint: when true, a tracked person who goes
+    /// motionless low in the frame fires a `fall` event. Best-effort at ~1 fps —
+    /// misses occluded / soft / slow falls. NOT a medical-alert device; pair with
+    /// a pendant. See `residential.rs` + `docs/05`.
+    #[serde(default)]
+    pub fall_detect: bool,
+    /// Residential child/adult calibration: a tracked person whose normalized
+    /// bbox height is at/below this fraction is treated as a "child". `None`
+    /// disables all child features on this camera (the default). FRAGILE without
+    /// per-camera setup — bbox height depends on the camera angle/distance.
+    #[serde(default)]
+    pub child_height_frac: Option<f32>,
+    /// Server-side body-pose monitoring (24/7, headless) for the residential
+    /// safety tier: fall posture, crib standing/rollover, covered-face. Runs a
+    /// YOLOv8-pose model (Settings.pose_model) on this camera. Opt-in + ASSISTIVE
+    /// only — see `posture.rs` + `docs/05`. Off by default.
+    #[serde(default)]
+    pub pose_detect: bool,
+    /// Privacy / dignity for sensitive cameras (nursery, bedroom, bathroom): when
+    /// on, residential + pose safety events on this camera fire WITHOUT saving a
+    /// snapshot image — you still get the alert (label + zone + time), but no
+    /// picture is written to disk (or sent to webhook/MQTT with an image). Pairs
+    /// with privacy masks for live view. Off by default.
+    #[serde(default)]
+    pub no_clip: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -350,6 +398,17 @@ pub enum DeleteUser {
     LastAdmin,
 }
 
+/// One auto-arm/disarm schedule entry (residential "modes" automation): at
+/// `hhmm` local time on the given `days` (0 = Sunday; empty = every day), set the
+/// system to `mode` ("home" | "away" | "disarmed"). Driven by `schedule.rs`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArmScheduleEntry {
+    pub days: Vec<u8>,
+    pub hhmm: String,
+    pub mode: String,
+}
+
 /// A saved named camera layout (A6 Liveviews), persisted in `Settings`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Liveview {
@@ -409,6 +468,24 @@ pub struct AlarmRule {
     /// face is the `UNKNOWN_FACE` sentinel). Mutually exclusive with `face_like`.
     #[serde(default)]
     pub face_unknown: bool,
+    /// Substring match (case-insensitive) on the event's detection ZONE name —
+    /// fire only when the object is in a named zone, e.g. `zone_like = "Pool"`.
+    /// Combined with a `label` this expresses the residential primitives
+    /// "person in the Pool zone", "dog on the Couch zone". `None` = any zone.
+    #[serde(default)]
+    pub zone_like: Option<String>,
+    /// Cross-modal confirmation: only fire when an event of THIS label also
+    /// occurred on the same camera within `confirm_within_secs` — e.g. a "Glass"
+    /// audio event confirmed by a "person" within 10 s (glass-vs-dishes), or a
+    /// "fall" confirmed by a "Screaming". `None` = no confirmation required.
+    /// Opt-in and precision-oriented; **fails open** (fires) on any lookup error
+    /// so an infra glitch never silently suppresses a real alert. Do NOT gate a
+    /// life-safety rule on it — see docs/05 (confirmation should escalate, not gate).
+    #[serde(default)]
+    pub confirm_label: Option<String>,
+    /// Window (seconds) for `confirm_label`. `None`/0 disables confirmation.
+    #[serde(default)]
+    pub confirm_within_secs: Option<i64>,
     #[serde(default)]
     pub min_score: f32,
     /// Legacy single action: "webhook" / "mqtt" / "ntfy". Superseded by
@@ -502,6 +579,48 @@ impl AlarmRule {
             now.weekday().num_days_from_sunday() as u8,
             (now.hour() * 60 + now.minute()) as u16,
         )
+    }
+
+    /// Does the event's detection zone satisfy this rule's optional `zone_like`
+    /// filter? `None`/blank matches anything; otherwise a case-insensitive
+    /// substring match on the event's zone (an event with no zone never matches a
+    /// zone-scoped rule). Checked alongside [`AlarmRule::matches`] at every call
+    /// site so a zone-scoped residential rule (e.g. "person in Pool") fires only
+    /// in its zone. Kept separate from `matches` to avoid churning its many
+    /// call sites; AND the two together.
+    pub fn zone_ok(&self, zone: Option<&str>) -> bool {
+        match self
+            .zone_like
+            .as_deref()
+            .map(str::trim)
+            .filter(|z| !z.is_empty())
+        {
+            None => true,
+            Some(want) => zone
+                .map(|z| z.to_lowercase().contains(&want.to_lowercase()))
+                .unwrap_or(false),
+        }
+    }
+
+    /// Cross-modal confirmation gate. Returns true (allow the rule to fire) unless
+    /// both `confirm_label` and a positive `confirm_within_secs` are set AND no
+    /// event of that label exists on this camera within the window. **Fails OPEN**
+    /// (returns true) on any DB error so an infrastructure glitch can never
+    /// silently suppress an alert — confirmation is for precision, not gating
+    /// life-safety. AND-ed with [`AlarmRule::matches`] at every alarm call site.
+    pub fn confirm_ok(&self, db: &Db, camera_id: i64, now: i64) -> bool {
+        match (
+            self.confirm_label
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty()),
+            self.confirm_within_secs,
+        ) {
+            (Some(lbl), Some(w)) if w > 0 => {
+                db.has_recent_event(camera_id, lbl, now - w).unwrap_or(true)
+            }
+            _ => true,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -755,6 +874,15 @@ pub struct Settings {
     /// which alarm rules fire — see `notify::armed_in_mode`.
     #[serde(default = "default_arm_mode")]
     pub arm_mode: String,
+    /// Auto-arm/disarm schedule (residential "modes" automation): each entry
+    /// flips `arm_mode` at a day+time. Empty = no automation. See `schedule.rs`.
+    #[serde(default)]
+    pub arm_schedule: Vec<ArmScheduleEntry>,
+    /// Path to the YOLOv8-pose ONNX model used by the server-side pose worker
+    /// (downloaded, not committed — like the YOLO/YAMNet models). The pose worker
+    /// idles until this file exists AND a camera has `pose_detect` on.
+    #[serde(default = "default_pose_model")]
+    pub pose_model: String,
     /// SMTP for the "email" alarm action. `smtp_url` is "smtps://host:465"
     /// (implicit TLS) / "smtp://host:587" (STARTTLS) / "host[:port]"; creds go in
     /// `smtp_user`/`smtp_pass`. `smtp_pass` is write-only — blanked in
@@ -774,6 +902,10 @@ pub struct Settings {
 
 fn default_arm_mode() -> String {
     "away".into()
+}
+
+fn default_pose_model() -> String {
+    "yolov8n-pose.onnx".into()
 }
 
 impl Default for Settings {
@@ -861,6 +993,8 @@ impl Default for Settings {
             liveviews: Vec::new(),
             floorplan: String::new(),
             arm_mode: default_arm_mode(),
+            arm_schedule: Vec::new(),
+            pose_model: default_pose_model(),
             smtp_url: String::new(),
             smtp_user: String::new(),
             smtp_pass: String::new(),
@@ -1345,7 +1479,12 @@ impl Db {
 
     pub fn add_alarm(&self, r: &AlarmRule) -> Result<i64> {
         let schedule = serde_json::json!({
-            "days": r.days, "start": r.start_hhmm, "end": r.end_hhmm, "modes": r.modes
+            "days": r.days, "start": r.start_hhmm, "end": r.end_hhmm, "modes": r.modes,
+            // Residential zone scope + cross-modal confirmation ride the schedule
+            // blob (no migration), like modes.
+            "zone_like": r.zone_like,
+            "confirm_label": r.confirm_label,
+            "confirm_within": r.confirm_within_secs
         })
         .to_string();
         // Persist the full scene, and dual-write the legacy action/target/priority
@@ -1433,6 +1572,9 @@ impl Db {
                     face_like: r.get(5)?,
                     plate_like: r.get(6)?,
                     gesture_like: r.get(12)?,
+                    zone_like: sched["zone_like"].as_str().map(str::to_string),
+                    confirm_label: sched["confirm_label"].as_str().map(str::to_string),
+                    confirm_within_secs: sched["confirm_within"].as_i64(),
                     min_score: r.get(7)?,
                     action,
                     target,
@@ -2290,6 +2432,18 @@ impl Db {
 
     // --- settings --------------------------------------------------------
 
+    /// Does an event of `label` exist on `camera_id` at or after `since` (unix
+    /// secs)? The cross-modal confirmation lookup (`AlarmRule::confirm_ok`).
+    pub fn has_recent_event(&self, camera_id: i64, label: &str, since: i64) -> Result<bool> {
+        let n: i64 = self.conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM events
+             WHERE camera_id = ?1 AND label = ?2 AND ts >= ?3)",
+            params![camera_id, label, since],
+            |r| r.get(0),
+        )?;
+        Ok(n != 0)
+    }
+
     pub fn settings(&self) -> Settings {
         let json: Option<String> = self
             .conn()
@@ -2793,6 +2947,10 @@ mod tests {
                 labels: vec!["person".into()],
                 dwell_secs: Some(30),
                 occupancy_max: Some(5),
+                alert_enter: true,
+                child_watch: true,
+                supervise: true,
+                water: false,
             }],
             tripwires: vec![crate::analytics::Tripwire {
                 name: "gate".into(),
@@ -2820,6 +2978,10 @@ mod tests {
             face_recognize: Some(true),
             two_way_audio: true,
             retention_days: Some(14),
+            fall_detect: true,
+            child_height_frac: Some(0.45),
+            pose_detect: true,
+            no_clip: false,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
@@ -2877,6 +3039,9 @@ mod tests {
             gesture_like: None,
             transcript_like: None,
             face_unknown: false,
+            zone_like: None,
+            confirm_label: None,
+            confirm_within_secs: None,
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
@@ -2952,6 +3117,21 @@ mod tests {
         assert!(stranger_rule.matches(3, "person", 1.0, Some(UNKNOWN_FACE), None, None, None));
         assert!(!stranger_rule.matches(3, "person", 1.0, Some("Alice"), None, None, None));
         assert!(!stranger_rule.matches(3, "person", 1.0, None, None, None, None));
+
+        // zone_like scopes a residential rule to a named detection zone (e.g.
+        // "person in the Pool zone") via a case-insensitive substring match.
+        let zoned = AlarmRule {
+            zone_like: Some("Pool".into()),
+            ..rule.clone()
+        };
+        assert!(zoned.zone_ok(Some("Backyard Pool")));
+        assert!(!zoned.zone_ok(Some("Driveway")));
+        assert!(
+            !zoned.zone_ok(None),
+            "a zone-scoped rule needs a zoned event"
+        );
+        assert!(rule.zone_ok(None), "an unscoped rule matches any/no zone");
+        assert!(rule.zone_ok(Some("Pool")));
     }
 
     #[test]
@@ -2969,6 +3149,9 @@ mod tests {
                 gesture_like: None,
                 transcript_like: Some("help".into()),
                 face_unknown: true,
+                zone_like: Some("Door".into()),
+                confirm_label: Some("person".into()),
+                confirm_within_secs: Some(10),
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
@@ -2991,6 +3174,45 @@ mod tests {
         assert_eq!(back.priority, 4);
         assert_eq!(back.transcript_like.as_deref(), Some("help"));
         assert!(back.face_unknown);
+        // zone_like + cross-modal confirmation ride the schedule blob and round-trip.
+        assert_eq!(back.zone_like.as_deref(), Some("Door"));
+        assert_eq!(back.confirm_label.as_deref(), Some("person"));
+        assert_eq!(back.confirm_within_secs, Some(10));
+        // confirm_ok: needs a co-occurring "person" event on the same camera in 10 s.
+        // Fails open only on DB error; a clean "no such event" correctly suppresses.
+        let rule = back.clone();
+        let cam = db
+            .add_camera("confirm-cam", "rtsp://x", None, true, true)
+            .unwrap();
+        assert!(
+            !rule.confirm_ok(&db, cam.id, 1_000_000),
+            "no companion event -> not confirmed"
+        );
+        db.add_event(
+            cam.id,
+            1_000_000 - 5,
+            "person",
+            0.9,
+            [0.0; 4],
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            rule.confirm_ok(&db, cam.id, 1_000_000),
+            "companion person within window"
+        );
+        assert!(
+            !rule.confirm_ok(&db, cam.id, 1_000_000 + 100),
+            "companion now outside the window"
+        );
+        assert!(
+            !rule.confirm_ok(&db, cam.id + 1, 1_000_000),
+            "companion is on a different camera"
+        );
         // A legacy rule (no explicit scene) reads back as a 1-action scene
         // synthesized from the legacy action/target/priority columns.
         assert_eq!(back.actions.len(), 1);
@@ -3073,6 +3295,9 @@ mod tests {
             gesture_like: None,
             transcript_like: None,
             face_unknown: false,
+            zone_like: None,
+            confirm_label: None,
+            confirm_within_secs: None,
             min_score: 0.0,
             action: "webhook".into(),
             target: "http://x".into(),
