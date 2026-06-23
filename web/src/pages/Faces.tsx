@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, CamEvent, PlateEntry, PlateCategory } from "../api";
+import { api, CamEvent, GaitProfile, PlateEntry, PlateCategory } from "../api";
 import { useToast, useDialog, Modal, RelTime } from "../ui";
 import { IconUser, IconStranger, IconCar, IconAlert, IconCheck, IconTrash, IconPlus } from "../icons";
 
@@ -48,6 +48,9 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   const [pPlate, setPPlate] = useState("");
   const [pName, setPName] = useState("");
   const [pCat, setPCat] = useState<PlateCategory>("known");
+  const [gaitProfiles, setGaitProfiles] = useState<GaitProfile[]>([]);
+  const [gaitCands, setGaitCands] = useState<CamEvent[]>([]);
+  const [gaitNames, setGaitNames] = useState<Record<number, string>>({});
 
   const load = () => {
     api.faces().then((r) => {
@@ -56,6 +59,50 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
     }).catch(() => {});
     api.events({ limit: 3000 }).then(setEvents).catch(() => {});
     api.plates().then(setLib).catch(() => {});
+    api.gait().then((r) => {
+      setGaitProfiles(r.profiles);
+      setGaitCands(r.candidates);
+    }).catch(() => {});
+  };
+
+  const enrollGait = async (ev: CamEvent) => {
+    const name = (gaitNames[ev.id] || "").trim();
+    if (!name) return;
+    try {
+      await api.enrollGait(ev.id, name);
+      setGaitNames((n) => ({ ...n, [ev.id]: "" }));
+      toast.success(`Enrolled ${name}'s gait`);
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const renameGait = async (p: GaitProfile) => {
+    const next = await dialog.prompt({
+      title: "Rename gait identity",
+      label: `New name for "${p.name}"`,
+      defaultValue: p.name,
+      maxLength: 64,
+    });
+    if (!next || !next.trim() || next.trim() === p.name) return;
+    try {
+      await api.renameGait(p.id, next.trim());
+      toast.success("Renamed");
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const forgetGait = async (p: GaitProfile) => {
+    if (!(await dialog.confirm({ title: `Forget "${p.name}"'s gait?`, confirmLabel: "Forget", danger: true })))
+      return;
+    try {
+      await api.deleteGait(p.id);
+      toast.success(`Forgot ${p.name}'s gait`);
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
   };
 
   const addPlate = async () => {
@@ -420,6 +467,71 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                       className="btn btn-primary"
                       disabled={!(names[file] || "").trim()}
                       onClick={() => enroll(file)}
+                    >
+                      Enroll
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <h2>Gait identities</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Identify people by how they walk — works at a distance and when the face isn't visible.
+          Enable <b>gait identification</b> per camera (Cameras → tuning). It's a coarse
+          body-and-motion signature (build, bob/sway, pace), best as a re-ID aid alongside faces, not
+          a forensic match. Name an unknown walker below to enroll them.
+        </p>
+        {gaitProfiles.length > 0 && (
+          <div className="identity-grid" style={{ marginBottom: 12 }}>
+            {gaitProfiles.map((p) => (
+              <div key={p.id} className="identity-card" style={{ cursor: "default" }}>
+                <span className="identity-thumb"><IconUser size={22} /></span>
+                <div className="identity-body">
+                  <b>{p.name}</b>
+                  <div className="muted">
+                    {p.samples} sample{p.samples === 1 ? "" : "s"} · updated{" "}
+                    <RelTime ts={p.updated_ts} className="clock" />
+                  </div>
+                </div>
+                <div className="identity-actions">
+                  <button className="btn btn-ghost ev-act" onClick={() => renameGait(p)}>Rename</button>
+                  <button className="btn btn-danger ev-act" onClick={() => forgetGait(p)}>Forget</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <h3 style={{ margin: "8px 0" }}>Unknown walkers</h3>
+        {gaitCands.length === 0 ? (
+          <p className="muted">
+            None waiting. Confident person tracks that didn't match an enrolled gait appear here.
+          </p>
+        ) : (
+          <div className="event-grid">
+            {gaitCands.map((ev) => (
+              <div className="event-card" key={ev.id} style={{ cursor: "default" }}>
+                {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}?w=240`} alt="unknown walker" loading="lazy" />}
+                <div className="meta">
+                  <span className="muted">{ev.camera}</span>
+                  <RelTime ts={ev.ts} className="muted clock" style={{ display: "block", fontSize: "0.72rem" }} />
+                  <div className="row" style={{ marginTop: 6 }}>
+                    <input
+                      type="text"
+                      placeholder="who walks like this?"
+                      value={gaitNames[ev.id] || ""}
+                      onChange={(e) => setGaitNames((n) => ({ ...n, [ev.id]: e.target.value }))}
+                      style={{ flex: 1 }}
+                      onKeyDown={(e) => e.key === "Enter" && enrollGait(ev)}
+                    />
+                    <button
+                      className="btn btn-primary"
+                      disabled={!(gaitNames[ev.id] || "").trim()}
+                      onClick={() => enrollGait(ev)}
                     >
                       Enroll
                     </button>

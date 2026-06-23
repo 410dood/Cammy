@@ -96,6 +96,11 @@ pub fn router(state: AppState) -> Router {
             axum::routing::patch(rename_face_api).delete(delete_face_api),
         )
         .route("/api/faces/unknown/{file}", get(unknown_face_img))
+        .route("/api/gait", get(list_gait).post(enroll_gait_api))
+        .route(
+            "/api/gait/{id}",
+            axum::routing::patch(rename_gait_api).delete(delete_gait_api),
+        )
         .route("/api/plates", get(list_plates_api).post(add_plate_api))
         .route(
             "/api/plates/{id}",
@@ -191,6 +196,7 @@ async fn camera_status(State(st): State<AppState>) -> ApiResult<Json<serde_json:
                 "inference_ms": h.inference_ms,
                 "accelerator": h.accelerator,
                 "model": h.model,
+                "tamper": h.tamper,
             }),
         );
     }
@@ -865,6 +871,76 @@ async fn twofa_disable(
         );
     }
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// --- gait identification (#64) ----------------------------------------------
+
+/// Enrolled gait profiles + recent unknown-walker events to enroll from.
+async fn list_gait(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let profiles = st.db.list_gait_profiles()?;
+    let candidates = st.db.unknown_gait_events(48)?;
+    Ok(Json(
+        serde_json::json!({ "profiles": profiles, "candidates": candidates }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct EnrollGaitReq {
+    event_id: i64,
+    name: String,
+}
+
+/// Enroll (or reinforce) a gait identity from an unknown-walker event's stored
+/// signature, then tag that event with the name so it leaves the unknown list.
+async fn enroll_gait_api(
+    State(st): State<AppState>,
+    Json(req): Json<EnrollGaitReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err(bad_request("name must be 1-64 characters"));
+    }
+    if name == crate::db::UNKNOWN_GAIT {
+        return Err(bad_request("that name is reserved"));
+    }
+    let Some(sig_json) = st.db.event_gait_sig(req.event_id)? else {
+        return Err(bad_request("that event has no gait signature to enroll"));
+    };
+    let sig: Vec<f32> = serde_json::from_str(&sig_json)
+        .map_err(|_| bad_request("stored gait signature is invalid"))?;
+    let now = chrono::Local::now().timestamp();
+    let id = st.db.enroll_gait(name, &sig, now)?;
+    // The just-named walker should drop out of the unknown-candidates list.
+    let _ = st
+        .db
+        .set_event_gait(req.event_id, Some(name), Some(&sig_json));
+    Ok(Json(serde_json::json!({ "id": id, "name": name })))
+}
+
+#[derive(Deserialize)]
+struct RenameGaitReq {
+    name: String,
+}
+
+async fn rename_gait_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<RenameGaitReq>,
+) -> ApiResult<StatusCode> {
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 64 || name == crate::db::UNKNOWN_GAIT {
+        return Err(bad_request("invalid name"));
+    }
+    match st.db.rename_gait(id, name) {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err(not_found()),
+        Err(_) => Err(bad_request("a gait identity with that name already exists")),
+    }
+}
+
+async fn delete_gait_api(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+    st.db.delete_gait(id)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -3248,6 +3324,7 @@ mod tests {
             anomaly_score: None,
             direction: Some("a_to_b".into()),
             speed: Some(32.4),
+            gait: None,
         };
         let csv = events_to_csv(std::slice::from_ref(&ev));
         let mut lines = csv.lines();

@@ -239,6 +239,16 @@ pub struct DetectConfig {
     /// a speaker / ONVIF backchannel — purely a UI gate; the audio path is the
     /// player's WebRTC mic track through the `/api/ws` proxy.
     pub two_way_audio: bool,
+    /// Camera tamper detection (blackout / defocus / scene-change): watch the
+    /// optical integrity of this camera's feed and fire a `tamper` event +
+    /// notification when the lens is covered, defocused, or the camera is moved.
+    #[serde(default)]
+    pub tamper_detect: bool,
+    /// Gait analysis & identification: build a per-person walking signature from
+    /// the object tracker and attribute person events to an enrolled gait
+    /// identity (works at distance / when the face isn't visible). Opt-in.
+    #[serde(default)]
+    pub gait_identify: bool,
     /// Per-camera recording RETENTION override in days (UniFi-style: keep the
     /// doorbell 30d, a quiet side camera 3d). `None` inherits the global
     /// `Settings.retention_days`. The global byte cap still applies as the
@@ -317,6 +327,20 @@ pub struct Event {
     /// Estimated ground speed (km/h) on a calibrated crossing event.
     #[serde(default)]
     pub speed: Option<f32>,
+    /// Attributed gait identity (#64): an enrolled name, or `?` for a confident
+    /// unknown walker, when gait identification ran on a person event.
+    #[serde(default)]
+    pub gait: Option<String>,
+}
+
+/// One enrolled gait identity (its averaged signature stays server-side).
+#[derive(Clone, Debug, Serialize)]
+pub struct GaitProfileRow {
+    pub id: i64,
+    pub name: String,
+    pub samples: i64,
+    pub created_ts: i64,
+    pub updated_ts: i64,
 }
 
 /// One row of the smart-search corpus: an event's id, its searchable text
@@ -427,6 +451,12 @@ pub struct Liveview {
 /// "no face detected" (`None`); kept short and reserved so it can't be confused
 /// with a real enrolled name.
 pub const UNKNOWN_FACE: &str = "?";
+
+/// Sentinel stored in an event's `gait` when a person was tracked walking but
+/// matched no enrolled gait profile — an "unknown walker" (#64). Distinguishes
+/// that from "gait not computed" (`None`); the raw signature is kept in
+/// `gait_sig` so the walker can be enrolled from the event.
+pub const UNKNOWN_GAIT: &str = "?";
 
 /// One action a rule fires. A rule can fire several at once (a "scene"): e.g.
 /// push to your phone AND POST a webhook AND email a snapshot. `kind` is
@@ -1195,6 +1225,21 @@ impl Db {
         // Last TOTP time-step accepted for this user, to refuse intra-window
         // replay of a code (a code is valid for ~90 s across the skew window).
         let _ = conn.execute("ALTER TABLE users ADD COLUMN totp_last_step INTEGER", []);
+        // Gait identification (#64): the attributed walking identity on an event
+        // (a name or the `?` unknown sentinel) plus its raw signature JSON (kept
+        // so an unknown walker can be enrolled straight from the event).
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN gait TEXT", []);
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN gait_sig TEXT", []);
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS gait_profiles (
+                 id         INTEGER PRIMARY KEY,
+                 name       TEXT NOT NULL UNIQUE,
+                 signature  TEXT NOT NULL,
+                 samples    INTEGER NOT NULL DEFAULT 1,
+                 created_ts INTEGER NOT NULL,
+                 updated_ts INTEGER NOT NULL
+             );",
+        )?;
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
@@ -1353,7 +1398,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -1388,13 +1433,144 @@ impl Db {
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                         e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed
+                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
             )
             .optional()?;
         Ok(ev)
+    }
+
+    // --- gait identification (#64) --------------------------------------------
+
+    /// Attach a gait identity (+ raw signature JSON) to an event. Returns whether
+    /// the event existed.
+    pub fn set_event_gait(
+        &self,
+        id: i64,
+        gait: Option<&str>,
+        sig_json: Option<&str>,
+    ) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE events SET gait = ?1, gait_sig = ?2 WHERE id = ?3",
+            params![gait, sig_json, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// The stored gait signature JSON for an event (used to enroll a profile).
+    pub fn event_gait_sig(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT gait_sig FROM events WHERE id = ?1", [id], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
+    /// Recent unknown-walker events (gait = `?`, signature present) — the
+    /// enrollment candidates for the gait UI.
+    pub fn unknown_gait_events(&self, limit: u32) -> Result<Vec<Event>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
+                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait
+             FROM events e JOIN cameras c ON c.id = e.camera_id
+             WHERE e.gait = ?1 AND e.gait_sig IS NOT NULL
+             ORDER BY e.ts DESC, e.id DESC LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![UNKNOWN_GAIT, limit], row_to_event)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// All enrolled gait profiles (metadata only — signatures stay server-side).
+    pub fn list_gait_profiles(&self) -> Result<Vec<GaitProfileRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, samples, created_ts, updated_ts FROM gait_profiles ORDER BY name",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(GaitProfileRow {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    samples: r.get(2)?,
+                    created_ts: r.get(3)?,
+                    updated_ts: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// `(name, signature)` for every enrolled profile, for the gait matcher.
+    pub fn gait_profile_sigs(&self) -> Result<Vec<(String, Vec<f32>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT name, signature FROM gait_profiles")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(n, s)| serde_json::from_str::<Vec<f32>>(&s).ok().map(|v| (n, v)))
+            .collect())
+    }
+
+    /// Enroll / merge a gait signature under `name` (running average), returning
+    /// the profile id. The read-modify-write runs under the single DB lock.
+    pub fn enroll_gait(&self, name: &str, sig: &[f32], now: i64) -> Result<i64> {
+        let conn = self.conn();
+        let existing: Option<(i64, String, i64)> = conn
+            .query_row(
+                "SELECT id, signature, samples FROM gait_profiles WHERE name = ?1",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if let Some((id, old_json, samples)) = existing {
+            let old: Vec<f32> = serde_json::from_str(&old_json).unwrap_or_default();
+            let merged: Vec<f32> = if old.len() == sig.len() {
+                let n = samples.max(0) as f32;
+                old.iter()
+                    .zip(sig)
+                    .map(|(o, s)| (o * n + s) / (n + 1.0))
+                    .collect()
+            } else {
+                sig.to_vec()
+            };
+            let mj = serde_json::to_string(&merged).unwrap_or_else(|_| "[]".into());
+            conn.execute(
+                "UPDATE gait_profiles SET signature = ?1, samples = samples + 1, updated_ts = ?2 WHERE id = ?3",
+                params![mj, now, id],
+            )?;
+            Ok(id)
+        } else {
+            let sj = serde_json::to_string(sig).unwrap_or_else(|_| "[]".into());
+            conn.execute(
+                "INSERT INTO gait_profiles (name, signature, samples, created_ts, updated_ts) VALUES (?1, ?2, 1, ?3, ?3)",
+                params![name, sj, now],
+            )?;
+            Ok(conn.last_insert_rowid())
+        }
+    }
+
+    pub fn rename_gait(&self, id: i64, name: &str) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE gait_profiles SET name = ?1 WHERE id = ?2",
+            params![name, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn delete_gait(&self, id: i64) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM gait_profiles WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     /// Tracker-analytics roll-up over `crossing`/`loiter` events in a time range
@@ -2650,6 +2826,7 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         anomaly_score: r.get(19)?,
         direction: r.get(20)?,
         speed: r.get(21)?,
+        gait: r.get(22)?,
     })
 }
 
@@ -3125,6 +3302,8 @@ mod tests {
             poll_ms: Some(2000),
             face_recognize: Some(true),
             two_way_audio: true,
+            tamper_detect: true,
+            gait_identify: true,
             retention_days: Some(14),
             fall_detect: true,
             child_height_frac: Some(0.45),

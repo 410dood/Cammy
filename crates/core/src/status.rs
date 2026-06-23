@@ -26,6 +26,11 @@ pub struct CamHealth {
     /// inside) from the most recent analytics tick. Empty when the camera runs
     /// no tracker-driven analytics. Surfaced at `GET /api/analytics/occupancy`.
     pub occupancy: HashMap<String, u32>,
+    /// Active camera-tamper kind (`blackout`/`defocus`/`scene_change`) if the
+    /// feed's optical integrity is currently compromised; `None` when healthy or
+    /// when tamper detection is off for the camera (#63).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tamper: Option<String>,
 }
 
 /// Seconds within which a camera must have delivered a frame to count as
@@ -90,6 +95,11 @@ impl StatusBoard {
     /// Publish the latest per-zone live occupancy for a camera (zone -> count).
     pub fn set_occupancy(&self, camera_id: i64, occupancy: HashMap<String, u32>) {
         self.write().entry(camera_id).or_default().occupancy = occupancy;
+    }
+
+    /// Publish the camera's current tamper kind (`None` = healthy / off).
+    pub fn set_tamper(&self, camera_id: i64, kind: Option<String>) {
+        self.write().entry(camera_id).or_default().tamper = kind;
     }
 
     /// Drop state for cameras that no longer exist.
