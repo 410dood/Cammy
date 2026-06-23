@@ -94,7 +94,12 @@ pub fn run(
             .map(|(p, _)| p != &settings.pose_model)
             .unwrap_or(true)
         {
-            match PoseEstimator::new(&settings.pose_model, settings.force_cpu, POSE_CONF, POSE_IOU) {
+            match PoseEstimator::new(
+                &settings.pose_model,
+                settings.force_cpu,
+                POSE_CONF,
+                POSE_IOU,
+            ) {
                 Ok(e) => {
                     tracing::info!(model = %settings.pose_model, "pose worker ready");
                     estimator = Some((settings.pose_model.clone(), e));
@@ -172,7 +177,21 @@ pub fn run(
                 let since = *st.fall_since.get_or_insert(now);
                 if !st.fall_fired && now - since >= FALL_HOLD_SECS {
                     st.fall_fired = true;
-                    emit(&db, &settings, &alarms, &throttle, &mqtt_tx, &snapshots_dir, &frame, cam, "fall", anchor, None, now, &mut last_fire);
+                    emit(
+                        &db,
+                        &settings,
+                        &alarms,
+                        &throttle,
+                        &mqtt_tx,
+                        &snapshots_dir,
+                        &frame,
+                        cam,
+                        "fall",
+                        anchor,
+                        None,
+                        now,
+                        &mut last_fire,
+                    );
                 }
             } else {
                 st.fall_since = None;
@@ -184,7 +203,21 @@ pub fn run(
                 let since = *st.covered_since.get_or_insert(now);
                 if !st.covered_fired && now - since >= COVERED_HOLD_SECS {
                     st.covered_fired = true;
-                    emit(&db, &settings, &alarms, &throttle, &mqtt_tx, &snapshots_dir, &frame, cam, "covered_face", anchor, Some(&zone), now, &mut last_fire);
+                    emit(
+                        &db,
+                        &settings,
+                        &alarms,
+                        &throttle,
+                        &mqtt_tx,
+                        &snapshots_dir,
+                        &frame,
+                        cam,
+                        "covered_face",
+                        anchor,
+                        Some(&zone),
+                        now,
+                        &mut last_fire,
+                    );
                 }
             } else {
                 st.covered_since = None;
@@ -196,7 +229,21 @@ pub fn run(
                 Some((zone, anchor)) => {
                     if !st.standing_on {
                         st.standing_on = true;
-                        emit(&db, &settings, &alarms, &throttle, &mqtt_tx, &snapshots_dir, &frame, cam, "standing", anchor, Some(&zone), now, &mut last_fire);
+                        emit(
+                            &db,
+                            &settings,
+                            &alarms,
+                            &throttle,
+                            &mqtt_tx,
+                            &snapshots_dir,
+                            &frame,
+                            cam,
+                            "standing",
+                            anchor,
+                            Some(&zone),
+                            now,
+                            &mut last_fire,
+                        );
                     }
                 }
                 None => st.standing_on = false,
@@ -208,7 +255,11 @@ pub fn run(
 }
 
 /// Normalize a person's pixel keypoints to frame fractions for the classifier.
-fn normalize_keypoints(p: &detector::PersonPose, fw: f32, fh: f32) -> [Keypoint; pose::NUM_KEYPOINTS] {
+fn normalize_keypoints(
+    p: &detector::PersonPose,
+    fw: f32,
+    fh: f32,
+) -> [Keypoint; pose::NUM_KEYPOINTS] {
     let mut kpts = [Keypoint::default(); pose::NUM_KEYPOINTS];
     for (i, k) in p.keypoints.iter().enumerate() {
         kpts[i] = Keypoint {
@@ -266,7 +317,10 @@ fn emit(
         None
     } else {
         std::fs::create_dir_all(snapshots_dir).ok();
-        frame.save(snapshots_dir.join(&snap_rel)).ok().map(|_| snap_rel.clone())
+        frame
+            .save(snapshots_dir.join(&snap_rel))
+            .ok()
+            .map(|_| snap_rel.clone())
     };
 
     let id = match db.add_event(
@@ -334,7 +388,10 @@ fn emit(
 
 fn fetch_frame(api_base: &str, camera: &str) -> Option<Vec<u8>> {
     let url = format!("{api_base}/api/frame.jpeg?src={camera}");
-    let resp = ureq::get(&url).timeout(Duration::from_secs(5)).call().ok()?;
+    let resp = ureq::get(&url)
+        .timeout(Duration::from_secs(5))
+        .call()
+        .ok()?;
     let mut bytes = Vec::new();
     resp.into_reader()
         .take(32 * 1024 * 1024)

@@ -173,7 +173,11 @@ impl ResidentialState {
                 water_fired: false,
                 seeded: false,
             });
-            let dt = if m.seeded { (now - m.last_ts).max(0) } else { 0 };
+            let dt = if m.seeded {
+                (now - m.last_ts).max(0)
+            } else {
+                0
+            };
             let disp = ((a.0 - m.last_anchor.0).powi(2) + (a.1 - m.last_anchor.1).powi(2)).sqrt();
             let moving = disp > MOTION_EPS;
             m.still_secs = if moving { 0 } else { m.still_secs + dt };
@@ -339,13 +343,7 @@ mod tests {
         }];
         let mut total = Vec::new();
         // Outside, then inside for three frames, then leaves, then re-enters.
-        let path = [
-            (0.1, 0.1),
-            (0.5, 0.5),
-            (0.5, 0.5),
-            (0.1, 0.1),
-            (0.5, 0.5),
-        ];
+        let path = [(0.1, 0.1), (0.5, 0.5), (0.5, 0.5), (0.1, 0.1), (0.5, 0.5)];
         for (i, (x, y)) in path.iter().enumerate() {
             let t = trk(1, "person", *x, *y, 0.3);
             total.extend(st.tick(&[&t], &z, None, false, i as i64));
@@ -370,7 +368,11 @@ mod tests {
         let mut st2 = ResidentialState::default();
         let adult = trk(2, "person", 0.5, 0.5, 0.5);
         let out2 = st2.tick(&[&adult], &z, Some(0.3), false, 0);
-        assert_eq!(count(&out2, ResKind::ChildInZone), 0, "adult is not a child");
+        assert_eq!(
+            count(&out2, ResKind::ChildInZone),
+            0,
+            "adult is not a child"
+        );
     }
 
     #[test]
@@ -417,7 +419,11 @@ mod tests {
             let t = trk(1, "person", x, y, 0.1);
             total.extend(st.tick(&[&t], &[], None, true, now));
         }
-        assert_eq!(count(&total, ResKind::Fall), 1, "one fall after the still period");
+        assert_eq!(
+            count(&total, ResKind::Fall),
+            1,
+            "one fall after the still period"
+        );
     }
 
     #[test]
@@ -428,7 +434,11 @@ mod tests {
             let t = trk(1, "person", 0.5, 0.3, 0.1); // stays high in frame
             total.extend(st.tick(&[&t], &[], None, true, now));
         }
-        assert_eq!(count(&total, ResKind::Fall), 0, "standing still is not a fall");
+        assert_eq!(
+            count(&total, ResKind::Fall),
+            0,
+            "standing still is not a fall"
+        );
     }
 
     #[test]
@@ -459,6 +469,9 @@ mod tests {
         assert!(!st.motion.is_empty() && !st.inside.is_empty());
         st.tick(&[], &z, None, true, 1);
         assert!(st.motion.is_empty(), "motion state GC'd for retired track");
-        assert!(st.inside.is_empty(), "membership state GC'd for retired track");
+        assert!(
+            st.inside.is_empty(),
+            "membership state GC'd for retired track"
+        );
     }
 }

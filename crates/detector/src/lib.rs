@@ -279,7 +279,7 @@ fn decode_yolov8_pose(
 ) -> Vec<PersonPose> {
     let features = shape[1] as usize; // 56
     let anchors = shape[2] as usize; // 8400
-    // Guard: must have at least the box + score + 17*3 keypoint channels.
+                                     // Guard: must have at least the box + score + 17*3 keypoint channels.
     if features < 5 + POSE_KEYPOINTS * 3 {
         return Vec::new();
     }
@@ -327,11 +327,7 @@ fn pose_nms(mut poses: Vec<PersonPose>, iou_thresh: f32) -> Vec<PersonPose> {
     let mut keep: Vec<PersonPose> = Vec::new();
     'outer: for p in poses {
         for k in &keep {
-            if box_iou(
-                (p.x1, p.y1, p.x2, p.y2),
-                (k.x1, k.y1, k.x2, k.y2),
-            ) > iou_thresh
-            {
+            if box_iou((p.x1, p.y1, p.x2, p.y2), (k.x1, k.y1, k.x2, k.y2)) > iou_thresh {
                 continue 'outer;
             }
         }

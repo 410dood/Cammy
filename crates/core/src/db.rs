@@ -616,9 +616,9 @@ impl AlarmRule {
                 .filter(|l| !l.is_empty()),
             self.confirm_within_secs,
         ) {
-            (Some(lbl), Some(w)) if w > 0 => db
-                .has_recent_event(camera_id, lbl, now - w)
-                .unwrap_or(true),
+            (Some(lbl), Some(w)) if w > 0 => {
+                db.has_recent_event(camera_id, lbl, now - w).unwrap_or(true)
+            }
             _ => true,
         }
     }
@@ -3126,7 +3126,10 @@ mod tests {
         };
         assert!(zoned.zone_ok(Some("Backyard Pool")));
         assert!(!zoned.zone_ok(Some("Driveway")));
-        assert!(!zoned.zone_ok(None), "a zone-scoped rule needs a zoned event");
+        assert!(
+            !zoned.zone_ok(None),
+            "a zone-scoped rule needs a zoned event"
+        );
         assert!(rule.zone_ok(None), "an unscoped rule matches any/no zone");
         assert!(rule.zone_ok(Some("Pool")));
     }
@@ -3181,12 +3184,35 @@ mod tests {
         let cam = db
             .add_camera("confirm-cam", "rtsp://x", None, true, true)
             .unwrap();
-        assert!(!rule.confirm_ok(&db, cam.id, 1_000_000), "no companion event -> not confirmed");
-        db.add_event(cam.id, 1_000_000 - 5, "person", 0.9, [0.0; 4], None, None, None, None, None)
-            .unwrap();
-        assert!(rule.confirm_ok(&db, cam.id, 1_000_000), "companion person within window");
-        assert!(!rule.confirm_ok(&db, cam.id, 1_000_000 + 100), "companion now outside the window");
-        assert!(!rule.confirm_ok(&db, cam.id + 1, 1_000_000), "companion is on a different camera");
+        assert!(
+            !rule.confirm_ok(&db, cam.id, 1_000_000),
+            "no companion event -> not confirmed"
+        );
+        db.add_event(
+            cam.id,
+            1_000_000 - 5,
+            "person",
+            0.9,
+            [0.0; 4],
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            rule.confirm_ok(&db, cam.id, 1_000_000),
+            "companion person within window"
+        );
+        assert!(
+            !rule.confirm_ok(&db, cam.id, 1_000_000 + 100),
+            "companion now outside the window"
+        );
+        assert!(
+            !rule.confirm_ok(&db, cam.id + 1, 1_000_000),
+            "companion is on a different camera"
+        );
         // A legacy rule (no explicit scene) reads back as a 1-action scene
         // synthesized from the legacy action/target/priority columns.
         assert_eq!(back.actions.len(), 1);
