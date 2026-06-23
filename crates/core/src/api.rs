@@ -90,6 +90,10 @@ pub fn router(state: AppState) -> Router {
             "/api/users/{id}",
             axum::routing::patch(patch_user_api).delete(delete_user_api),
         )
+        .route(
+            "/api/users/{id}/cameras",
+            get(get_user_cameras).put(put_user_cameras),
+        )
         .route("/api/faces", get(faces_overview).post(enroll_face))
         .route(
             "/api/faces/{id}",
@@ -160,6 +164,10 @@ fn not_found() -> ApiError {
     ApiError(StatusCode::NOT_FOUND, "not found".into())
 }
 
+fn forbidden(msg: impl Into<String>) -> ApiError {
+    ApiError(StatusCode::FORBIDDEN, msg.into())
+}
+
 type ApiResult<T> = Result<T, ApiError>;
 
 async fn health() -> Json<serde_json::Value> {
@@ -174,11 +182,18 @@ async fn config(State(st): State<AppState>) -> Json<serde_json::Value> {
 /// Per-camera health: frame freshness from the detection pipeline + recorder
 /// liveness. `online` means a frame arrived within the last 3 poll intervals,
 /// or (for detect-off cameras) the recorder is alive.
-async fn camera_status(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+async fn camera_status(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
     let now = chrono::Local::now().timestamp();
     let window = crate::status::freshness_window(st.db.settings().poll_ms);
+    let allow = allowed_cameras(&st, &p)?;
     let mut out = serde_json::Map::new();
     for cam in st.db.list_cameras()? {
+        if !camera_allowed(&allow, cam.id) {
+            continue;
+        }
         let h = st
             .status
             .snapshot()
@@ -943,6 +958,90 @@ async fn delete_gait_api(State(st): State<AppState>, Path(id): Path<i64>) -> Api
     Ok(StatusCode::NO_CONTENT)
 }
 
+// --- per-camera RBAC scoping (#66) -------------------------------------------
+
+/// The set of camera ids the caller is allowed to see, or `None` when
+/// unrestricted. Unrestricted = an Admin, the loopback/legacy/token/SSO-unmatched
+/// caller (`user_id == None`), or a named user with an empty allow-list. A
+/// non-admin named user with a non-empty allow-list is scoped to exactly it.
+fn allowed_cameras(
+    st: &AppState,
+    p: &crate::auth::Principal,
+) -> ApiResult<Option<std::collections::HashSet<i64>>> {
+    if p.role == crate::auth::Role::Admin {
+        return Ok(None);
+    }
+    let Some(uid) = p.user_id else {
+        return Ok(None);
+    };
+    let ids = st.db.list_user_cameras(uid)?;
+    if ids.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(ids.into_iter().collect()))
+    }
+}
+
+/// Whether the caller may access camera `camera_id`.
+fn camera_allowed(allowed: &Option<std::collections::HashSet<i64>>, camera_id: i64) -> bool {
+    allowed
+        .as_ref()
+        .map(|s| s.contains(&camera_id))
+        .unwrap_or(true)
+}
+
+/// Guard a single-camera route: `not_found` (404, not 403, to avoid camera-id
+/// enumeration) when a scoped caller may not access `camera_id`.
+fn require_camera(
+    allowed: &Option<std::collections::HashSet<i64>>,
+    camera_id: i64,
+) -> ApiResult<()> {
+    if camera_allowed(allowed, camera_id) {
+        Ok(())
+    } else {
+        Err(not_found())
+    }
+}
+
+/// An Admin lists a user's camera allow-list (empty = unrestricted).
+async fn get_user_cameras(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<Vec<i64>>> {
+    Ok(Json(st.db.list_user_cameras(id)?))
+}
+
+#[derive(Deserialize)]
+struct SetUserCamerasReq {
+    camera_ids: Vec<i64>,
+}
+
+/// An Admin sets a user's camera allow-list. An empty list = unrestricted.
+async fn put_user_cameras(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<i64>,
+    Json(req): Json<SetUserCamerasReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !st.db.set_user_cameras(id, &req.camera_ids)? {
+        return Err(not_found());
+    }
+    // The scope is read live per request, so no session invalidation is needed.
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "user_cameras_set",
+        Some(&format!("#{id} -> {} camera(s)", req.camera_ids.len())),
+    );
+    Ok(Json(
+        serde_json::json!({ "id": id, "cameras": req.camera_ids.len() }),
+    ))
+}
+
 #[derive(Deserialize)]
 struct DiscoverReq {
     host: String,
@@ -1011,12 +1110,25 @@ pub(crate) fn urlencode(s: &str) -> String {
 
 // --- cameras --------------------------------------------------------------
 
-async fn list_cameras(State(st): State<AppState>) -> ApiResult<Json<Vec<Camera>>> {
-    Ok(Json(st.db.list_cameras()?))
+async fn list_cameras(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<Vec<Camera>>> {
+    let mut cams = st.db.list_cameras()?;
+    if let Some(set) = &allowed_cameras(&st, &p)? {
+        cams.retain(|c| set.contains(&c.id));
+    }
+    Ok(Json(cams))
 }
 
-async fn get_camera(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult<Json<Camera>> {
-    Ok(Json(st.db.get_camera(id)?.ok_or_else(not_found)?))
+async fn get_camera(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<Camera>> {
+    let cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
+    Ok(Json(cam))
 }
 
 #[derive(Deserialize)]
@@ -1135,9 +1247,11 @@ struct CameraPatch {
 async fn patch_camera(
     State(st): State<AppState>,
     Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Json(patch): Json<CameraPatch>,
 ) -> ApiResult<Json<Camera>> {
     let mut cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
     // go2rtc's config depends only on name/source/detect_source/enabled, so a
     // metadata-only patch (group, detect, record, zones) must NOT touch it —
     // restarting needlessly drops every live stream.
@@ -1236,8 +1350,13 @@ async fn patch_camera(
     Ok(Json(cam))
 }
 
-async fn delete_camera(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
+async fn delete_camera(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<StatusCode> {
     st.db.get_camera(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
     st.db.delete_camera(id)?;
     // Reconcile DELETEs just this camera's stream(s); other live views hold.
     st.go2rtc.sync_streams(&st.db, false)?;
@@ -1425,12 +1544,37 @@ async fn stream_ws(
     State(st): State<AppState>,
     ws: axum::extract::ws::WebSocketUpgrade,
     Query(q): Query<std::collections::HashMap<String, String>>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> Response {
     // Only forward the stream selector; build the upstream URL ourselves so a
     // client can't redirect us elsewhere.
     let src = q.get("src").cloned().unwrap_or_default();
     if src.trim().is_empty() {
         return bad_request("a stream name (?src=) is required").into_response();
+    }
+    // Per-camera RBAC: ?src is a client-supplied camera NAME forwarded verbatim
+    // upstream, so authorize the camera it ACTUALLY streams. Match the exact name
+    // first (covers a camera literally named "x_sub"); only if there's no exact
+    // camera treat it as the "{base}_sub" sub-stream and authorize the base. This
+    // avoids authorizing "x" while streaming a distinct "x_sub".
+    match allowed_cameras(&st, &p) {
+        Ok(Some(allow)) => {
+            let raw = src.trim();
+            let cid = match st.db.camera_by_name(raw) {
+                Ok(Some(id)) => Some(id),
+                Ok(None) => raw
+                    .strip_suffix("_sub")
+                    .and_then(|base| st.db.camera_by_name(base).ok().flatten()),
+                // DB error -> fail closed (deny) rather than leak.
+                Err(_) => return not_found().into_response(),
+            };
+            match cid {
+                Some(id) if allow.contains(&id) => {}
+                _ => return not_found().into_response(),
+            }
+        }
+        Ok(None) => {}
+        Err(e) => return e.into_response(),
     }
     let upstream = format!(
         "{}/api/ws?src={}",
@@ -1533,7 +1677,11 @@ fn ptz_target(st: &AppState, id: i64) -> Result<crate::ptz::CamTarget, ApiError>
 async fn ptz_caps(
     State(st): State<AppState>,
     Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    // Scope check first, propagated as 404 (not swallowed into supported:false),
+    // so an out-of-scope camera doesn't leak its PTZ capability.
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
     let target = match ptz_target(&st, id) {
         Ok(t) => t,
         Err(_) => return Ok(Json(serde_json::json!({ "supported": false }))),
@@ -1558,8 +1706,10 @@ struct PtzReq {
 async fn ptz_command(
     State(st): State<AppState>,
     Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Json(req): Json<PtzReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
     let target = ptz_target(&st, id)?;
     let clamp = |v: f32| v.clamp(-1.0, 1.0);
     let action = req.action.clone();
@@ -1579,8 +1729,13 @@ async fn ptz_command(
 /// Proxy the camera's current decoded frame from go2rtc as a same-origin JPEG.
 /// The zone/mask editor draws on top of this still; serving it through the core
 /// API avoids the cross-origin taint that blocks reading go2rtc pixels directly.
-async fn camera_frame(State(st): State<AppState>, Path(id): Path<i64>) -> ApiResult<Response> {
+async fn camera_frame(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Response> {
     let cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
     let url = format!("{}/api/frame.jpeg?src={}", st.go2rtc.api_base(), cam.name);
     let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
         use std::io::Read as _;
@@ -1623,8 +1778,13 @@ fn default_limit() -> u32 {
 async fn list_events(
     State(st): State<AppState>,
     Query(q): Query<EventQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<Vec<crate::db::Event>>> {
-    Ok(Json(st.db.list_events(
+    let allow = allowed_cameras(&st, &p)?;
+    if let Some(cid) = q.camera_id {
+        require_camera(&allow, cid)?;
+    }
+    let mut events = st.db.list_events(
         q.camera_id,
         q.label.as_deref(),
         q.gesture.as_deref(),
@@ -1633,7 +1793,13 @@ async fn list_events(
         q.before,
         q.flagged,
         q.limit.min(1000),
-    )?))
+    )?;
+    // Scoped users see only their cameras' events (the LIMIT applies pre-scope,
+    // so a page may under-fill — acceptable; never leaks another camera's event).
+    if let Some(set) = &allow {
+        events.retain(|e| set.contains(&e.camera_id));
+    }
+    Ok(Json(events))
 }
 
 /// Quote a CSV field per RFC 4180, and neutralize spreadsheet formula injection
@@ -1703,8 +1869,13 @@ fn events_to_csv(events: &[crate::db::Event]) -> String {
 async fn export_events_csv(
     State(st): State<AppState>,
     Query(q): Query<EventQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<impl IntoResponse> {
-    let events = st.db.list_events(
+    let allow = allowed_cameras(&st, &p)?;
+    if let Some(cid) = q.camera_id {
+        require_camera(&allow, cid)?;
+    }
+    let mut events = st.db.list_events(
         q.camera_id,
         q.label.as_deref(),
         q.gesture.as_deref(),
@@ -1714,6 +1885,9 @@ async fn export_events_csv(
         q.flagged,
         100_000,
     )?;
+    if let Some(set) = &allow {
+        events.retain(|e| set.contains(&e.camera_id));
+    }
     let csv = events_to_csv(&events);
     Ok((
         [
@@ -1757,8 +1931,13 @@ struct BookmarkReq {
 async fn bookmark_event(
     State(st): State<AppState>,
     Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Json(req): Json<BookmarkReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    // Load the event first so a scoped user can't flag/annotate (and so pin past
+    // retention) an event on a camera they can't see. 404 for missing OR forbidden.
+    let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
     let existed = match req.note {
         // Field omitted → only update the flag, leave the note as-is.
         None => st.db.set_event_flag(id, req.flagged)?,
@@ -1796,6 +1975,7 @@ struct GestureReq {
 /// surveillance semantics — events, snapshots, alarms — live here.
 async fn record_gesture(
     State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Json(req): Json<GestureReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let settings = st.db.settings();
@@ -1825,6 +2005,8 @@ async fn record_gesture(
         None => None,
     }
     .ok_or_else(|| bad_request("no camera to attribute the signal to — register or select one"))?;
+    // A scoped user can't create events / fire alarms on a camera they can't see.
+    require_camera(&allowed_cameras(&st, &p)?, cam.id)?;
 
     let now = chrono::Local::now().timestamp();
     let score = req.score.unwrap_or(1.0).clamp(0.0, 1.0);
@@ -2017,9 +2199,11 @@ async fn event_clip(
     State(st): State<AppState>,
     Path(id): Path<i64>,
     Query(q): Query<ClipQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     req: Request,
 ) -> ApiResult<Response> {
     let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
     let seg = st
         .db
         .find_segment_at(ev.camera_id, ev.ts)?
@@ -2083,11 +2267,22 @@ async fn snapshot(
     State(st): State<AppState>,
     Path(file): Path<String>,
     Query(q): Query<ThumbQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     req: Request,
 ) -> ApiResult<Response> {
     // Snapshot names are generated by us ({camera}-{ts}.jpg); reject traversal.
     if file.contains(['/', '\\']) || file.contains("..") {
         return Err(bad_request("bad snapshot name"));
+    }
+    // Per-camera RBAC: a scoped user may only fetch snapshots of their cameras.
+    // Camera names allow '-', so resolve the owning camera via the authoritative
+    // events table (not by parsing the filename); deny (404) if it maps to no
+    // event or a forbidden camera (fail-closed).
+    if let Some(allow) = &allowed_cameras(&st, &p)? {
+        match st.db.camera_for_snapshot(&file)? {
+            Some(cid) if allow.contains(&cid) => {}
+            _ => return Err(not_found()),
+        }
     }
     let path = st.snapshots_dir.join(&file);
     if !path.exists() {
@@ -2126,8 +2321,18 @@ async fn snapshot(
 
 // --- alarm manager -----------------------------------------------------------
 
-async fn list_alarms_api(State(st): State<AppState>) -> ApiResult<Json<Vec<crate::db::AlarmRule>>> {
-    Ok(Json(st.db.list_alarms()?))
+async fn list_alarms_api(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<Vec<crate::db::AlarmRule>>> {
+    let mut alarms = st.db.list_alarms()?;
+    // A scoped user sees only global rules (camera_id = None) + rules for their
+    // cameras — not forbidden cameras' rules (which carry their ids, watch
+    // strings, and webhook/MQTT targets).
+    if let Some(set) = &allowed_cameras(&st, &p)? {
+        alarms.retain(|a| a.camera_id.is_none_or(|cid| set.contains(&cid)));
+    }
+    Ok(Json(alarms))
 }
 
 async fn add_alarm_api(
@@ -2232,11 +2437,13 @@ fn default_search_limit() -> usize {
 async fn smart_search(
     State(st): State<AppState>,
     Query(q): Query<SearchQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let query = q.q.trim().to_string();
     if query.is_empty() {
         return Err(bad_request("empty query"));
     }
+    let allow = allowed_cameras(&st, &p)?;
     // Hybrid search: CLIP visual similarity on the snapshot (when the models are
     // present) PLUS a text match on the event's transcript + caption — so you
     // can search what was *said* / described, not only what was seen. With no
@@ -2286,9 +2493,19 @@ async fn smart_search(
     scored.retain(|(score, is_text, _)| *is_text || *score > 0.0);
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
+    // Materialize up to `limit` results, skipping events on cameras a scoped
+    // user can't see (filter as we go, not after take(), so the count stays honest
+    // and no forbidden transcript/caption/snapshot leaks).
+    let limit = q.limit.min(100);
     let mut results = Vec::new();
-    for (score, is_text, id) in scored.into_iter().take(q.limit.min(100)) {
+    for (score, is_text, id) in scored.into_iter() {
+        if results.len() >= limit {
+            break;
+        }
         if let Some(ev) = st.db.get_event(id)? {
+            if !camera_allowed(&allow, ev.camera_id) {
+                continue;
+            }
             results.push(serde_json::json!({
                 "similarity": score,
                 "match": if is_text { "speech" } else { "visual" },
@@ -2310,12 +2527,18 @@ async fn event_similar(
     State(st): State<AppState>,
     Path(id): Path<i64>,
     Query(q): Query<std::collections::HashMap<String, String>>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(24)
         .min(100);
+    let allow = allowed_cameras(&st, &p)?;
+    // The seed event must itself be visible to the caller (404 otherwise), so a
+    // scoped user can't probe forbidden cameras' crops.
+    let seed = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allow, seed.camera_id)?;
     let Some(query_emb) = st.db.crop_embedding_for(id)? else {
         return Ok(Json(
             serde_json::json!({ "results": [], "available": false }),
@@ -2337,8 +2560,14 @@ async fn event_similar(
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     let mut results = Vec::new();
-    for (score, eid) in scored.into_iter().take(limit) {
+    for (score, eid) in scored.into_iter() {
+        if results.len() >= limit {
+            break;
+        }
         if let Some(ev) = st.db.get_event(eid)? {
+            if !camera_allowed(&allow, ev.camera_id) {
+                continue;
+            }
             results.push(serde_json::json!({ "similarity": score, "event": ev }));
         }
     }
@@ -2354,8 +2583,20 @@ fn safe_file(name: &str) -> bool {
 }
 
 /// Enrolled identities + unknown face crops waiting to be named.
-async fn faces_overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+async fn faces_overview(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
     let enrolled = st.db.list_faces()?;
+    // Unknown-face crops are camera-derived images with no per-camera tag, so a
+    // scoped user must not browse them (they could show people on forbidden
+    // cameras). Hide the crop queue for scoped users (leak-safe v1); the enrolled
+    // identity library carries no camera data, so it stays visible.
+    if allowed_cameras(&st, &p)?.is_some() {
+        return Ok(Json(
+            serde_json::json!({ "enrolled": enrolled, "unknown": [] }),
+        ));
+    }
     let mut unknown: Vec<String> = std::fs::read_dir(st.faces_dir.join("unknown"))
         .map(|entries| {
             entries
@@ -2438,10 +2679,16 @@ async fn rename_face_api(
 async fn unknown_face_img(
     State(st): State<AppState>,
     Path(file): Path<String>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     req: Request,
 ) -> ApiResult<Response> {
     if !safe_file(&file) {
         return Err(bad_request("bad file name"));
+    }
+    // Unknown-face crops aren't camera-tagged; deny them to scoped users (they
+    // could depict people captured on a forbidden camera).
+    if allowed_cameras(&st, &p)?.is_some() {
+        return Err(not_found());
     }
     let path = st.faces_dir.join("unknown").join(&file);
     if !path.exists() {
@@ -2554,8 +2801,17 @@ struct RecordingQuery {
 async fn list_recordings(
     State(st): State<AppState>,
     Query(q): Query<RecordingQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<Vec<crate::db::SegmentRow>>> {
-    Ok(Json(st.db.list_segments(q.camera_id, q.limit.min(1000))?))
+    let allow = allowed_cameras(&st, &p)?;
+    if let Some(cid) = q.camera_id {
+        require_camera(&allow, cid)?;
+    }
+    let mut segs = st.db.list_segments(q.camera_id, q.limit.min(1000))?;
+    if let Some(set) = &allow {
+        segs.retain(|s| set.contains(&s.camera_id));
+    }
+    Ok(Json(segs))
 }
 
 #[derive(Deserialize)]
@@ -2569,7 +2825,9 @@ struct AtQuery {
 async fn recording_at(
     State(st): State<AppState>,
     Query(q): Query<AtQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    require_camera(&allowed_cameras(&st, &p)?, q.camera_id)?;
     let seg = st
         .db
         .find_segment_at(q.camera_id, q.ts)?
@@ -2590,9 +2848,11 @@ async fn recording_at(
 async fn segment_video(
     State(st): State<AppState>,
     Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     req: Request,
 ) -> ApiResult<Response> {
     let seg = st.db.get_segment(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, seg.camera_id)?;
     Ok(ServeFile::new(seg.path).oneshot(req).await.into_response())
 }
 
@@ -2600,8 +2860,23 @@ async fn segment_video(
 
 /// Storage + event totals for the dashboard: per-camera disk usage from the
 /// segment index, overall event count, and snapshot footprint.
-async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
-    let cameras = st.db.storage_stats()?;
+async fn stats(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let allow = allowed_cameras(&st, &p)?;
+    let mut cameras = st.db.storage_stats()?;
+    if let Some(set) = &allow {
+        cameras.retain(|c| set.contains(&c.camera_id));
+    }
+    // Scoped users get an event total over only their cameras (the global
+    // count_events() would leak the volume on cameras they can't see).
+    let events_total: i64 = match &allow {
+        Some(set) => st
+            .db
+            .count_events_in(&set.iter().copied().collect::<Vec<_>>())?,
+        None => st.db.count_events()?,
+    };
     let total_bytes: u64 = cameras.iter().map(|c| c.bytes).sum();
     let snapshots_bytes: u64 = std::fs::read_dir(&st.snapshots_dir)
         .map(|entries| {
@@ -2660,7 +2935,7 @@ async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>>
         "cameras": cameras,
         "total_bytes": total_bytes,
         "snapshots_bytes": snapshots_bytes,
-        "events_total": st.db.count_events()?,
+        "events_total": events_total,
         "disk_free_bytes": disk_free,
         "recordings_root": rec_root.to_string_lossy(),
         "write_bytes_per_day": write_per_day,
@@ -2680,10 +2955,12 @@ async fn stats(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>>
 async fn analytics_counts(
     State(st): State<AppState>,
     Query(q): Query<std::collections::HashMap<String, String>>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let from = q.get("from").and_then(|s| s.parse::<i64>().ok());
     let to = q.get("to").and_then(|s| s.parse::<i64>().ok());
-    Ok(Json(st.db.analytics_counts(from, to)?))
+    let allow = allowed_cameras(&st, &p)?;
+    Ok(Json(st.db.analytics_counts(from, to, allow.as_ref())?))
 }
 
 /// Live per-camera, per-zone occupancy from the status board — the current count
@@ -2692,14 +2969,21 @@ async fn analytics_counts(
 /// would otherwise linger after a camera goes offline or has its zones removed.
 /// Guard against that: report only enabled, online cameras and only zones that
 /// still exist in the camera's current config.
-async fn analytics_occupancy(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+async fn analytics_occupancy(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
     let board = st.status.snapshot();
     let cameras = st.db.list_cameras()?;
     let now = chrono::Local::now().timestamp();
     let window = crate::status::freshness_window(st.db.settings().poll_ms);
+    let allow = allowed_cameras(&st, &p)?;
     let rows: Vec<serde_json::Value> = cameras
         .iter()
         .filter_map(|c| {
+            if !camera_allowed(&allow, c.id) {
+                return None;
+            }
             let h = board.get(&c.id)?;
             if !c.enabled || !h.is_online(c.detect, now, window) {
                 return None;
@@ -2735,11 +3019,13 @@ async fn analytics_occupancy(State(st): State<AppState>) -> ApiResult<Json<serde
 async fn analytics_heatmap(
     State(st): State<AppState>,
     Query(q): Query<std::collections::HashMap<String, String>>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let camera = q
         .get("camera")
         .and_then(|s| s.parse::<i64>().ok())
         .ok_or_else(|| bad_request("camera id required"))?;
+    require_camera(&allowed_cameras(&st, &p)?, camera)?;
     let from = q.get("from").and_then(|s| s.parse::<i64>().ok());
     let to = q.get("to").and_then(|s| s.parse::<i64>().ok());
     let grid = q
@@ -2755,8 +3041,15 @@ async fn analytics_heatmap(
     ))
 }
 
-async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
-    let cameras = st.db.list_cameras()?;
+async fn overview(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let allow = allowed_cameras(&st, &p)?;
+    let mut cameras = st.db.list_cameras()?;
+    if let Some(set) = &allow {
+        cameras.retain(|c| set.contains(&c.id));
+    }
     let board = st.status.snapshot();
     let settings = st.db.settings();
     let now_dt = chrono::Local::now();
@@ -2783,7 +3076,7 @@ async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Valu
         use chrono::Timelike;
         now - now_dt.num_seconds_from_midnight() as i64
     };
-    let today = st.db.list_events(
+    let mut today = st.db.list_events(
         None,
         None,
         None,
@@ -2793,6 +3086,9 @@ async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Valu
         false,
         20_000,
     )?;
+    if let Some(set) = &allow {
+        today.retain(|e| set.contains(&e.camera_id));
+    }
     let mut by_label: std::collections::BTreeMap<String, u32> = Default::default();
     for e in &today {
         *by_label.entry(e.label.clone()).or_default() += 1;
@@ -2800,8 +3096,24 @@ async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Valu
     let mut today_by_label: Vec<(String, u32)> = by_label.into_iter().collect();
     today_by_label.sort_by_key(|x| std::cmp::Reverse(x.1));
 
-    let storage = st.db.storage_stats()?;
+    let mut storage = st.db.storage_stats()?;
+    if let Some(set) = &allow {
+        storage.retain(|c| set.contains(&c.camera_id));
+    }
     let total_bytes: u64 = storage.iter().map(|c| c.bytes).sum();
+    // Scoped users get camera-restricted totals; the global count_events() /
+    // count_unread_notifications() would leak volumes on cameras they can't see.
+    let events_total: i64 = match &allow {
+        Some(set) => st
+            .db
+            .count_events_in(&set.iter().copied().collect::<Vec<_>>())?,
+        None => st.db.count_events()?,
+    };
+    let unread_notifications: i64 = if allow.is_some() {
+        0
+    } else {
+        st.db.count_unread_notifications()?
+    };
     let rec_root = if settings.recordings_dir.trim().is_empty() {
         st.recordings_dir_default.clone()
     } else {
@@ -2815,12 +3127,12 @@ async fn overview(State(st): State<AppState>) -> ApiResult<Json<serde_json::Valu
         "cameras_total": enabled,
         "cameras_online": online,
         "recording": recording,
-        "events_total": st.db.count_events()?,
+        "events_total": events_total,
         "events_today": today.len(),
         "disk_free_bytes": disk_free,
         "total_bytes": total_bytes,
         "today_by_label": today_by_label,
-        "unread_notifications": st.db.count_unread_notifications()?,
+        "unread_notifications": unread_notifications,
         "arm_mode": settings.arm_mode,
     })))
 }
@@ -2900,7 +3212,14 @@ struct NotificationsQuery {
 async fn list_notifications_api(
     State(st): State<AppState>,
     Query(q): Query<NotificationsQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<Vec<crate::db::Notification>>> {
+    // Notifications aren't yet per-camera attributed, and they reference cameras
+    // (offline/anomaly/stranger) a scoped user may not see — so a scoped user
+    // gets none (leak-safe). Per-camera notification scoping is a follow-up.
+    if allowed_cameras(&st, &p)?.is_some() {
+        return Ok(Json(vec![]));
+    }
     Ok(Json(st.db.list_notifications(q.unread, q.limit.min(1000))?))
 }
 
@@ -2930,12 +3249,29 @@ struct DigestsQuery {
 async fn list_digests_api(
     State(st): State<AppState>,
     Query(q): Query<DigestsQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<Vec<crate::db::Digest>>> {
+    // Digests are pre-rendered cross-camera recaps with no per-camera field, so
+    // they can't be retro-scoped — a scoped user gets none (leak-safe).
+    if allowed_cameras(&st, &p)?.is_some() {
+        return Ok(Json(vec![]));
+    }
     Ok(Json(st.db.list_digests(q.limit.min(366))?))
 }
 
 /// Generate a digest for the last 24 hours immediately (manual "run now").
-async fn run_digest_api(State(st): State<AppState>) -> ApiResult<Json<crate::db::Digest>> {
+async fn run_digest_api(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<crate::db::Digest>> {
+    // Digests are whole-system cross-camera recaps (identities, plates, busiest
+    // camera). A scoped user must not generate/receive one — mirror the empty
+    // GET /api/digests behavior (leak-safe v1).
+    if allowed_cameras(&st, &p)?.is_some() {
+        return Err(forbidden(
+            "digests aren't available for camera-scoped accounts",
+        ));
+    }
     let now = chrono::Local::now().timestamp();
     let events = st.db.list_events(
         None,
@@ -3095,11 +3431,22 @@ fn render_metrics(version: &str, events: i64, disk_free: u64, cams: &[CamMetric]
 
 /// Prometheus metrics exposition. Gated by the same auth as the rest of `/api`,
 /// so a scraper authenticates with a Bearer token (or runs on the loopback box).
-async fn metrics(State(st): State<AppState>) -> ApiResult<impl IntoResponse> {
+async fn metrics(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<impl IntoResponse> {
     let now = chrono::Local::now().timestamp();
     let settings = st.db.settings();
     let window = crate::status::freshness_window(settings.poll_ms);
-    let cameras = st.db.list_cameras()?;
+    // Per-camera RBAC: a scoped user (or its matching SSO account) sees only their
+    // cameras' series; a token/admin/loopback scraper (user_id=None) is unrestricted.
+    let allow = allowed_cameras(&st, &p)?;
+    let cameras: Vec<_> = st
+        .db
+        .list_cameras()?
+        .into_iter()
+        .filter(|c| camera_allowed(&allow, c.id))
+        .collect();
     let storage = st.db.storage_stats()?;
     let health = st.status.snapshot();
     let store: std::collections::HashMap<i64, &crate::db::CamStorage> =
@@ -3128,12 +3475,13 @@ async fn metrics(State(st): State<AppState>) -> ApiResult<impl IntoResponse> {
     let disk_free = fs2::available_space(&rec_root)
         .or_else(|_| fs2::available_space(std::path::Path::new(".")))
         .unwrap_or(0);
-    let body = render_metrics(
-        env!("CARGO_PKG_VERSION"),
-        st.db.count_events()?,
-        disk_free,
-        &cams,
-    );
+    let events_total = match &allow {
+        Some(set) => st
+            .db
+            .count_events_in(&set.iter().copied().collect::<Vec<_>>())?,
+        None => st.db.count_events()?,
+    };
+    let body = render_metrics(env!("CARGO_PKG_VERSION"), events_total, disk_free, &cams);
     Ok((
         [(
             axum::http::header::CONTENT_TYPE,

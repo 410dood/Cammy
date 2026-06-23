@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, ArmMode, AuditEntry, fmtTime, Me, Role, Settings as S, User } from "../api";
+import { api, ApiToken, ArmMode, AuditEntry, Camera, fmtTime, Me, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
@@ -581,12 +581,51 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
   const [name, setName] = useState("");
   const [pw, setPw] = useState("");
   const [role, setRole] = useState<Role>("viewer");
+  const [cams, setCams] = useState<Camera[]>([]);
+  const [editing, setEditing] = useState<number | null>(null);
+  const [editIds, setEditIds] = useState<Set<number>>(new Set());
 
   const load = () => {
     api.me().then(setMe).catch(() => {});
     api.users().then(setUsers).catch(() => {});
+    api.cameras().then(setCams).catch(() => {});
   };
   useEffect(load, []);
+
+  const openScope = async (u: User) => {
+    if (editing === u.id) {
+      setEditing(null);
+      return;
+    }
+    try {
+      const ids = await api.userCameras(u.id);
+      setEditIds(new Set(ids));
+      setEditing(u.id);
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const toggleScope = (cid: number) => {
+    setEditIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(cid)) next.delete(cid);
+      else next.add(cid);
+      return next;
+    });
+  };
+  const saveScope = async (u: User) => {
+    try {
+      await api.setUserCameras(u.id, [...editIds]);
+      toast.success(
+        editIds.size === 0
+          ? `${u.username} can now see all cameras`
+          : `${u.username} restricted to ${editIds.size} camera(s)`
+      );
+      setEditing(null);
+    } catch (e) {
+      onError(String(e));
+    }
+  };
 
   // Only admins manage users (the backend gates it too).
   if (!me || me.role !== "admin") return null;
@@ -716,6 +755,16 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
                 </td>
                 <td className="muted">created <RelTime ts={u.created_ts} /></td>
                 <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  {u.role !== "admin" && (
+                    <button
+                      type="button"
+                      className={`btn ev-act ${editing === u.id ? "btn-primary" : "btn-ghost"}`}
+                      onClick={() => openScope(u)}
+                      title="Restrict which cameras this user can see"
+                    >
+                      Cameras
+                    </button>
+                  )}
                   <button type="button" className="btn btn-ghost ev-act" onClick={() => resetPw(u)}>
                     Reset password
                   </button>
@@ -730,6 +779,48 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
             ))}
           </tbody>
         </table>
+      )}
+      {editing !== null && (
+        <div className="card" style={{ background: "var(--surface-hover)", marginTop: 12, marginBottom: 0 }}>
+          <b>Camera access for {users.find((u) => u.id === editing)?.username}</b>
+          <p className="muted" style={{ margin: "4px 0" }}>
+            Tick the cameras this user may see (live, events, recordings, snapshots, everything).
+            Leave <b>all unticked</b> to give them access to <b>every</b> camera (the default).
+            Admins always see all.
+          </p>
+          {cams.length === 0 ? (
+            <p className="muted">No cameras yet.</p>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 6 }}>
+              {cams.map((c) => (
+                <label key={c.id} className="toggle" style={{ gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={editIds.has(c.id)}
+                    onChange={() => toggleScope(c.id)}
+                  />
+                  {c.name}
+                  {c.group && <span className="muted"> · {c.group}</span>}
+                </label>
+              ))}
+            </div>
+          )}
+          <div className="row" style={{ marginTop: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => saveScope(users.find((u) => u.id === editing)!)}
+            >
+              Save access
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={() => setEditing(null)}>
+              Cancel
+            </button>
+            <span className="muted">
+              {editIds.size === 0 ? "all cameras" : `${editIds.size} selected`}
+            </span>
+          </div>
+        </div>
       )}
     </div>
   );
