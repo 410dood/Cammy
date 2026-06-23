@@ -586,6 +586,7 @@ label.field {
   gap: 12px;
 }
 .event-card {
+  position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -594,6 +595,43 @@ label.field {
   transition: border-color 0.15s, transform 0.15s;
 }
 .event-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.event-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-ring); }
+
+/* Bulk-triage selection: per-card checkbox overlay + sticky action bar. */
+.event-check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-xs);
+  border: 2px solid #fff;
+  background: rgba(10, 12, 16, 0.6);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+.event-check.on { background: var(--accent); border-color: var(--accent); }
+.select-bar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+  background: var(--elevated);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+}
+.select-count { font-size: var(--text-sm); }
+.select-count b { font-variant-numeric: tabular-nums; }
 .event-card img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: #000; }
 .event-card .meta { padding: 10px 14px 12px; font-size: 0.84rem; }
 .event-card .meta b { text-transform: capitalize; }
