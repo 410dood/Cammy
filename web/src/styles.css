@@ -642,6 +642,8 @@ label.field {
   color: var(--text-subtle);
 }
 .empty-state-ico svg { width: 26px; height: 26px; }
+.empty-state-ico.danger { color: var(--danger); background: var(--danger-bg); border-color: transparent; }
+.empty-state-ico.warn { color: var(--warn); background: var(--warn-bg); border-color: transparent; }
 .empty-state-title { font-size: 1.02rem; font-weight: 650; color: var(--text); }
 .empty-state-hint {
   margin: 0;
@@ -898,6 +900,16 @@ label.field {
 .wall-alert { top: 8px; }
 
 .table-scroll { overflow-x: auto; }
+
+/* --- tablet (769–1024px): keep the desktop rail, but reclaim width and let the
+   live grid pack two cameras instead of dropping to one. ---------------------- */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .sidebar { width: 184px; }
+  .main { padding: 20px 22px 40px; }
+  .live-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  .event-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  .detail-body { grid-template-columns: 1fr 280px; }
+}
 
 /* --- mobile (Protect-app style: bottom tab bar, stacked layout) -------------- */
 @media (max-width: 768px) {

@@ -129,16 +129,19 @@ export function EmptyState({
   title,
   hint,
   action,
+  tone,
 }: {
   icon?: ReactNode;
   title: string;
   hint?: ReactNode;
   action?: ReactNode;
+  /** Tints the icon for non-neutral states (e.g. a failed load). */
+  tone?: "danger" | "warn";
 }) {
   return (
     <div className="empty-state">
       {icon && (
-        <div className="empty-state-ico" aria-hidden="true">
+        <div className={`empty-state-ico${tone ? ` ${tone}` : ""}`} aria-hidden="true">
           {icon}
         </div>
       )}
@@ -146,6 +149,34 @@ export function EmptyState({
       {hint && <p className="empty-state-hint">{hint}</p>}
       {action && <div className="empty-state-action">{action}</div>}
     </div>
+  );
+}
+
+/** A failed-to-load state — distinct from a genuinely-empty one — with a Retry.
+ *  Use this when a fetch errors so the surface doesn't lie "Nothing here yet." */
+export function ErrorState({
+  what,
+  message,
+  onRetry,
+}: {
+  what: string;
+  message?: string | null;
+  onRetry?: () => void;
+}) {
+  return (
+    <EmptyState
+      tone="danger"
+      icon={<IconAlert />}
+      title={`Couldn't load ${what}`}
+      hint={message || "The server didn't respond. Check that it's running and reachable, then retry."}
+      action={
+        onRetry ? (
+          <button className="btn btn-secondary" onClick={onRetry}>
+            Retry
+          </button>
+        ) : undefined
+      }
+    />
   );
 }
 
