@@ -165,6 +165,7 @@ export default function App() {
   const [locked, setLocked] = useState(false);
   const [palette, setPalette] = useState(false);
   const [focusCamera, setFocusCamera] = useState<Camera | null>(null);
+  const [focusEvent, setFocusEvent] = useState<number | null>(null);
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifs, setNotifs] = useState<Notification[]>([]);
@@ -266,6 +267,39 @@ export default function App() {
 
   if (locked) return <LoginOverlay />;
 
+  // Shared by the desktop rail (.rail-tools) and the mobile top bar (.topbar) —
+  // on mobile the sidebar collapses to a bottom tab bar, so without this the
+  // bell / command palette / theme toggle would be unreachable.
+  const toolButtons = (
+    <>
+      <button
+        className="icon-btn rail-bell"
+        title="Notifications"
+        aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`}
+        onClick={() => setNotifOpen(true)}
+      >
+        <IconBell size={17} />
+        {unread > 0 && <span className="notif-badge">{unread > 9 ? "9+" : unread}</span>}
+      </button>
+      <button
+        className="icon-btn"
+        title="Command palette (Ctrl/⌘ K)"
+        aria-label="Open command palette"
+        onClick={() => setPalette(true)}
+      >
+        <IconCommand size={17} />
+      </button>
+      <button
+        className="icon-btn"
+        title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+        aria-label="Toggle color theme"
+        onClick={flipTheme}
+      >
+        {theme === "light" ? <IconMoon size={17} /> : <IconSun size={17} />}
+      </button>
+    </>
+  );
+
   return (
     <>
       <nav className="sidebar">
@@ -291,37 +325,18 @@ export default function App() {
             </button>
           );
         })}
-        <div className="rail-tools">
-          <button
-            className="icon-btn rail-bell"
-            title="Notifications"
-            aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`}
-            onClick={() => setNotifOpen(true)}
-          >
-            <IconBell size={17} />
-            {unread > 0 && <span className="notif-badge">{unread > 9 ? "9+" : unread}</span>}
-          </button>
-          <button
-            className="icon-btn"
-            title="Command palette (Ctrl/⌘ K)"
-            aria-label="Open command palette"
-            onClick={() => setPalette(true)}
-          >
-            <IconCommand size={17} />
-          </button>
-          <button
-            className="icon-btn"
-            title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
-            aria-label="Toggle color theme"
-            onClick={flipTheme}
-          >
-            {theme === "light" ? <IconMoon size={17} /> : <IconSun size={17} />}
-          </button>
-        </div>
+        <div className="rail-tools">{toolButtons}</div>
         <div className="foot">
           {cameras.length} camera{cameras.length === 1 ? "" : "s"} · self-hosted NVR
         </div>
       </nav>
+      <header className="topbar">
+        <span className="topbar-brand">
+          Cam<span>my</span>
+        </span>
+        <span className="spacer" />
+        {toolButtons}
+      </header>
       <main className="main">
         {error && (
           <div className="error-banner" role="alert" onClick={() => setError(null)}>
@@ -343,7 +358,13 @@ export default function App() {
             onFocusHandled={() => setFocusCamera(null)}
           />
         )}
-        {page === "Events" && <Events cameras={cameras} />}
+        {page === "Events" && (
+          <Events
+            cameras={cameras}
+            focusEventId={focusEvent}
+            onFocusHandled={() => setFocusEvent(null)}
+          />
+        )}
         {page === "Family" && <Family cameras={cameras} />}
         {page === "Signals" && <Signals cameras={cameras} />}
         {page === "Recordings" && <Recordings cameras={cameras} />}
@@ -371,8 +392,9 @@ export default function App() {
           onClose={() => setNotifOpen(false)}
           onMarkRead={markRead}
           onMarkAll={markAllNotifs}
-          onOpenEvent={() => {
+          onOpenEvent={(eventId) => {
             setNotifOpen(false);
+            setFocusEvent(eventId);
             go("Events");
           }}
         />

@@ -27,7 +27,7 @@ export default function NotificationsPanel({
   onClose: () => void;
   onMarkRead: (id: number) => void;
   onMarkAll: () => void;
-  onOpenEvent: () => void;
+  onOpenEvent: (eventId: number) => void;
 }) {
   return (
     <div className="notif-overlay" onClick={onClose}>
@@ -72,7 +72,7 @@ export default function NotificationsPanel({
                   className={`notif-item ${n.read ? "" : "unread"}`}
                   onClick={() => {
                     if (!n.read) onMarkRead(n.id);
-                    if (n.event_id) onOpenEvent();
+                    if (n.event_id) onOpenEvent(n.event_id);
                   }}
                 >
                   <span className={`notif-ico ${tone}`}><Icon size={16} /></span>

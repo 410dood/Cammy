@@ -10,8 +10,19 @@ import PrivacyOverlay from "../PrivacyOverlay";
 import { useToast, useDialog, EmptyState } from "../ui";
 import {
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight,
-  IconPlus, IconMinus, IconExpand, IconRecDot, IconLayers, IconX, IconVideo,
+  IconPlus, IconMinus, IconExpand, IconRecDot, IconLayers, IconX, IconVideo, IconAlert,
 } from "../icons";
+
+// Humanized camera-tamper kinds (#63) for the live-tile warning chip.
+const TAMPER_LABEL: Record<string, string> = {
+  blackout: "Blacked out",
+  defocus: "Defocused",
+  scene_change: "View moved",
+};
+// A camera whose stream froze (online but no new frame) this many seconds behind
+// the freshest camera is flagged "No signal". Using the freshest frame across all
+// cameras as "now" makes this immune to client/server clock skew.
+const STALE_SECS = 30;
 
 /// Hold-to-move PTZ pad, shown only on cameras that answer ONVIF PTZ.
 function PtzPad({ cameraId }: { cameraId: number }) {
@@ -289,16 +300,32 @@ export default function Live({
         <div className="empty">No cameras in “{group}”.</div>
       ) : (
       <div className="live-grid">
-        {live.map((cam) => {
+        {(() => {
+          // "now" = freshest frame across all cameras (clock-skew-immune).
+          const serverNow = Math.max(
+            0,
+            ...Object.values(status).map((st) => st.last_frame_ts || 0),
+          );
+          return live.map((cam) => {
           const s = status[String(cam.id)];
+          const tamper = s?.tamper || null;
+          const stale =
+            !!s && s.online && !tamper && !!s.last_frame_ts && serverNow - s.last_frame_ts > STALE_SECS;
+          const dotCls = !s ? "" : !s.online ? "off" : tamper || stale ? "warn" : "on";
+          const alert = tamper ? TAMPER_LABEL[tamper] ?? "Tampered" : stale ? "No signal" : null;
           return (
             <div className="tile" key={cam.id}>
               <div className="label">
-                <span className={`dot ${s ? (s.online ? "on" : "off") : ""}`} /> {cam.name}
+                <span className={`dot ${dotCls}`} /> {cam.name}
                 {s?.recording && (
                   <span className="rec"><IconRecDot size={9} /> REC</span>
                 )}
               </div>
+              {alert && (
+                <div className="tile-alert" title={tamper ? "Possible camera tampering (#63)" : "Stream frozen — camera online but no fresh frames"}>
+                  <IconAlert size={13} /> {alert}
+                </div>
+              )}
               <LiveVideo name={cam.name} mode={mode} online={s ? s.online : undefined} />
               <PrivacyOverlay masks={cam.detect_config.privacy_masks} />
               <button
@@ -312,7 +339,8 @@ export default function Live({
               {ptz[cam.id] && <PtzPad cameraId={cam.id} />}
             </div>
           );
-        })}
+          });
+        })()}
       </div>
       )}
 
@@ -328,6 +356,7 @@ export default function Live({
         <Wall
           cameras={live}
           mode={mode}
+          status={status}
           onClose={() => {
             setWall(false);
             if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
