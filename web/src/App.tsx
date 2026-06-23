@@ -31,12 +31,17 @@ import {
   IconHome,
   IconMap,
   IconShield,
+  IconGrid,
 } from "./icons";
 import CommandPalette, { Command } from "./CommandPalette";
 import { getTheme, toggleTheme, Theme } from "./theme";
 
 const PAGES = ["Home", "Live", "Events", "Family", "Signals", "Recordings", "People", "Alarms", "Cameras", "Map", "Settings"] as const;
 type Page = (typeof PAGES)[number];
+
+// On mobile the bottom tab bar can't hold 11 tabs, so only these four show as
+// tabs; the rest live behind a "More" overflow sheet. (Desktop shows them all.)
+const MOBILE_PRIMARY: readonly Page[] = ["Home", "Live", "Events", "Recordings"];
 
 const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
   Home: IconHome,
@@ -168,6 +173,7 @@ export default function App() {
   const [focusEvent, setFocusEvent] = useState<number | null>(null);
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [notifOpen, setNotifOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [notifs, setNotifs] = useState<Notification[]>([]);
   const [camerasLoaded, setCamerasLoaded] = useState(false);
   const [dismissedOnboard, setDismissedOnboard] = useState(false);
@@ -311,7 +317,9 @@ export default function App() {
           return (
             <button
               key={p}
-              className={`nav-btn ${page === p ? "active" : ""}`}
+              className={`nav-btn ${page === p ? "active" : ""} ${
+                MOBILE_PRIMARY.includes(p) ? "" : "nav-secondary"
+              }`}
               onClick={() => {
                 setPage(p);
                 refresh();
@@ -325,6 +333,17 @@ export default function App() {
             </button>
           );
         })}
+        {/* Mobile-only overflow tab; CSS hides it on desktop (where all tabs show). */}
+        <button
+          className={`nav-btn nav-more ${!MOBILE_PRIMARY.includes(page) ? "active" : ""}`}
+          onClick={() => setMoreOpen(true)}
+          aria-haspopup="dialog"
+        >
+          <span className="nav-ico">
+            <IconGrid size={20} />
+          </span>
+          <span className="nav-label">More</span>
+        </button>
         <div className="rail-tools">{toolButtons}</div>
         <div className="foot">
           {cameras.length} camera{cameras.length === 1 ? "" : "s"} · self-hosted NVR
@@ -384,6 +403,38 @@ export default function App() {
           }}
           onClose={() => setDismissedOnboard(true)}
         />
+      )}
+      {moreOpen && (
+        <div className="more-overlay" onClick={() => setMoreOpen(false)}>
+          <div
+            className="more-sheet"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="More pages"
+          >
+            <div className="more-grid">
+              {PAGES.filter((p) => !MOBILE_PRIMARY.includes(p)).map((p) => {
+                const Icon = ICONS[p];
+                return (
+                  <button
+                    key={p}
+                    className={`more-item ${page === p ? "active" : ""}`}
+                    onClick={() => {
+                      setPage(p);
+                      refresh();
+                      setMoreOpen(false);
+                    }}
+                    aria-current={page === p ? "page" : undefined}
+                  >
+                    <Icon size={22} />
+                    <span>{p}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       )}
       {palette && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
       {notifOpen && (
