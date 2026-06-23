@@ -23,6 +23,7 @@ mod health;
 pub mod lpr;
 mod mqtt;
 mod notify;
+mod parcel;
 mod pipeline;
 mod posture;
 mod proc;

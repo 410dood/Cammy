@@ -38,6 +38,9 @@ function TuneModal({
     tamper_detect: camera.detect_config.tamper_detect ?? false,
     gait_identify: camera.detect_config.gait_identify ?? false,
     retention_days: camera.detect_config.retention_days ?? null,
+    package_detect: camera.detect_config.package_detect ?? false,
+    package_zone: camera.detect_config.package_zone ?? null,
+    package_labels: camera.detect_config.package_labels ?? [],
     fall_detect: camera.detect_config.fall_detect ?? false,
     child_height_frac: camera.detect_config.child_height_frac ?? null,
     pose_detect: camera.detect_config.pose_detect ?? false,
@@ -248,6 +251,40 @@ function TuneModal({
               <option value="off">off</option>
             </select>
           </label>
+          <label
+            className="toggle field"
+            title="Porch-piracy alerts: fire a 'package' event when a parcel-like object sits in view for a while, and 'package_removed' when it's taken. Watches the whole frame (a package zone is API-settable). Make alarm rules with label 'package' / 'package_removed'."
+          >
+            package detection
+            <input
+              type="checkbox"
+              checked={dc.package_detect ?? false}
+              onChange={() => setDc({ ...dc, package_detect: !dc.package_detect })}
+            />
+          </label>
+          {dc.package_detect && (
+            <label
+              className="field"
+              title="Labels that count as a parcel (comma-separated). Blank uses the defaults: suitcase, backpack, handbag. Add 'package' if your model has that class."
+            >
+              package labels (blank = default)
+              <input
+                type="text"
+                style={{ width: 220 }}
+                placeholder="suitcase, backpack, handbag"
+                value={(dc.package_labels ?? []).join(", ")}
+                onChange={(e) =>
+                  setDc({
+                    ...dc,
+                    package_labels: e.target.value
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  })
+                }
+              />
+            </label>
+          )}
           <label
             className="toggle field"
             title="Keep only footage near events: segments with no detection within a segment-length margin are deleted after a 15-minute grace period. Saves most of the disk on quiet cameras."

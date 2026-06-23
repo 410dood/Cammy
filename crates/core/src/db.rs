@@ -288,6 +288,19 @@ pub struct DetectConfig {
     /// continuous packet-copy recorder only.
     #[serde(default)]
     pub record_schedule: Option<Schedule>,
+    /// Package / parcel monitoring (#69, "porch piracy"): emit a `package` event
+    /// when a parcel-like object persists in the zone, and `package_removed` when
+    /// it's taken. Off by default (opt-in).
+    #[serde(default)]
+    pub package_detect: bool,
+    /// Polygon (0..1 fractions) the parcel must sit inside; `None` = whole frame.
+    #[serde(default)]
+    pub package_zone: Option<Vec<[f32; 2]>>,
+    /// Labels that count as a parcel; empty = the default COCO carry-item set
+    /// (`suitcase`/`backpack`/`handbag`). Add a real `package` class here if your
+    /// model has one.
+    #[serde(default)]
+    pub package_labels: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -3605,6 +3618,9 @@ mod tests {
                 start_hhmm: Some("08:00".into()),
                 end_hhmm: Some("18:00".into()),
             }),
+            package_detect: true,
+            package_zone: Some(vec![[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]),
+            package_labels: vec!["package".to_string()],
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
