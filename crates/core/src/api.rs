@@ -142,6 +142,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/metrics", get(metrics))
         .route("/api/backup", get(backup))
         .route("/api/restore", axum::routing::post(restore))
+        .route("/api/offsite/status", get(offsite_status))
         .route("/api/player/{file}", get(go2rtc_player))
         .route("/api/ws", get(stream_ws))
         .with_state(state)
@@ -1501,6 +1502,39 @@ async fn restore(
         "cameras_added": cams_added,
         "cameras_skipped": cams_skipped,
         "alarms_added": alarms_added,
+    })))
+}
+
+/// Offsite-backup health (matrix #70): config (no secrets) + sync state. Used by
+/// the Settings "Offsite backup" card. The secret key is never returned here.
+async fn offsite_status(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let s = st.db.settings();
+    // When backup is off the readout is hidden client-side, so skip the stats
+    // scan entirely — a feature-off deployment pays nothing for the 5 s poll.
+    let stats = if s.offsite_backup_enabled {
+        st.db.offsite_stats()?
+    } else {
+        crate::db::OffsiteStats::default()
+    };
+    let configured = !s.offsite_endpoint.trim().is_empty()
+        && !s.offsite_bucket.trim().is_empty()
+        && !s.offsite_access_key.trim().is_empty()
+        && !s.offsite_secret_key.trim().is_empty();
+    Ok(Json(serde_json::json!({
+        "enabled": s.offsite_backup_enabled,
+        "configured": configured,
+        "last_success_ts": stats.last_success_ts,
+        "backlog": stats.backlog,
+        "bytes_total": stats.bytes_total,
+        "done": stats.done,
+        "skipped": stats.skipped,
+        "gaveup": stats.gaveup,
+        "last_error": stats.last_error,
+        "per_camera": stats
+            .per_camera
+            .iter()
+            .map(|(c, b)| serde_json::json!({ "camera": c, "bytes": b }))
+            .collect::<Vec<_>>(),
     })))
 }
 
@@ -3402,6 +3436,24 @@ struct CamMetric {
     segments: i64,
 }
 
+/// Offsite-backup gauges (matrix #70) for the metrics exposition.
+#[derive(Default)]
+struct BackupMetric {
+    enabled: bool,
+    /// Seconds since the last successful upload, if any has succeeded.
+    last_success_age: Option<i64>,
+    /// Sealed segments not yet backed up offsite.
+    backlog: i64,
+    /// Total bytes uploaded.
+    bytes_total: i64,
+    /// Segments whose local file was pruned before backup (terminal loss).
+    skipped: i64,
+    /// Segments that exhausted retries / were oversize (terminal loss).
+    gaveup: i64,
+    /// Bytes uploaded per camera.
+    per_camera: Vec<(String, i64)>,
+}
+
 /// Escape a Prometheus label value (backslash, double-quote, newline).
 fn esc_label(s: &str) -> String {
     s.replace('\\', "\\\\")
@@ -3411,7 +3463,13 @@ fn esc_label(s: &str) -> String {
 
 /// Render the metrics exposition text (Prometheus 0.0.4). Pure so it's unit-
 /// testable without a server.
-fn render_metrics(version: &str, events: i64, disk_free: u64, cams: &[CamMetric]) -> String {
+fn render_metrics(
+    version: &str,
+    events: i64,
+    disk_free: u64,
+    cams: &[CamMetric],
+    backup: &BackupMetric,
+) -> String {
     let online = cams.iter().filter(|c| c.online).count();
     let mut out = String::new();
     let family = |out: &mut String, name: &str, help: &str, kind: &str| {
@@ -3526,6 +3584,73 @@ fn render_metrics(version: &str, events: i64, disk_free: u64, cams: &[CamMetric]
             ));
         }
     }
+
+    // Offsite backup (#70).
+    family(
+        &mut out,
+        "zoomy_backup_enabled",
+        "Offsite backup enabled (1/0).",
+        "gauge",
+    );
+    out.push_str(&format!("zoomy_backup_enabled {}\n", backup.enabled as u8));
+    family(
+        &mut out,
+        "zoomy_backup_backlog_segments",
+        "Sealed segments not yet backed up offsite.",
+        "gauge",
+    );
+    out.push_str(&format!(
+        "zoomy_backup_backlog_segments {}\n",
+        backup.backlog
+    ));
+    family(
+        &mut out,
+        "zoomy_backup_bytes_total",
+        "Total bytes uploaded offsite.",
+        "gauge",
+    );
+    out.push_str(&format!(
+        "zoomy_backup_bytes_total {}\n",
+        backup.bytes_total
+    ));
+    family(
+        &mut out,
+        "zoomy_backup_last_success_seconds",
+        "Seconds since the last successful offsite upload.",
+        "gauge",
+    );
+    if let Some(age) = backup.last_success_age {
+        out.push_str(&format!("zoomy_backup_last_success_seconds {age}\n"));
+    }
+    family(
+        &mut out,
+        "zoomy_backup_skipped_segments",
+        "Segments dropped (pruned locally) before they could be backed up.",
+        "gauge",
+    );
+    out.push_str(&format!(
+        "zoomy_backup_skipped_segments {}\n",
+        backup.skipped
+    ));
+    family(
+        &mut out,
+        "zoomy_backup_gaveup_segments",
+        "Segments abandoned after exhausting backup retries or oversize.",
+        "gauge",
+    );
+    out.push_str(&format!("zoomy_backup_gaveup_segments {}\n", backup.gaveup));
+    family(
+        &mut out,
+        "zoomy_backup_camera_bytes",
+        "Bytes uploaded offsite per camera.",
+        "gauge",
+    );
+    for (cam, bytes) in &backup.per_camera {
+        out.push_str(&format!(
+            "zoomy_backup_camera_bytes{{camera=\"{}\"}} {bytes}\n",
+            esc_label(cam)
+        ));
+    }
     out
 }
 
@@ -3581,7 +3706,29 @@ async fn metrics(
             .count_events_in(&set.iter().copied().collect::<Vec<_>>())?,
         None => st.db.count_events()?,
     };
-    let body = render_metrics(env!("CARGO_PKG_VERSION"), events_total, disk_free, &cams);
+    // Only pay for the backup stats scan when the feature is on — otherwise
+    // every Prometheus scrape would needlessly walk segments + offsite_uploads.
+    let bstats = if settings.offsite_backup_enabled {
+        st.db.offsite_stats().unwrap_or_default()
+    } else {
+        crate::db::OffsiteStats::default()
+    };
+    let backup = BackupMetric {
+        enabled: settings.offsite_backup_enabled,
+        last_success_age: bstats.last_success_ts.map(|t| (now - t).max(0)),
+        backlog: bstats.backlog,
+        bytes_total: bstats.bytes_total,
+        skipped: bstats.skipped,
+        gaveup: bstats.gaveup,
+        per_camera: bstats.per_camera,
+    };
+    let body = render_metrics(
+        env!("CARGO_PKG_VERSION"),
+        events_total,
+        disk_free,
+        &cams,
+        &backup,
+    );
     Ok((
         [(
             axum::http::header::CONTENT_TYPE,
@@ -3683,11 +3830,14 @@ async fn delete_token(
 
 async fn get_settings(State(st): State<AppState>) -> Json<Settings> {
     let mut s = st.db.settings();
-    // GET /api/settings is Viewer-reachable; never hand the SMTP password back.
-    // The field is write-only: a blank smtp_pass on save preserves the stored one
-    // (see put_settings), so blanking it here doesn't lose it.
+    // GET /api/settings is Viewer-reachable; never hand secrets back. These
+    // fields are write-only: a blank value on save preserves the stored one
+    // (see put_settings), so blanking here doesn't lose it.
     if !s.smtp_pass.is_empty() {
         s.smtp_pass = String::new();
+    }
+    if !s.offsite_secret_key.is_empty() {
+        s.offsite_secret_key = String::new();
     }
     Json(s)
 }
@@ -3717,15 +3867,40 @@ async fn put_settings(
             .map_err(|e| bad_request(format!("recordings dir not writable: {e}")))?;
         let _ = std::fs::remove_file(&probe);
     }
-    // SMTP password is write-only (get_settings blanks it): a blank incoming
-    // value means "unchanged", so restore the stored one rather than wipe it.
+    // Validate the offsite-backup target when one is set. NOTE: unlike the
+    // WebPush endpoint, a private/LAN endpoint is intentionally allowed here —
+    // the whole point is bring-your-own MinIO/NAS — so we only require an
+    // http(s):// scheme and reject control chars (same hardening as camera
+    // sources, which flow into generated config).
+    let ep = s.offsite_endpoint.trim();
+    if !(ep.is_empty() || ep.starts_with("http://") || ep.starts_with("https://")) {
+        return Err(bad_request(
+            "offsite endpoint must be an http:// or https:// URL",
+        ));
+    }
+    if !no_control(&s.offsite_endpoint)
+        || !no_control(&s.offsite_region)
+        || !no_control(&s.offsite_bucket)
+        || !no_control(&s.offsite_prefix)
+        || !no_control(&s.offsite_access_key)
+        || !no_control(&s.offsite_secret_key)
+    {
+        return Err(bad_request("offsite settings contain invalid characters"));
+    }
+    // SMTP password and the S3 secret key are write-only (get_settings blanks
+    // them): a blank incoming value means "unchanged", so restore the stored one
+    // rather than wipe it.
     let mut s = s;
     if s.smtp_pass.is_empty() {
         s.smtp_pass = st.db.settings().smtp_pass;
     }
+    if s.offsite_secret_key.is_empty() {
+        s.offsite_secret_key = st.db.settings().offsite_secret_key;
+    }
     st.db.save_settings(&s)?;
     let mut out = st.db.settings();
     out.smtp_pass = String::new(); // never echo the secret back
+    out.offsite_secret_key = String::new();
     Ok(Json(out))
 }
 
@@ -3733,7 +3908,7 @@ async fn put_settings(
 mod tests {
     use super::{
         csv_field, events_to_csv, no_control, render_metrics, valid_group, valid_source,
-        BookmarkReq, CamMetric,
+        BackupMetric, BookmarkReq, CamMetric,
     };
 
     #[test]
@@ -3811,13 +3986,30 @@ mod tests {
                 segments: 0,
             },
         ];
-        let m = render_metrics("0.1.0", 42, 9999, &cams);
+        let backup = BackupMetric {
+            enabled: true,
+            last_success_age: Some(12),
+            backlog: 3,
+            bytes_total: 4096,
+            skipped: 1,
+            gaveup: 0,
+            per_camera: vec![("porch".into(), 4096)],
+        };
+        let m = render_metrics("0.1.0", 42, 9999, &cams, &backup);
         // Global gauges.
         assert!(m.contains("zoomy_build_info{version=\"0.1.0\"} 1\n"));
         assert!(m.contains("\nzoomy_cameras 2\n"));
         assert!(m.contains("\nzoomy_cameras_online 1\n"));
         assert!(m.contains("\nzoomy_events 42\n"));
         assert!(m.contains("\nzoomy_disk_free_bytes 9999\n"));
+        // Offsite-backup gauges (#70).
+        assert!(m.contains("\nzoomy_backup_enabled 1\n"));
+        assert!(m.contains("\nzoomy_backup_backlog_segments 3\n"));
+        assert!(m.contains("\nzoomy_backup_bytes_total 4096\n"));
+        assert!(m.contains("\nzoomy_backup_last_success_seconds 12\n"));
+        assert!(m.contains("\nzoomy_backup_skipped_segments 1\n"));
+        assert!(m.contains("\nzoomy_backup_gaveup_segments 0\n"));
+        assert!(m.contains("zoomy_backup_camera_bytes{camera=\"porch\"} 4096\n"));
         // Per-camera, with HELP/TYPE headers and escaped labels.
         assert!(m.contains("# TYPE zoomy_camera_online gauge\n"));
         assert!(m.contains("zoomy_camera_online{camera=\"porch\"} 1\n"));

@@ -24,6 +24,7 @@ pub mod lpr;
 mod mqtt;
 mod notify;
 mod parcel;
+mod offsite;
 mod pipeline;
 mod posture;
 mod proc;
@@ -32,6 +33,7 @@ mod push;
 mod record;
 mod residential;
 mod schedule;
+mod sigv4;
 mod smart;
 mod status;
 mod tamper;
@@ -203,6 +205,11 @@ pub async fn run(
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || push::run(db, stop)
     })?;
+    // #70: offsite/cloud backup of recordings to S3-compatible storage. Opt-in
+    // (gated on Settings.offsite_backup_enabled), re-reads live config each tick.
+    let offsite_thread = std::thread::Builder::new().name("offsite".into()).spawn({
+        let (db, stop) = (db.clone(), workers_stop.clone());
+        move || offsite::run(db, stop)
     let audio_thread = std::thread::Builder::new().name("audio".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -345,6 +352,7 @@ pub async fn run(
         let _ = schedule_thread.join();
         let _ = pose_thread.join();
         let _ = push_thread.join();
+        let _ = offsite_thread.join();
     })
     .await;
     go2rtc.stop();

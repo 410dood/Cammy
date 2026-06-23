@@ -243,6 +243,28 @@ export interface ArmScheduleEntry {
   days: number[];
   hhmm: string;
   mode: ArmMode;
+  /** Offsite backup of recordings to S3-compatible storage (#70).
+   *  offsite_secret_key is write-only (blank on read; blank on save keeps it). */
+  offsite_backup_enabled: boolean;
+  offsite_endpoint: string;
+  offsite_region: string;
+  offsite_bucket: string;
+  offsite_prefix: string;
+  offsite_access_key: string;
+  offsite_secret_key: string;
+}
+
+export interface OffsiteStatus {
+  enabled: boolean;
+  configured: boolean;
+  last_success_ts: number | null;
+  backlog: number;
+  bytes_total: number;
+  done: number;
+  skipped: number;
+  gaveup: number;
+  last_error: string | null;
+  per_camera: { camera: string; bytes: number }[];
 }
 
 export interface CamStorage {
@@ -652,6 +674,7 @@ export const api = {
   settings: () => req<Settings>("/api/settings"),
   saveSettings: (s: Settings) =>
     req<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
+  offsiteStatus: () => req<OffsiteStatus>("/api/offsite/status"),
   overview: () => req<Overview>("/api/overview"),
   analyticsCounts: (from?: number, to?: number) => {
     const p = new URLSearchParams();
@@ -738,4 +761,10 @@ export function relTime(ts: number, nowMs: number = Date.now()): string {
   });
 }
 export const fmtBytes = (b: number) =>
-  b > 1e9 ? `${(b / 1e9).toFixed(2)} GB` : b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.round(b / 1e3)} KB`;
+  b > 1e12
+    ? `${(b / 1e12).toFixed(2)} TB`
+    : b > 1e9
+      ? `${(b / 1e9).toFixed(2)} GB`
+      : b > 1e6
+        ? `${(b / 1e6).toFixed(1)} MB`
+        : `${Math.round(b / 1e3)} KB`;
