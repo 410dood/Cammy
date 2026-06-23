@@ -229,7 +229,7 @@ export default function Home({
           ) : (
             <div className="row" style={{ flexWrap: "wrap" }}>
               {counts.map(([label, n]) => (
-                <span key={label} className="badge accent" style={{ textTransform: "capitalize" }}>
+                <span key={label} className="badge" style={{ textTransform: "capitalize" }}>
                   {label} <b className="tnum">{n}</b>
                 </span>
               ))}
@@ -339,7 +339,7 @@ export default function Home({
               <h2>Live occupancy</h2>
               <div className="row" style={{ flexWrap: "wrap" }}>
                 {occRows.map((r) => (
-                  <span key={`${r.camera}-${r.zone}`} className="badge accent">
+                  <span key={`${r.camera}-${r.zone}`} className="badge">
                     {r.zone} <b className="tnum">{r.count}</b>
                     <span className="muted"> · {r.camera}</span>
                   </span>

@@ -2,10 +2,10 @@
 // clock, for a dedicated monitor. Keeps the screen awake (Wake Lock), Esc exits.
 
 import { useEffect, useState } from "react";
-import { Camera, StreamMode } from "./api";
+import { Camera, StatusMap, StreamMode } from "./api";
 import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
-import { IconX } from "./icons";
+import { IconX, IconAlert } from "./icons";
 
 function gridCols(n: number): number {
   if (n <= 1) return 1;
@@ -14,13 +14,21 @@ function gridCols(n: number): number {
   return 4;
 }
 
+const TAMPER_LABEL: Record<string, string> = {
+  blackout: "Blacked out",
+  defocus: "Defocused",
+  scene_change: "View moved",
+};
+
 export default function Wall({
   cameras,
   mode,
+  status,
   onClose,
 }: {
   cameras: Camera[];
   mode: StreamMode;
+  status?: StatusMap;
   onClose: () => void;
 }) {
   const [clock, setClock] = useState("");
@@ -78,13 +86,29 @@ export default function Wall({
           className="wall-grid"
           style={{ gridTemplateColumns: `repeat(${gridCols(cameras.length)}, 1fr)` }}
         >
-          {cameras.map((c) => (
-            <div className="wall-tile" key={c.id}>
-              <LiveVideo name={c.name} mode={mode} />
-              <PrivacyOverlay masks={c.detect_config.privacy_masks} />
-              <span className="wall-name">{c.name}</span>
-            </div>
-          ))}
+          {(() => {
+            const st = status ?? {};
+            const serverNow = Math.max(0, ...Object.values(st).map((x) => x.last_frame_ts || 0));
+            return cameras.map((c) => {
+              const s = st[String(c.id)];
+              const tamper = s?.tamper || null;
+              const stale =
+                !!s && s.online && !tamper && !!s.last_frame_ts && serverNow - s.last_frame_ts > 30;
+              const alert = tamper ? TAMPER_LABEL[tamper] ?? "Tampered" : stale ? "No signal" : null;
+              return (
+                <div className="wall-tile" key={c.id}>
+                  <LiveVideo name={c.name} mode={mode} />
+                  <PrivacyOverlay masks={c.detect_config.privacy_masks} />
+                  <span className="wall-name">{c.name}</span>
+                  {alert && (
+                    <span className="wall-alert">
+                      <IconAlert size={13} /> {alert}
+                    </span>
+                  )}
+                </div>
+              );
+            });
+          })()}
         </div>
       )}
       <div className="wall-clock">{clock}</div>

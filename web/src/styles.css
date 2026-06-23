@@ -310,6 +310,28 @@ body {
   text-transform: uppercase;
 }
 
+/* --- mobile top bar (only shown on narrow screens; see @media below) -------
+   The sidebar collapses to a bottom tab bar on mobile, which would strand the
+   notifications bell, command palette, and theme toggle — this restores them. */
+.topbar { display: none; }
+.topbar-brand {
+  font-weight: var(--fw-bold);
+  font-size: 0.95rem;
+  letter-spacing: var(--ls-tight);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.topbar-brand::before {
+  content: "";
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: radial-gradient(circle at 34% 30%, #5aa0ff, var(--accent) 58%, #0042a0);
+  box-shadow: 0 0 0 1px rgba(0, 111, 255, 0.35), 0 2px 8px rgba(0, 111, 255, 0.4);
+}
+.topbar-brand span { color: var(--accent-text); }
+
 /* --- main ------------------------------------------------------------------ */
 .main { flex: 1; padding: 24px 30px 48px; min-width: 0; }
 .main h1 {
@@ -435,6 +457,9 @@ video-stream.live-video .info { display: none; }
   border-radius: var(--radius);
   padding: 18px 20px;
   margin-bottom: 14px;
+  /* One quiet, system-wide lift so content cards read as physical surfaces
+     on the near-equal-darkness canvas (matches .stat-card). */
+  box-shadow: var(--shadow-1), var(--edge-light);
 }
 .card h2 {
   margin: 0 0 14px;
@@ -488,6 +513,40 @@ select {
   cursor: pointer;
 }
 input::-webkit-calendar-picker-indicator { filter: invert(0.7); cursor: pointer; }
+
+/* Themed checkbox / radio — stop them rendering as light OS widgets (the same
+   reason <select> gets a custom chevron above). Uses the accent on :checked. */
+input[type="checkbox"], input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+  border: var(--bw-strong) solid var(--border-strong);
+  background: var(--surface-hover);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  vertical-align: -0.18em;
+  background-repeat: no-repeat;
+  background-position: center;
+  transition: background-color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+input[type="radio"] { border-radius: 50%; }
+input[type="checkbox"]:hover:not(:disabled),
+input[type="radio"]:hover:not(:disabled) { border-color: var(--border-hover); }
+input[type="checkbox"]:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  background-size: 11px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23f7faff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.5 5 9l4.5-5.5'/%3E%3C/svg%3E");
+}
+input[type="radio"]:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  background-image: radial-gradient(circle at center, var(--text-on-accent) 0 3px, transparent 3.5px);
+}
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: 0.5; cursor: default; }
 label.field {
   display: flex;
   flex-direction: column;
@@ -496,42 +555,10 @@ label.field {
   color: #aeb4c0; /* labels are essential, lifted off --muted */
 }
 
-/* Legacy bare-class buttons (button.primary/.ghost/.danger/.secondary) are kept
-   pixel-identical to the .btn system below so the whole app shares one button
-   look (inline-flex + gap for icon+text, press feedback, disabled-safe hover). */
-button.primary, button.ghost, button.danger, button.secondary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border-radius: var(--radius-sm);
-  padding: 8px 14px;
-  font-size: var(--text-sm);
-  font-weight: var(--fw-semibold);
-  font-family: inherit;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
-    color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
-}
-button.primary:active, button.ghost:active, button.danger:active, button.secondary:active {
-  transform: translateY(0.5px);
-}
-button.primary:disabled, button.ghost:disabled, button.danger:disabled, button.secondary:disabled {
-  opacity: 0.45;
-  cursor: default;
-  transform: none;
-}
-button.primary { background: var(--accent); color: var(--text-on-accent); }
-button.primary:hover:not(:disabled) { background: var(--accent-hover); }
-button.secondary { background: var(--surface-active); border-color: var(--border-strong); color: var(--text); }
-button.secondary:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
-button.ghost { background: none; border-color: var(--border); color: var(--text); }
-button.ghost:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
-button.danger { background: none; border-color: transparent; color: var(--danger); }
-button.danger:hover:not(:disabled) { background: var(--danger-bg); }
+/* Legacy bare-class buttons (button.primary/.ghost/.danger/.secondary) now share
+   the SINGLE .btn recipe below (grouped selectors), so there's one source of
+   truth instead of two hand-synced copies. Prefer `class="btn btn-*"` in new
+   code; the bare classes remain as aliases for the existing call sites. */
 
 .toggle { cursor: pointer; user-select: none; }
 .pill {
@@ -844,12 +871,53 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
 }
 .dot.on { background: var(--ok); box-shadow: 0 0 6px rgba(56, 193, 114, 0.8); }
 .dot.off { background: var(--danger); }
+.dot.warn { background: var(--warn); box-shadow: 0 0 6px rgba(245, 165, 36, 0.85); }
+
+/* Tamper / "no signal" warning chip on a live tile (#63). A blinded or frozen
+   camera must not read as a calm green tile. */
+.tile-alert, .wall-alert {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: var(--r-pill);
+  background: rgba(10, 12, 16, 0.74);
+  backdrop-filter: blur(6px);
+  border: 1px solid color-mix(in oklch, var(--warn) 55%, transparent);
+  color: var(--warn);
+  font-size: var(--text-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+}
+.wall-alert { top: 8px; }
 
 .table-scroll { overflow-x: auto; }
 
 /* --- mobile (Protect-app style: bottom tab bar, stacked layout) -------------- */
 @media (max-width: 768px) {
   #root { flex-direction: column; }
+
+  /* Slim top bar carries the brand + bell / palette / theme that the bottom
+     tab bar can't (it's a scrolling row of page tabs). */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    position: sticky;
+    top: 0;
+    z-index: var(--z-nav);
+    padding: 10px 12px;
+    padding-top: calc(10px + env(safe-area-inset-top));
+    background: var(--bg-shell);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar .icon-btn { width: 38px; height: 38px; }
 
   .sidebar {
     position: fixed;
@@ -914,8 +982,9 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
 
 /* === Components ========================================================== */
 
-/* --- buttons (new .btn system; legacy button.primary/.ghost/.danger kept) -- */
-.btn {
+/* --- buttons — ONE recipe; .btn-* are canonical, bare button.* are aliases --- */
+.btn,
+button.primary, button.secondary, button.ghost, button.danger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -933,16 +1002,18 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
   transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
     color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
 }
-.btn:active { transform: translateY(0.5px); }
-.btn:disabled { opacity: 0.45; cursor: default; transform: none; }
-.btn-primary { background: var(--accent); color: var(--text-on-accent); }
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-.btn-secondary { background: var(--surface-active); border-color: var(--border-strong); color: var(--text); }
-.btn-secondary:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
-.btn-ghost { background: transparent; border-color: var(--border); color: var(--text); }
-.btn-ghost:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
-.btn-danger { background: transparent; color: var(--danger); }
-.btn-danger:hover:not(:disabled) { background: var(--danger-bg); }
+.btn:active,
+button.primary:active, button.secondary:active, button.ghost:active, button.danger:active { transform: translateY(0.5px); }
+.btn:disabled,
+button.primary:disabled, button.secondary:disabled, button.ghost:disabled, button.danger:disabled { opacity: 0.45; cursor: default; transform: none; }
+.btn-primary, button.primary { background: var(--accent); color: var(--text-on-accent); }
+.btn-primary:hover:not(:disabled), button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-secondary, button.secondary { background: var(--surface-active); border-color: var(--border-strong); color: var(--text); }
+.btn-secondary:hover:not(:disabled), button.secondary:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
+.btn-ghost, button.ghost { background: transparent; border-color: var(--border); color: var(--text); }
+.btn-ghost:hover:not(:disabled), button.ghost:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
+.btn-danger, button.danger { background: transparent; color: var(--danger); }
+.btn-danger:hover:not(:disabled), button.danger:hover:not(:disabled) { background: var(--danger-bg); }
 .btn-danger-solid { background: var(--danger); color: #fff; }
 .btn-danger-solid:hover:not(:disabled) { filter: brightness(1.08); }
 
@@ -1079,6 +1150,29 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
 .badge.danger { color: var(--danger); border-color: transparent; background: var(--danger-bg); }
 .badge.accent { color: var(--accent-text); border-color: var(--accent-border); background: var(--accent-soft); }
 
+/* --- callout / inline notice (warn / info / danger) ------------------------
+   A status-tinted surface for liability disclaimers & inline notices. Replaces
+   the retired left-border side-stripe with a full sanctioned surface. */
+.callout {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 13px 15px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  margin-bottom: var(--sp-3);
+}
+.callout-ico { display: inline-flex; flex: 0 0 auto; margin-top: 1px; }
+.callout-warn { border-color: color-mix(in oklch, var(--warn) 42%, transparent); background: var(--warn-bg); color: var(--text); }
+.callout-warn .callout-ico { color: var(--warn); }
+.callout-danger { border-color: color-mix(in oklch, var(--danger) 42%, transparent); background: var(--danger-bg); color: var(--text); }
+.callout-danger .callout-ico { color: var(--danger); }
+.callout-info { border-color: var(--accent-border); background: var(--accent-soft); color: var(--text); }
+.callout-info .callout-ico { color: var(--accent-text); }
+
 /* --- skeleton / section header / eyebrow ----------------------------------- */
 .skeleton {
   display: block;
@@ -1188,7 +1282,7 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
 .xtl-evt.vehicle { background: var(--class-vehicle); }
 .xtl-evt.audio { background: var(--class-audio); }
 .xtl-axis { position: relative; height: 14px; margin-left: 120px; }
-.xtl-axis-label { position: absolute; top: 0; font-size: 0.66rem; color: var(--text-subtle); transform: translateX(-50%); white-space: nowrap; }
+.xtl-axis-label { position: absolute; top: 0; font-size: 0.66rem; color: var(--text-muted); transform: translateX(-50%); white-space: nowrap; }
 
 /* --- floor plan (C6) ------------------------------------------------------- */
 .fp-drop { cursor: pointer; gap: 8px; width: 100%; box-sizing: border-box; }
@@ -1222,7 +1316,7 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
   animation: modal-in var(--dur-3) var(--ease-out);
 }
 .onb-steps { display: flex; gap: 4px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
-.onb-step { display: flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--text-subtle); flex: 1; }
+.onb-step { display: flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--text-muted); flex: 1; }
 .onb-step.active { color: var(--text); font-weight: var(--fw-semibold); }
 .onb-step.done { color: var(--text-muted); }
 .onb-dot {
@@ -1469,7 +1563,7 @@ img.identity-thumb { background: var(--n-0); }
 .cmdk-input input:focus { outline: none; box-shadow: none; border: none; }
 .cmdk-kbd {
   font-size: var(--text-xs);
-  color: var(--text-subtle);
+  color: var(--text-muted);
   border: 1px solid var(--border);
   border-radius: var(--r-xs);
   padding: 2px 6px;
@@ -1491,7 +1585,7 @@ img.identity-thumb { background: var(--n-0); }
 .cmdk-ico { display: inline-flex; color: var(--text-subtle); }
 .cmdk-item.active .cmdk-ico { color: var(--accent-text); }
 .cmdk-label { flex: 1; }
-.cmdk-hint { font-size: var(--text-xs); color: var(--text-subtle); }
+.cmdk-hint { font-size: var(--text-xs); color: var(--text-muted); }
 .cmdk-empty { padding: 24px; text-align: center; color: var(--muted); }
 
 /* lightbox (event snapshot) */

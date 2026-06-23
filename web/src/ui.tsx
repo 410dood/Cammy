@@ -19,10 +19,54 @@ import {
   useRef,
   useState,
   ReactNode,
+  RefObject,
   CSSProperties,
 } from "react";
 import { IconCheck, IconAlert, IconInfo, IconX } from "./icons";
 import { relTime, fmtTime } from "./api";
+
+/* ======================================================================== */
+/* useFocusTrap — keep Tab focus inside an open overlay                       */
+/* ======================================================================== */
+
+const FOCUSABLE =
+  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),' +
+  'textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+/** Cycle Tab / Shift-Tab within `ref`'s subtree so keyboard focus can't escape
+ *  an open modal/panel into the page behind it. The element should already hold
+ *  focus (callers focus an input, the card, or the container on open). */
+export function useFocusTrap(ref: RefObject<HTMLElement>) {
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const items = Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+        (el) => el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement,
+      );
+      if (items.length === 0) {
+        e.preventDefault();
+        node.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (active === first || !node.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !node.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    node.addEventListener("keydown", onKey);
+    return () => node.removeEventListener("keydown", onKey);
+  }, [ref]);
+}
 
 /* ======================================================================== */
 /* RelTime — self-updating relative timestamp                                */
@@ -197,6 +241,7 @@ export function Modal({
 }) {
   const labelId = useId();
   const cardRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(cardRef);
 
   // Escape-to-close. Keyed on onClose, which callers often pass as an inline
   // arrow, so this effect may re-run on every parent render — that's fine, it

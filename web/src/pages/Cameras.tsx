@@ -1,8 +1,8 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
 import { api, Camera, DetectConfig, DiscoveredCam, StatusMap, Zone } from "../api";
 import ZoneEditor from "../ZoneEditor";
-import { Modal } from "../ui";
-import { IconRadar, IconSearch, IconCheck } from "../icons";
+import { Modal, EmptyState } from "../ui";
+import { IconRadar, IconSearch, IconCheck, IconVideo } from "../icons";
 
 function TuneModal({
   camera,
@@ -830,7 +830,11 @@ export default function Cameras({
       <div className="card">
         <h2>Registered</h2>
         {cameras.length === 0 ? (
-          <p className="muted">No cameras registered.</p>
+          <EmptyState
+            icon={<IconVideo />}
+            title="No cameras yet"
+            hint="Add your first camera using the form above to start recording and detection."
+          />
         ) : (
           <div className="table-scroll">
           <table>

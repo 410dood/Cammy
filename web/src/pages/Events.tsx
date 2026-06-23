@@ -142,7 +142,16 @@ function parseNL(raw: string, cameras: Camera[], faces: string[]): Parsed {
   return out;
 }
 
-export default function Events({ cameras }: { cameras: Camera[] }) {
+export default function Events({
+  cameras,
+  focusEventId,
+  onFocusHandled,
+}: {
+  cameras: Camera[];
+  /** When set (e.g. from tapping a notification), open this event's detail. */
+  focusEventId?: number | null;
+  onFocusHandled?: () => void;
+}) {
   const toast = useToast();
   const dialog = useDialog();
   const [events, setEvents] = useState<CamEvent[]>([]);
@@ -209,6 +218,17 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
   const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
   const [similar, setSimilar] = useState<{ ev: CamEvent; res: SimilarResult | null } | null>(null);
   const [noClip, setNoClip] = useState<number | null>(null);
+
+  // Deep-link from a notification: once events have loaded, open the matching
+  // event's detail (best-effort — the event is usually recent and in the list),
+  // then clear the request. onFocusHandled clears focusEventId synchronously, so
+  // this fires once per click without a guard (and re-clicks work).
+  useEffect(() => {
+    if (!focusEventId || events.length === 0) return;
+    const ev = events.find((e) => e.id === focusEventId);
+    if (ev) setOpen(ev);
+    onFocusHandled?.();
+  }, [focusEventId, events, onFocusHandled]);
 
   // Protect-style playback shortcuts: space pause, arrows seek (shift =
   // frame-ish steps), f fullscreen, Esc close.
@@ -544,7 +564,16 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
           <span className="muted">Explore:</span>
           <span
             className={`pill toggle ${label === "" ? "on" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-pressed={label === ""}
             onClick={() => setLabel("")}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setLabel("");
+              }
+            }}
           >
             all ({exploreBase.length})
           </span>
@@ -552,7 +581,16 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
             <span
               key={l}
               className={`pill toggle ${label === l ? "on" : ""}`}
+              role="button"
+              tabIndex={0}
+              aria-pressed={label === l}
               onClick={() => setLabel(label === l ? "" : l)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setLabel(label === l ? "" : l);
+                }
+              }}
             >
               {l} ({n})
             </span>
@@ -577,7 +615,22 @@ export default function Events({ cameras }: { cameras: Camera[] }) {
       ) : (
         <div className="event-grid">
           {list.map(({ ev, cluster }) => (
-            <div className="event-card" key={ev.id} onClick={() => setOpen(ev)}>
+            <div
+              className="event-card"
+              key={ev.id}
+              role="button"
+              tabIndex={0}
+              aria-label={`Open ${ev.label} event from ${ev.camera}`}
+              onClick={() => setOpen(ev)}
+              onKeyDown={(e) => {
+                // Enter/Space open the event, but only when the card itself is
+                // focused — not when a nested action button has focus.
+                if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
+                  e.preventDefault();
+                  setOpen(ev);
+                }
+              }}
+            >
               {ev.snapshot ? (
                 <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={ev.label} loading="lazy" />
               ) : (

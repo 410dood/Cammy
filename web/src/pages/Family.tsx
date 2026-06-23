@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, Camera, CamEvent, fmtTime } from "../api";
-import { IconShield, IconInfo } from "../icons";
+import { IconShield, IconInfo, IconAlert } from "../icons";
 
 /// A residential "mode": a plain-language recipe that ties together the camera
 /// toggles, zones, sounds and alarm rules already shipped — so a non-expert can
@@ -149,16 +149,14 @@ export default function Family({ cameras }: { cameras: Camera[] }) {
         Guided “modes” for the home — baby, pets, pool and aging-in-place. Each one is a recipe over
         the camera, zone, sound and alarm settings you already have; follow the steps to set it up.
       </p>
-      <div
-        className="card"
-        style={{ borderLeft: "3px solid var(--status-warn, #f0a020)", marginBottom: 12 }}
-      >
-        <b>Please read:</b>{" "}
-        <span className="muted">
+      <div className="callout callout-warn" role="note">
+        <span className="callout-ico"><IconAlert size={16} /></span>
+        <div>
+          <b>Please read:</b>{" "}
           These are <b>assistive aids, not safety devices</b>. They are best-effort, can miss events,
           and are not medical, breathing/SIDS, or drowning detection. Never rely on them in place of
           supervision, a fence, safe-sleep practices, or a medical-alert pendant.
-        </span>
+        </div>
       </div>
       {cameras.length === 0 && (
         <p className="muted">Add a camera first (Cameras page), then come back to set up a mode.</p>

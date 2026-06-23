@@ -1,6 +1,7 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
 import { api, AlarmRule, Action, ActionKind, ArmMode, Camera } from "../api";
-import { IconStranger, IconMoon, IconPlus, IconX } from "../icons";
+import { IconStranger, IconMoon, IconPlus, IconX, IconSiren } from "../icons";
+import { EmptyState } from "../ui";
 
 const LABELS = [
   "person", "car", "truck", "bus", "bicycle", "motorcycle", "dog", "cat",
@@ -415,7 +416,11 @@ export default function Alarms({
       <div className="card">
         <h2>Rules</h2>
         {rules.length === 0 ? (
-          <p className="muted">No rules yet. Rules fire actions the moment a matching event is detected.</p>
+          <EmptyState
+            icon={<IconSiren />}
+            title="No alarm rules yet"
+            hint="Rules fire actions the moment a matching event is detected. Create one using the form above."
+          />
         ) : (
           <div className="table-scroll">
           <table>
