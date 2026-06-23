@@ -55,6 +55,14 @@ export interface GroundCalib {
   height_m: number;
 }
 
+/** A day-of-week + time-of-day window (recording schedule). days: 0=Sun..6=Sat,
+ *  empty = every day; HH:MM strings; start > end = overnight window. */
+export interface Schedule {
+  days: number[];
+  start_hhmm: string | null;
+  end_hhmm: string | null;
+}
+
 export interface DetectConfig {
   labels: string[] | null;
   min_score: number | null;
@@ -94,6 +102,8 @@ export interface DetectConfig {
   /** Privacy: residential + pose safety events on this camera fire WITHOUT saving
    *  a snapshot image (nursery/bedroom/bathroom dignity). Off by default. */
   no_clip?: boolean;
+  /** Per-camera recording schedule; null = always record (#67). */
+  record_schedule?: Schedule | null;
 }
 
 export interface Camera {
