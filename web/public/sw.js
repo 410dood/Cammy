@@ -57,3 +57,36 @@ self.addEventListener("fetch", (event) => {
     ),
   );
 });
+
+// --- Web Push (#68) --------------------------------------------------------
+// The server encrypts a JSON payload {title, body, kind, event_id, ...}; show it
+// as a native notification. Clicking focuses (or opens) the app.
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { title: "Cammy", body: event.data && event.data.text() };
+  }
+  const title = data.title || "Cammy";
+  const options = {
+    body: data.body || "",
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    tag: data.id ? `cammy-${data.id}` : undefined,
+    data: { kind: data.kind, event_id: data.event_id },
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cls) => {
+      for (const c of cls) {
+        if ("focus" in c) return c.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow("/");
+    }),
+  );
+});

@@ -680,6 +680,16 @@ export const api = {
     req<{ updated: number }>("/api/notifications/read-all", { method: "POST" }),
   digests: (limit = 14) => req<Digest[]>(`/api/digests?limit=${limit}`),
   runDigest: () => req<Digest>("/api/digests/run", { method: "POST" }),
+  // Native WebPush (#68): no third-party push service.
+  pushVapid: () => req<{ public_key: string }>("/api/push/vapid"),
+  pushSubscribe: (sub: PushSubscriptionJSON) =>
+    req<{ ok: boolean }>("/api/push/subscribe", { method: "POST", body: JSON.stringify(sub) }),
+  pushUnsubscribe: (endpoint: string) =>
+    req<{ removed: boolean }>("/api/push/unsubscribe", {
+      method: "POST",
+      body: JSON.stringify({ endpoint }),
+    }),
+  pushTest: () => req<{ sent: number; failed: number }>("/api/push/test", { method: "POST" }),
 };
 
 // Live-view transport. go2rtc restreams a single upstream camera connection to
