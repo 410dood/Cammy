@@ -235,15 +235,8 @@ export interface Settings {
   auth_proxy_role_header: string;
   /** Role for an SSO user with no role header + no matching account. */
   auth_proxy_default_role: string;
-}
-
-/** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every
- *  day), set the system to `mode`. Driven by the schedule worker. */
-export interface ArmScheduleEntry {
-  days: number[];
-  hhmm: string;
-  mode: ArmMode;
-  /** Offsite backup of recordings to S3-compatible storage (#70).
+  /** Offsite backup of recordings to S3-compatible storage (#70). Global
+   *  settings (mirrors the Rust `Settings` struct, not per-schedule-row).
    *  offsite_secret_key is write-only (blank on read; blank on save keeps it). */
   offsite_backup_enabled: boolean;
   offsite_endpoint: string;
@@ -252,6 +245,14 @@ export interface ArmScheduleEntry {
   offsite_prefix: string;
   offsite_access_key: string;
   offsite_secret_key: string;
+}
+
+/** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every
+ *  day), set the system to `mode`. Driven by the schedule worker. */
+export interface ArmScheduleEntry {
+  days: number[];
+  hhmm: string;
+  mode: ArmMode;
 }
 
 export interface OffsiteStatus {

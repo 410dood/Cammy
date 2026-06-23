@@ -177,7 +177,19 @@ export default function Live({
     toast.success("View deleted");
   };
 
-  if (!config) return <p className="muted">Connecting…</p>;
+  if (!config)
+    return (
+      <>
+        <h1>Live</h1>
+        <div className="live-grid" aria-busy="true">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div className="tile" key={i}>
+              <span className="skeleton" style={{ position: "absolute", inset: 0, borderRadius: 0 }} />
+            </div>
+          ))}
+        </div>
+      </>
+    );
   if (enabled.length === 0)
     return (
       <>

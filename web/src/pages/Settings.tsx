@@ -1064,7 +1064,19 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
     api.settings().then(setS).catch((e) => onError(String(e)));
   }, [onError]);
 
-  if (!s) return <p className="muted">Loading…</p>;
+  if (!s)
+    return (
+      <div className="settings-page" aria-busy="true">
+        <h1>Settings</h1>
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div className="card" key={i}>
+            <span className="skeleton" style={{ width: 150, height: 12, marginBottom: 16 }} />
+            <span className="skeleton" style={{ width: "100%", height: 36, marginBottom: 10 }} />
+            <span className="skeleton" style={{ width: "60%", height: 36 }} />
+          </div>
+        ))}
+      </div>
+    );
 
   const set = (patch: Partial<S>) => {
     setS({ ...s, ...patch });

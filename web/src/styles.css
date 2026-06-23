@@ -435,6 +435,9 @@ video-stream.live-video .info { display: none; }
   border-radius: var(--radius);
   padding: 18px 20px;
   margin-bottom: 14px;
+  /* One quiet, system-wide lift so content cards read as physical surfaces
+     on the near-equal-darkness canvas (matches .stat-card). */
+  box-shadow: var(--shadow-1), var(--edge-light);
 }
 .card h2 {
   margin: 0 0 14px;
@@ -488,6 +491,40 @@ select {
   cursor: pointer;
 }
 input::-webkit-calendar-picker-indicator { filter: invert(0.7); cursor: pointer; }
+
+/* Themed checkbox / radio — stop them rendering as light OS widgets (the same
+   reason <select> gets a custom chevron above). Uses the accent on :checked. */
+input[type="checkbox"], input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+  border: var(--bw-strong) solid var(--border-strong);
+  background: var(--surface-hover);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  vertical-align: -0.18em;
+  background-repeat: no-repeat;
+  background-position: center;
+  transition: background-color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+input[type="radio"] { border-radius: 50%; }
+input[type="checkbox"]:hover:not(:disabled),
+input[type="radio"]:hover:not(:disabled) { border-color: var(--border-hover); }
+input[type="checkbox"]:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  background-size: 11px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23f7faff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.5 5 9l4.5-5.5'/%3E%3C/svg%3E");
+}
+input[type="radio"]:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  background-image: radial-gradient(circle at center, var(--text-on-accent) 0 3px, transparent 3.5px);
+}
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { opacity: 0.5; cursor: default; }
 label.field {
   display: flex;
   flex-direction: column;
@@ -1079,6 +1116,29 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
 .badge.danger { color: var(--danger); border-color: transparent; background: var(--danger-bg); }
 .badge.accent { color: var(--accent-text); border-color: var(--accent-border); background: var(--accent-soft); }
 
+/* --- callout / inline notice (warn / info / danger) ------------------------
+   A status-tinted surface for liability disclaimers & inline notices. Replaces
+   the retired left-border side-stripe with a full sanctioned surface. */
+.callout {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 13px 15px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  margin-bottom: var(--sp-3);
+}
+.callout-ico { display: inline-flex; flex: 0 0 auto; margin-top: 1px; }
+.callout-warn { border-color: color-mix(in oklch, var(--warn) 42%, transparent); background: var(--warn-bg); color: var(--text); }
+.callout-warn .callout-ico { color: var(--warn); }
+.callout-danger { border-color: color-mix(in oklch, var(--danger) 42%, transparent); background: var(--danger-bg); color: var(--text); }
+.callout-danger .callout-ico { color: var(--danger); }
+.callout-info { border-color: var(--accent-border); background: var(--accent-soft); color: var(--text); }
+.callout-info .callout-ico { color: var(--accent-text); }
+
 /* --- skeleton / section header / eyebrow ----------------------------------- */
 .skeleton {
   display: block;
@@ -1188,7 +1248,7 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
 .xtl-evt.vehicle { background: var(--class-vehicle); }
 .xtl-evt.audio { background: var(--class-audio); }
 .xtl-axis { position: relative; height: 14px; margin-left: 120px; }
-.xtl-axis-label { position: absolute; top: 0; font-size: 0.66rem; color: var(--text-subtle); transform: translateX(-50%); white-space: nowrap; }
+.xtl-axis-label { position: absolute; top: 0; font-size: 0.66rem; color: var(--text-muted); transform: translateX(-50%); white-space: nowrap; }
 
 /* --- floor plan (C6) ------------------------------------------------------- */
 .fp-drop { cursor: pointer; gap: 8px; width: 100%; box-sizing: border-box; }
@@ -1222,7 +1282,7 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
   animation: modal-in var(--dur-3) var(--ease-out);
 }
 .onb-steps { display: flex; gap: 4px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
-.onb-step { display: flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--text-subtle); flex: 1; }
+.onb-step { display: flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--text-muted); flex: 1; }
 .onb-step.active { color: var(--text); font-weight: var(--fw-semibold); }
 .onb-step.done { color: var(--text-muted); }
 .onb-dot {
@@ -1469,7 +1529,7 @@ img.identity-thumb { background: var(--n-0); }
 .cmdk-input input:focus { outline: none; box-shadow: none; border: none; }
 .cmdk-kbd {
   font-size: var(--text-xs);
-  color: var(--text-subtle);
+  color: var(--text-muted);
   border: 1px solid var(--border);
   border-radius: var(--r-xs);
   padding: 2px 6px;
@@ -1491,7 +1551,7 @@ img.identity-thumb { background: var(--n-0); }
 .cmdk-ico { display: inline-flex; color: var(--text-subtle); }
 .cmdk-item.active .cmdk-ico { color: var(--accent-text); }
 .cmdk-label { flex: 1; }
-.cmdk-hint { font-size: var(--text-xs); color: var(--text-subtle); }
+.cmdk-hint { font-size: var(--text-xs); color: var(--text-muted); }
 .cmdk-empty { padding: 24px; text-align: center; color: var(--muted); }
 
 /* lightbox (event snapshot) */
