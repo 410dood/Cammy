@@ -258,7 +258,16 @@ export default function Live({
           <span
             key={v.name}
             className={`pill toggle ${viewName === v.name ? "on" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-pressed={viewName === v.name}
             onClick={() => setViewName(viewName === v.name ? null : v.name)}
+            onKeyDown={(e) => {
+              if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
+                e.preventDefault();
+                setViewName(viewName === v.name ? null : v.name);
+              }
+            }}
           >
             {v.name}
             {viewName === v.name && (
@@ -289,7 +298,16 @@ export default function Live({
             <span
               key={g}
               className={`pill toggle ${!viewName && group === g ? "on" : ""}`}
+              role="button"
+              tabIndex={0}
+              aria-pressed={!viewName && group === g}
               onClick={() => pickGroup(g)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  pickGroup(g);
+                }
+              }}
             >
               {g}
             </span>

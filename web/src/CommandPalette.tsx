@@ -4,6 +4,7 @@
 
 import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { IconSearch } from "./icons";
+import { useFocusTrap } from "./ui";
 
 export interface Command {
   id: string;
@@ -44,6 +45,8 @@ export default function CommandPalette({
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(cardRef);
 
   const results = useMemo(() => {
     const tokens = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -100,6 +103,7 @@ export default function CommandPalette({
   return (
     <div className="cmdk-overlay" onClick={onClose}>
       <div
+        ref={cardRef}
         className="cmdk"
         role="dialog"
         aria-modal="true"

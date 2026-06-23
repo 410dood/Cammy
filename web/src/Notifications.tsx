@@ -1,8 +1,9 @@
 // A4 — Notifications center: a right-slide panel listing recent activity
 // (strangers, camera offline/online, anomalies, daily digests), with mark-read.
 
+import { useEffect, useRef } from "react";
 import { Notification } from "./api";
-import { RelTime, EmptyState } from "./ui";
+import { RelTime, EmptyState, useFocusTrap } from "./ui";
 import {
   IconBell, IconX, IconWifiOff, IconWifi, IconStranger, IconSparkles,
   IconAlert, IconCheck, IconProps,
@@ -29,9 +30,18 @@ export default function NotificationsPanel({
   onMarkAll: () => void;
   onOpenEvent: (eventId: number) => void;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(panelRef);
+  // Move focus into the panel on open so the trap has somewhere to start and
+  // keyboard/screen-reader users land inside it.
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, []);
   return (
     <div className="notif-overlay" onClick={onClose}>
       <div
+        ref={panelRef}
+        tabIndex={-1}
         className="notif-panel"
         onClick={(e) => e.stopPropagation()}
         role="dialog"

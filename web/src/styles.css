@@ -555,42 +555,10 @@ label.field {
   color: #aeb4c0; /* labels are essential, lifted off --muted */
 }
 
-/* Legacy bare-class buttons (button.primary/.ghost/.danger/.secondary) are kept
-   pixel-identical to the .btn system below so the whole app shares one button
-   look (inline-flex + gap for icon+text, press feedback, disabled-safe hover). */
-button.primary, button.ghost, button.danger, button.secondary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border-radius: var(--radius-sm);
-  padding: 8px 14px;
-  font-size: var(--text-sm);
-  font-weight: var(--fw-semibold);
-  font-family: inherit;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
-    color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
-}
-button.primary:active, button.ghost:active, button.danger:active, button.secondary:active {
-  transform: translateY(0.5px);
-}
-button.primary:disabled, button.ghost:disabled, button.danger:disabled, button.secondary:disabled {
-  opacity: 0.45;
-  cursor: default;
-  transform: none;
-}
-button.primary { background: var(--accent); color: var(--text-on-accent); }
-button.primary:hover:not(:disabled) { background: var(--accent-hover); }
-button.secondary { background: var(--surface-active); border-color: var(--border-strong); color: var(--text); }
-button.secondary:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
-button.ghost { background: none; border-color: var(--border); color: var(--text); }
-button.ghost:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
-button.danger { background: none; border-color: transparent; color: var(--danger); }
-button.danger:hover:not(:disabled) { background: var(--danger-bg); }
+/* Legacy bare-class buttons (button.primary/.ghost/.danger/.secondary) now share
+   the SINGLE .btn recipe below (grouped selectors), so there's one source of
+   truth instead of two hand-synced copies. Prefer `class="btn btn-*"` in new
+   code; the bare classes remain as aliases for the existing call sites. */
 
 .toggle { cursor: pointer; user-select: none; }
 .pill {
@@ -1014,8 +982,9 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
 
 /* === Components ========================================================== */
 
-/* --- buttons (new .btn system; legacy button.primary/.ghost/.danger kept) -- */
-.btn {
+/* --- buttons — ONE recipe; .btn-* are canonical, bare button.* are aliases --- */
+.btn,
+button.primary, button.secondary, button.ghost, button.danger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1033,16 +1002,18 @@ button.danger:hover:not(:disabled) { background: var(--danger-bg); }
   transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
     color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
 }
-.btn:active { transform: translateY(0.5px); }
-.btn:disabled { opacity: 0.45; cursor: default; transform: none; }
-.btn-primary { background: var(--accent); color: var(--text-on-accent); }
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-.btn-secondary { background: var(--surface-active); border-color: var(--border-strong); color: var(--text); }
-.btn-secondary:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
-.btn-ghost { background: transparent; border-color: var(--border); color: var(--text); }
-.btn-ghost:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
-.btn-danger { background: transparent; color: var(--danger); }
-.btn-danger:hover:not(:disabled) { background: var(--danger-bg); }
+.btn:active,
+button.primary:active, button.secondary:active, button.ghost:active, button.danger:active { transform: translateY(0.5px); }
+.btn:disabled,
+button.primary:disabled, button.secondary:disabled, button.ghost:disabled, button.danger:disabled { opacity: 0.45; cursor: default; transform: none; }
+.btn-primary, button.primary { background: var(--accent); color: var(--text-on-accent); }
+.btn-primary:hover:not(:disabled), button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-secondary, button.secondary { background: var(--surface-active); border-color: var(--border-strong); color: var(--text); }
+.btn-secondary:hover:not(:disabled), button.secondary:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
+.btn-ghost, button.ghost { background: transparent; border-color: var(--border); color: var(--text); }
+.btn-ghost:hover:not(:disabled), button.ghost:hover:not(:disabled) { border-color: var(--border-hover); background: var(--surface-hover); }
+.btn-danger, button.danger { background: transparent; color: var(--danger); }
+.btn-danger:hover:not(:disabled), button.danger:hover:not(:disabled) { background: var(--danger-bg); }
 .btn-danger-solid { background: var(--danger); color: #fff; }
 .btn-danger-solid:hover:not(:disabled) { filter: brightness(1.08); }
 

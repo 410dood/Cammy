@@ -564,7 +564,16 @@ export default function Events({
           <span className="muted">Explore:</span>
           <span
             className={`pill toggle ${label === "" ? "on" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-pressed={label === ""}
             onClick={() => setLabel("")}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setLabel("");
+              }
+            }}
           >
             all ({exploreBase.length})
           </span>
@@ -572,7 +581,16 @@ export default function Events({
             <span
               key={l}
               className={`pill toggle ${label === l ? "on" : ""}`}
+              role="button"
+              tabIndex={0}
+              aria-pressed={label === l}
               onClick={() => setLabel(label === l ? "" : l)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setLabel(label === l ? "" : l);
+                }
+              }}
             >
               {l} ({n})
             </span>
@@ -597,7 +615,22 @@ export default function Events({
       ) : (
         <div className="event-grid">
           {list.map(({ ev, cluster }) => (
-            <div className="event-card" key={ev.id} onClick={() => setOpen(ev)}>
+            <div
+              className="event-card"
+              key={ev.id}
+              role="button"
+              tabIndex={0}
+              aria-label={`Open ${ev.label} event from ${ev.camera}`}
+              onClick={() => setOpen(ev)}
+              onKeyDown={(e) => {
+                // Enter/Space open the event, but only when the card itself is
+                // focused — not when a nested action button has focus.
+                if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
+                  e.preventDefault();
+                  setOpen(ev);
+                }
+              }}
+            >
               {ev.snapshot ? (
                 <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={ev.label} loading="lazy" />
               ) : (

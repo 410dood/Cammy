@@ -2,9 +2,9 @@
 // welcome, optionally secure the box, then point the user at adding a camera.
 // Self-contained over existing endpoints; the real add lives on the Cameras page.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, DiscoveredCam } from "./api";
-import { useToast } from "./ui";
+import { useToast, useFocusTrap } from "./ui";
 import { IconShield, IconRadar, IconVideo, IconCheck, IconLock } from "./icons";
 
 const SEEN_KEY = "zoomy-onboarded";
@@ -28,6 +28,11 @@ export default function Onboarding({
   const [pw, setPw] = useState("");
   const [scanning, setScanning] = useState(false);
   const [found, setFound] = useState<DiscoveredCam[] | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(cardRef);
+  useEffect(() => {
+    cardRef.current?.focus();
+  }, []);
 
   const finish = () => {
     markOnboarded();
@@ -58,7 +63,7 @@ export default function Onboarding({
 
   return (
     <div className="modal-bg">
-      <div className="onb" role="dialog" aria-modal="true" aria-label="Welcome to Cammy">
+      <div ref={cardRef} tabIndex={-1} className="onb" role="dialog" aria-modal="true" aria-label="Welcome to Cammy">
         <div className="onb-steps">
           {["Welcome", "Secure", "Cameras"].map((s, i) => (
             <span key={s} className={`onb-step ${i === step ? "active" : ""} ${i < step ? "done" : ""}`}>
