@@ -9,7 +9,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::json;
 
@@ -33,7 +33,7 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
     };
 
     while !shutdown.load(Ordering::Relaxed) {
-        sleep_interruptible(TICK, &shutdown);
+        crate::util::sleep_interruptible(TICK, &shutdown);
         if shutdown.load(Ordering::Relaxed) {
             break;
         }
@@ -87,13 +87,6 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
                 }
             }
         }
-    }
-}
-
-fn sleep_interruptible(dur: Duration, shutdown: &Arc<AtomicBool>) {
-    let start = Instant::now();
-    while start.elapsed() < dur && !shutdown.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(200));
     }
 }
 

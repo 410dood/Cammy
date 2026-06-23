@@ -23,8 +23,8 @@ mod health;
 pub mod lpr;
 mod mqtt;
 mod notify;
-mod parcel;
 mod offsite;
+mod parcel;
 mod pipeline;
 mod posture;
 mod proc;
@@ -40,6 +40,7 @@ mod tamper;
 pub mod tls;
 mod totp;
 mod transcribe;
+mod util;
 mod webpush;
 
 use std::net::SocketAddr;
@@ -210,6 +211,7 @@ pub async fn run(
     let offsite_thread = std::thread::Builder::new().name("offsite".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || offsite::run(db, stop)
+    })?;
     let audio_thread = std::thread::Builder::new().name("audio".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),

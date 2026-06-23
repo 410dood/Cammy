@@ -12,14 +12,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 const ALGORITHM: &str = "AWS4-HMAC-SHA256";
 
-/// Lowercase-hex encode.
-fn hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
+use crate::util::hex;
 
 /// SHA-256 of `data`, lowercase hex (the form S3 wants in `x-amz-content-sha256`
 /// and in the canonical request's hashed-payload line).
@@ -251,7 +244,10 @@ mod tests {
         let uri = encode_path("/test$file.text");
         assert_eq!(uri, "/test%24file.text");
         let headers = vec![
-            ("date".to_string(), "Fri, 24 May 2013 00:00:00 GMT".to_string()),
+            (
+                "date".to_string(),
+                "Fri, 24 May 2013 00:00:00 GMT".to_string(),
+            ),
             (
                 "host".to_string(),
                 "examplebucket.s3.amazonaws.com".to_string(),

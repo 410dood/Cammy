@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::{Local, TimeZone, Timelike};
 
@@ -26,14 +26,7 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
                 tracing::debug!("anomaly scoring: {e:#}");
             }
         }
-        sleep_interruptible(TICK, &shutdown);
-    }
-}
-
-fn sleep_interruptible(dur: Duration, shutdown: &Arc<AtomicBool>) {
-    let start = Instant::now();
-    while start.elapsed() < dur && !shutdown.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(200));
+        crate::util::sleep_interruptible(TICK, &shutdown);
     }
 }
 

@@ -21,7 +21,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::{Datelike, Local, TimeZone, Utc};
 
@@ -137,7 +137,7 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
                 stale_notified = false;
             }
         }
-        sleep_interruptible(TICK, &shutdown);
+        crate::util::sleep_interruptible(TICK, &shutdown);
     }
 }
 
@@ -392,13 +392,6 @@ fn update_stale_notification(db: &Db, notified: &mut bool) {
         );
         *notified = false;
         tracing::info!("offsite backup recovered");
-    }
-}
-
-fn sleep_interruptible(dur: Duration, shutdown: &Arc<AtomicBool>) {
-    let start = Instant::now();
-    while start.elapsed() < dur && !shutdown.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(200));
     }
 }
 

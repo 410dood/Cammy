@@ -282,7 +282,7 @@ fn local_ipv4s() -> Vec<std::net::Ipv4Addr> {
 }
 
 fn hex16(bytes: &[u8; 16]) -> String {
-    let h: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let h = crate::util::hex(bytes);
     format!(
         "{}-{}-{}-{}-{}",
         &h[..8],

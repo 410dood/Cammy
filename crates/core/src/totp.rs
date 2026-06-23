@@ -204,7 +204,7 @@ pub fn normalize_recovery(code: &str) -> String {
 pub fn hash_recovery(code: &str) -> String {
     use sha2::Sha256;
     let d = Sha256::digest(normalize_recovery(code).as_bytes());
-    d.iter().map(|b| format!("{b:02x}")).collect()
+    crate::util::hex(&d)
 }
 
 /// Percent-encode for the otpauth URI label/issuer (RFC 3986 unreserved kept).

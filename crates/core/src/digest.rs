@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::{Datelike, Local, TimeZone, Timelike};
 
@@ -44,7 +44,7 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
                 }
             }
         }
-        sleep_interruptible(TICK, &shutdown);
+        crate::util::sleep_interruptible(TICK, &shutdown);
     }
 }
 
@@ -52,13 +52,6 @@ fn last_digest_day(db: &Db) -> Option<i64> {
     let ts = db.list_digests(1).ok()?.first()?.ts;
     let dt = Local.timestamp_opt(ts, 0).single()?;
     Some(dt.date_naive().num_days_from_ce() as i64)
-}
-
-fn sleep_interruptible(dur: Duration, shutdown: &Arc<AtomicBool>) {
-    let start = Instant::now();
-    while start.elapsed() < dur && !shutdown.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(200));
-    }
 }
 
 /// Build a deterministic, plain-language recap of a window's events. Public so

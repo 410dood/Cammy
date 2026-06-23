@@ -579,9 +579,7 @@ fn forbidden(msg: &str) -> Response {
         .into_response()
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+use crate::util::hex;
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
