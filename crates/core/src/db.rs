@@ -384,6 +384,11 @@ pub struct UserRow {
     pub created_ts: i64,
 }
 
+/// A credential's TOTP 2FA config: `(secret_base32, enabled, recovery_json)`.
+/// An inner `secret` of `None` means 2FA was never set up; `enabled` is false
+/// while a freshly minted secret awaits confirmation during enrollment.
+pub type TotpConfig = (Option<String>, bool, Option<String>);
+
 /// Outcome of a guarded role change (keeps the last-admin check + update atomic).
 pub enum SetRole {
     Ok,
@@ -1177,6 +1182,19 @@ impl Db {
             "ALTER TABLE api_tokens ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'",
             [],
         );
+        // Per-user TOTP 2FA: base32 secret, an enabled flag (a secret can be
+        // set-but-not-yet-confirmed during enrollment), and a JSON array of
+        // SHA-256-hashed one-time recovery codes. The shared single-password
+        // admin keeps its equivalent under the settings KV (see auth::KV_TOTP_*).
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN totp_recovery TEXT", []);
+        // Last TOTP time-step accepted for this user, to refuse intra-window
+        // replay of a code (a code is valid for ~90 s across the skew window).
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN totp_last_step INTEGER", []);
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
@@ -1932,6 +1950,136 @@ impl Db {
             params![password_hash, id],
         )?;
         Ok(n > 0)
+    }
+
+    /// A user's 2FA config `(secret_base32, enabled, recovery_codes_json)`.
+    /// `None` if the user doesn't exist; an inner `secret` of `None` means 2FA
+    /// has never been set up for them.
+    pub fn user_totp(&self, id: i64) -> Result<Option<TotpConfig>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT totp_secret, totp_enabled, totp_recovery FROM users WHERE id = ?1",
+                [id],
+                |r| {
+                    let secret: Option<String> = r.get(0)?;
+                    let enabled: i64 = r.get(1)?;
+                    let recovery: Option<String> = r.get(2)?;
+                    Ok((secret, enabled != 0, recovery))
+                },
+            )
+            .optional()?)
+    }
+
+    /// Replace a user's 2FA config (secret/enabled/recovery in one write). Always
+    /// resets the replay watermark (`totp_last_step`) — used on setup/enable
+    /// (fresh secret) and disable/reset (cleared). Returns whether the user
+    /// existed.
+    pub fn set_user_totp(
+        &self,
+        id: i64,
+        secret: Option<&str>,
+        enabled: bool,
+        recovery: Option<&str>,
+    ) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE users SET totp_secret = ?1, totp_enabled = ?2, totp_recovery = ?3, totp_last_step = NULL WHERE id = ?4",
+            params![secret, enabled as i64, recovery, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Atomic replay guard for a user: accept `step` only if it is newer than the
+    /// stored watermark, advancing the watermark in the SAME statement (compare-
+    /// and-set under one DB lock). Returns true if accepted. Doing the check and
+    /// the advance as one statement is what stops two concurrent logins carrying
+    /// the same still-valid code from both passing the guard (a read-then-write
+    /// across two lock acquisitions could let both win).
+    pub fn advance_user_totp_step(&self, id: i64, step: i64) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE users SET totp_last_step = ?1
+             WHERE id = ?2 AND (totp_last_step IS NULL OR totp_last_step < ?1)",
+            params![step, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Atomic replay guard for the shared single-password admin (KV-backed),
+    /// mirroring [`advance_user_totp_step`]: the read, compare, and conditional
+    /// write all run while holding the single DB lock.
+    pub fn advance_kv_totp_step(&self, key: &str, step: i64) -> Result<bool> {
+        let conn = self.conn();
+        let current: Option<i64> = conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+            .and_then(|s| s.parse::<i64>().ok());
+        if current.is_some_and(|c| c >= step) {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, step.to_string()],
+        )?;
+        Ok(true)
+    }
+
+    /// Consume one recovery code for a user given its hash: rewrite the stored
+    /// JSON array without that hash. Returns true if a code was removed. The
+    /// read-modify-write runs under the single DB lock so two parallel uses of
+    /// the same code can't both succeed.
+    pub fn consume_user_recovery(&self, id: i64, code_hash: &str) -> Result<bool> {
+        let conn = self.conn();
+        let current: Option<String> = conn
+            .query_row("SELECT totp_recovery FROM users WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten();
+        let mut hashes: Vec<String> = current
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let before = hashes.len();
+        hashes.retain(|h| h != code_hash);
+        if hashes.len() == before {
+            return Ok(false);
+        }
+        let json = serde_json::to_string(&hashes).unwrap_or_else(|_| "[]".into());
+        conn.execute(
+            "UPDATE users SET totp_recovery = ?1 WHERE id = ?2",
+            params![json, id],
+        )?;
+        Ok(true)
+    }
+
+    /// Consume one recovery code from a settings-KV JSON array (the shared
+    /// single-password admin's recovery set). Atomic under the single DB lock.
+    pub fn consume_kv_recovery(&self, key: &str, code_hash: &str) -> Result<bool> {
+        let conn = self.conn();
+        let current: Option<String> = conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let mut hashes: Vec<String> = current
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+        let before = hashes.len();
+        hashes.retain(|h| h != code_hash);
+        if hashes.len() == before {
+            return Ok(false);
+        }
+        let json = serde_json::to_string(&hashes).unwrap_or_else(|_| "[]".into());
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, json],
+        )?;
+        Ok(true)
     }
 
     /// Set a user's role, refusing to strip the last admin. The role read, the

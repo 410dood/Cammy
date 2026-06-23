@@ -81,6 +81,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/audit", get(list_audit))
         .route("/api/me", get(me))
         .route("/api/me/password", axum::routing::post(change_my_password))
+        .route("/api/2fa", get(twofa_status))
+        .route("/api/2fa/setup", axum::routing::post(twofa_setup))
+        .route("/api/2fa/enable", axum::routing::post(twofa_enable))
+        .route("/api/2fa/disable", axum::routing::post(twofa_disable))
         .route("/api/users", get(list_users_api).post(create_user_api))
         .route(
             "/api/users/{id}",
@@ -247,6 +251,10 @@ struct LoginReq {
     #[serde(default)]
     username: Option<String>,
     password: String,
+    /// Second factor: a 6-digit TOTP code or a one-time recovery code. Only
+    /// consulted when the matched credential has 2FA enabled.
+    #[serde(default)]
+    otp: Option<String>,
 }
 
 async fn login(
@@ -333,6 +341,84 @@ async fn login(
             "wrong username or password".into(),
         ));
     };
+
+    // --- second factor (TOTP), if enrolled for the matched credential -------
+    // The password verified above; if this credential has 2FA enabled, a valid
+    // code (or one-time recovery code) is required before any session is issued.
+    let (totp_secret, totp_on) = if let Some(uid) = principal.user_id {
+        let (s, e, _) = st.db.user_totp(uid)?.unwrap_or((None, false, None));
+        (s, e)
+    } else {
+        (
+            st.db.get_kv(crate::auth::KV_TOTP_SECRET),
+            st.db.get_kv(crate::auth::KV_TOTP_ENABLED).as_deref() == Some("1"),
+        )
+    };
+    if let Some(secret) = totp_secret
+        .filter(|_| totp_on)
+        .filter(|s| !s.trim().is_empty())
+    {
+        let otp = req.otp.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let Some(otp) = otp else {
+            // Password verified; ask for the second factor. Deliberately NOT a
+            // throttle failure (factor one was correct) and no session yet.
+            return Ok(
+                Json(serde_json::json!({ "ok": false, "mfa_required": true })).into_response(),
+            );
+        };
+        let now_u = now.max(0) as u64;
+        let mut passed = false;
+        let mut used_recovery = false;
+        if let Some(step) = crate::totp::matched_step(&secret, otp, now_u) {
+            // Replay guard: accept only a step newer than the last accepted one,
+            // advancing the watermark in the SAME statement (atomic compare-and-
+            // set under the DB lock) so two concurrent requests carrying the same
+            // still-valid code can't both win. A `false` result is a replay.
+            passed = if let Some(uid) = principal.user_id {
+                st.db.advance_user_totp_step(uid, step as i64)?
+            } else {
+                st.db
+                    .advance_kv_totp_step(crate::auth::KV_TOTP_LAST_STEP, step as i64)?
+            };
+            // passed == false: replayed code -> rejected below.
+        } else {
+            // Not a TOTP code; try to spend a one-time recovery code (atomic).
+            let hash = crate::totp::hash_recovery(otp);
+            let consumed = if let Some(uid) = principal.user_id {
+                st.db.consume_user_recovery(uid, &hash)?
+            } else {
+                st.db
+                    .consume_kv_recovery(crate::auth::KV_TOTP_RECOVERY, &hash)?
+            };
+            if consumed {
+                passed = true;
+                used_recovery = true;
+            }
+        }
+        if !passed {
+            st.login_throttle.record_failure(peer_ip);
+            let who = principal.username.as_deref().unwrap_or("admin");
+            st.db.add_audit(
+                now,
+                Some(&ip),
+                "login_failed",
+                Some(&format!("{who} (bad 2fa)")),
+            );
+            return Err(ApiError(
+                StatusCode::UNAUTHORIZED,
+                "wrong authentication code".into(),
+            ));
+        }
+        if used_recovery {
+            st.db.add_audit(
+                now,
+                Some(&ip),
+                "2fa_recovery_used",
+                principal.username.as_deref(),
+            );
+        }
+    }
+
     st.login_throttle.record_success(peer_ip);
     st.db.add_audit(
         now,
@@ -473,6 +559,10 @@ struct PatchUserReq {
     role: Option<String>,
     #[serde(default)]
     password: Option<String>,
+    /// Admin recovery: clear a (locked-out) user's two-factor enrollment so they
+    /// can log in with just their password and re-enroll.
+    #[serde(default)]
+    disable_2fa: Option<bool>,
 }
 
 async fn patch_user_api(
@@ -531,6 +621,17 @@ async fn patch_user_api(
         );
         changed = true;
     }
+    if req.disable_2fa == Some(true) {
+        // Admin recovery for a user who lost their authenticator AND recovery
+        // codes. Clears their 2FA (secret/enabled/recovery/watermark).
+        if !st.db.set_user_totp(id, None, false, None)? {
+            return Err(not_found());
+        }
+        st.sessions.clear_user(id);
+        st.db
+            .add_audit(now, Some(&ip), "2fa_reset", Some(&format!("#{id}")));
+        changed = true;
+    }
     if !changed {
         return Err(bad_request("nothing to update"));
     }
@@ -563,6 +664,207 @@ async fn delete_user_api(
         Some(&format!("#{id}")),
     );
     Ok(StatusCode::NO_CONTENT)
+}
+
+// --- TOTP two-factor authentication -----------------------------------------
+
+/// Load the 2FA config `(secret, enabled, recovery_json)` for the caller's
+/// credential: a named user (their `users` row) or, for the loopback / legacy
+/// single-password admin, the settings KV.
+fn load_totp(st: &AppState, p: &crate::auth::Principal) -> ApiResult<crate::db::TotpConfig> {
+    if let Some(uid) = p.user_id {
+        st.db.user_totp(uid)?.ok_or_else(not_found)
+    } else {
+        Ok((
+            st.db.get_kv(crate::auth::KV_TOTP_SECRET),
+            st.db.get_kv(crate::auth::KV_TOTP_ENABLED).as_deref() == Some("1"),
+            st.db.get_kv(crate::auth::KV_TOTP_RECOVERY),
+        ))
+    }
+}
+
+/// Persist the 2FA config for the caller's credential, always resetting the
+/// replay watermark (set_user_totp does this for users; for KV we drop the key).
+fn save_totp(
+    st: &AppState,
+    p: &crate::auth::Principal,
+    secret: Option<&str>,
+    enabled: bool,
+    recovery: Option<&str>,
+) -> ApiResult<()> {
+    if let Some(uid) = p.user_id {
+        if !st.db.set_user_totp(uid, secret, enabled, recovery)? {
+            return Err(not_found());
+        }
+    } else {
+        match secret {
+            Some(s) => st.db.set_kv(crate::auth::KV_TOTP_SECRET, s)?,
+            None => st.db.delete_kv(crate::auth::KV_TOTP_SECRET)?,
+        }
+        st.db.set_kv(
+            crate::auth::KV_TOTP_ENABLED,
+            if enabled { "1" } else { "0" },
+        )?;
+        match recovery {
+            Some(r) => st.db.set_kv(crate::auth::KV_TOTP_RECOVERY, r)?,
+            None => st.db.delete_kv(crate::auth::KV_TOTP_RECOVERY)?,
+        }
+        st.db.delete_kv(crate::auth::KV_TOTP_LAST_STEP)?;
+    }
+    Ok(())
+}
+
+fn totp_account(p: &crate::auth::Principal) -> String {
+    p.username.clone().unwrap_or_else(|| "admin".into())
+}
+
+/// Whether `code` matches one of the stored recovery-code hashes (peek, no spend).
+fn recovery_contains(recovery_json: &Option<String>, code: &str) -> bool {
+    let hashes: Vec<String> = recovery_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    let target = crate::totp::hash_recovery(code);
+    hashes.iter().any(|h| h == &target)
+}
+
+/// 2FA status for the caller's own credential.
+async fn twofa_status(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (secret, enabled, _) = load_totp(&st, &p)?;
+    Ok(Json(serde_json::json!({
+        "enabled": enabled,
+        "pending": !enabled && secret.is_some(),
+        "scope": if p.user_id.is_some() { "user" } else { "shared" },
+        "account": totp_account(&p),
+    })))
+}
+
+/// Begin enrollment: mint a fresh (not-yet-active) secret and return it plus the
+/// `otpauth://` URI for an authenticator app. Refuses if 2FA is already on.
+async fn twofa_setup(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (_, enabled, _) = load_totp(&st, &p)?;
+    if enabled {
+        return Err(bad_request(
+            "two-factor is already enabled — disable it first to re-enroll",
+        ));
+    }
+    let secret = crate::totp::generate_secret();
+    save_totp(&st, &p, Some(&secret), false, None)?;
+    let account = totp_account(&p);
+    let uri = crate::totp::provisioning_uri(&secret, "Cammy", &account);
+    Ok(Json(serde_json::json!({
+        "secret": secret,
+        "otpauth_uri": uri,
+        "account": account,
+    })))
+}
+
+#[derive(Deserialize)]
+struct TwoFaCodeReq {
+    #[serde(default)]
+    code: String,
+}
+
+/// Confirm enrollment: verify a code against the pending secret, activate 2FA,
+/// and return one-time recovery codes (shown ONCE; only hashes are stored).
+async fn twofa_enable(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<TwoFaCodeReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (secret, enabled, _) = load_totp(&st, &p)?;
+    if enabled {
+        return Err(bad_request("two-factor is already enabled"));
+    }
+    let Some(secret) = secret.filter(|s| !s.trim().is_empty()) else {
+        return Err(bad_request("start setup before enabling two-factor"));
+    };
+    let now = chrono::Local::now().timestamp().max(0) as u64;
+    if !crate::totp::verify(&secret, req.code.trim(), now) {
+        return Err(bad_request(
+            "that code didn't verify — check the authenticator's clock and try again",
+        ));
+    }
+    let codes = crate::totp::generate_recovery_codes();
+    let hashes: Vec<String> = codes
+        .iter()
+        .map(|c| crate::totp::hash_recovery(c))
+        .collect();
+    let recovery_json = serde_json::to_string(&hashes).unwrap_or_else(|_| "[]".into());
+    save_totp(&st, &p, Some(&secret), true, Some(&recovery_json))?;
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "2fa_enabled",
+        p.username.as_deref(),
+    );
+    Ok(Json(
+        serde_json::json!({ "ok": true, "recovery_codes": codes }),
+    ))
+}
+
+/// Disable 2FA. Requires a current TOTP/recovery code — EXCEPT from loopback
+/// (the physically-trusted local box; mirrors the loopback exemption so a lost
+/// authenticator can never permanently lock the owner out of their own machine).
+async fn twofa_disable(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<TwoFaCodeReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (secret, enabled, recovery) = load_totp(&st, &p)?;
+    let (ip, via_proxy) = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy);
+    if enabled {
+        let loopback = !via_proxy && ip.is_loopback();
+        if !loopback {
+            // Brute-forcing the disable code from a hijacked session must hit the
+            // same per-IP lockout as a wrong login code (loopback is exempt above).
+            if st.login_throttle.locked_for(ip).is_some() {
+                return Err(ApiError(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many attempts; try again later".into(),
+                ));
+            }
+            let code = req.code.trim();
+            let now = chrono::Local::now().timestamp().max(0) as u64;
+            let ok = secret
+                .as_deref()
+                .map(|s| crate::totp::verify(s, code, now))
+                .unwrap_or(false)
+                || recovery_contains(&recovery, code);
+            if !ok {
+                st.login_throttle.record_failure(ip);
+                return Err(ApiError(
+                    StatusCode::UNAUTHORIZED,
+                    "enter a current authenticator code or a recovery code to disable two-factor"
+                        .into(),
+                ));
+            }
+        }
+    }
+    // Wipe secret + enabled + recovery + replay watermark either way.
+    save_totp(&st, &p, None, false, None)?;
+    if enabled {
+        st.db.add_audit(
+            chrono::Local::now().timestamp(),
+            Some(&ip.to_string()),
+            "2fa_disabled",
+            p.username.as_deref(),
+        );
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]
