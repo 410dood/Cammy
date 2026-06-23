@@ -1,6 +1,8 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import { api, CamEvent, Camera, fmtTime, Segment, SimilarResult } from "../api";
-import { useToast, useDialog, Modal, RelTime, EmptyState } from "../ui";
+import { useToast, useDialog, Modal, RelTime, EmptyState, ErrorState } from "../ui";
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
@@ -155,6 +157,7 @@ export default function Events({
   const toast = useToast();
   const dialog = useDialog();
   const [events, setEvents] = useState<CamEvent[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [cameraId, setCameraId] = useState<number | "">("");
   const [label, setLabel] = useState("");
   const [review, setReview] = useState<"all" | "alerts">("all");
@@ -350,8 +353,11 @@ export default function Events({
         flagged: flaggedOnly || undefined,
         limit: 200,
       })
-      .then(setEvents)
-      .catch(() => {});
+      .then((d) => {
+        setEvents(d);
+        setLoadError(null);
+      })
+      .catch((e) => setLoadError(errMsg(e)));
   };
 
   // Download the current filter set as a CSV (server streams it with the same
@@ -599,7 +605,9 @@ export default function Events({
       )}
 
       {list.length === 0 ? (
-        searchResults || interpreted.length > 0 ? (
+        loadError && !searchResults ? (
+          <ErrorState what="events" message={loadError} onRetry={load} />
+        ) : searchResults || interpreted.length > 0 ? (
           <EmptyState
             icon={<IconSparkles />}
             title={query ? `No events match “${query}”` : "No events match these filters"}

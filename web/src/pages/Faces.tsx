@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, CamEvent, GaitProfile, PlateEntry, PlateCategory } from "../api";
-import { useToast, useDialog, Modal, RelTime } from "../ui";
+import { useToast, useDialog, Modal, RelTime, ErrorState } from "../ui";
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 import { IconUser, IconStranger, IconCar, IconAlert, IconCheck, IconTrash, IconPlus } from "../icons";
 
 /** Mirror of the backend normalize_plate: uppercase, alphanumerics only. */
@@ -51,13 +53,17 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   const [gaitProfiles, setGaitProfiles] = useState<GaitProfile[]>([]);
   const [gaitCands, setGaitCands] = useState<CamEvent[]>([]);
   const [gaitNames, setGaitNames] = useState<Record<number, string>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = () => {
     api.faces().then((r) => {
       setEnrolled(r.enrolled);
       setUnknown(r.unknown);
     }).catch(() => {});
-    api.events({ limit: 3000 }).then(setEvents).catch(() => {});
+    api.events({ limit: 3000 }).then((d) => {
+      setEvents(d);
+      setLoadError(null);
+    }).catch((e) => setLoadError(errMsg(e)));
     api.plates().then(setLib).catch(() => {});
     api.gait().then((r) => {
       setGaitProfiles(r.profiles);
@@ -255,10 +261,14 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
       <div className="card">
         <h2>People</h2>
         {identities.length === 0 ? (
-          <p className="muted">
-            Nobody enrolled or seen yet. Name a face from the unknown gallery below — detections of
-            that person will then carry their name.
-          </p>
+          loadError ? (
+            <ErrorState what="people" message={loadError} onRetry={load} />
+          ) : (
+            <p className="muted">
+              Nobody enrolled or seen yet. Name a face from the unknown gallery below — detections of
+              that person will then carry their name.
+            </p>
+          )
         ) : (
           <div className="identity-grid">
             {strangerCount > 0 && lastStranger && (

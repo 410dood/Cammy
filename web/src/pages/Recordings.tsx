@@ -3,7 +3,9 @@ import { api, CamEvent, Camera, fmtBytes, fmtTime, Segment, Stats } from "../api
 import Timeline from "../Timeline";
 import CrossTimeline from "../CrossTimeline";
 import { IconPlay, IconFilm } from "../icons";
-import { EmptyState } from "../ui";
+import { EmptyState, ErrorState } from "../ui";
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const WINDOWS = [
   { label: "1h", secs: 3600 },
@@ -19,12 +21,16 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = () => {
     api
       .recordings({ camera_id: cameraId === "" ? undefined : cameraId, limit: 1000 })
-      .then(setSegments)
-      .catch(() => {});
+      .then((s) => {
+        setSegments(s);
+        setLoadError(null);
+      })
+      .catch((e) => setLoadError(errMsg(e)));
     api.stats().then(setStats).catch(() => {});
     // Fetch events for the timeline: all cameras (cross-camera lanes) or just one.
     api
@@ -159,11 +165,15 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       )}
 
       {segments.length === 0 ? (
-        <EmptyState
-          icon={<IconFilm />}
-          title="No recordings yet"
-          hint="Segments land here about a minute after a record-enabled camera connects. Check that recording is on for at least one camera."
-        />
+        loadError ? (
+          <ErrorState what="recordings" message={loadError} onRetry={load} />
+        ) : (
+          <EmptyState
+            icon={<IconFilm />}
+            title="No recordings yet"
+            hint="Segments land here about a minute after a record-enabled camera connects. Check that recording is on for at least one camera."
+          />
+        )
       ) : (
         <div className="card">
           <div className="table-scroll">

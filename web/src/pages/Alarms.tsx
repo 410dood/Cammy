@@ -1,7 +1,9 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
 import { api, AlarmRule, Action, ActionKind, ArmMode, Camera } from "../api";
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren } from "../icons";
-import { EmptyState } from "../ui";
+import { EmptyState, ErrorState } from "../ui";
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const LABELS = [
   "person", "car", "truck", "bus", "bicycle", "motorcycle", "dog", "cat",
@@ -44,6 +46,7 @@ export default function Alarms({
   onError: (e: string) => void;
 }) {
   const [rules, setRules] = useState<AlarmRule[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [cameraId, setCameraId] = useState<number | "">("");
   const [label, setLabel] = useState("");
@@ -74,7 +77,13 @@ export default function Alarms({
     setActions((p) => (p.length > 1 ? p.filter((_, j) => j !== i) : p));
 
   const load = () => {
-    api.alarms().then(setRules).catch(() => {});
+    api
+      .alarms()
+      .then((r) => {
+        setRules(r);
+        setLoadError(null);
+      })
+      .catch((e) => setLoadError(errMsg(e)));
   };
   useEffect(load, []);
 
@@ -416,11 +425,15 @@ export default function Alarms({
       <div className="card">
         <h2>Rules</h2>
         {rules.length === 0 ? (
-          <EmptyState
-            icon={<IconSiren />}
-            title="No alarm rules yet"
-            hint="Rules fire actions the moment a matching event is detected. Create one using the form above."
-          />
+          loadError ? (
+            <ErrorState what="alarm rules" message={loadError} onRetry={load} />
+          ) : (
+            <EmptyState
+              icon={<IconSiren />}
+              title="No alarm rules yet"
+              hint="Rules fire actions the moment a matching event is detected. Create one using the form above."
+            />
+          )
         ) : (
           <div className="table-scroll">
           <table>
