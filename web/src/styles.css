@@ -713,6 +713,18 @@ label.field {
   background: var(--danger);
   border-radius: 1px;
 }
+/* Keyboard scrubber playhead (timeline + cross-timeline). */
+.tl-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 16px;
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-ring);
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+.timeline:focus-visible { outline: var(--bw-accent) solid var(--accent-ring); outline-offset: 2px; }
 .tl-times {
   position: absolute;
   left: 10px; right: 10px; bottom: 3px;
@@ -901,6 +913,47 @@ label.field {
 
 .table-scroll { overflow-x: auto; }
 
+/* --- mobile "More" overflow tab + bottom sheet ----------------------------- */
+.nav-more { display: none; } /* desktop shows every page in the rail */
+.more-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  background: var(--scrim);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-end;
+}
+.more-sheet {
+  width: 100%;
+  background: var(--bg-shell);
+  border-top: 1px solid var(--border);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+  box-shadow: var(--shadow-3);
+  animation: sheet-up var(--dur-3) var(--ease-out);
+}
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: none; } }
+.more-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.more-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 14px 6px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.more-item svg { color: var(--text-subtle); }
+.more-item:hover { color: var(--text); border-color: var(--border-hover); }
+.more-item.active { color: var(--accent-text); border-color: var(--accent-border); background: var(--accent-soft); }
+.more-item.active svg { color: var(--accent-text); }
+
 /* --- tablet (769–1024px): keep the desktop rail, but reclaim width and let the
    live grid pack two cameras instead of dropping to one. ---------------------- */
 @media (min-width: 769px) and (max-width: 1024px) {
@@ -949,7 +1002,12 @@ label.field {
   }
   .sidebar::-webkit-scrollbar { display: none; }
   .nav-btn { min-width: 64px; }
-  .brand, .sidebar .foot, .rail-tools { display: none; }
+  /* Scoped to .sidebar so these beat the later-in-source base .rail-tools rule
+     (the bell/palette/theme live in the mobile .topbar instead). */
+  .sidebar .brand, .sidebar .foot, .sidebar .rail-tools { display: none; }
+  /* Bottom bar shows 4 primary tabs + More; the rest live in the More sheet. */
+  .nav-secondary { display: none; }
+  .nav-more { display: flex; }
   .nav-btn {
     flex-direction: column;
     gap: 3px;
@@ -1279,6 +1337,13 @@ button.primary:disabled, button.secondary:disabled, button.ghost:disabled, butto
 .xtl { position: relative; padding: 14px 16px 28px; }
 .xtl-grid { position: absolute; left: 136px; right: 16px; top: 14px; bottom: 28px; pointer-events: none; }
 .xtl-line { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--hairline); }
+.xtl-cursor { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); box-shadow: 0 0 8px var(--accent-ring); transform: translateX(-1px); }
+.xtl-lane:focus-visible { outline: var(--bw-accent) solid var(--accent-ring); outline-offset: 1px; }
+/* ZoneEditor keyboard crosshair. */
+.ze-cursor { position: absolute; width: 20px; height: 20px; transform: translate(-50%, -50%); pointer-events: none; z-index: 2; }
+.ze-cursor::before, .ze-cursor::after { content: ""; position: absolute; background: #fff; box-shadow: 0 0 2px rgba(0, 0, 0, 0.9); }
+.ze-cursor::before { left: 50%; top: 0; width: 2px; height: 100%; transform: translateX(-50%); }
+.ze-cursor::after { top: 50%; left: 0; height: 2px; width: 100%; transform: translateY(-50%); }
 .xtl-row { display: flex; align-items: center; gap: 10px; height: 26px; margin-bottom: 4px; position: relative; }
 .xtl-name {
   width: 110px; flex: 0 0 110px; font-size: var(--text-sm); color: var(--text-muted);

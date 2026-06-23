@@ -3,6 +3,7 @@
 // Clicking a lane seeks that camera's recording at that moment. Coverage is
 // coalesced (not one div per 60s segment) so a full day stays light.
 
+import { useState } from "react";
 import { CamEvent, Camera, Segment } from "./api";
 
 const HOUR = 3600;
@@ -55,6 +56,33 @@ export default function CrossTimeline({
   const start = nowTs - windowSecs;
   const pct = (ts: number) => ((ts - start) / windowSecs) * 100;
 
+  // Keyboard scrubbing: one shared playhead (0..1) the arrows move; Enter plays
+  // the focused lane's camera at that moment.
+  const [cursor, setCursor] = useState<number | null>(null);
+  const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
+  const tsAt = (f: number) => Math.round(start + f * windowSecs);
+  const fmtClock = (ts: number) =>
+    new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const laneKey = (camId: number) => (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.shiftKey ? 0.1 : 0.02;
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") {
+      e.preventDefault();
+      setCursor((c) => clamp01((c ?? 1) + step));
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowDown") {
+      e.preventDefault();
+      setCursor((c) => clamp01((c ?? 1) - step));
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setCursor(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setCursor(1);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (cursor != null) onSeek(camId, tsAt(cursor));
+    }
+  };
+
   const lines: number[] = [];
   const step = windowSecs <= 2 * HOUR ? HOUR / 4 : windowSecs <= 12 * HOUR ? HOUR : 3 * HOUR;
   const first = Math.ceil(start / step) * step;
@@ -71,6 +99,7 @@ export default function CrossTimeline({
         {lines.map((t) => (
           <span key={t} className="xtl-line" style={{ left: `${pct(t)}%` }} />
         ))}
+        {cursor != null && <span className="xtl-cursor" style={{ left: `${cursor * 100}%` }} />}
       </div>
       {cameras.map((cam) => {
         const blocks = coalesce(segments.filter((s) => s.camera_id === cam.id), segmentSecs);
@@ -80,9 +109,18 @@ export default function CrossTimeline({
             <div className="xtl-name" title={cam.name}>{cam.name}</div>
             <div
               className="xtl-lane"
+              role="slider"
+              tabIndex={0}
+              aria-label={`${cam.name} recording scrubber — arrow keys move the playhead, Enter plays`}
+              aria-valuemin={0}
+              aria-valuemax={windowSecs}
+              aria-valuenow={cursor != null ? Math.round(cursor * windowSecs) : windowSecs}
+              aria-valuetext={cursor != null ? fmtClock(tsAt(cursor)) : "now"}
+              onKeyDown={laneKey(cam.id)}
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 const frac = (e.clientX - rect.left) / rect.width;
+                setCursor(clamp01(frac));
                 onSeek(cam.id, Math.round(start + frac * windowSecs));
               }}
             >

@@ -43,6 +43,8 @@ export default function ZoneEditor({
   onCalib: (c: GroundCalib | null) => void;
 }) {
   const [draw, setDraw] = useState<Draw>(null);
+  // Keyboard drawing: a crosshair (0..1) the arrows move; Enter places a point.
+  const [kbCursor, setKbCursor] = useState<[number, number]>([0.5, 0.5]);
   // Frame loading is resilient: go2rtc may be mid-restart or waiting for a
   // keyframe when the modal opens, so a single failed load shouldn't strand the
   // editor on "No live frame" forever. Retry a few times (cache-busting each
@@ -69,15 +71,40 @@ export default function ZoneEditor({
     setBust((b) => b + 1);
   };
 
-  const addPoint = (e: React.MouseEvent) => {
+  const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
+
+  const placePoint = (x: number, y: number) => {
     if (!draw) return;
     // A tripwire is exactly a 2-point segment; a calibration quad is 4 points.
     if (draw.kind === "tripwire" && draw.points.length >= 2) return;
     if (draw.kind === "calib" && draw.points.length >= 4) return;
+    setDraw({
+      ...draw,
+      points: [...draw.points, [Number(clamp01(x).toFixed(4)), Number(clamp01(y).toFixed(4))]],
+    });
+  };
+
+  const addPoint = (e: React.MouseEvent) => {
+    if (!draw) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
-    setDraw({ ...draw, points: [...draw.points, [Number(x.toFixed(4)), Number(y.toFixed(4))]] });
+    placePoint((e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
+  };
+
+  // Keyboard drawing: arrows nudge the crosshair, Enter/Space drops a point,
+  // Backspace removes the last one.
+  const onCanvasKey = (e: React.KeyboardEvent) => {
+    if (!draw) return;
+    const step = e.shiftKey ? 0.1 : 0.02;
+    const [cx, cy] = kbCursor;
+    if (e.key === "ArrowRight") { e.preventDefault(); setKbCursor([clamp01(cx + step), cy]); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); setKbCursor([clamp01(cx - step), cy]); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); setKbCursor([cx, clamp01(cy + step)]); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setKbCursor([cx, clamp01(cy - step)]); }
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); placePoint(cx, cy); }
+    else if (e.key === "Backspace" || e.key === "Delete") {
+      e.preventDefault();
+      if (draw.points.length) setDraw({ ...draw, points: draw.points.slice(0, -1) });
+    }
   };
 
   const minPts = (d: NonNullable<Draw>) =>
@@ -126,6 +153,13 @@ export default function ZoneEditor({
     <div>
       <div
         onClick={addPoint}
+        onKeyDown={onCanvasKey}
+        tabIndex={draw ? 0 : undefined}
+        aria-label={
+          draw
+            ? "Drawing surface — arrow keys move the crosshair, Enter drops a point, Backspace removes the last"
+            : undefined
+        }
         style={{
           position: "relative",
           width: "100%",
@@ -257,6 +291,13 @@ export default function ZoneEditor({
             </>
           )}
         </svg>
+        {draw && (
+          <div
+            className="ze-cursor"
+            style={{ left: `${kbCursor[0] * 100}%`, top: `${kbCursor[1] * 100}%` }}
+            aria-hidden="true"
+          />
+        )}
       </div>
 
       <div className="row" style={{ marginTop: 10, flexWrap: "wrap" }}>
