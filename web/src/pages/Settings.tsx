@@ -1331,6 +1331,55 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <div className="card">
+          <h2>Reverse-proxy SSO</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Sit Cammy behind an auth proxy (Authelia, oauth2-proxy, Cloudflare Access, Tailscale) and
+            trust the authenticated-user header it sets — single sign-on without a Cammy password.
+            Set the header below, then enter the user header name your proxy sends.{" "}
+            <b>
+              Only enable this when the server is started with <code>--trusted-proxy</code>, is
+              reachable <i>only</i> through that proxy, and the proxy <i>sets and strips</i> these
+              headers
+            </b>{" "}
+            so a client can't inject them. (Cammy already ignores the header on any request that
+            didn't arrive through the proxy — i.e. without <code>X-Forwarded-For</code>.) Leave the
+            user header blank to turn SSO off. If the username matches a Cammy account, that account's
+            role applies.
+          </p>
+          <div className="row">
+            <label className="field" style={{ flex: 1, minWidth: 220 }}>
+              user header (blank = off)
+              <input
+                type="text"
+                placeholder="Remote-User"
+                value={s.auth_proxy_header}
+                onChange={(e) => set({ auth_proxy_header: e.target.value })}
+              />
+            </label>
+            <label className="field" style={{ flex: 1, minWidth: 220 }}>
+              role/group header (optional)
+              <input
+                type="text"
+                placeholder="Remote-Groups"
+                value={s.auth_proxy_role_header}
+                onChange={(e) => set({ auth_proxy_role_header: e.target.value })}
+              />
+            </label>
+            <label className="field" title="Role for an SSO user with no role header and no matching Cammy account.">
+              default role
+              <select
+                value={s.auth_proxy_default_role}
+                onChange={(e) => set({ auth_proxy_default_role: e.target.value })}
+              >
+                <option value="viewer">viewer</option>
+                <option value="operator">operator</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div className="card">
           <h2>Notifications</h2>
           <div className="row">
             <label className="field" style={{ flex: 1, minWidth: 320 }}>

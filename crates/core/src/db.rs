@@ -933,6 +933,23 @@ pub struct Settings {
     /// Default recipient(s) (comma-separated) for email actions whose target is blank.
     #[serde(default)]
     pub smtp_to: String,
+    /// Reverse-proxy SSO (forward auth). When non-empty AND the server runs with
+    /// `--trusted-proxy`, a *proxied* request carrying this header is trusted as
+    /// that authenticated user (the proxy — Authelia / oauth2-proxy / Cloudflare
+    /// Access / Tailscale — already authenticated them). Empty = off. Only honored
+    /// on requests that arrived through the proxy (have `X-Forwarded-For`), so a
+    /// direct connection can never spoof it.
+    #[serde(default)]
+    pub auth_proxy_header: String,
+    /// Optional header carrying the user's role/group; its value is parsed
+    /// leniently (admin/operator/viewer, unknown → viewer). Empty = use the
+    /// matched Cammy user's role, else `auth_proxy_default_role`.
+    #[serde(default)]
+    pub auth_proxy_role_header: String,
+    /// Role granted to a forward-auth user with no role header and no matching
+    /// Cammy account. Defaults to the least-privileged `viewer`.
+    #[serde(default = "default_proxy_role")]
+    pub auth_proxy_default_role: String,
 }
 
 fn default_arm_mode() -> String {
@@ -941,6 +958,10 @@ fn default_arm_mode() -> String {
 
 fn default_pose_model() -> String {
     "yolov8n-pose.onnx".into()
+}
+
+fn default_proxy_role() -> String {
+    "viewer".into()
 }
 
 impl Default for Settings {
@@ -1035,6 +1056,9 @@ impl Default for Settings {
             smtp_pass: String::new(),
             smtp_from: String::new(),
             smtp_to: String::new(),
+            auth_proxy_header: String::new(),
+            auth_proxy_role_header: String::new(),
+            auth_proxy_default_role: default_proxy_role(),
         }
     }
 }

@@ -212,6 +212,13 @@ export interface Settings {
   /** Path to the YOLOv8-pose ONNX model for the server-side pose worker
    *  (downloaded, not committed). The worker idles until it exists. */
   pose_model: string;
+  /** Reverse-proxy SSO (forward auth): header carrying the authenticated user
+   *  (e.g. "Remote-User"). Empty = off. Only honored with --trusted-proxy. */
+  auth_proxy_header: string;
+  /** Optional header carrying the user's role/group (admin/operator/viewer). */
+  auth_proxy_role_header: string;
+  /** Role for an SSO user with no role header + no matching account. */
+  auth_proxy_default_role: string;
 }
 
 /** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every

@@ -371,6 +371,82 @@ fn request_token(req: &Request) -> Option<String> {
     })
 }
 
+/// The forward-auth username from the configured proxy header — but ONLY on a
+/// request that arrived through the trusted proxy (`via_proxy`). Returns `None`
+/// if SSO is off, the header is absent/blank, or the request came in directly
+/// (so a connection bypassing the proxy can never spoof the header).
+fn proxy_user(
+    headers: &header::HeaderMap,
+    settings: &crate::db::Settings,
+    via_proxy: bool,
+) -> Option<String> {
+    if !via_proxy {
+        return None;
+    }
+    let name = settings.auth_proxy_header.trim();
+    if name.is_empty() {
+        return None;
+    }
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Role for a forward-auth user: an explicit role header wins, else the matched
+/// Cammy account's role, else the configured default.
+fn forward_auth_role(
+    role_header: Option<&str>,
+    matched_role: Option<&str>,
+    default_role: &str,
+) -> Role {
+    role_header
+        .map(Role::parse)
+        .or_else(|| matched_role.map(Role::parse))
+        .unwrap_or_else(|| Role::parse(default_role))
+}
+
+/// Build a [`Principal`] for a reverse-proxy SSO (forward-auth) request, if one
+/// applies. A matching Cammy account contributes its id + role; otherwise the
+/// user is virtual (no `user_id`) at the role-header/default role.
+fn forward_auth_principal(
+    headers: &header::HeaderMap,
+    settings: &crate::db::Settings,
+    via_proxy: bool,
+    db: &crate::db::Db,
+) -> Option<Principal> {
+    // Cammy usernames are stored lower-case (see `valid_username`), so normalize
+    // the proxy-supplied name before matching — otherwise "Bob" wouldn't match
+    // the "bob" account and would silently get the default role instead of theirs.
+    let user = proxy_user(headers, settings, via_proxy)?.to_ascii_lowercase();
+    let matched = db.user_by_name(&user).ok().flatten();
+    let role_header_val = {
+        let rh = settings.auth_proxy_role_header.trim();
+        if rh.is_empty() {
+            None
+        } else {
+            headers
+                .get(rh)
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        }
+    };
+    let role = forward_auth_role(
+        role_header_val.as_deref(),
+        matched.as_ref().map(|(_, _, r)| r.as_str()),
+        &settings.auth_proxy_default_role,
+    );
+    Some(Principal {
+        user_id: matched.as_ref().map(|(id, _, _)| *id),
+        username: Some(user),
+        role,
+    })
+}
+
 /// Gate `/api/*` for non-loopback peers when a password is set. Static assets
 /// stay open so the login screen can render; login/health/auth-status stay
 /// open so logging in is possible.
@@ -389,47 +465,67 @@ pub async fn middleware(
     // own 127.0.0.1 connection, or a spoofed XFF, must not bypass auth).
     let (cip, via_proxy) = client_ip(req.headers(), addr.ip(), st.behind_proxy);
     let loopback_exempt = !via_proxy && cip.is_loopback();
-    // Auth is active once a single password OR any named user account exists.
-    // A failed user count is treated as "auth on" (fail closed): a transient DB
-    // error must never silently open the gate to unauthenticated remote callers.
-    let auth_on =
-        st.db.get_kv(KV_PASSWORD).is_some() || st.db.count_users().map(|n| n > 0).unwrap_or(true);
 
-    // The local box and open mode get full access with no role gating.
-    if loopback_exempt || !auth_on {
+    // The local box always gets full access (and skips the per-request settings
+    // read below — loopback is the hot path for the desktop app / local dev).
+    if loopback_exempt {
+        req.extensions_mut().insert(Principal::admin());
+        return next.run(req).await;
+    }
+
+    // Remote request: read settings once (forward-auth config below needs it).
+    let settings = st.db.settings();
+    // Auth is active once a single password OR any named user account exists OR
+    // reverse-proxy SSO is configured. A failed user count is treated as "auth
+    // on" (fail closed): a transient DB error must never silently open the gate.
+    // Forward-auth only counts toward "auth on" when --trusted-proxy is set,
+    // because it can ONLY authenticate via_proxy requests (which require that
+    // flag). Otherwise configuring the header alone would flip auth on while
+    // leaving no working remote credential path — a remote lockout footgun.
+    let auth_on = st.db.get_kv(KV_PASSWORD).is_some()
+        || st.db.count_users().map(|n| n > 0).unwrap_or(true)
+        || (st.behind_proxy && !settings.auth_proxy_header.trim().is_empty());
+
+    // Open mode (no password, no users, no SSO): full access, no role gating.
+    if !auth_on {
         req.extensions_mut().insert(Principal::admin());
         return next.run(req).await;
     }
 
     // Resolve the caller: a session cookie (a named user or the legacy
-    // single-password admin), or an API token (admin-level, but constrained by
-    // `token_forbidden`).
+    // single-password admin), reverse-proxy SSO (a forward-auth header the
+    // trusted proxy set), or an API token (constrained by `token_forbidden`).
     let mut is_token = false;
-    let principal: Option<Principal> =
-        if let Some(p) = request_token(&req).and_then(|t| st.sessions.get(&t)) {
-            Some(p)
-        } else if let Some(bearer) = bearer_token(&req) {
-            match st.db.api_token_by_hash(&token_hash(&bearer)) {
-                Ok(Some((id, last, role))) => {
-                    is_token = true;
-                    let now = chrono::Local::now().timestamp();
-                    // Throttle last-used writes to at most once a minute per token.
-                    if last.map(|t| now - t >= 60).unwrap_or(true) {
-                        let _ = st.db.touch_api_token(id, now);
-                    }
-                    // A token acts at its assigned role (scoped, not blanket admin);
-                    // `token_forbidden` still blocks the interactive-only endpoints.
-                    Some(Principal {
-                        user_id: None,
-                        username: None,
-                        role: Role::parse(&role),
-                    })
+    let mut is_forward_auth = false;
+    let principal: Option<Principal> = if let Some(p) =
+        request_token(&req).and_then(|t| st.sessions.get(&t))
+    {
+        Some(p)
+    } else if let Some(p) = forward_auth_principal(req.headers(), &settings, via_proxy, &st.db) {
+        is_forward_auth = true;
+        Some(p)
+    } else if let Some(bearer) = bearer_token(&req) {
+        match st.db.api_token_by_hash(&token_hash(&bearer)) {
+            Ok(Some((id, last, role))) => {
+                is_token = true;
+                let now = chrono::Local::now().timestamp();
+                // Throttle last-used writes to at most once a minute per token.
+                if last.map(|t| now - t >= 60).unwrap_or(true) {
+                    let _ = st.db.touch_api_token(id, now);
                 }
-                _ => None,
+                // A token acts at its assigned role (scoped, not blanket admin);
+                // `token_forbidden` still blocks the interactive-only endpoints.
+                Some(Principal {
+                    user_id: None,
+                    username: None,
+                    role: Role::parse(&role),
+                })
             }
-        } else {
-            None
-        };
+            _ => None,
+        }
+    } else {
+        None
+    };
 
     // Open endpoints (login/health/auth-status, static assets) pass through,
     // carrying any principal we resolved.
@@ -444,9 +540,15 @@ pub async fn middleware(
         Some(p) => p,
         None => return unauthorized(),
     };
-    // A leaked API token must not reach interactive-only endpoints.
-    if is_token && token_forbidden(&method, &path) {
-        return forbidden("this endpoint requires an interactive login, not an API token");
+    // Interactive-only endpoints (2FA, user/role mgmt, password, audit log) are
+    // off-limits to API tokens AND to reverse-proxy SSO callers. The latter is
+    // load-bearing: an SSO user is `user_id=None` when its username matches no
+    // Cammy account, which would otherwise fall through to the *shared
+    // single-password admin's* 2FA in `/api/2fa` — letting a low-privilege SSO
+    // viewer recon or plant a TOTP on the shared admin credential. Account /
+    // security management belongs to an interactive local session, not the proxy.
+    if (is_token || is_forward_auth) && token_forbidden(&method, &path) {
+        return forbidden("this endpoint requires an interactive login");
     }
     // Role gate (C5).
     if principal.role < min_role_for(&method, &path) {
@@ -641,6 +743,49 @@ mod tests {
         spoof.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
         let (ip, via) = client_ip(&spoof, real, true);
         assert!(ip.is_loopback() && via, "spoof must be flagged via_proxy");
+    }
+
+    #[test]
+    fn proxy_user_requires_via_proxy_and_a_configured_header() {
+        let mut s = crate::db::Settings::default();
+        let mut h = header::HeaderMap::new();
+        h.insert("remote-user", "alice".parse().unwrap());
+
+        // SSO off (blank header config) -> never resolves.
+        assert_eq!(proxy_user(&h, &s, true), None);
+
+        s.auth_proxy_header = "Remote-User".into();
+        // Configured + header present + via_proxy -> resolves.
+        assert_eq!(proxy_user(&h, &s, true).as_deref(), Some("alice"));
+        // Direct hit (NOT via_proxy) -> header is NOT trusted (anti-spoof).
+        assert_eq!(proxy_user(&h, &s, false), None);
+        // Header absent -> None.
+        assert_eq!(proxy_user(&header::HeaderMap::new(), &s, true), None);
+        // Blank header value -> None.
+        let mut blank = header::HeaderMap::new();
+        blank.insert("remote-user", "  ".parse().unwrap());
+        assert_eq!(proxy_user(&blank, &s, true), None);
+    }
+
+    #[test]
+    fn forward_auth_role_precedence() {
+        // Explicit role header wins over everything.
+        assert_eq!(
+            forward_auth_role(Some("admin"), Some("viewer"), "operator"),
+            Role::Admin
+        );
+        // No role header -> matched account's role.
+        assert_eq!(
+            forward_auth_role(None, Some("operator"), "viewer"),
+            Role::Operator
+        );
+        // Neither -> the configured default.
+        assert_eq!(forward_auth_role(None, None, "operator"), Role::Operator);
+        // Unknown role values fall back to the least-privileged Viewer.
+        assert_eq!(
+            forward_auth_role(Some("superuser"), None, "admin"),
+            Role::Viewer
+        );
     }
 
     #[test]
