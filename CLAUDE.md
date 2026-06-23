@@ -14,9 +14,41 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — commercial suite 61/61 + residential suite (batches 1-7, PR #27), 2026-06-22
+## Current status: v0.3 — full competitor suite (#1–#70) integrated on main + cross-feature simplify, 2026-06-22
 
-### Latest: residential / consumer-camera analytics suite — batch 1 (PR #27, branch `residential-analytics` off main)
+### Latest: full-suite integration to main + cross-feature simplify
+
+All outstanding feature branches were merged into `main` (fast-forwarded to the
+`integration/merge-all` result, now `0d5b09d` + the simplify commit): **#62 TOTP
+2FA** (PR #19), **#63 tamper + #64 gait** (PR #20), **#65 reverse-proxy SSO /
+forward auth** (PR #21), **#66 per-camera RBAC scoping** (PR #22), **#67
+per-camera recording schedules** (PR #23), **#68 native Web Push** (PR #24),
+**#69 package / porch-piracy detection** (PR #25), and **#70 offsite S3 backup**
+(PR #26, incl. its review-tightening pass). The 8 branches were integrated in
+dependency order on an isolated git worktree (two-factor first, since tamper/gait
++ SSO stacked on it); every text/semantic conflict was hand-resolved — the
+pipeline analytics/tracker gate (residential + gait + parcel all keep the tracker
+running on motionless frames), the db schema batch + `Settings` struct/`Default`,
+the `lib.rs` worker spawns + joins, the `api.rs` metrics call (RBAC-scoped event
+count **and** backup gauges), and the Cameras/Settings UI. Validated:
+`cargo clippy -D warnings` clean, **135 core tests pass**, web `tsc`+`vite` clean.
+(The `zoomy-desktop` Tauri bundle needs the gitignored `clip_text.onnx`; that's an
+environment resource, not a code issue.)
+
+Then an **entire-codebase simplify pass** (commit `2c25228`): the merge surfaced
+cross-feature duplication, consolidated into a new `crates/core/src/util.rs` —
+one efficient `hex` (a single pre-allocated `String`, no per-byte alloc) replacing
+**4** copies across auth / sigv4 / ptz / totp, and one `sleep_interruptible`
+replacing **5** byte-identical copies across anomaly / digest / offsite / push /
+schedule. ~60 fewer lines; behavior unchanged (SigV4 AWS, TOTP RFC, auth vectors
+all still pass).
+
+**GOTCHA:** this integration ran in an isolated worktree (`/e/dev/_cammy_integration`,
+branch `integration/merge-all`) while a concurrent session held the main checkout
+on `residential-analytics` — the worktree kept the two from colliding. Build needs
+`LIBCLANG_PATH` set (whisper-rs bindgen) — see the memory note.
+
+### Earlier: residential / consumer-camera analytics suite — batch 1 (PR #27, branch `residential-analytics` off main)
 
 The consumer-camera parallel to the commercial suite — baby / pet / pool / kid /
 aging-in-place — researched + ranked in `docs/05-residential-analytics-suite.md`
