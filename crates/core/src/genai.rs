@@ -68,13 +68,25 @@ fn parse_response(body: &serde_json::Value) -> Option<String> {
     })
 }
 
-fn caption_one(db: &Db, job: &CaptionJob) {
+/// Result of one caption attempt, so the worker can surface a *reachability*
+/// failure to the user instead of swallowing it at debug (the silent-failure gap).
+enum Outcome {
+    /// The model was reached (a caption was saved, or it replied with none).
+    Reached,
+    /// Disabled / no snapshot — nothing to do, not a failure.
+    Skipped,
+    /// The model could not be reached (network/HTTP/parse) — the user can't tell
+    /// their Ollama/endpoint is down without this.
+    Failed(String),
+}
+
+fn caption_one(db: &Db, job: &CaptionJob) -> Outcome {
     let s = db.settings();
     if !s.genai_enabled || s.genai_url.trim().is_empty() {
-        return;
+        return Outcome::Skipped;
     }
     let Ok(bytes) = std::fs::read(&job.snapshot_path) else {
-        return;
+        return Outcome::Skipped;
     };
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let req = build_request(&s.genai_model, &prompt_for(&job.label, &job.camera), &b64);
@@ -91,22 +103,63 @@ fn caption_one(db: &Db, job: &CaptionJob) {
             Ok(body) => {
                 if let Some(caption) = parse_response(&body) {
                     if let Err(e) = db.set_event_caption(job.event_id, &caption) {
+                        // A DB write failure is a local problem, not "model down" —
+                        // don't trip the reachability notification for it.
                         tracing::debug!("caption save failed: {e}");
                     } else {
                         tracing::info!(event = job.event_id, "genai caption: {caption}");
                     }
                 }
+                Outcome::Reached
             }
-            Err(e) => tracing::debug!("genai response not JSON: {e}"),
+            Err(e) => Outcome::Failed(format!("response not JSON: {e}")),
         },
-        Err(e) => tracing::debug!("genai request failed: {e}"),
+        Err(e) => Outcome::Failed(format!("request failed: {e}")),
+    }
+}
+
+/// Decide the in-app notification (if any) for a caption outcome, given whether
+/// we've already notified about an ongoing failure. Returns
+/// `(new_notified_state, title, body)` when a notification should fire — edge-
+/// triggered like the offsite/health latches so a flapping endpoint can't spam
+/// the bell. Pure → unit-tested.
+fn err_transition(outcome: &Outcome, notified: bool) -> Option<(bool, &'static str, String)> {
+    match outcome {
+        Outcome::Failed(msg) if !notified => Some((
+            true,
+            "AI captions unavailable",
+            format!(
+                "The captioning model could not be reached ({}). Captions are paused \
+                 until it recovers; check the GenAI endpoint in Settings.",
+                msg.chars().take(200).collect::<String>()
+            ),
+        )),
+        Outcome::Reached if notified => Some((
+            false,
+            "AI captions recovered",
+            "The captioning model is reachable again.".to_string(),
+        )),
+        _ => None,
     }
 }
 
 pub fn run(db: Db, rx: Receiver<CaptionJob>, shutdown: Arc<AtomicBool>) {
+    // Edge-triggered failure surface: notify once when the endpoint goes
+    // unreachable, once when it recovers.
+    let mut err_notified = false;
     while !shutdown.load(Ordering::Relaxed) {
         match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(job) => caption_one(&db, &job),
+            Ok(job) => {
+                let outcome = caption_one(&db, &job);
+                if let Some((new_state, title, body)) = err_transition(&outcome, err_notified) {
+                    let now = chrono::Utc::now().timestamp();
+                    let _ = db.add_notification(now, "genai_error", title, Some(&body), None);
+                    err_notified = new_state;
+                    if new_state {
+                        tracing::warn!("genai captioner endpoint unreachable: {title}");
+                    }
+                }
+            }
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -142,5 +195,23 @@ mod tests {
         // Empty / missing → None.
         assert!(parse_response(&serde_json::json!({ "response": "   " })).is_none());
         assert!(parse_response(&serde_json::json!({ "x": 1 })).is_none());
+    }
+
+    #[test]
+    fn err_transition_is_edge_triggered() {
+        // First failure → notify + latch on.
+        let (state, title, _) = err_transition(&Outcome::Failed("conn refused".into()), false).unwrap();
+        assert!(state);
+        assert_eq!(title, "AI captions unavailable");
+        // Repeat failure while latched → no spam.
+        assert!(err_transition(&Outcome::Failed("conn refused".into()), true).is_none());
+        // Recovery while latched → notify + latch off.
+        let (state, title, _) = err_transition(&Outcome::Reached, true).unwrap();
+        assert!(!state);
+        assert_eq!(title, "AI captions recovered");
+        // Success while not latched, and skips, are silent.
+        assert!(err_transition(&Outcome::Reached, false).is_none());
+        assert!(err_transition(&Outcome::Skipped, true).is_none());
+        assert!(err_transition(&Outcome::Skipped, false).is_none());
     }
 }

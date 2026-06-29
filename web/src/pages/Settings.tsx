@@ -1058,6 +1058,33 @@ function SettingsNav() {
   );
 }
 
+// Flags a public base URL that will silently produce dead tap-through links in
+// pushes: http:// (phones often block mixed/insecure links) or a private/LAN host
+// (won't resolve when you're away from home). Returns null when it looks fine.
+function baseUrlWarning(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null;
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return "Not a valid URL — include the scheme, e.g. https://nvr.example.com";
+  }
+  const h = u.hostname;
+  const isPrivate =
+    h === "localhost" ||
+    h.endsWith(".local") ||
+    /^127\./.test(h) ||
+    /^10\./.test(h) ||
+    /^192\.168\./.test(h) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+  if (u.protocol === "http:")
+    return "Uses http:// — phones may block the tap-through clip links; prefer https://.";
+  if (isPrivate)
+    return "Private/LAN host — clip links in pushes won't open when you're away from home.";
+  return null;
+}
+
 // Surfaces which optional AI models are actually present, so an enabled feature
 // whose model isn't downloaded reads as "not downloaded" instead of silently
 // no-op'ing (the dominant silent-failure gap). Read-only; fetches on mount.
@@ -1857,6 +1884,14 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.public_base_url ?? ""}
                 onChange={(e) => set({ public_base_url: e.target.value })}
               />
+              {baseUrlWarning(s.public_base_url ?? "") && (
+                <span
+                  className="muted"
+                  style={{ color: "var(--warn)", fontSize: "var(--text-sm)", marginTop: 4 }}
+                >
+                  ⚠ {baseUrlWarning(s.public_base_url ?? "")}
+                </span>
+              )}
             </label>
             <label className="field" style={{ minWidth: 240 }}>
               MQTT broker (empty = off)
