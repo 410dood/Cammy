@@ -1,0 +1,37 @@
+# Cammy NVR — systemd unit. See DEPLOYMENT.md.
+# Install to /etc/systemd/system/cammy.service, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cammy
+#
+# Layout assumed (edit to taste):
+#   /opt/cammy            -> binary `zoomy`, web/dist, bin/go2rtc, and the *.onnx
+#                            model files (this is the WorkingDirectory, where models
+#                            are resolved from)
+#   /var/lib/cammy/data   -> SQLite db, recordings, snapshots, generated go2rtc.yaml
+
+[Unit]
+Description=Cammy self-hosted NVR
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cammy
+Group=cammy
+WorkingDirectory=/opt/cammy
+# Add --trusted-proxy ONLY when this port is reachable solely through a reverse
+# proxy (see DEPLOYMENT.md §3). Add --tls-self-signed (or --tls-cert/--tls-key) to
+# serve HTTPS directly instead of terminating TLS at a proxy.
+ExecStart=/opt/cammy/zoomy --port 8080 --data-dir /var/lib/cammy/data --ui-dir /opt/cammy/web/dist
+Environment=RUST_LOG=info,zoomy=info
+Restart=on-failure
+RestartSec=5
+
+# Hardening (loosen if it conflicts with your paths).
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cammy
+
+[Install]
+WantedBy=multi-user.target
