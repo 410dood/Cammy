@@ -1,7 +1,7 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
 import { api, AlarmRule, Action, ActionKind, ArmMode, Camera } from "../api";
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren } from "../icons";
-import { EmptyState, ErrorState } from "../ui";
+import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -45,7 +45,10 @@ export default function Alarms({
   cameras: Camera[];
   onError: (e: string) => void;
 }) {
+  const dialog = useDialog();
+  const toast = useToast();
   const [rules, setRules] = useState<AlarmRule[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [cameraId, setCameraId] = useState<number | "">("");
@@ -83,9 +86,21 @@ export default function Alarms({
         setRules(r);
         setLoadError(null);
       })
-      .catch((e) => setLoadError(errMsg(e)));
+      .catch((e) => setLoadError(errMsg(e)))
+      .finally(() => setLoaded(true));
   };
   useEffect(load, []);
+
+  const removeRule = async (r: AlarmRule) => {
+    if (!(await dialog.confirm({ title: `Delete rule “${r.name}”?`, confirmLabel: "Delete", danger: true }))) return;
+    try {
+      await api.deleteAlarm(r.id);
+      toast.success("Rule deleted");
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
 
   const add = async (e: FormEvent) => {
     e.preventDefault();
@@ -175,6 +190,39 @@ export default function Alarms({
     return conds.join(" · ");
   };
 
+  // Structured split of a rule's conditions into what FIRES it (trigger) vs the
+  // qualifiers that SCOPE it (camera/zone/schedule/modes), so the "When" column
+  // is scannable instead of one long dot-joined gray string.
+  const describeParts = (r: AlarmRule): { trigger: string[]; scope: string[] } => {
+    const sched =
+      (r.days ?? []).length > 0 || r.start_hhmm || r.end_hhmm
+        ? [
+            (r.days ?? []).length > 0 ? (r.days ?? []).map((d) => DAY_NAMES[d]).join(",") : null,
+            r.start_hhmm || r.end_hhmm ? `${r.start_hhmm ?? "00:00"}–${r.end_hhmm ?? "24:00"}` : null,
+          ]
+            .filter(Boolean)
+            .join(" ")
+        : null;
+    const trigger = [
+      r.label ?? null,
+      r.face_like ? `face ~ "${r.face_like}"` : null,
+      r.face_unknown ? "stranger" : null,
+      r.plate_like ? `plate ~ "${r.plate_like}"` : null,
+      r.gesture_like ? `signal ${r.gesture_like}` : null,
+      r.transcript_like ? `said "${r.transcript_like}"` : null,
+    ].filter(Boolean) as string[];
+    if (trigger.length === 0) trigger.push("any object");
+    const scope = [
+      r.camera_id != null ? (cameras.find((c) => c.id === r.camera_id)?.name ?? `camera ${r.camera_id}`) : null,
+      r.zone_like ? `zone ~ "${r.zone_like}"` : null,
+      r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
+      sched ? `armed ${sched}` : null,
+      (r.modes ?? []).length > 0 ? `modes ${(r.modes ?? []).join("/")}` : null,
+      r.cooldown_secs > 0 ? `cooldown ${r.cooldown_secs}s` : null,
+    ].filter(Boolean) as string[];
+    return { trigger, scope };
+  };
+
   const actionText = (a: Action) =>
     a.kind === "webhook"
       ? `POST ${a.target}`
@@ -197,12 +245,12 @@ export default function Alarms({
 
   return (
     <>
-      <h1>Alarm Manager</h1>
+      <h1>Alarm manager</h1>
 
       <div className="card">
         <h2>New rule — when this happens…</h2>
         <form onSubmit={add}>
-          <div className="row" style={{ marginBottom: 12 }}>
+          <div className="row" style={{ marginBottom: 8 }}>
             <label className="field">
               rule name
               <input type="text" value={name} onChange={(e) => setName(e.target.value)} required placeholder="person at the front door" />
@@ -239,93 +287,94 @@ export default function Alarms({
                 disabled={faceUnknown}
               />
             </label>
-            <label
-              className="field"
-              title="Fire when a person's face is detected but matches nobody you've enrolled — a stranger / unfamiliar-face alert. Needs face recognition on the camera, and at least one enrolled identity (enroll known faces on the Faces page) so only true unknowns alert."
-            >
-              <span>
-                <input
-                  type="checkbox"
-                  checked={faceUnknown}
-                  onChange={(e) => setFaceUnknown(e.target.checked)}
-                />{" "}
-                <IconStranger size={14} /> unknown face (stranger)
-              </span>
-              {faceUnknown && (
-                <small className="muted">
-                  Enroll known faces (Faces page) first — strangers are detected only
-                  relative to enrolled identities.
-                </small>
-              )}
-            </label>
             <label className="field">
               plate contains (optional)
               <input type="text" value={plateLike} onChange={(e) => setPlateLike(e.target.value)} placeholder="any plate" />
             </label>
-            <label className="field">
-              hand signal (optional)
-              <select value={gestureLike} onChange={(e) => setGestureLike(e.target.value)}>
-                <option value="">any / none</option>
-                {GESTURES.map((g) => (
-                  <option key={g} value={g}>
-                    {g}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field" title="Fire when this phrase is spoken near the camera (needs audio transcription enabled). A spoken safe word, e.g. 'help'.">
-              spoken phrase (optional)
-              <input
-                type="text"
-                value={transcriptLike}
-                onChange={(e) => setTranscriptLike(e.target.value)}
-                placeholder='e.g. "help"'
-              />
-            </label>
-            <label className="field" title="Fire only when the object is inside a named detection zone (substring, case-insensitive) — e.g. a 'Pool' zone for 'person in the Pool'. Draw zones on the camera's detect config.">
-              in zone (optional)
-              <input
-                type="text"
-                value={zoneLike}
-                onChange={(e) => setZoneLike(e.target.value)}
-                placeholder='e.g. "Pool"'
-              />
-            </label>
-            <label className="field" title="Cross-modal confirmation: only fire when an event of THIS label also happened on the same camera recently — e.g. a Glass sound confirmed by a 'person' (glass-vs-dishes). Fails open (fires) on any error, so don't use it to gate a life-safety rule.">
-              confirmed by (optional)
-              <select value={confirmLabel} onChange={(e) => setConfirmLabel(e.target.value)}>
-                <option value="">none</option>
-                {LABELS.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {confirmLabel && (
-              <label className="field" title="Time window (seconds) the confirming event must fall within.">
-                within (s)
+          </div>
+          <details className="adv">
+            <summary>Advanced conditions — stranger, hand signal, spoken phrase, zone, confirmation</summary>
+            <div className="row" style={{ marginTop: 8, marginBottom: 12 }}>
+              <label
+                className="field"
+                title="Fire when a person's face is detected but matches nobody you've enrolled — a stranger / unfamiliar-face alert. Needs face recognition on the camera, and at least one enrolled identity (enroll known faces on the Faces page) so only true unknowns alert."
+              >
+                <span>
+                  <input
+                    type="checkbox"
+                    checked={faceUnknown}
+                    onChange={(e) => setFaceUnknown(e.target.checked)}
+                  />{" "}
+                  <IconStranger size={14} /> unknown face (stranger)
+                </span>
+                {faceUnknown && (
+                  <small className="muted">
+                    Enroll known faces (Faces page) first — strangers are detected only
+                    relative to enrolled identities.
+                  </small>
+                )}
+              </label>
+              <label className="field">
+                hand signal (optional)
+                <select value={gestureLike} onChange={(e) => setGestureLike(e.target.value)}>
+                  <option value="">any / none</option>
+                  {GESTURES.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field" title="Fire when this phrase is spoken near the camera (needs audio transcription enabled). A spoken safe word, e.g. 'help'.">
+                spoken phrase (optional)
                 <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  style={{ width: 80 }}
-                  value={confirmWithin}
-                  onChange={(e) => setConfirmWithin(Math.max(1, Number(e.target.value) || 1))}
+                  type="text"
+                  value={transcriptLike}
+                  onChange={(e) => setTranscriptLike(e.target.value)}
+                  placeholder='e.g. "help"'
                 />
               </label>
-            )}
-          </div>
+              <label className="field" title="Fire only when the object is inside a named detection zone (substring, case-insensitive) — e.g. a 'Pool' zone for 'person in the Pool'. Draw zones on the camera's detect config.">
+                in zone (optional)
+                <input
+                  type="text"
+                  value={zoneLike}
+                  onChange={(e) => setZoneLike(e.target.value)}
+                  placeholder='e.g. "Pool"'
+                />
+              </label>
+              <label className="field" title="Cross-modal confirmation: only fire when an event of THIS label also happened on the same camera recently — e.g. a Glass sound confirmed by a 'person' (glass-vs-dishes). Fails open (fires) on any error, so don't use it to gate a life-safety rule.">
+                confirmed by (optional)
+                <select value={confirmLabel} onChange={(e) => setConfirmLabel(e.target.value)}>
+                  <option value="">none</option>
+                  {LABELS.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {confirmLabel && (
+                <label className="field" title="Time window (seconds) the confirming event must fall within.">
+                  within (s)
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    style={{ width: 80 }}
+                    value={confirmWithin}
+                    onChange={(e) => setConfirmWithin(Math.max(1, Number(e.target.value) || 1))}
+                  />
+                </label>
+              )}
+            </div>
+          </details>
           <div className="row" style={{ marginBottom: 12 }}>
             <span className="muted">…armed (optional):</span>
             {DAY_NAMES.map((d, i) => (
-              <span
-                key={d}
-                className={`pill toggle ${days.includes(i) ? "on" : ""}`}
-                onClick={() => toggleDay(i)}
-              >
+              <TogglePill key={d} on={days.includes(i)} onClick={() => toggleDay(i)} ariaLabel={`Armed on ${d}`}>
                 {d}
-              </span>
+              </TogglePill>
             ))}
             <label className="field">
               from
@@ -340,10 +389,11 @@ export default function Alarms({
           <div className="row" style={{ marginBottom: 12 }}>
             <span className="muted">…in modes (optional):</span>
             {ARM_OPTS.map((m) => (
-              <span
+              <TogglePill
                 key={m.id}
-                className={`pill toggle ${modes.includes(m.id) ? "on" : ""}`}
+                on={modes.includes(m.id)}
                 onClick={() => toggleMode(m.id)}
+                ariaLabel={`Active in ${m.label} mode`}
                 title={
                   m.id === "disarmed"
                     ? "Include Disarmed to make this a panic rule that fires even when the system is disarmed"
@@ -351,7 +401,7 @@ export default function Alarms({
                 }
               >
                 {m.label}
-              </span>
+              </TogglePill>
             ))}
             <span className="muted">none = active in Home + Away (paused when Disarmed)</span>
           </div>
@@ -417,14 +467,20 @@ export default function Alarms({
               />
             </label>
             <div className="spacer" />
-            <button className="primary">Create rule</button>
+            <button className="btn btn-primary">Create rule</button>
           </div>
         </form>
       </div>
 
       <div className="card">
         <h2>Rules</h2>
-        {rules.length === 0 ? (
+        {!loaded ? (
+          <div aria-busy="true">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <span key={i} className="skeleton" style={{ height: 38, marginBottom: 8 }} />
+            ))}
+          </div>
+        ) : rules.length === 0 ? (
           loadError ? (
             <ErrorState what="alarm rules" message={loadError} onRetry={load} />
           ) : (
@@ -447,20 +503,36 @@ export default function Alarms({
               </tr>
             </thead>
             <tbody>
-              {rules.map((r) => (
+              {rules.map((r) => {
+                const parts = describeParts(r);
+                return (
                 <tr key={r.id}>
                   <td>
                     <b>{r.name}</b>
                   </td>
-                  <td className="muted">{describe(r)}</td>
+                  <td title={describe(r)}>
+                    <div className="ev-chips" style={{ marginBottom: 4 }}>
+                      {parts.trigger.map((t, i) => (
+                        <span key={i} className="badge accent" style={{ textTransform: "capitalize" }}>{t}</span>
+                      ))}
+                    </div>
+                    {parts.scope.length > 0 && (
+                      <div className="ev-chips">
+                        {parts.scope.map((s, i) => (
+                          <span key={i} className="badge">{s}</span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
                   <td className="muted">
                     {ruleActions(r).map((a, i) => (
                       <div key={i}>{actionText(a)}</div>
                     ))}
                   </td>
                   <td>
-                    <span
-                      className={`pill toggle ${r.enabled ? "on" : ""}`}
+                    <TogglePill
+                      on={r.enabled}
+                      ariaLabel={`Rule ${r.name} ${r.enabled ? "enabled" : "disabled"}`}
                       onClick={async () => {
                         await api
                           .patchAlarm(r.id, { enabled: !r.enabled })
@@ -469,7 +541,7 @@ export default function Alarms({
                       }}
                     >
                       {r.enabled ? "on" : "off"}
-                    </span>
+                    </TogglePill>
                     {snoozeText(r) && (
                       <span className="pill" style={{ marginLeft: 6 }} title="snoozed">
                         <IconMoon size={12} /> {snoozeText(r)}
@@ -479,7 +551,7 @@ export default function Alarms({
                   <td>
                     {snoozeText(r) ? (
                       <button
-                        className="ghost"
+                        className="btn btn-ghost ev-act"
                         onClick={async () => {
                           await api
                             .patchAlarm(r.id, { snooze_secs: 0 })
@@ -491,7 +563,7 @@ export default function Alarms({
                       </button>
                     ) : (
                       <button
-                        className="ghost"
+                        className="btn btn-ghost ev-act"
                         title="Suppress this rule for 1 hour"
                         onClick={async () => {
                           await api
@@ -504,18 +576,16 @@ export default function Alarms({
                       </button>
                     )}
                     <button
-                      className="danger"
+                      className="btn btn-danger ev-act"
                       style={{ marginLeft: 8 }}
-                      onClick={async () => {
-                        await api.deleteAlarm(r.id).catch((e) => onError(String(e)));
-                        load();
-                      }}
+                      onClick={() => removeRule(r)}
                     >
                       Delete
                     </button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           </div>

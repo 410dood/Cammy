@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, Camera, CamEvent, fmtTime } from "../api";
-import { IconShield, IconInfo, IconAlert } from "../icons";
+import { IconInfo, IconAlert } from "../icons";
 
 /// A residential "mode": a plain-language recipe that ties together the camera
 /// toggles, zones, sounds and alarm rules already shipped — so a non-expert can
@@ -78,7 +78,21 @@ const MODES: Mode[] = [
   },
 ];
 
-function ModeCard({ mode, events }: { mode: Mode; events: CamEvent[] }) {
+type GoPage = "Cameras" | "Alarms" | "Settings";
+
+function ModeCard({
+  mode,
+  events,
+  loaded,
+  loadError,
+  onGo,
+}: {
+  mode: Mode;
+  events: CamEvent[];
+  loaded: boolean;
+  loadError: string | null;
+  onGo?: (p: GoPage) => void;
+}) {
   const recent = useMemo(
     () => events.filter((e) => mode.labels.includes(e.label)).slice(0, 4),
     [events, mode.labels]
@@ -89,7 +103,7 @@ function ModeCard({ mode, events }: { mode: Mode; events: CamEvent[] }) {
       <p className="muted" style={{ margin: 0 }}>{mode.blurb}</p>
 
       <div>
-        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>Watches for</div>
+        <div className="muted" style={{ fontSize: "var(--text-xs)", marginBottom: 4 }}>Watches for</div>
         <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
           {mode.watches.map((w) => (
             <span key={w} className="pill">{w}</span>
@@ -98,20 +112,31 @@ function ModeCard({ mode, events }: { mode: Mode; events: CamEvent[] }) {
       </div>
 
       <div>
-        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>Set it up</div>
-        <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.5 }}>
+        <div className="muted" style={{ fontSize: "var(--text-xs)", marginBottom: 4 }}>Set it up</div>
+        <ol style={{ margin: 0, paddingLeft: 18, fontSize: "var(--text-sm)", lineHeight: 1.5 }}>
           {mode.setup.map((s, i) => (
             <li key={i}>{s}</li>
           ))}
         </ol>
+        {onGo && (
+          <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+            <button className="btn btn-ghost ev-act" onClick={() => onGo("Cameras")}>Open Cameras →</button>
+            <button className="btn btn-ghost ev-act" onClick={() => onGo("Alarms")}>Open Alarms →</button>
+            <button className="btn btn-ghost ev-act" onClick={() => onGo("Settings")}>Open Settings →</button>
+          </div>
+        )}
       </div>
 
       <div>
-        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>Recent activity</div>
-        {recent.length === 0 ? (
-          <span className="muted" style={{ fontSize: 13 }}>Nothing yet.</span>
+        <div className="muted" style={{ fontSize: "var(--text-xs)", marginBottom: 4 }}>Recent activity</div>
+        {loadError ? (
+          <span className="muted" style={{ fontSize: "var(--text-sm)" }}>Couldn’t load recent activity.</span>
+        ) : !loaded ? (
+          <span className="skeleton" style={{ height: 18, width: "70%" }} />
+        ) : recent.length === 0 ? (
+          <span className="muted" style={{ fontSize: "var(--text-sm)" }}>Nothing yet.</span>
         ) : (
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: "var(--text-sm)" }}>
             {recent.map((e) => (
               <li key={e.id}>
                 <b>{e.label}</b> on {e.camera}
@@ -125,7 +150,7 @@ function ModeCard({ mode, events }: { mode: Mode; events: CamEvent[] }) {
       {mode.safety && (
         <p
           className="muted"
-          style={{ fontSize: 12, margin: 0, borderTop: "1px solid var(--border)", paddingTop: 8 }}
+          style={{ fontSize: "var(--text-xs)", margin: 0, borderTop: "1px solid var(--border)", paddingTop: 8 }}
         >
           <IconInfo size={12} /> {mode.safety}
         </p>
@@ -134,17 +159,21 @@ function ModeCard({ mode, events }: { mode: Mode; events: CamEvent[] }) {
   );
 }
 
-export default function Family({ cameras }: { cameras: Camera[] }) {
+export default function Family({ cameras, onGo }: { cameras: Camera[]; onGo?: (p: GoPage) => void }) {
   const [events, setEvents] = useState<CamEvent[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
-    api.events({ limit: 300 }).then(setEvents).catch(() => {});
+    api
+      .events({ limit: 300 })
+      .then((d) => { setEvents(d); setLoadError(null); })
+      .catch((e) => setLoadError(String(e)))
+      .finally(() => setLoaded(true));
   }, []);
 
   return (
     <div>
-      <h1>
-        <IconShield size={20} /> Family safety
-      </h1>
+      <h1>Family safety</h1>
       <p className="muted" style={{ marginTop: 0 }}>
         Guided “modes” for the home — baby, pets, pool and aging-in-place. Each one is a recipe over
         the camera, zone, sound and alarm settings you already have; follow the steps to set it up.
@@ -161,9 +190,9 @@ export default function Family({ cameras }: { cameras: Camera[] }) {
       {cameras.length === 0 && (
         <p className="muted">Add a camera first (Cameras page), then come back to set up a mode.</p>
       )}
-      <div className="grid-cards" style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
+      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
         {MODES.map((m) => (
-          <ModeCard key={m.key} mode={m} events={events} />
+          <ModeCard key={m.key} mode={m} events={events} loaded={loaded} loadError={loadError} onGo={onGo} />
         ))}
       </div>
     </div>

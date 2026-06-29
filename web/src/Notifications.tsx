@@ -80,6 +80,7 @@ export default function NotificationsPanel({
                 <button
                   key={n.id}
                   className={`notif-item ${n.read ? "" : "unread"}`}
+                  aria-label={`${n.read ? "" : "Unread — "}${n.title}${n.body ? `. ${n.body}` : ""}`}
                   onClick={() => {
                     if (!n.read) onMarkRead(n.id);
                     if (n.event_id) onOpenEvent(n.event_id);
@@ -91,7 +92,7 @@ export default function NotificationsPanel({
                     {n.body && <div className="muted notif-text">{n.body}</div>}
                     <RelTime ts={n.ts} className="muted clock notif-time" />
                   </div>
-                  {!n.read && <span className="notif-dot" aria-label="unread" />}
+                  {!n.read && <span className="notif-dot" aria-hidden="true" />}
                 </button>
               );
             })

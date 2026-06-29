@@ -16,7 +16,31 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.3 — full competitor suite (#1–#70) integrated on main + cross-feature simplify, 2026-06-22
 
-### Latest: full-suite integration to main + cross-feature simplify
+### Latest: web UX/UI review pass (branch `ux-review-improvements`), 2026-06-29
+
+A multi-agent UX audit (9 lenses → adversarially-verified → ranked plan) drove a
+**web-only** improvement pass across 21 files in `web/src` (no backend changes).
+Highlights, all `tsc`+`vite` green and **E2E-validated in Chrome against the live
+backend** (4 real cameras): a shared accessible **`TogglePill`** primitive
+(`ui.tsx`) replacing the keyboard/SR-broken `<span className="pill toggle">`
+pattern that armed alarms / toggled cameras / picked safety sounds across 6 files;
+**hash-based URL routing** (`#/page`, `#/events/<id>` deep links — refresh keeps
+your place, Back/Forward + bookmarks work, single hashchange update path, no
+setPage↔hash loop); **3-section nav rail** (Monitor/Detections/Configure; the
+Monitor group == the mobile-primary set so the bottom tab bar is unchanged);
+progressive-disclosure **`<details className="adv">`** on the dense Alarms
+new-rule form (Advanced conditions) and Cameras tuning modal (Residential safety);
+**clickable timeline ticks** (snap-to-event in Timeline + CrossTimeline);
+**Settings dirty-state** ("Unsaved changes" + `beforeunload` guard); real
+**error/loading states** on pages that swallowed fetch failures (Home/Faces/
+Family/FloorPlan/Alarms); security caveats promoted to `.callout`s; themed delete
+dialogs + confirm-before-delete (Cameras/Alarms); masked camera password;
+colorblind-safe timeline/heatmap legends; plus polish (notifications a11y,
+command-palette footer, Family page cross-links, privacy tag, Strangers drill-in,
+ZoneEditor aria-labels). New shared CSS recipes: `button.pill` reset, `.nav-group`,
+`details.adv`, `.evt-legend`, `.cmdk-foot`, `.privacy-tag`.
+
+### Earlier: full-suite integration to main + cross-feature simplify
 
 All outstanding feature branches were merged into `main` (fast-forwarded to the
 `integration/merge-all` result, now `0d5b09d` + the simplify commit): **#62 TOTP

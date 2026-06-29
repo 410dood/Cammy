@@ -145,6 +145,25 @@ export default function Heatmap({ camera }: { camera: Camera }) {
           </div>
         )}
       </div>
+      {!loading && !err && (
+        <div className="row" style={{ marginTop: 8, gap: 8, alignItems: "center", maxWidth: 720 }}>
+          <span className="muted" style={{ fontSize: "var(--text-xs)" }}>Less</span>
+          <span
+            aria-hidden="true"
+            style={{
+              flex: 1,
+              height: 8,
+              borderRadius: 4,
+              background:
+                "linear-gradient(90deg, rgb(30,60,200), rgb(0,200,200), rgb(0,200,60), rgb(240,220,0), rgb(230,40,30))",
+            }}
+          />
+          <span className="muted" style={{ fontSize: "var(--text-xs)" }}>More activity</span>
+          <span className="muted" style={{ fontSize: "var(--text-xs)", marginLeft: 6 }}>
+            · relative to this camera &amp; range
+          </span>
+        </div>
+      )}
     </div>
   );
 }

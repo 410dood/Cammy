@@ -4,8 +4,8 @@
 
 import { ChangeEvent, MouseEvent, useEffect, useRef, useState } from "react";
 import { api, Camera, FloorPlan, Settings, StatusMap } from "../api";
-import { useToast } from "../ui";
-import { IconUpload, IconVideo } from "../icons";
+import { useToast, TogglePill, ErrorState } from "../ui";
+import { IconUpload, IconVideo, IconCheck } from "../icons";
 
 async function resizeToDataUrl(file: File, maxDim: number): Promise<string> {
   const bitmap = await createImageBitmap(file);
@@ -31,14 +31,17 @@ export default function FloorPlanPage({
   const [editing, setEditing] = useState(false);
   const [placing, setPlacing] = useState("");
   const [status, setStatus] = useState<StatusMap>({});
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const settingsRef = useRef<Settings | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  const loadPlan = () => {
     api
       .settings()
       .then((s) => {
         settingsRef.current = s;
+        setLoadError(null);
         if (s.floorplan) {
           try {
             setPlan(JSON.parse(s.floorplan));
@@ -47,7 +50,12 @@ export default function FloorPlanPage({
           }
         }
       })
-      .catch(() => {});
+      .catch((e) => setLoadError(String(e)))
+      .finally(() => setLoaded(true));
+  };
+
+  useEffect(() => {
+    loadPlan();
     api.status().then(setStatus).catch(() => {});
   }, []);
 
@@ -104,7 +112,11 @@ export default function FloorPlanPage({
         )}
       </div>
 
-      {!plan.image ? (
+      {!loaded ? (
+        <span className="skeleton" style={{ height: 280, borderRadius: "var(--radius)" }} aria-busy="true" />
+      ) : loadError && !plan.image ? (
+        <ErrorState what="your floor plan" message={loadError} onRetry={loadPlan} />
+      ) : !plan.image ? (
         <label className="empty fp-drop">
           <IconUpload size={22} />
           <b>Upload a floor plan</b>
@@ -120,14 +132,15 @@ export default function FloorPlanPage({
             <div className="row" style={{ marginBottom: 10, flexWrap: "wrap" }}>
               <span className="muted">Place a camera:</span>
               {cameras.map((c) => (
-                <span
+                <TogglePill
                   key={c.id}
-                  className={`pill toggle ${placing === c.name ? "on" : ""}`}
+                  on={placing === c.name}
+                  ariaLabel={`Place ${c.name} on the floor plan`}
                   onClick={() => setPlacing(placing === c.name ? "" : c.name)}
                 >
                   {c.name}
-                  {plan.pins.some((p) => p.camera === c.name) ? " ✓" : ""}
-                </span>
+                  {plan.pins.some((p) => p.camera === c.name) && <IconCheck size={12} />}
+                </TogglePill>
               ))}
               {placing && <span className="muted">click the map to place “{placing}” (or a marker to remove it)</span>}
             </div>

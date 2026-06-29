@@ -29,11 +29,33 @@ function coalesce(segs: Segment[], segmentSecs: number): Block[] {
   return blocks;
 }
 
-function eventClass(label: string): string {
+export function eventClass(label: string): string {
   if (label === "person") return "person";
   if (VEHICLES.includes(label)) return "vehicle";
   if (["knock", "speech", "glass", "alarm", "bark"].some((k) => label.toLowerCase().includes(k))) return "audio";
   return "";
+}
+
+/** Swatch + text legend for the color-coded event ticks — the text is the
+ *  color-blind / low-vision fallback for the color encoding. Shared with the
+ *  single-camera Timeline's tick palette. */
+export function EventLegend() {
+  const items: [string, string][] = [
+    ["person", "Person"],
+    ["vehicle", "Vehicle"],
+    ["audio", "Audio"],
+    ["", "Other"],
+  ];
+  return (
+    <div className="evt-legend" aria-hidden="true">
+      {items.map(([cls, label]) => (
+        <span className="evt-legend-item" key={label}>
+          <span className={`evt-swatch ${cls}`} />
+          {label}
+        </span>
+      ))}
+    </div>
+  );
 }
 
 export default function CrossTimeline({
@@ -119,9 +141,26 @@ export default function CrossTimeline({
               onKeyDown={laneKey(cam.id)}
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
-                const frac = (e.clientX - rect.left) / rect.width;
-                setCursor(clamp01(frac));
-                onSeek(cam.id, Math.round(start + frac * windowSecs));
+                const frac = clamp01((e.clientX - rect.left) / rect.width);
+                // Snap to a nearby event tick (within ~6px) and seek a few seconds
+                // before it; clicks elsewhere keep free-seeking.
+                const thresh = 6 / rect.width;
+                let best: CamEvent | null = null;
+                let bestD = thresh;
+                for (const ev of evs) {
+                  const d = Math.abs((ev.ts - start) / windowSecs - frac);
+                  if (d <= bestD) {
+                    bestD = d;
+                    best = ev;
+                  }
+                }
+                if (best) {
+                  setCursor(clamp01((best.ts - start) / windowSecs));
+                  onSeek(cam.id, Math.max(start, best.ts - 3));
+                } else {
+                  setCursor(frac);
+                  onSeek(cam.id, Math.round(start + frac * windowSecs));
+                }
               }}
             >
               {blocks.map((b, i) => (
@@ -150,6 +189,7 @@ export default function CrossTimeline({
           </span>
         ))}
       </div>
+      <EventLegend />
     </div>
   );
 }

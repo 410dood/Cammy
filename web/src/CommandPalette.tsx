@@ -127,7 +127,11 @@ export default function CommandPalette({
           <kbd className="cmdk-kbd">Esc</kbd>
         </div>
         <div className="cmdk-list" id="cmdk-list" role="listbox" ref={listRef}>
-          {results.length === 0 && <div className="cmdk-empty">No matches</div>}
+          {results.length === 0 && (
+            <div className="cmdk-empty">
+              No matches{q.trim() ? ` for “${q.trim()}”` : ""} — try a page, camera, or action name.
+            </div>
+          )}
           {results.map((c, i) => {
             const showGroup = c.group && c.group !== lastGroup;
             lastGroup = c.group;
@@ -150,6 +154,11 @@ export default function CommandPalette({
               </div>
             );
           })}
+        </div>
+        <div className="cmdk-foot">
+          <span><kbd className="cmdk-kbd">↑</kbd><kbd className="cmdk-kbd">↓</kbd> navigate</span>
+          <span><kbd className="cmdk-kbd">↵</kbd> run</span>
+          <span><kbd className="cmdk-kbd">esc</kbd> close</span>
         </div>
       </div>
     </div>
