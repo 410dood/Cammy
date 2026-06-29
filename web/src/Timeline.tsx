@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { CamEvent, Segment } from "./api";
+import { eventClass } from "./CrossTimeline";
 
 /// UniFi-style scrubber: recorded coverage as blocks, events as ticks.
 /// Click anywhere in a recorded span to start playback at that instant.
@@ -75,6 +76,21 @@ export default function Timeline({
   const click = (ev: React.MouseEvent<HTMLDivElement>) => {
     const rect = ev.currentTarget.getBoundingClientRect();
     const f = clamp01((ev.clientX - rect.left) / rect.width);
+    // Snap to a nearby event tick (within ~6px) so the markers are actionable —
+    // seek a few seconds before the event so you see it happen. Clicks elsewhere
+    // keep free-seeking.
+    const thresh = 6 / rect.width;
+    let best: { left: number; e: CamEvent } | null = null;
+    for (const t of ticks) {
+      if (Math.abs(t.left - f) <= thresh && (!best || Math.abs(t.left - f) < Math.abs(best.left - f))) {
+        best = t;
+      }
+    }
+    if (best) {
+      setCursor(best.left);
+      onSeek(Math.max(start, best.e.ts - 3));
+      return;
+    }
     setCursor(f);
     onSeek(tsAt(f));
   };
@@ -105,7 +121,7 @@ export default function Timeline({
       ))}
       {ticks.map(({ left, e }, i) => (
         <div
-          className="tl-tick"
+          className={`tl-tick ${eventClass(e.label)}`}
           key={i}
           style={{ left: `${left * 100}%` }}
           title={`${e.label} ${(e.score * 100).toFixed(0)}% @ ${new Date(e.ts * 1000).toLocaleTimeString()}`}

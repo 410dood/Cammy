@@ -70,14 +70,26 @@ function StatCard({
   );
 }
 
+/** A pulsing placeholder shown in a stat card's value slot before first load. */
+function SkelValue() {
+  return (
+    <span
+      className="skeleton"
+      style={{ display: "inline-block", width: 56, height: 22, verticalAlign: "-4px" }}
+    />
+  );
+}
+
 export default function Home({
   cameras,
   onOpenEvents,
   onOpenCamera,
+  onOpenEvent,
 }: {
   cameras: Camera[];
   onOpenEvents: () => void;
   onOpenCamera: (c: Camera) => void;
+  onOpenEvent?: (eventId: number) => void;
 }) {
   const toast = useToast();
   const [stats, setStats] = useState<Stats | null>(null);
@@ -86,16 +98,24 @@ export default function Home({
   const [digest, setDigest] = useState<Digest | null>(null);
   const [notes, setNotes] = useState<Notification[]>([]);
   const [arm, setArm] = useState<ArmMode | null>(null);
+  const [armErr, setArmErr] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [lightbox, setLightbox] = useState<CamEvent | null>(null);
   const [throughput, setThroughput] = useState<AnalyticsCounts | null>(null);
   const [occ, setOcc] = useState<OccupancyReport | null>(null);
 
   useEffect(() => {
     const load = () => {
-      api.stats().then(setStats).catch(() => {});
-      api.status().then(setStatus).catch(() => {});
-      api.armMode().then((r) => setArm(r.arm_mode)).catch(() => {});
-      api.events({ limit: 500 }).then(setEvents).catch(() => {});
+      // Core data drives the at-a-glance cards; mark loaded only once these
+      // settle so the health tiles don't flash a confident "all healthy" / 0
+      // before the first response.
+      const core = [
+        api.stats().then(setStats),
+        api.status().then(setStatus),
+        api.armMode().then((r) => { setArm(r.arm_mode); setArmErr(false); }).catch((e) => { setArmErr(true); throw e; }),
+        api.events({ limit: 500 }).then(setEvents),
+      ].map((p) => p.catch(() => {}));
+      Promise.allSettled(core).then(() => setLoaded(true));
       // These are best-effort: the endpoints exist only once the backend
       // build ships the digest/notifications/analytics features.
       api.digests(1).then((d) => setDigest(d[0] ?? null)).catch(() => {});
@@ -165,14 +185,14 @@ export default function Home({
     <>
       <h1>Overview</h1>
 
-      <div className="arm-bar" role="group" aria-label="Security mode">
+      <div className="arm-bar" role="group" aria-label="Security mode" aria-busy={!loaded}>
         {ARM_MODES.map((m) => (
           <button
             key={m.id}
             type="button"
             className={`arm-opt arm-${m.id} ${arm === m.id ? "active" : ""}`}
             aria-pressed={arm === m.id}
-            title={m.hint}
+            title={arm === null ? "Security mode unavailable" : m.hint}
             disabled={arm === null}
             onClick={() => arm !== m.id && setMode(m.id)}
           >
@@ -181,32 +201,37 @@ export default function Home({
           </button>
         ))}
       </div>
+      {loaded && arm === null && (
+        <p className="muted" style={{ marginTop: -10, marginBottom: 18 }}>
+          {armErr ? "Couldn't reach the security-mode control — retrying." : "Security mode unavailable."}
+        </p>
+      )}
 
-      <div className="stat-grid">
+      <div className="stat-grid" aria-busy={!loaded}>
         <StatCard
           icon={<IconVideo size={20} />}
           label="Cameras online"
-          value={`${online}/${enabled.length}`}
-          sub={offline.length ? `${offline.length} offline` : "all healthy"}
-          tone={offline.length ? "warn" : "ok"}
+          value={loaded ? `${online}/${enabled.length}` : <SkelValue />}
+          sub={loaded ? (offline.length ? `${offline.length} offline` : "all healthy") : undefined}
+          tone={loaded ? (offline.length ? "warn" : "ok") : undefined}
         />
         <StatCard
           icon={<IconRecDot size={18} />}
           label="Recording"
-          value={recording}
+          value={loaded ? recording : <SkelValue />}
           sub={`of ${enabled.length} cameras`}
-          tone={recording > 0 ? "danger" : undefined}
+          tone={loaded && recording > 0 ? "danger" : undefined}
         />
         <StatCard
           icon={<IconSparkles size={20} />}
           label="Events today"
-          value={today.length}
+          value={loaded ? today.length : <SkelValue />}
           sub={stats ? `${stats.events_total.toLocaleString()} all time` : ""}
         />
         <StatCard
           icon={<IconDatabase size={20} />}
           label="Free space"
-          value={stats ? fmtBytes(stats.disk_free_bytes) : "…"}
+          value={stats ? fmtBytes(stats.disk_free_bytes) : <SkelValue />}
           sub={stats ? `${fmtBytes(stats.total_bytes)} recorded` : ""}
         />
       </div>
@@ -353,15 +378,31 @@ export default function Home({
       {notes.length > 0 && (
         <div className="card">
           <h2><IconBell size={13} /> Latest notifications</h2>
-          {notes.map((n) => (
-            <div className="feed-item" key={n.id} style={{ cursor: "default" }}>
+          {notes.map((n) => {
+            const clickable = n.event_id != null && !!onOpenEvent;
+            const body = (
               <div>
                 <b>{n.title}</b>
                 {n.body && <span className="muted"> — {n.body}</span>}
                 <RelTime ts={n.ts} className="muted clock" style={{ display: "block", fontSize: "0.75rem" }} />
               </div>
-            </div>
-          ))}
+            );
+            return clickable ? (
+              <button
+                key={n.id}
+                className="feed-item"
+                style={{ width: "100%", textAlign: "left", background: "none", border: "none", color: "inherit", font: "inherit" }}
+                onClick={() => onOpenEvent!(n.event_id!)}
+                aria-label={`Open event: ${n.title}`}
+              >
+                {body}
+              </button>
+            ) : (
+              <div className="feed-item" key={n.id} style={{ cursor: "default" }}>
+                {body}
+              </div>
+            );
+          })}
         </div>
       )}
 

@@ -305,24 +305,24 @@ export default function ZoneEditor({
           <>
             <button
               type="button"
-              className="ghost"
+              className="btn btn-ghost"
               onClick={() => setDraw({ kind: "zone", zoneKind: "required", points: [] })}
             >
               + required zone
             </button>
             <button
               type="button"
-              className="ghost"
+              className="btn btn-ghost"
               onClick={() => setDraw({ kind: "zone", zoneKind: "ignore", points: [] })}
             >
               + ignore zone
             </button>
-            <button type="button" className="ghost" onClick={() => setDraw({ kind: "mask", points: [] })}>
+            <button type="button" className="btn btn-ghost" onClick={() => setDraw({ kind: "mask", points: [] })}>
               + privacy mask
             </button>
             <button
               type="button"
-              className="ghost"
+              className="btn btn-ghost"
               onClick={() => setDraw({ kind: "tripwire", points: [] })}
             >
               + tripwire
@@ -330,7 +330,7 @@ export default function ZoneEditor({
             {!calib && (
               <button
                 type="button"
-                className="ghost"
+                className="btn btn-ghost"
                 title="Calibrate the ground plane for speed estimation: click the 4 corners of a known rectangle on the ground, then enter its real size."
                 onClick={() => setDraw({ kind: "calib", points: [] })}
               >
@@ -356,7 +356,7 @@ export default function ZoneEditor({
             </span>
             <button
               type="button"
-              className="ghost"
+              className="btn btn-ghost"
               disabled={draw.points.length === 0}
               onClick={() => setDraw({ ...draw, points: draw.points.slice(0, -1) })}
             >
@@ -364,13 +364,13 @@ export default function ZoneEditor({
             </button>
             <button
               type="button"
-              className="primary"
+              className="btn btn-primary"
               disabled={draw.points.length < minPts(draw)}
               onClick={finish}
             >
               Finish
             </button>
-            <button type="button" className="ghost" onClick={() => setDraw(null)}>
+            <button type="button" className="btn btn-ghost" onClick={() => setDraw(null)}>
               cancel
             </button>
           </>
@@ -384,6 +384,8 @@ export default function ZoneEditor({
               <span className="dot" style={{ background: COLORS[z.kind] }} />
               <input
                 type="text"
+                aria-label="Zone name"
+                placeholder="zone name"
                 style={{ width: 130 }}
                 value={z.name}
                 onChange={(e) =>
@@ -391,6 +393,7 @@ export default function ZoneEditor({
                 }
               />
               <select
+                aria-label="Zone type"
                 value={z.kind}
                 onChange={(e) =>
                   onChange(
@@ -404,6 +407,7 @@ export default function ZoneEditor({
               </select>
               <input
                 type="text"
+                aria-label="Objects this zone applies to"
                 placeholder="objects (all)"
                 style={{ width: 130 }}
                 value={z.labels.join(", ")}
@@ -423,6 +427,7 @@ export default function ZoneEditor({
                 min="0"
                 step="5"
                 placeholder="dwell s"
+                aria-label="Loiter dwell seconds"
                 title="Loiter alert: seconds an object must dwell inside this zone to fire a loiter event (blank/0 = off, needs tracking)"
                 style={{ width: 76 }}
                 value={z.dwell_secs ?? ""}
@@ -442,6 +447,7 @@ export default function ZoneEditor({
                 min="0"
                 step="1"
                 placeholder="max #"
+                aria-label="Occupancy limit"
                 title="Occupancy limit: an occupancy event fires when the live count of objects inside this zone first exceeds this number (blank/0 = off, needs tracking)"
                 style={{ width: 76 }}
                 value={z.occupancy_max ?? ""}
@@ -498,7 +504,7 @@ export default function ZoneEditor({
               </label>
               <button
                 type="button"
-                className="danger"
+                className="btn btn-danger"
                 onClick={() => onChange(zones.filter((_, j) => j !== i), masks)}
               >
                 remove
@@ -520,7 +526,7 @@ export default function ZoneEditor({
               </span>
               <button
                 type="button"
-                className="danger"
+                className="btn btn-danger"
                 onClick={() => onChange(zones, masks.filter((_, j) => j !== i))}
               >
                 remove
@@ -595,7 +601,7 @@ export default function ZoneEditor({
               </label>
               <button
                 type="button"
-                className="danger"
+                className="btn btn-danger"
                 onClick={() => onTripwires(tripwires.filter((_, j) => j !== i))}
               >
                 remove
@@ -635,7 +641,7 @@ export default function ZoneEditor({
                 onChange={(e) => onCalib({ ...calib, height_m: Number(e.target.value) })}
               />
             </label>
-            <button type="button" className="danger" onClick={() => onCalib(null)}>
+            <button type="button" className="btn btn-danger" onClick={() => onCalib(null)}>
               remove
             </button>
           </div>

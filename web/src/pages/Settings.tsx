@@ -1,9 +1,9 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { api, ApiToken, ArmMode, AuditEntry, Camera, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
-import { useToast, useDialog, RelTime } from "../ui";
+import { useToast, useDialog, RelTime, TogglePill } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
-  IconDownload, IconUpload, IconCheck, IconUser, IconShield,
+  IconDownload, IconUpload, IconCheck, IconUser, IconShield, IconAlert,
 } from "../icons";
 
 const AUDIT_META: Record<string, { label: string; Icon: (p: IconProps) => JSX.Element; cls: string }> = {
@@ -198,9 +198,9 @@ function PushCard({ onError }: { onError: (e: string) => void }) {
 }
 
 function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
   const [enabled, setEnabled] = useState(false);
   const [pw, setPw] = useState("");
-  const [msg, setMsg] = useState("");
 
   useEffect(() => {
     api.authStatus().then((a) => setEnabled(a.enabled)).catch(() => {});
@@ -211,7 +211,7 @@ function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
       const r = await api.setPassword(password);
       setEnabled(r.enabled);
       setPw("");
-      setMsg(r.enabled ? "Password set — other devices must now log in." : "Password cleared.");
+      toast.success(r.enabled ? "Password set — other devices must now log in." : "Password cleared.");
     } catch (e) {
       onError(String(e));
     }
@@ -232,15 +232,14 @@ function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
           value={pw}
           onChange={(e) => setPw(e.target.value)}
         />
-        <button type="button" className="primary" disabled={pw.trim().length < 6} onClick={() => apply(pw)}>
+        <button type="button" className="btn btn-primary" disabled={pw.trim().length < 6} onClick={() => apply(pw)}>
           Set password
         </button>
         {enabled && (
-          <button type="button" className="danger" onClick={() => apply("")}>
+          <button type="button" className="btn btn-danger" onClick={() => apply("")}>
             Clear
           </button>
         )}
-        {msg && <span style={{ color: "var(--ok)" }}>{msg}</span>}
       </div>
     </div>
   );
@@ -661,10 +660,14 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
       <h2>Backup &amp; restore</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         Export your configuration — cameras, settings and alarm rules — to a JSON file to move to
-        another machine. Recordings, events and enrolled faces are <b>not</b> included. The file can
-        contain camera credentials, so keep it private. Restore is additive: settings are replaced,
-        but a camera/alarm whose name already exists is left untouched.
+        another machine. Recordings, events and enrolled faces are <b>not</b> included. Restore is
+        additive: settings are replaced, but a camera/alarm whose name already exists is left
+        untouched.
       </p>
+      <div className="callout callout-warn" role="note">
+        <span className="callout-ico"><IconAlert size={16} /></span>
+        <div>The backup file contains your camera credentials in clear text — store it somewhere private.</div>
+      </div>
       <div className="row" style={{ alignItems: "center" }}>
         <a className="btn btn-ghost" href="/api/backup" download="zoomy-backup.json">
           <IconDownload size={15} /> Download backup
@@ -1059,10 +1062,23 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
   const toast = useToast();
   const [s, setS] = useState<S | null>(null);
   const [saved, setSaved] = useState(false);
+  const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
     api.settings().then(setS).catch((e) => onError(String(e)));
   }, [onError]);
+
+  // Warn before a refresh/close/navigation-away discards unsaved global edits.
+  // (In-app page switches surface the "Unsaved changes" cue on the save bar.)
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   if (!s)
     return (
@@ -1081,6 +1097,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
   const set = (patch: Partial<S>) => {
     setS({ ...s, ...patch });
     setSaved(false);
+    setDirty(true);
   };
 
   const save = async (e: FormEvent) => {
@@ -1088,6 +1105,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
     try {
       setS(await api.saveSettings(s));
       setSaved(true);
+      setDirty(false);
       toast.success("Settings saved");
     } catch (err) {
       onError(String(err));
@@ -1282,10 +1300,15 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           <h2>AI event captions (opt-in)</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Generate a short natural-language description of each event for review and search.
-            <b> Off by default.</b> With the default localhost Ollama URL nothing leaves this
-            machine; pointing it at a cloud endpoint sends snapshots there — that's a deliberate
-            choice you make here.
+            <b> Off by default.</b>
           </p>
+          <div className="callout callout-warn" role="note">
+            <span className="callout-ico"><IconAlert size={16} /></span>
+            <div>
+              With the default localhost Ollama URL nothing leaves this machine; pointing it at a
+              cloud endpoint <b>sends event snapshots there</b> — a deliberate choice you make here.
+            </div>
+          </div>
           <div className="row">
             <label className="toggle field">
               enable captions
@@ -1380,10 +1403,11 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             {AUDIO_SOUNDS.map((snd) => {
               const on = snd.values.every((v) => s.audio_labels.includes(v));
               return (
-                <span
+                <TogglePill
                   key={snd.label}
-                  className={`pill toggle ${on ? "on" : ""}`}
+                  on={on}
                   title={snd.values.join(", ")}
+                  ariaLabel={`Monitor ${snd.label}`}
                   onClick={() => {
                     const set_ = new Set(s.audio_labels);
                     if (on) snd.values.forEach((v) => set_.delete(v));
@@ -1392,7 +1416,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                   }}
                 >
                   {snd.label}
-                </span>
+                </TogglePill>
               );
             })}
           </div>
@@ -1417,9 +1441,10 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               style={{ marginBottom: 6, flexWrap: "wrap", alignItems: "center", gap: 6 }}
             >
               {DOW.map((d, di) => (
-                <span
+                <TogglePill
                   key={di}
-                  className={`pill toggle ${row.days.includes(di) ? "on" : ""}`}
+                  on={row.days.includes(di)}
+                  ariaLabel={`${d} for schedule row ${i + 1}`}
                   onClick={() =>
                     set({
                       arm_schedule: s.arm_schedule.map((r, j) =>
@@ -1436,7 +1461,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                   }
                 >
                   {d}
-                </span>
+                </TogglePill>
               ))}
               <input
                 type="time"
@@ -1686,17 +1711,20 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           <p className="muted" style={{ marginTop: 0 }}>
             Sit Cammy behind an auth proxy (Authelia, oauth2-proxy, Cloudflare Access, Tailscale) and
             trust the authenticated-user header it sets — single sign-on without a Cammy password.
-            Set the header below, then enter the user header name your proxy sends.{" "}
-            <b>
-              Only enable this when the server is started with <code>--trusted-proxy</code>, is
-              reachable <i>only</i> through that proxy, and the proxy <i>sets and strips</i> these
-              headers
-            </b>{" "}
-            so a client can't inject them. (Cammy already ignores the header on any request that
-            didn't arrive through the proxy — i.e. without <code>X-Forwarded-For</code>.) Leave the
+            Set the header below, then enter the user header name your proxy sends. Leave the
             user header blank to turn SSO off. If the username matches a Cammy account, that account's
             role applies.
           </p>
+          <div className="callout callout-danger" role="note">
+            <span className="callout-ico"><IconAlert size={16} /></span>
+            <div>
+              Only enable this when the server is started with <code>--trusted-proxy</code>, is
+              reachable <i>only</i> through that proxy, and the proxy <i>sets and strips</i> these
+              headers so a client can't inject them — otherwise a spoofed header is a remote auth
+              bypass. (Cammy already ignores the header on any request that didn't arrive through the
+              proxy — i.e. without <code>X-Forwarded-For</code>.)
+            </div>
+          </div>
           <div className="row">
             <label className="field" style={{ flex: 1, minWidth: 220 }}>
               user header (blank = off)
@@ -1916,9 +1944,11 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
 
         <div className="row save-bar">
           <button className="btn btn-primary">Save</button>
-          {saved && (
+          {dirty ? (
+            <span className="badge accent">Unsaved changes</span>
+          ) : saved ? (
             <span className="save-ok"><IconCheck size={15} /> Saved</span>
-          )}
+          ) : null}
           <span className="muted">Changes apply within a few seconds — no restart needed.</span>
         </div>
       </form>

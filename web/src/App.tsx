@@ -32,6 +32,7 @@ import {
   IconMap,
   IconShield,
   IconGrid,
+  IconRadar,
 } from "./icons";
 import CommandPalette, { Command } from "./CommandPalette";
 import { getTheme, toggleTheme, Theme } from "./theme";
@@ -39,14 +40,41 @@ import { getTheme, toggleTheme, Theme } from "./theme";
 const PAGES = ["Home", "Live", "Events", "Family", "Signals", "Recordings", "People", "Alarms", "Cameras", "Map", "Settings"] as const;
 type Page = (typeof PAGES)[number];
 
+// Display labels: the route key stays terse (and drives the Page union), but the
+// nav/More/palette can read more clearly — e.g. "Signals" is ambiguous for what
+// is a silent hand-signal panic button.
+const LABELS: Record<Page, string> = {
+  Home: "Home",
+  Live: "Live",
+  Events: "Events",
+  Family: "Family",
+  Signals: "Hand signals",
+  Recordings: "Recordings",
+  People: "People",
+  Alarms: "Alarms",
+  Cameras: "Cameras",
+  Map: "Map",
+  Settings: "Settings",
+};
+
 // On mobile the bottom tab bar can't hold 11 tabs, so only these four show as
 // tabs; the rest live behind a "More" overflow sheet. (Desktop shows them all.)
 const MOBILE_PRIMARY: readonly Page[] = ["Home", "Live", "Events", "Recordings"];
 
+// Desktop rail grouping — three labeled sections with hairline dividers so the
+// 11 tabs read as an organized hierarchy rather than a flat wall. The "Monitor"
+// group is exactly MOBILE_PRIMARY (same order), so on mobile (where the labels +
+// dividers are hidden) the bottom tab bar is unchanged.
+const NAV_GROUPS: { label: string; pages: readonly Page[] }[] = [
+  { label: "Monitor", pages: ["Home", "Live", "Events", "Recordings"] },
+  { label: "Detections", pages: ["Family", "Signals", "People"] },
+  { label: "Configure", pages: ["Alarms", "Cameras", "Map", "Settings"] },
+];
+
 const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
   Home: IconHome,
   Live: IconLive,
-  Events: IconBell,
+  Events: IconRadar,
   Family: IconShield,
   Signals: IconHand,
   Recordings: IconFilm,
@@ -56,6 +84,21 @@ const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
   Map: IconMap,
   Settings: IconSettings,
 };
+
+// ── Hash routing ───────────────────────────────────────────────────────────
+// The URL hash mirrors the current page, so a refresh keeps your place, the
+// browser Back/Forward buttons work, and pages are bookmarkable. `#/events/<id>`
+// is a deep link that opens a specific event (e.g. from a notification).
+function pageHash(p: Page): string {
+  return `#/${p.toLowerCase()}`;
+}
+function parseHash(): { page: Page; eventId?: number } {
+  const raw = window.location.hash.replace(/^#\/?/, "");
+  const [seg, arg] = raw.split("/");
+  const page = PAGES.find((p) => p.toLowerCase() === seg.toLowerCase()) ?? "Home";
+  const eventId = page === "Events" && arg ? Number(arg) || undefined : undefined;
+  return { page, eventId };
+}
 
 function LoginOverlay() {
   const [user, setUser] = useState("");
@@ -103,6 +146,7 @@ function LoginOverlay() {
               <input
                 type="text"
                 placeholder="username"
+                aria-label="Username"
                 value={user}
                 autoFocus
                 autoComplete="username"
@@ -114,6 +158,7 @@ function LoginOverlay() {
               <input
                 type="password"
                 placeholder="password"
+                aria-label="Password"
                 value={pw}
                 autoFocus={!hasUsers}
                 autoComplete="current-password"
@@ -134,6 +179,7 @@ function LoginOverlay() {
                 type="text"
                 inputMode="numeric"
                 placeholder="123456"
+                aria-label="Authentication code"
                 value={otp}
                 autoFocus
                 autoComplete="one-time-code"
@@ -156,14 +202,14 @@ function LoginOverlay() {
             </button>
           </>
         )}
-        {err && <p style={{ color: "var(--danger)" }}>{err}</p>}
+        {err && <p role="alert" style={{ color: "var(--danger)" }}>{err}</p>}
       </form>
     </div>
   );
 }
 
 export default function App() {
-  const [page, setPage] = useState<Page>("Home");
+  const [page, setPage] = useState<Page>(() => parseHash().page);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -199,22 +245,37 @@ export default function App() {
       .catch((e) => setError(String(e)));
   };
 
-  const go = (p: Page) => {
-    setPage(p);
-    refresh();
+  // Navigate by writing the hash; the single hashchange listener applies it to
+  // state — so UI clicks, Back/Forward, and manual hash edits share one path and
+  // can't drive a setPage↔hashchange loop.
+  const navigate = (hash: string) => {
+    if (window.location.hash === hash) refresh(); // same hash won't fire hashchange
+    else window.location.hash = hash;
   };
+  const go = (p: Page) => navigate(pageHash(p));
   const openCamera = (c: Camera) => {
     setFocusCamera(c);
-    setPage("Live");
-    refresh();
+    navigate(pageHash("Live"));
   };
+  const openEvent = (eventId: number) => navigate(`#/events/${eventId}`);
   const flipTheme = () => setThemeState(toggleTheme());
 
   useEffect(() => {
     const onLocked = () => setLocked(true);
     window.addEventListener("zoomy-401", onLocked);
+
+    // Keep state in sync with the URL: applies the initial hash (incl. an event
+    // deep-link) and reacts to Back/Forward + manual hash edits.
+    const applyHash = () => {
+      const { page: p, eventId } = parseHash();
+      setPage(p);
+      if (eventId != null) setFocusEvent(eventId);
+      refresh();
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+
     api.config().then(setConfig).catch((e) => setError(String(e)));
-    refresh();
     loadNotifs();
     const notifTimer = setInterval(loadNotifs, 20000);
     // Cmd/Ctrl-K toggles the command palette.
@@ -227,6 +288,7 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("zoomy-401", onLocked);
+      window.removeEventListener("hashchange", applyHash);
       window.removeEventListener("keydown", onKey);
       clearInterval(notifTimer);
     };
@@ -237,9 +299,9 @@ export default function App() {
       const Icon = ICONS[p];
       return {
         id: `page-${p}`,
-        label: p,
+        label: LABELS[p],
         group: "Pages",
-        keywords: "go open navigate",
+        keywords: `go open navigate ${p === "Signals" ? "hand gesture panic signals" : ""}`,
         icon: <Icon size={16} />,
         run: () => go(p),
       };
@@ -312,27 +374,29 @@ export default function App() {
         <div className="brand">
           Cam<span>my</span>
         </div>
-        {PAGES.map((p) => {
-          const Icon = ICONS[p];
-          return (
-            <button
-              key={p}
-              className={`nav-btn ${page === p ? "active" : ""} ${
-                MOBILE_PRIMARY.includes(p) ? "" : "nav-secondary"
-              }`}
-              onClick={() => {
-                setPage(p);
-                refresh();
-              }}
-              aria-current={page === p ? "page" : undefined}
-            >
-              <span className="nav-ico">
-                <Icon size={20} />
-              </span>
-              <span className="nav-label">{p}</span>
-            </button>
-          );
-        })}
+        {NAV_GROUPS.map((grp) => (
+          <div className="nav-group" key={grp.label} role="group" aria-label={grp.label}>
+            <div className="nav-group-label">{grp.label}</div>
+            {grp.pages.map((p) => {
+              const Icon = ICONS[p];
+              return (
+                <button
+                  key={p}
+                  className={`nav-btn ${page === p ? "active" : ""} ${
+                    MOBILE_PRIMARY.includes(p) ? "" : "nav-secondary"
+                  }`}
+                  onClick={() => go(p)}
+                  aria-current={page === p ? "page" : undefined}
+                >
+                  <span className="nav-ico">
+                    <Icon size={20} />
+                  </span>
+                  <span className="nav-label">{LABELS[p]}</span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
         {/* Mobile-only overflow tab; CSS hides it on desktop (where all tabs show). */}
         <button
           className={`nav-btn nav-more ${!MOBILE_PRIMARY.includes(page) ? "active" : ""}`}
@@ -367,6 +431,7 @@ export default function App() {
             cameras={cameras}
             onOpenEvents={() => go("Events")}
             onOpenCamera={openCamera}
+            onOpenEvent={openEvent}
           />
         )}
         {page === "Live" && (
@@ -384,7 +449,7 @@ export default function App() {
             onFocusHandled={() => setFocusEvent(null)}
           />
         )}
-        {page === "Family" && <Family cameras={cameras} />}
+        {page === "Family" && <Family cameras={cameras} onGo={go} />}
         {page === "Signals" && <Signals cameras={cameras} />}
         {page === "Recordings" && <Recordings cameras={cameras} />}
         {page === "People" && <Faces onError={setError} />}
@@ -421,14 +486,13 @@ export default function App() {
                     key={p}
                     className={`more-item ${page === p ? "active" : ""}`}
                     onClick={() => {
-                      setPage(p);
-                      refresh();
+                      go(p);
                       setMoreOpen(false);
                     }}
                     aria-current={page === p ? "page" : undefined}
                   >
                     <Icon size={22} />
-                    <span>{p}</span>
+                    <span>{LABELS[p]}</span>
                   </button>
                 );
               })}
@@ -445,8 +509,7 @@ export default function App() {
           onMarkAll={markAllNotifs}
           onOpenEvent={(eventId) => {
             setNotifOpen(false);
-            setFocusEvent(eventId);
-            go("Events");
+            openEvent(eventId);
           }}
         />
       )}

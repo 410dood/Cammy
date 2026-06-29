@@ -1,6 +1,6 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { api, CamEvent, Camera, Segment, getStreamMode } from "./api";
-import { RelTime, Modal } from "./ui";
+import { RelTime, Modal, useToast } from "./ui";
 import Timeline from "./Timeline";
 import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
@@ -29,6 +29,29 @@ export default function CameraDetail({
   const [talking, setTalking] = useState(false);
   const [online, setOnline] = useState<boolean | undefined>(undefined);
   const twoWay = !!camera.detect_config.two_way_audio;
+  const toast = useToast();
+  // Tracks whether the talk button is still held, so an async permission probe
+  // that resolves AFTER release can't latch the "Talking…" state on.
+  const holdingTalk = useRef(false);
+
+  // Verify mic access before entering the "Talking…" state, so push-to-talk
+  // doesn't show a success-looking UI while the browser has the mic blocked.
+  const startTalk = async () => {
+    holdingTalk.current = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // We only needed the permission probe; the player opens its own track.
+      stream.getTracks().forEach((t) => t.stop());
+      if (holdingTalk.current) setTalking(true);
+    } catch {
+      holdingTalk.current = false;
+      toast.error("Microphone blocked — allow mic access in your browser to talk.");
+    }
+  };
+  const stopTalk = () => {
+    holdingTalk.current = false;
+    setTalking(false);
+  };
 
   // Safety net: guarantee push-to-talk releases (mic off) on ANY pointer-up or
   // window blur, even if the up/cancel misses the button (drag-off, alt-tab).
@@ -75,19 +98,22 @@ export default function CameraDetail({
       <div className="detail-head">
         <h1 style={{ border: "none", margin: 0, padding: 0 }}>{camera.name}</h1>
         <div className="spacer" />
-        {[
-          { label: "1h", secs: 3600 },
-          { label: "6h", secs: 6 * 3600 },
-          { label: "24h", secs: 24 * 3600 },
-        ].map((w) => (
-          <button
-            key={w.secs}
-            className={windowSecs === w.secs ? "primary" : "ghost"}
-            onClick={() => setWindowSecs(w.secs)}
-          >
-            {w.label}
-          </button>
-        ))}
+        <div className="row" role="group" aria-label="Timeline range" style={{ gap: 6 }}>
+          {[
+            { label: "1h", secs: 3600 },
+            { label: "6h", secs: 6 * 3600 },
+            { label: "24h", secs: 24 * 3600 },
+          ].map((w) => (
+            <button
+              key={w.secs}
+              className={`btn ${windowSecs === w.secs ? "btn-primary" : "btn-secondary"}`}
+              aria-pressed={windowSecs === w.secs}
+              onClick={() => setWindowSecs(w.secs)}
+            >
+              {w.label}
+            </button>
+          ))}
+        </div>
         <button className="btn btn-ghost" onClick={onClose}>
           <IconX size={15} /> Close
         </button>
@@ -102,15 +128,15 @@ export default function CameraDetail({
             {twoWay && (
               <button
                 className={`talk-btn ${talking ? "on" : ""}`}
-                title="Hold to talk through this camera's speaker"
+                title="Hold to talk through this camera's speaker (best-effort; needs a camera with a speaker)"
                 aria-pressed={talking}
                 onPointerDown={(e) => {
                   e.preventDefault();
-                  setTalking(true);
+                  startTalk();
                 }}
-                onPointerUp={() => setTalking(false)}
-                onPointerLeave={() => setTalking(false)}
-                onPointerCancel={() => setTalking(false)}
+                onPointerUp={stopTalk}
+                onPointerLeave={stopTalk}
+                onPointerCancel={stopTalk}
               >
                 <IconMic size={15} /> {talking ? "Talking…" : "Hold to talk"}
               </button>

@@ -3,7 +3,7 @@ import { api, CamEvent, Camera, fmtBytes, fmtTime, Segment, Stats } from "../api
 import Timeline from "../Timeline";
 import CrossTimeline from "../CrossTimeline";
 import { IconPlay, IconFilm } from "../icons";
-import { EmptyState, ErrorState } from "../ui";
+import { EmptyState, ErrorState, Modal } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -66,6 +66,9 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   return (
     <>
       <h1>Recordings</h1>
+      <p className="muted" style={{ marginTop: -8 }}>
+        Continuous footage and storage. For AI detections (person, vehicle, and more), see Events.
+      </p>
 
       {stats && (
         <div className="card">
@@ -208,12 +211,11 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       )}
 
       {playing && (
-        <div className="modal-bg" onClick={() => setPlaying(null)}>
+        <Modal bare onClose={() => setPlaying(null)}>
           <video
             src={`/api/recordings/${playing.segment.id}/video`}
             controls
             autoPlay
-            onClick={(e) => e.stopPropagation()}
             onLoadedMetadata={(e) => {
               const v = e.currentTarget;
               // Clamp: clicking near "now" can resolve into the last closed
@@ -222,7 +224,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
                 v.currentTime = Math.min(playing.offset, Math.max(0, v.duration - 2));
             }}
           />
-        </div>
+        </Modal>
       )}
     </>
   );

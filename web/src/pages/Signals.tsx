@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, Camera, Settings } from "../api";
 import { loadPlayer } from "../LiveVideo";
+import { useToast } from "../ui";
 import { IconPlay, IconStop, IconSiren } from "../icons";
 
 // MediaPipe Tasks Vision is loaded at runtime from a CDN (configurable), so the
@@ -68,16 +69,19 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
     fired: false,
   });
 
+  const toast = useToast();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [camera, setCamera] = useState<string>("");
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState("Idle — start the camera to read hand signals.");
   const [current, setCurrent] = useState<{ gesture: string; score: number } | null>(null);
-  const [toast, setToast] = useState<string>("");
   const [touchless, setTouchless] = useState(false);
   const [ptzOk, setPtzOk] = useState<boolean | null>(null);
   const [duressFlash, setDuressFlash] = useState(false);
   const lastPtz = useRef(0);
+  // Set true once the source produces decodable frames; drives the "no video"
+  // hint so an offline IP camera doesn't spin on "Reading hand signals…".
+  const framesSeenRef = useRef(false);
   // The rAF loop captures state at start; mirror live controls into refs.
   const touchlessRef = useRef(false);
   const ptzOkRef = useRef(false);
@@ -182,6 +186,17 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
       }
       setRunning(true);
       setStatus("Reading hand signals…");
+      framesSeenRef.current = false;
+      // If an IP-camera source never delivers a frame, surface it instead of
+      // spinning indefinitely on a black box.
+      if (!isWebcam) {
+        const src = camera;
+        window.setTimeout(() => {
+          if (!framesSeenRef.current && streamElRef.current) {
+            setStatus(`No video from ${src} — check it's online and reachable.`);
+          }
+        }, 6000);
+      }
       loop();
     } catch (e) {
       setStatus(
@@ -196,16 +211,13 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
       const r = await api.recordGesture({ gesture: g, camera: isWebcam ? undefined : camera });
       if (r.duress) {
         setDuressFlash(true);
-        setToast(`DURESS — ${pretty(g)} — high-priority alert sent`);
+        toast.error(`DURESS — ${pretty(g)} — high-priority alert sent`);
         setTimeout(() => setDuressFlash(false), 6000);
-        setTimeout(() => setToast(""), 6000);
       } else if (r.recorded) {
-        setToast(`${pretty(g)} → signal sent`);
-        setTimeout(() => setToast(""), 2500);
+        toast.success(`${pretty(g)} → signal sent`);
       }
     } catch (e) {
-      setToast(`send failed: ${e}`);
-      setTimeout(() => setToast(""), 3000);
+      toast.error(`Couldn't send signal: ${e}`);
     }
   };
 
@@ -223,6 +235,10 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
     if (!video || !canvas || !recognizer || video.readyState < 2) {
       rafRef.current = requestAnimationFrame(loop);
       return;
+    }
+    if (!framesSeenRef.current) {
+      framesSeenRef.current = true;
+      setStatus("Reading hand signals…");
     }
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -293,7 +309,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
 
   return (
     <>
-      <h1>Hand Signals</h1>
+      <h1>Hand signals</h1>
       <p className="muted" style={{ marginTop: -8 }}>
         Real-time hand-landmark tracking in your browser — from this device's webcam{" "}
         <b>or any camera's live stream</b>. Hold an armed signal for {holdSecs.toFixed(1)}s to log
@@ -328,21 +344,13 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
               <input type="checkbox" checked={touchless} onChange={() => setTouchless((t) => !t)} />
             </label>
           )}
-          <span className="muted">{status}</span>
+          <span className="muted" role="status" aria-live="polite">{status}</span>
         </div>
 
         {duressFlash && (
-          <div
-            style={{
-              background: "var(--danger, #e5484d)",
-              color: "#fff",
-              padding: "10px 14px",
-              borderRadius: 8,
-              fontWeight: 700,
-              marginBottom: 10,
-            }}
-          >
-            <IconSiren size={15} style={{ verticalAlign: "-2px", marginRight: 6 }} /> DURESS signal sent — a high-priority alert went out.
+          <div className="callout callout-danger" role="alert" style={{ fontWeight: 600 }}>
+            <span className="callout-ico"><IconSiren size={16} /></span>
+            <div>DURESS signal sent — a high-priority alert went out.</div>
           </div>
         )}
 
@@ -422,7 +430,6 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
             </div>
           </div>
         )}
-        {toast && <p style={{ color: "var(--ok)", fontWeight: 600 }}>{toast}</p>}
       </div>
 
       <div className="card">

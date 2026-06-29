@@ -54,6 +54,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   const [gaitCands, setGaitCands] = useState<CamEvent[]>([]);
   const [gaitNames, setGaitNames] = useState<Record<number, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
   const load = () => {
     api.faces().then((r) => {
@@ -63,7 +64,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
     api.events({ limit: 3000 }).then((d) => {
       setEvents(d);
       setLoadError(null);
-    }).catch((e) => setLoadError(errMsg(e)));
+    }).catch((e) => setLoadError(errMsg(e))).finally(() => setLoaded(true));
     api.plates().then(setLib).catch(() => {});
     api.gait().then((r) => {
       setGaitProfiles(r.profiles);
@@ -209,6 +210,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   const idMap: Record<string, IdentityStat> = {};
   let strangerCount = 0;
   let lastStranger: CamEvent | undefined;
+  const strangerSightings: CamEvent[] = [];
   const plateMap: Record<string, PlateStat> = {};
   const libMap: Record<string, PlateEntry> = {};
   for (const p of lib) libMap[p.plate] = p;
@@ -226,6 +228,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
     if (e.face === "?") {
       strangerCount++;
       if (!lastStranger) lastStranger = e;
+      if (strangerSightings.length < 24) strangerSightings.push(e);
     } else if (e.face) {
       const s =
         idMap[e.face] ??
@@ -256,13 +259,15 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
 
   return (
     <>
-      <h1>People &amp; Vehicles</h1>
+      <h1>People &amp; vehicles</h1>
 
       <div className="card">
         <h2>People</h2>
         {identities.length === 0 ? (
           loadError ? (
             <ErrorState what="people" message={loadError} onRetry={load} />
+          ) : !loaded ? (
+            <span className="skeleton" style={{ height: 60 }} aria-busy="true" />
           ) : (
             <p className="muted">
               Nobody enrolled or seen yet. Name a face from the unknown gallery below — detections of
@@ -272,7 +277,18 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
         ) : (
           <div className="identity-grid">
             {strangerCount > 0 && lastStranger && (
-              <div className="identity-card" style={{ cursor: "default" }}>
+              <button
+                className="identity-card"
+                onClick={() =>
+                  setOpenId({
+                    name: "Strangers",
+                    count: strangerCount,
+                    last: lastStranger!,
+                    cameras: {},
+                    sightings: strangerSightings,
+                  })
+                }
+              >
                 <span className="identity-thumb warn"><IconStranger size={22} /></span>
                 <div className="identity-body">
                   <b>Strangers</b>
@@ -281,7 +297,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                     <RelTime ts={lastStranger.ts} className="clock" />
                   </div>
                 </div>
-              </div>
+              </button>
             )}
             {identities.map((s) => (
               <button key={s.name} className="identity-card" onClick={() => s.count > 0 && setOpenId(s)}>

@@ -112,6 +112,7 @@ export default function Wall({
         </div>
       )}
       <div className="wall-clock">{clock}</div>
+      <div className="wall-hint">Press Esc to exit</div>
       <button className="wall-exit" aria-label="Exit wall mode" onClick={onClose}>
         <IconX size={20} />
       </button>

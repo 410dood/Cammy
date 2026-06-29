@@ -300,6 +300,18 @@ body {
 }
 .nav-btn.active .nav-ico { color: var(--accent-text); }
 
+/* Rail grouping: labeled sections with a hairline divider between them. */
+.nav-group { display: flex; flex-direction: column; gap: 2px; }
+.nav-group + .nav-group { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--hairline); }
+.nav-group-label {
+  font-size: 0.66rem;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 3px 12px 4px;
+}
+
 .sidebar .foot {
   margin-top: auto;
   color: var(--muted);
@@ -555,6 +567,35 @@ label.field {
   color: #aeb4c0; /* labels are essential, lifted off --muted */
 }
 
+/* Progressive disclosure: collapse niche/advanced fields behind a summary so a
+   dense form leads with the common case. Custom triangle marker (no UA arrow). */
+details.adv { margin: 2px 0 12px; }
+details.adv > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--fw-medium);
+  padding: 6px 2px;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  border-radius: var(--radius-sm);
+}
+details.adv > summary:hover { color: var(--text); }
+details.adv > summary::-webkit-details-marker { display: none; }
+details.adv > summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform var(--dur-1) var(--ease);
+}
+details.adv[open] > summary::before { transform: rotate(90deg); }
+
 /* Legacy bare-class buttons (button.primary/.ghost/.danger/.secondary) now share
    the SINGLE .btn recipe below (grouped selectors), so there's one source of
    truth instead of two hand-synced copies. Prefer `class="btn btn-*"` in new
@@ -578,6 +619,11 @@ label.field {
 .pill.toggle { cursor: pointer; transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
 .pill.toggle:hover { border-color: var(--border-hover); color: var(--text); }
 .pill.toggle.on { border-color: var(--accent-border); color: var(--accent-text); background: var(--accent-soft); }
+/* A <TogglePill> renders a real <button>; strip the UA button chrome so it
+   matches the <span>-based pills exactly (the .pill recipe supplies the rest:
+   size, weight, color, border, padding, and the shared :focus-visible ring). */
+button.pill { font-family: inherit; background: transparent; appearance: none; -webkit-appearance: none; }
+button.pill:disabled { opacity: 0.5; cursor: default; }
 
 /* --- events ------------------------------------------------------------------------- */
 .event-grid {
@@ -748,9 +794,14 @@ label.field {
   top: 5px;
   width: 3px;
   height: 34px;
-  background: var(--danger);
+  background: var(--text-muted);
   border-radius: 1px;
 }
+/* Class-colored ticks, matched to the cross-timeline + the event-class legend
+   (so a single-camera tick no longer reads as alarm-red for every detection). */
+.tl-tick.person { background: var(--class-person); }
+.tl-tick.vehicle { background: var(--class-vehicle); }
+.tl-tick.audio { background: var(--class-audio); }
 /* Keyboard scrubber playhead (timeline + cross-timeline). */
 .tl-cursor {
   position: absolute;
@@ -1043,6 +1094,10 @@ label.field {
   /* Scoped to .sidebar so these beat the later-in-source base .rail-tools rule
      (the bell/palette/theme live in the mobile .topbar instead). */
   .sidebar .brand, .sidebar .foot, .sidebar .rail-tools { display: none; }
+  /* Flatten the rail groups into the bottom tab row: the group is transparent
+     to layout (its buttons become direct flex children) and labels/dividers go. */
+  .nav-group { display: contents; }
+  .nav-group-label { display: none; }
   /* Bottom bar shows 4 primary tabs + More; the rest live in the More sheet. */
   .nav-secondary { display: none; }
   .nav-more { display: flex; }
@@ -1054,7 +1109,7 @@ label.field {
     padding: 6px 2px;
     border-left: none;
     border-radius: 8px;
-    font-size: 0.62rem;
+    font-size: 0.68rem;
     text-align: center;
     align-items: center;
   }
@@ -1063,7 +1118,9 @@ label.field {
   .nav-label { letter-spacing: 0.2px; }
 
   .main { padding: 14px 12px calc(86px + env(safe-area-inset-bottom)); }
-  .main h1 { font-size: 0.95rem; margin-bottom: 14px; }
+  /* Keep the page title above the 16px form inputs (was 0.95rem ≈ 14px, an
+     inverted hierarchy on phones). */
+  .main h1 { font-size: var(--text-md); margin-bottom: 14px; }
 
   .live-grid { grid-template-columns: 1fr; }
   .tile .expand, .tile .ptz-pad { opacity: 1; } /* no hover on touch */
@@ -1399,6 +1456,23 @@ button.primary:disabled, button.secondary:disabled, button.ghost:disabled, butto
 .xtl-axis { position: relative; height: 14px; margin-left: 120px; }
 .xtl-axis-label { position: absolute; top: 0; font-size: 0.66rem; color: var(--text-muted); transform: translateX(-50%); white-space: nowrap; }
 
+/* Event-class legend (cross-timeline + single-camera timeline). The text label
+   is the color-blind / low-vision fallback for the color-coded ticks. */
+.evt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 10px 16px 0 136px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.evt-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.evt-swatch { width: 9px; height: 9px; border-radius: 2px; background: var(--text-muted); flex: 0 0 auto; }
+.evt-swatch.person { background: var(--class-person); }
+.evt-swatch.vehicle { background: var(--class-vehicle); }
+.evt-swatch.audio { background: var(--class-audio); }
+@media (max-width: 768px) { .evt-legend { margin-left: 16px; } }
+
 /* --- floor plan (C6) ------------------------------------------------------- */
 .fp-drop { cursor: pointer; gap: 8px; width: 100%; box-sizing: border-box; }
 .fp-drop p { max-width: 52ch; }
@@ -1460,6 +1534,25 @@ button.primary:disabled, button.secondary:disabled, button.ghost:disabled, butto
   -webkit-backdrop-filter: blur(16px);
   background: rgba(18, 20, 26, 0.25);
 }
+.privacy-tag {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  background: rgba(10, 12, 16, 0.6);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #cfd6e4;
+  font-size: var(--text-xs);
+  font-weight: var(--fw-medium);
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
 
 /* --- kiosk / wall mode (C4) ------------------------------------------------ */
 .wall { position: fixed; inset: 0; background: #000; z-index: var(--z-modal); display: flex; }
@@ -1479,9 +1572,19 @@ button.primary:disabled, button.secondary:disabled, button.ghost:disabled, butto
   position: fixed; top: 14px; right: 18px; z-index: 3; width: 40px; height: 40px;
   border-radius: var(--r-sm); display: grid; place-items: center;
   background: rgba(10, 12, 16, 0.7); border: 1px solid rgba(255, 255, 255, 0.18);
-  color: #fff; cursor: pointer; opacity: 0.3; transition: opacity var(--dur-1) var(--ease);
+  color: #fff; cursor: pointer; opacity: 0.55; transition: opacity var(--dur-1) var(--ease);
 }
-.wall:hover .wall-exit { opacity: 1; }
+.wall:hover .wall-exit, .wall-exit:focus-visible { opacity: 1; }
+/* Briefly-shown "Press Esc to exit" hint so the kiosk exit is discoverable. */
+.wall-hint {
+  position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 3;
+  padding: 6px 14px; border-radius: var(--r-pill); color: #fff;
+  background: rgba(10, 12, 16, 0.7); border: 1px solid rgba(255, 255, 255, 0.18);
+  font-size: var(--text-sm); pointer-events: none;
+  animation: wall-hint-fade 4s ease forwards;
+}
+@keyframes wall-hint-fade { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .wall-hint { animation: none; opacity: 0.85; } }
 .wall-empty { margin: auto; color: var(--muted); }
 
 /* --- liveviews (A6) -------------------------------------------------------- */
@@ -1626,7 +1729,8 @@ img.identity-thumb { background: var(--n-0); }
   cursor: pointer; color: var(--text); font: inherit;
 }
 .notif-item:hover { background: var(--surface-hover); }
-.notif-item.unread { background: var(--accent-tint); }
+/* Unread isn't conveyed by the 8% tint alone — add an accent edge marker. */
+.notif-item.unread { background: var(--accent-tint); box-shadow: inset 2px 0 0 var(--accent); }
 .notif-ico {
   display: inline-grid; place-items: center; width: 32px; height: 32px;
   border-radius: var(--r-sm); background: var(--surface-active); color: var(--text-muted); flex: 0 0 auto;
@@ -1702,6 +1806,15 @@ img.identity-thumb { background: var(--n-0); }
 .cmdk-label { flex: 1; }
 .cmdk-hint { font-size: var(--text-xs); color: var(--text-muted); }
 .cmdk-empty { padding: 24px; text-align: center; color: var(--muted); }
+.cmdk-foot {
+  display: flex;
+  gap: 16px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--border);
+  font-size: var(--text-xs);
+  color: var(--text-subtle);
+}
+.cmdk-foot kbd { margin-right: 3px; }
 
 /* lightbox (event snapshot) */
 .modal-card.lightbox { max-width: min(940px, 94vw); }

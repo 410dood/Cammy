@@ -181,6 +181,47 @@ export function ErrorState({
 }
 
 /* ======================================================================== */
+/* TogglePill — an accessible on/off pill (real <button>, keyboard + SR)      */
+/* ======================================================================== */
+
+/** A pill-shaped toggle that renders a real, focusable `<button>` with
+ *  `aria-pressed`, so it is keyboard-operable (Enter/Space) and announced as a
+ *  toggle button to screen readers. Replaces the `<span className="pill toggle"
+ *  onClick>` pattern, which was mouse-only and invisible to assistive tech.
+ *  Visuals come from the existing `.pill.toggle` recipe in styles.css. */
+export function TogglePill({
+  on,
+  onClick,
+  children,
+  title,
+  className,
+  ariaLabel,
+  disabled,
+}: {
+  on: boolean;
+  onClick: () => void;
+  children: ReactNode;
+  title?: string;
+  className?: string;
+  ariaLabel?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className={`pill toggle${on ? " on" : ""}${className ? ` ${className}` : ""}`}
+      aria-pressed={on}
+      aria-label={ariaLabel}
+      title={title}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* ======================================================================== */
 /* Toasts                                                                    */
 /* ======================================================================== */
 

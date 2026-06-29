@@ -1,8 +1,8 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
 import { api, Camera, DetectConfig, DiscoveredCam, StatusMap, Zone } from "../api";
 import ZoneEditor from "../ZoneEditor";
-import { Modal, EmptyState } from "../ui";
-import { IconRadar, IconSearch, IconCheck, IconVideo } from "../icons";
+import { Modal, EmptyState, TogglePill, useToast, useDialog } from "../ui";
+import { IconRadar, IconSearch, IconCheck, IconVideo, IconAlert } from "../icons";
 
 function TuneModal({
   camera,
@@ -54,12 +54,14 @@ function TuneModal({
     setDc({ ...dc, ignore_zones: zones });
   };
 
+  const toast = useToast();
   const save = async () => {
     try {
       await api.patchCamera(camera.id, {
         detect_config: dc,
         detect_source: subSource.trim(),
       } as Partial<Camera>);
+      toast.success(`Saved tuning for ${camera.name}`);
       onSaved();
       onClose();
     } catch (e) {
@@ -315,61 +317,6 @@ function TuneModal({
               }
             />
           </label>
-          <label
-            className="toggle field"
-            title="Residential ASSISTIVE fall hint: a tracked person who goes motionless low in the frame fires a 'fall' event. Best-effort at ~1 fps — it MISSES occluded, soft, or slow falls. NOT a medical-alert device; pair it with a pendant and never auto-dial emergency services off a single visual trigger."
-          >
-            fall detection (assistive*)
-            <input
-              type="checkbox"
-              checked={dc.fall_detect}
-              onChange={() => setDc({ ...dc, fall_detect: !dc.fall_detect })}
-            />
-          </label>
-          <label
-            className="toggle field"
-            title="Server-side 24/7 body-pose monitoring for the nursery/elder camera: emits 'fall' (lying on the floor), 'standing' (a child standing up in a crib zone — climb-out) and 'covered_face' (body present but face not visible in a zone — rollover / blanket). Runs a YOLOv8-pose model on the server (download yolov8n-pose.onnx; set the path in Settings). ASSISTIVE only — not a medical/SIDS device, draw a crib/bed zone for standing + covered-face."
-          >
-            body pose monitoring (assistive*)
-            <input
-              type="checkbox"
-              checked={dc.pose_detect}
-              onChange={() => setDc({ ...dc, pose_detect: !dc.pose_detect })}
-            />
-          </label>
-          <label
-            className="toggle field"
-            title="Privacy / dignity for a sensitive camera (nursery, bedroom, bathroom): residential + pose safety events still fire (you get the alert — label, zone, time), but NO snapshot image is saved to disk or sent to webhook/MQTT/email. Pair with a privacy mask for live view."
-          >
-            no snapshot on safety events (privacy)
-            <input
-              type="checkbox"
-              checked={dc.no_clip}
-              onChange={() => setDc({ ...dc, no_clip: !dc.no_clip })}
-            />
-          </label>
-          <label
-            className="field"
-            title="Residential child calibration: a tracked person whose normalized bbox HEIGHT (0..1 of the frame) is at/below this fraction is treated as a 'child', enabling the child / child-alone zone rules. Blank disables child features. FRAGILE — bbox height depends on camera angle/distance; tune per camera and treat results as a detection aid only."
-          >
-            child height ≤ (frac, blank = off*)
-            <input
-              type="number"
-              step="0.05"
-              min="0"
-              max="1"
-              style={{ width: 110 }}
-              placeholder="off"
-              value={dc.child_height_frac ?? ""}
-              onChange={(e) =>
-                setDc({
-                  ...dc,
-                  child_height_frac:
-                    e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)),
-                })
-              }
-            />
-          </label>
           <div
             className="field"
             style={{ minWidth: 320, flex: 1 }}
@@ -450,12 +397,72 @@ function TuneModal({
             )}
           </div>
         </div>
-        <p className="muted" style={{ fontSize: 12, marginTop: -4 }}>
-          * Fall detection and child classification are <b>assistive, best-effort</b>{" "}
-          safety aids — not medical devices and not guaranteed. They can miss events
-          and must never replace supervision or a personal alarm. See the zone editor
-          below to arm child / unattended / pool-water hints.
-        </p>
+        <details className="adv">
+          <summary>Residential safety &amp; privacy (assistive*)</summary>
+          <div className="row" style={{ marginTop: 8 }}>
+            <label
+              className="toggle field"
+              title="Residential ASSISTIVE fall hint: a tracked person who goes motionless low in the frame fires a 'fall' event. Best-effort at ~1 fps — it MISSES occluded, soft, or slow falls. NOT a medical-alert device; pair it with a pendant and never auto-dial emergency services off a single visual trigger."
+            >
+              fall detection (assistive*)
+              <input
+                type="checkbox"
+                checked={dc.fall_detect}
+                onChange={() => setDc({ ...dc, fall_detect: !dc.fall_detect })}
+              />
+            </label>
+            <label
+              className="toggle field"
+              title="Server-side 24/7 body-pose monitoring for the nursery/elder camera: emits 'fall' (lying on the floor), 'standing' (a child standing up in a crib zone — climb-out) and 'covered_face' (body present but face not visible in a zone — rollover / blanket). Runs a YOLOv8-pose model on the server (download yolov8n-pose.onnx; set the path in Settings). ASSISTIVE only — not a medical/SIDS device, draw a crib/bed zone for standing + covered-face."
+            >
+              body pose monitoring (assistive*)
+              <input
+                type="checkbox"
+                checked={dc.pose_detect}
+                onChange={() => setDc({ ...dc, pose_detect: !dc.pose_detect })}
+              />
+            </label>
+            <label
+              className="toggle field"
+              title="Privacy / dignity for a sensitive camera (nursery, bedroom, bathroom): residential + pose safety events still fire (you get the alert — label, zone, time), but NO snapshot image is saved to disk or sent to webhook/MQTT/email. Pair with a privacy mask for live view."
+            >
+              no snapshot on safety events (privacy)
+              <input
+                type="checkbox"
+                checked={dc.no_clip}
+                onChange={() => setDc({ ...dc, no_clip: !dc.no_clip })}
+              />
+            </label>
+            <label
+              className="field"
+              title="Residential child calibration: a tracked person whose normalized bbox HEIGHT (0..1 of the frame) is at/below this fraction is treated as a 'child', enabling the child / child-alone zone rules. Blank disables child features. FRAGILE — bbox height depends on camera angle/distance; tune per camera and treat results as a detection aid only."
+            >
+              child height ≤ (frac, blank = off*)
+              <input
+                type="number"
+                step="0.05"
+                min="0"
+                max="1"
+                style={{ width: 110 }}
+                placeholder="off"
+                value={dc.child_height_frac ?? ""}
+                onChange={(e) =>
+                  setDc({
+                    ...dc,
+                    child_height_frac:
+                      e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)),
+                  })
+                }
+              />
+            </label>
+          </div>
+          <p className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 6 }}>
+            * Fall detection and child classification are <b>assistive, best-effort</b>{" "}
+            safety aids — not medical devices and not guaranteed. They can miss events
+            and must never replace supervision or a personal alarm. See the zone editor
+            below to arm child / unattended / pool-water hints.
+          </p>
+        </details>
 
         <h2 style={{ marginTop: 18 }}>Zones &amp; privacy masks</h2>
         <p className="muted" style={{ marginTop: 0 }}>
@@ -493,7 +500,7 @@ function TuneModal({
               </label>
             ))}
             <button
-              className="danger"
+              className="btn btn-danger ev-act"
               onClick={() => setDc({ ...dc, ignore_zones: dc.ignore_zones.filter((_, j) => j !== i) })}
             >
               remove
@@ -502,7 +509,7 @@ function TuneModal({
         ))}
         <div className="row" style={{ marginTop: 12 }}>
           <button
-            className="ghost"
+            className="btn btn-ghost"
             onClick={() =>
               setDc({ ...dc, ignore_zones: [...dc.ignore_zones, { x: 0, y: 0, w: 0.25, h: 0.25 }] })
             }
@@ -510,10 +517,10 @@ function TuneModal({
             + add zone
           </button>
           <div className="spacer" />
-          <button className="ghost" onClick={onClose}>
+          <button className="btn btn-ghost" onClick={onClose}>
             Cancel
           </button>
-          <button className="primary" onClick={save}>
+          <button className="btn btn-primary" onClick={save}>
             Save
           </button>
         </div>
@@ -534,6 +541,7 @@ function NameCell({
   onChange: () => void;
   onError: (e: string) => void;
 }) {
+  const toast = useToast();
   const [val, setVal] = useState(cam.name);
   useEffect(() => {
     setVal(cam.name);
@@ -547,6 +555,7 @@ function NameCell({
     }
     try {
       await api.patchCamera(cam.id, { name: next } as Partial<Camera>);
+      toast.success(`Renamed to ${next}`);
       onChange();
     } catch (e) {
       setVal(cam.name); // revert on rejection (e.g. invalid chars)
@@ -580,6 +589,7 @@ function GroupCell({
   onChange: () => void;
   onError: (e: string) => void;
 }) {
+  const toast = useToast();
   const [val, setVal] = useState(cam.group ?? "");
   useEffect(() => {
     setVal(cam.group ?? "");
@@ -589,6 +599,7 @@ function GroupCell({
     if (next === (cam.group ?? "")) return;
     try {
       await api.patchCamera(cam.id, { group: next } as Partial<Camera>);
+      toast.success(next ? `Moved to “${next}”` : "Removed from group");
       onChange();
     } catch (e) {
       onError(String(e));
@@ -619,6 +630,8 @@ export default function Cameras({
   onChange: () => void;
   onError: (e: string) => void;
 }) {
+  const toast = useToast();
+  const dialog = useDialog();
   const [status, setStatus] = useState<StatusMap>({});
   const [tuning, setTuning] = useState<Camera | null>(null);
 
@@ -683,11 +696,13 @@ export default function Cameras({
         detect,
         record,
       });
+      const added = name.trim();
       setName("");
       setSource("");
       setDetectSource("");
       setGroup("");
       setFound(null);
+      toast.success(`Added ${added}`);
       onChange();
     } catch (err) {
       onError(String(err));
@@ -699,6 +714,7 @@ export default function Cameras({
   const toggle = async (cam: Camera, field: "enabled" | "detect" | "record") => {
     try {
       await api.patchCamera(cam.id, { [field]: !cam[field] });
+      toast.success(`${cam.name}: ${field} ${!cam[field] ? "on" : "off"}`);
       onChange();
     } catch (err) {
       onError(String(err));
@@ -706,9 +722,16 @@ export default function Cameras({
   };
 
   const remove = async (cam: Camera) => {
-    if (!window.confirm(`Delete camera "${cam.name}"? Its events are removed too.`)) return;
+    const ok = await dialog.confirm({
+      title: `Delete camera “${cam.name}”?`,
+      body: "Its events are removed too. This can't be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api.deleteCamera(cam.id);
+      toast.success(`Deleted ${cam.name}`);
       onChange();
     } catch (err) {
       onError(String(err));
@@ -738,15 +761,16 @@ export default function Cameras({
             <span className="muted">no ONVIF cameras responded</span>
           )}
           {scanned?.map((c) => (
-            <span
+            <TogglePill
               key={c.host}
-              className={`pill toggle ${ip === c.host ? "on" : ""}`}
+              on={ip === c.host}
               title="click to fill the IP field"
+              ariaLabel={`Use ${c.host}${c.name ? ` (${c.name})` : ""}`}
               onClick={() => setIp(c.host)}
             >
               {c.host}
               {c.name ? ` — ${c.name}` : ""}
-            </span>
+            </TogglePill>
           ))}
         </div>
         <div className="row" style={{ marginBottom: 14 }}>
@@ -760,7 +784,7 @@ export default function Cameras({
           </label>
           <label className="field">
             password
-            <input type="text" value={pass} onChange={(e) => setPass(e.target.value)} />
+            <input type="password" autoComplete="off" value={pass} onChange={(e) => setPass(e.target.value)} />
           </label>
           <button type="button" className="btn btn-ghost" disabled={busy || !ip.trim()} onClick={resolve}>
             <IconSearch size={15} /> Resolve via ONVIF
@@ -817,7 +841,7 @@ export default function Cameras({
           <label className="toggle">
             <input type="checkbox" checked={record} onChange={() => setRecord(!record)} /> record
           </label>
-          <button className="primary" disabled={busy}>
+          <button className="btn btn-primary" disabled={busy}>
             Add
           </button>
         </form>
@@ -852,21 +876,23 @@ export default function Cameras({
               </tr>
             </thead>
             <tbody>
-              {cameras.map((cam) => (
+              {cameras.map((cam) => {
+                const s = status[String(cam.id)];
+                return (
                 <tr key={cam.id}>
-                  <td title={status[String(cam.id)]?.last_error ?? ""}>
+                  <td title={s?.last_error ?? ""}>
                     <span
-                      className={`dot ${
-                        status[String(cam.id)] ? (status[String(cam.id)].online ? "on" : "off") : ""
-                      }`}
+                      className={`dot ${s ? (s.online ? "on" : "off") : ""}`}
+                      aria-hidden="true"
                     />{" "}
                     <span className="muted">
-                      {status[String(cam.id)]?.online
-                        ? "online"
-                        : status[String(cam.id)]
-                          ? "offline"
-                          : "…"}
+                      {s?.online ? "online" : s ? "offline" : "checking…"}
                     </span>
+                    {s && !s.online && s.last_error && (
+                      <span className="badge danger" style={{ marginLeft: 6 }} title={s.last_error}>
+                        <IconAlert size={11} /> error
+                      </span>
+                    )}
                   </td>
                   <td>
                     <NameCell cam={cam} onChange={onChange} onError={onError} />
@@ -876,31 +902,34 @@ export default function Cameras({
                   </td>
                   {(["enabled", "detect", "record"] as const).map((f) => (
                     <td key={f}>
-                      <span className={`pill toggle ${cam[f] ? "on" : ""}`} onClick={() => toggle(cam, f)}>
+                      <TogglePill
+                        on={cam[f]}
+                        ariaLabel={`${cam.name} ${f} ${cam[f] ? "on" : "off"}`}
+                        onClick={() => toggle(cam, f)}
+                      >
                         {cam[f] ? "on" : "off"}
-                      </span>
+                      </TogglePill>
                     </td>
                   ))}
                   <td>
                     <GroupCell cam={cam} onChange={onChange} onError={onError} />
                   </td>
                   <td className="muted" style={{ whiteSpace: "nowrap" }}>
-                    {(() => {
-                      const s = status[String(cam.id)];
-                      if (!s?.accelerator) return "—";
-                      return `${s.inference_ms != null ? s.inference_ms.toFixed(1) + "ms · " : ""}${s.accelerator}`;
-                    })()}
+                    {!s?.accelerator
+                      ? "—"
+                      : `${s.inference_ms != null ? s.inference_ms.toFixed(1) + "ms · " : ""}${s.accelerator}`}
                   </td>
                   <td>
-                    <button className="ghost" onClick={() => setTuning(cam)} style={{ marginRight: 8 }}>
+                    <button className="btn btn-ghost ev-act" onClick={() => setTuning(cam)} style={{ marginRight: 8 }}>
                       Tune
                     </button>
-                    <button className="danger" onClick={() => remove(cam)}>
+                    <button className="btn btn-danger ev-act" onClick={() => remove(cam)}>
                       Delete
                     </button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           </div>
