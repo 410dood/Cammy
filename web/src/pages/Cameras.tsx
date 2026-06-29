@@ -48,6 +48,15 @@ function TuneModal({
     record_schedule: camera.detect_config.record_schedule ?? null,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
+  // Flag toggles whose backing model isn't downloaded, so an enabled feature
+  // doesn't silently no-op (the gitignored-pose-model case CLAUDE.md flags).
+  const [poseModelMissing, setPoseModelMissing] = useState(false);
+  useEffect(() => {
+    api
+      .capabilities()
+      .then((r) => setPoseModelMissing(!(r.features.find((f) => f.key === "pose")?.present ?? true)))
+      .catch(() => {});
+  }, []);
 
   const setZone = (i: number, field: keyof Zone, v: number) => {
     const zones = dc.ignore_zones.map((z, j) => (j === i ? { ...z, [field]: v } : z));
@@ -422,6 +431,15 @@ function TuneModal({
                 onChange={() => setDc({ ...dc, pose_detect: !dc.pose_detect })}
               />
             </label>
+            {poseModelMissing && (
+              <span
+                className="muted"
+                style={{ color: "var(--warn)", fontSize: "var(--text-sm)", marginTop: -6 }}
+                title="The pose model file (yolov8n-pose.onnx) isn't in the app directory, so this toggle does nothing until you download it. See Settings → Models & capabilities."
+              >
+                ⚠ pose model not downloaded — this won't run until yolov8n-pose.onnx is added
+              </span>
+            )}
             <label
               className="toggle field"
               title="Privacy / dignity for a sensitive camera (nursery, bedroom, bathroom): residential + pose safety events still fire (you get the alert — label, zone, time), but NO snapshot image is saved to disk or sent to webhook/MQTT/email. Pair with a privacy mask for live view."

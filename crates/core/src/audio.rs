@@ -84,6 +84,12 @@ impl Engine {
 }
 
 /// Capture ~1s of 16 kHz mono audio from the camera's restream.
+///
+/// Bounded by a wall-clock watchdog: `-t` caps only the *output* duration, so a
+/// stalled input (camera dropped, go2rtc mid-restart) could otherwise block
+/// `read_to_end` forever — hanging every later camera in this sequential sweep and
+/// delaying shutdown. We read stdout on a side thread and kill ffmpeg if it
+/// overruns. (Mirrors the proven transcribe.rs::capture watchdog.)
 fn capture(ffmpeg: &std::path::Path, rtsp_url: &str) -> Result<Vec<f32>> {
     let mut child = std::process::Command::new(ffmpeg)
         .args(["-loglevel", "error", "-rtsp_transport", "tcp", "-i"])
@@ -95,13 +101,25 @@ fn capture(ffmpeg: &std::path::Path, rtsp_url: &str) -> Result<Vec<f32>> {
         .no_console()
         .spawn()
         .context("spawning ffmpeg audio capture")?;
-    let mut bytes = Vec::new();
-    child
-        .stdout
-        .take()
-        .context("no stdout")?
-        .read_to_end(&mut bytes)?;
-    let _ = child.wait();
+    let mut stdout = child.stdout.take().context("no stdout")?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    // CAPTURE_SECS of output + a generous connect/teardown margin.
+    let bytes = match rx.recv_timeout(Duration::from_secs(CAPTURE_SECS as u64 + 8)) {
+        Ok(b) => {
+            let _ = child.wait();
+            b
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("audio capture timed out (stalled stream)");
+        }
+    };
     anyhow::ensure!(bytes.len() >= 4 * 1600, "no audio in stream");
     Ok(bytes
         .chunks_exact(4)
