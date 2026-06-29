@@ -43,26 +43,55 @@ impl ImageEmbedder {
     }
 
     pub fn embed(&mut self, img: &DynamicImage) -> Result<Vec<f32>> {
-        // Cover-resize + center crop to 224, CLIP normalization, NCHW.
-        let rgb = img
-            .resize_to_fill(EDGE, EDGE, image::imageops::FilterType::Triangle)
-            .to_rgb8();
-        let plane = (EDGE * EDGE) as usize;
-        let mut chw = vec![0.0f32; 3 * plane];
-        for (x, y, px) in rgb.enumerate_pixels() {
-            let idx = (y * EDGE + x) as usize;
-            for c in 0..3 {
-                chw[c * plane + idx] = (px[c] as f32 / 255.0 - MEAN[c]) / STD[c];
-            }
-        }
-        let input = Tensor::from_array(([1usize, 3, EDGE as usize, EDGE as usize], chw))?;
-        let outputs = self
-            .session
-            .run(detector::ort::inputs!["pixel_values" => input])?;
-        let (_name, value) = outputs.iter().next().context("no image_embeds")?;
-        let (_shape, data) = value.try_extract_tensor::<f32>()?;
-        Ok(l2(data))
+        run_vision(&mut self.session, img)
     }
+}
+
+/// CLIP image preprocessing (cover-resize + center crop to 224, CLIP
+/// normalization, NCHW) + forward pass → L2-normalized embedding. Shared by the
+/// pipeline's `ImageEmbedder` and the lazy API-side `embed_image`.
+fn run_vision(session: &mut Session, img: &DynamicImage) -> Result<Vec<f32>> {
+    let rgb = img
+        .resize_to_fill(EDGE, EDGE, image::imageops::FilterType::Triangle)
+        .to_rgb8();
+    let plane = (EDGE * EDGE) as usize;
+    let mut chw = vec![0.0f32; 3 * plane];
+    for (x, y, px) in rgb.enumerate_pixels() {
+        let idx = (y * EDGE + x) as usize;
+        for c in 0..3 {
+            chw[c * plane + idx] = (px[c] as f32 / 255.0 - MEAN[c]) / STD[c];
+        }
+    }
+    let input = Tensor::from_array(([1usize, 3, EDGE as usize, EDGE as usize], chw))?;
+    let outputs = session.run(detector::ort::inputs!["pixel_values" => input])?;
+    let (_name, value) = outputs.iter().next().context("no image_embeds")?;
+    let (_shape, data) = value.try_extract_tensor::<f32>()?;
+    Ok(l2(data))
+}
+
+/// Vision side, shared by API handlers (lazy global). Lets a handler embed an
+/// arbitrary uploaded image for appearance search without owning the detection
+/// pipeline's `ImageEmbedder`. A query is rare; one shared session is plenty.
+static VISION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
+
+/// True when the CLIP vision model exists — enough to embed an uploaded image
+/// and rank it against the stored crop corpus. (Image→image search needs neither
+/// the text model nor the tokenizer, so it can work where `models_present()` —
+/// which also gates text search — is false.)
+pub fn vision_present() -> bool {
+    std::path::Path::new(VISION_MODEL).exists()
+}
+
+/// Embed an arbitrary image with the shared CLIP vision session (lazy-loaded on
+/// first use). Used by the upload-a-reference-photo appearance search.
+pub fn embed_image(img: &DynamicImage) -> Result<Vec<f32>> {
+    let cell = VISION.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().expect("clip vision mutex poisoned");
+    if guard.is_none() {
+        *guard = Some(detector::build_ort_session(VISION_MODEL, true)?);
+    }
+    let session = guard.as_mut().expect("initialized above");
+    run_vision(session, img)
 }
 
 /// Text side, shared by API handlers (lazy global; a query is rare and fast).

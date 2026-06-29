@@ -48,6 +48,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/config", get(config))
+        .route("/api/capabilities", get(capabilities))
         .route("/api/auth", get(auth_status))
         .route("/api/auth/password", axum::routing::post(set_password))
         .route("/api/login", axum::routing::post(login))
@@ -71,6 +72,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/events/{id}/clip", get(event_clip))
         .route("/api/events/{id}/similar", get(event_similar))
         .route("/api/search", get(smart_search))
+        .route("/api/search/by-image", axum::routing::post(search_by_image))
         .route("/api/alarms", get(list_alarms_api).post(add_alarm_api))
         .route(
             "/api/alarms/{id}",
@@ -185,6 +187,56 @@ async fn health() -> Json<serde_json::Value> {
 /// Tells the UI where go2rtc's WebRTC endpoints live.
 async fn config(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "go2rtc_base": st.go2rtc.api_base() }))
+}
+
+/// Per-feature optional-model presence, so the UI can show a "model not
+/// downloaded" status and disable toggles whose backing model is missing —
+/// instead of letting an enabled feature silently no-op (the dominant
+/// silent-failure gap). Returns model *filenames* (already documented in the
+/// README), never absolute paths, so it's safe for any authenticated caller.
+async fn capabilities(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let s = st.db.settings();
+    let exists = |p: &str| !p.trim().is_empty() && std::path::Path::new(p.trim()).exists();
+    let feat = |key: &str, label: &str, model: String, present: bool, required: bool| {
+        serde_json::json!({
+            "key": key, "label": label, "model": model,
+            "present": present, "required": required,
+        })
+    };
+    let features = serde_json::json!([
+        feat(
+            "detection", "Object detection (YOLO)",
+            s.model_path.clone(), exists(&s.model_path), true,
+        ),
+        feat(
+            "smart_search", "Smart search & appearance (CLIP)",
+            format!("{} + {} + {}", crate::smart::VISION_MODEL, crate::smart::TEXT_MODEL, crate::smart::TOKENIZER),
+            crate::smart::models_present(), false,
+        ),
+        feat(
+            "audio", "Audio events (YAMNet)",
+            crate::audio::MODEL.to_string(), crate::audio::models_present(), false,
+        ),
+        feat(
+            "transcription", "Audio transcription (Whisper)",
+            s.transcription_model.clone(), exists(&s.transcription_model), false,
+        ),
+        feat(
+            "lpr", "License-plate recognition",
+            format!("{} + {}", crate::lpr::DET_MODEL, crate::lpr::REC_MODEL),
+            crate::lpr::models_present(), false,
+        ),
+        feat(
+            "face", "Face recognition",
+            format!("{} + {}", s.face_det_model, s.face_rec_model),
+            exists(&s.face_det_model) && exists(&s.face_rec_model), false,
+        ),
+        feat(
+            "pose", "Body-pose safety monitoring",
+            s.pose_model.clone(), crate::posture::models_present(&s.pose_model), false,
+        ),
+    ]);
+    Json(serde_json::json!({ "features": features }))
 }
 
 /// Per-camera health: frame freshness from the detection pipeline + recorder
@@ -2600,6 +2652,74 @@ async fn event_similar(
     })
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    let mut results = Vec::new();
+    for (score, eid) in scored.into_iter() {
+        if results.len() >= limit {
+            break;
+        }
+        if let Some(ev) = st.db.get_event(eid)? {
+            if !camera_allowed(&allow, ev.camera_id) {
+                continue;
+            }
+            results.push(serde_json::json!({ "similarity": score, "event": ev }));
+        }
+    }
+    Ok(Json(
+        serde_json::json!({ "results": results, "available": true }),
+    ))
+}
+
+/// Upload-a-reference-photo appearance search (UniFi Protect "Find Anything"):
+/// CLIP-embed an image posted in the request body and rank every object-detection
+/// crop in the corpus by cosine similarity — find a person/vehicle that was never
+/// enrolled, or never even captured by our own cameras (a still from a neighbour's
+/// camera, a flyer). Raw image bytes are the body (jpeg/png/webp — the format is
+/// sniffed, the declared content-type is ignored). Mirrors `event_similar`'s
+/// ranking + RBAC; `available: false` when the CLIP vision model isn't installed.
+async fn search_by_image(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    body: axum::body::Bytes,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !crate::smart::vision_present() {
+        return Ok(Json(
+            serde_json::json!({ "results": [], "available": false }),
+        ));
+    }
+    // A reference photo is small; bound memory so a huge upload can't OOM the box.
+    const MAX_BYTES: usize = 20 * 1024 * 1024;
+    if body.is_empty() {
+        return Err(bad_request("empty image"));
+    }
+    if body.len() > MAX_BYTES {
+        return Err(bad_request("image too large (max 20 MB)"));
+    }
+    let limit = q
+        .get("limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(24)
+        .min(100);
+    let allow = allowed_cameras(&st, &p)?;
+    let db = st.db.clone();
+    // Decode + embed + the whole-corpus cosine scan are all CPU-bound — run them
+    // off the async runtime's worker threads (mirrors event_similar's scan).
+    let scored = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(f32, i64)>> {
+        let img = image::load_from_memory(&body)
+            .map_err(|e| anyhow::anyhow!("decoding uploaded image: {e}"))?;
+        let q = crate::smart::embed_image(&img)?;
+        let mut scored: Vec<(f32, i64)> = db
+            .crop_embeddings()?
+            .into_iter()
+            .map(|(eid, emb)| (crate::smart::cosine(&q, &emb).max(0.0), eid))
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    // A decode/embed failure is almost always a bad upload — report it as a 400.
+    .map_err(|e| bad_request(format!("{e:#}")))?;
     let mut results = Vec::new();
     for (score, eid) in scored.into_iter() {
         if results.len() >= limit {
