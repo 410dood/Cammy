@@ -200,7 +200,8 @@ mod tests {
     #[test]
     fn err_transition_is_edge_triggered() {
         // First failure → notify + latch on.
-        let (state, title, _) = err_transition(&Outcome::Failed("conn refused".into()), false).unwrap();
+        let (state, title, _) =
+            err_transition(&Outcome::Failed("conn refused".into()), false).unwrap();
         assert!(state);
         assert_eq!(title, "AI captions unavailable");
         // Repeat failure while latched → no spam.

@@ -205,35 +205,58 @@ async fn capabilities(State(st): State<AppState>) -> Json<serde_json::Value> {
     };
     let features = serde_json::json!([
         feat(
-            "detection", "Object detection (YOLO)",
-            s.model_path.clone(), exists(&s.model_path), true,
+            "detection",
+            "Object detection (YOLO)",
+            s.model_path.clone(),
+            exists(&s.model_path),
+            true,
         ),
         feat(
-            "smart_search", "Smart search & appearance (CLIP)",
-            format!("{} + {} + {}", crate::smart::VISION_MODEL, crate::smart::TEXT_MODEL, crate::smart::TOKENIZER),
-            crate::smart::models_present(), false,
+            "smart_search",
+            "Smart search & appearance (CLIP)",
+            format!(
+                "{} + {} + {}",
+                crate::smart::VISION_MODEL,
+                crate::smart::TEXT_MODEL,
+                crate::smart::TOKENIZER
+            ),
+            crate::smart::models_present(),
+            false,
         ),
         feat(
-            "audio", "Audio events (YAMNet)",
-            crate::audio::MODEL.to_string(), crate::audio::models_present(), false,
+            "audio",
+            "Audio events (YAMNet)",
+            crate::audio::MODEL.to_string(),
+            crate::audio::models_present(),
+            false,
         ),
         feat(
-            "transcription", "Audio transcription (Whisper)",
-            s.transcription_model.clone(), exists(&s.transcription_model), false,
+            "transcription",
+            "Audio transcription (Whisper)",
+            s.transcription_model.clone(),
+            exists(&s.transcription_model),
+            false,
         ),
         feat(
-            "lpr", "License-plate recognition",
+            "lpr",
+            "License-plate recognition",
             format!("{} + {}", crate::lpr::DET_MODEL, crate::lpr::REC_MODEL),
-            crate::lpr::models_present(), false,
+            crate::lpr::models_present(),
+            false,
         ),
         feat(
-            "face", "Face recognition",
+            "face",
+            "Face recognition",
             format!("{} + {}", s.face_det_model, s.face_rec_model),
-            exists(&s.face_det_model) && exists(&s.face_rec_model), false,
+            exists(&s.face_det_model) && exists(&s.face_rec_model),
+            false,
         ),
         feat(
-            "pose", "Body-pose safety monitoring",
-            s.pose_model.clone(), crate::posture::models_present(&s.pose_model), false,
+            "pose",
+            "Body-pose safety monitoring",
+            s.pose_model.clone(),
+            crate::posture::models_present(&s.pose_model),
+            false,
         ),
     ]);
     Json(serde_json::json!({ "features": features }))
