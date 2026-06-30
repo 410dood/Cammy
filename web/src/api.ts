@@ -110,6 +110,9 @@ export interface DetectConfig {
   package_zone?: [number, number][] | null;
   /** Labels counting as a parcel; empty = suitcase/backpack/handbag. */
   package_labels?: string[];
+  /** Stationary-object suppression: only alert on new or moving objects, not on
+   *  every motion-gate trip while a parked car / idle object sits in view. */
+  suppress_stationary?: boolean;
 }
 
 export interface Camera {
@@ -245,6 +248,9 @@ export interface Settings {
   offsite_prefix: string;
   offsite_access_key: string;
   offsite_secret_key: string;
+  /** Burn an amber outline of the motion region(s) that tripped the gate onto
+   *  detection snapshots, so you can see what actually triggered an event. */
+  highlight_motion: boolean;
 }
 
 /** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every

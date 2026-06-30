@@ -16,7 +16,46 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.3 — full competitor suite (#1–#70) integrated on main + cross-feature simplify, 2026-06-22
 
-### Latest: web UX/UI review pass (branch `ux-review-improvements`), 2026-06-29
+### Latest: stationary-object suppression + motion highlight, 2026-06-30
+
+Fix for "8 near-identical events of a parked car in 10 min, no actual motion":
+ambient motion (wind/shadows/auto-exposure) keeps tripping the gate, YOLO re-sees
+the still car, and the 10s per-(camera,label) cooldown lets each re-detection
+through. **Two features, backend + web, all `cargo clippy -D warnings` +
+`cargo test` (core 140 / motion 8 / tracker 14) + web `tsc`/`vite` green:**
+
+1. **Per-camera `DetectConfig.suppress_stationary`** ("suppress stationary
+   repeats", off by default). Drives the existing `crates/tracker` for the camera
+   and, in `pipeline.rs`, filters `wanted` so a detection only fires when it's a
+   **new** object (no confirmed track yet → fail-open, keeps first-arrival
+   latency) or its matched confirmed track **moved** ≥ `STATIONARY_MOVE_FRAC`
+   (0.05 frame-fraction, ground anchor) since it last alerted. A parked car =
+   one stable track that stops moving → suppressed; a real arrival / departure
+   still fires, rate-limited by `event_cooldown_secs`. Per-track last-alert
+   anchors live in `alerted_tracks` (pruned to live track ids + on camera-delete +
+   on disable). **Re-acquisition guard** (adversarial-review catch): the tracker
+   keeps a vacated track alive for `max_age`, so a *different* object occupying the
+   same spot could inherit the old id + its stale anchor and be wrongly suppressed
+   — so a track that missed ≥ `STATIONARY_REACQUIRE_GAP` (2) frames before
+   re-matching is treated as new (its pre-update miss count is threaded into the
+   confirmed-track snapshot). `moved_enough` + `stationary_keep` are pure +
+   unit-tested (incl. the re-acquisition regression); first-settle may emit ≤2
+   events before quiescing. `suppress_stationary ⟹ tracker_on`, so a
+   `suppress_stationary` camera runs YOLO ~1fps continuously (same cost model as
+   any analytics camera) to keep the still object's track alive between gate trips.
+2. **Global `Settings.highlight_motion`** (on by default). The motion gate
+   (`crates/motion`) now keeps the changed-cell mask and exposes
+   `motion_regions()` (4-connectivity connected-components over the 64×64 diff →
+   ≤8 largest blob boxes in 0..1 fractions, single-cell noise dropped). The
+   pipeline captures those right after `gate.update` and `save_snapshot` burns
+   them onto the event JPEG in **amber**, under the **red** detection boxes — so a
+   viewer can see *what actually triggered* an event (trees vs. the object). Both
+   new tests in the motion crate; toggle in Settings → Detection.
+
+Both are JSON-blob / `detect_json` fields — **no DB migration**. Build-validated
++ unit-tested; not yet live-E2E'd against cameras.
+
+### Earlier: web UX/UI review pass (branch `ux-review-improvements`), 2026-06-29
 
 A multi-agent UX audit (9 lenses → adversarially-verified → ranked plan) drove a
 **web-only** improvement pass across 21 files in `web/src` (no backend changes).
