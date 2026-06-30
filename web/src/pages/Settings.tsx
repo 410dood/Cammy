@@ -1261,11 +1261,10 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <div className="card">
           <h2>Detection</h2>
           <div className="row">
-            <label className="field">
+            <label className="field" style={{ flex: 1, minWidth: "min(380px, 100%)" }}>
               objects (comma-separated, empty = all)
               <input
                 type="text"
-                style={{ minWidth: 380 }}
                 value={s.detect_labels.join(", ")}
                 onChange={(e) =>
                   set({
