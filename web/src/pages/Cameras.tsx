@@ -87,7 +87,7 @@ function TuneModal({
           Empty fields inherit the global Settings values.
         </p>
         <div className="row" style={{ marginBottom: 10 }}>
-          <label className="field" style={{ flex: 1, minWidth: 380 }}>
+          <label className="field" style={{ flex: 1, minWidth: "min(380px, 100%)" }}>
             low-res sub-stream for detection (empty = detect on main stream)
             <input
               type="text"

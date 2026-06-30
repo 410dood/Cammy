@@ -961,7 +961,7 @@ export default function Events({
                 </div>
               </div>
             )}
-            <div style={{ flex: "1 1 320px", minWidth: 280 }}>
+            <div style={{ flex: "1 1 320px", minWidth: "min(280px, 100%)" }}>
               {!similar.res ? (
                 <p className="muted">Searching across cameras…</p>
               ) : !similar.res.available ? (
@@ -1040,7 +1040,7 @@ export default function Events({
                 uploaded photo
               </div>
             </div>
-            <div style={{ flex: "1 1 320px", minWidth: 280 }}>
+            <div style={{ flex: "1 1 320px", minWidth: "min(280px, 100%)" }}>
               {!imgSearch.res ? (
                 <p className="muted">Matching your photo across cameras…</p>
               ) : !imgSearch.res.available ? (
