@@ -329,6 +329,11 @@ export interface AlarmRule {
    *  null = no confirmation. Fails open; don't gate life-safety rules on it. */
   confirm_label: string | null;
   confirm_within_secs: number | null;
+  /** VLM alert-verification gate: a yes/no question asked of the GenAI vision
+   *  model about the snapshot; the rule fires only when the model confirms
+   *  ("Is a real person at the door?"). Runs off-thread; fails OPEN. Needs GenAI
+   *  captions enabled. null/empty = no gate. Detection-event rules only. */
+  vlm_prompt: string | null;
   min_score: number;
   /** Legacy single action; kept in sync with actions[0]. Prefer `actions`. */
   action: string;

@@ -39,7 +39,7 @@ pub fn run(
     status: StatusBoard,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
     throttle: crate::notify::AlarmThrottle,
-    genai_tx: std::sync::mpsc::Sender<crate::genai::CaptionJob>,
+    genai_tx: std::sync::mpsc::Sender<crate::genai::Job>,
     shutdown: Arc<AtomicBool>,
 ) {
     // One detector session per (model, force_cpu, conf, iou) combination, so
@@ -865,7 +865,35 @@ pub fn run(
                                 && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
                                 && crate::notify::ready(r, &throttle, now)
                         }) {
-                            crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
+                            // VLM alert-verification gate: a rule with a vlm_prompt
+                            // is verified by the vision model OFF this detection
+                            // thread (the call is multi-second). Hand it to the
+                            // GenAI worker, which fires it iff the model confirms
+                            // (fails OPEN). All the cheap gates (incl. cooldown via
+                            // `ready` above) already passed; only the VLM verdict
+                            // remains. Non-VLM rules fire inline as before.
+                            if rule
+                                .vlm_prompt
+                                .as_deref()
+                                .is_some_and(|p| !p.trim().is_empty())
+                            {
+                                let _ = genai_tx.send(crate::genai::Job::VlmGate(Box::new(
+                                    crate::genai::VlmGateJob {
+                                        rule: rule.clone(),
+                                        event_id: id,
+                                        camera: cam.name.clone(),
+                                        label: d.label.to_string(),
+                                        score: d.score,
+                                        ts: now,
+                                        snapshot_url: format!("/api/snapshots/{snap_rel}"),
+                                        snapshot_path: snap_abs.clone(),
+                                        face: face_names[i].clone(),
+                                        plate: plates[i].clone(),
+                                    },
+                                )));
+                            } else {
+                                crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
+                            }
                         }
                         // Gait (#64): attribute an identity to this person event
                         // from the best-overlapping confirmed person track.
@@ -894,12 +922,12 @@ pub fn run(
             // off-thread so the LLM call never stalls detection.
             if settings.genai_enabled {
                 if let Some(&first) = new_event_ids.first() {
-                    let _ = genai_tx.send(crate::genai::CaptionJob {
+                    let _ = genai_tx.send(crate::genai::Job::Caption(crate::genai::CaptionJob {
                         event_id: first,
                         snapshot_path: snap_abs.clone(),
                         label: wanted[0].label.to_string(),
                         camera: cam.name.clone(),
-                    });
+                    }));
                 }
             }
 
