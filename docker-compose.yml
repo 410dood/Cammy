@@ -1,0 +1,26 @@
+# Cammy via Docker Compose — community starting point. See DEPLOYMENT.md §4.
+#
+#   1. Put your downloaded model files in ./models  (yolov8n.onnx, clip_*.onnx,
+#      clip_tokenizer.json, yamnet.onnx, yamnet_class_map.csv, ... — see the README)
+#   2. Put the go2rtc binary at ./bin/go2rtc
+#   3. docker compose up -d --build
+#
+# Front it with the Caddy/nginx config in DEPLOYMENT.md §3 (the default command
+# includes --trusted-proxy). If you expose 8080 directly, override `command` to
+# drop --trusted-proxy.
+
+services:
+  cammy:
+    build: .
+    image: cammy:local
+    container_name: cammy
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models        # working dir: *.onnx / *.bin / *.csv model files
+      - ./data:/data            # SQLite db, recordings, snapshots, go2rtc.yaml
+      - ./bin:/models/bin:ro    # go2rtc binary (found via the default ./bin lookup)
+    environment:
+      - RUST_LOG=info,zoomy=info
+    # command: ["--port", "8080"]   # uncomment (drops --trusted-proxy) if NOT behind a proxy

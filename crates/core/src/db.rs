@@ -541,6 +541,17 @@ pub struct AlarmRule {
     /// Window (seconds) for `confirm_label`. `None`/0 disables confirmation.
     #[serde(default)]
     pub confirm_within_secs: Option<i64>,
+    /// VLM alert-verification gate (Agent DVR "Ask AI" / Bosch IVA Pro Context):
+    /// a yes/no question asked of the GenAI vision model about the event snapshot;
+    /// the rule only fires when the model answers "yes" (phrase the prompt as the
+    /// condition to CONFIRM, e.g. "Is a real person actually at the front door?").
+    /// Runs OFF the detection thread in the GenAI worker so the multi-second call
+    /// never stalls detection, and **fails OPEN** — fires on any model error/timeout
+    /// so a flaky endpoint never silently suppresses a real alert. Needs GenAI
+    /// captions enabled (a vision model). `None`/empty = no gate. Detection-event
+    /// rules only in v1. Rides `schedule_json` (no migration).
+    #[serde(default)]
+    pub vlm_prompt: Option<String>,
     #[serde(default)]
     pub min_score: f32,
     /// Legacy single action: "webhook" / "mqtt" / "ntfy". Superseded by
@@ -1904,7 +1915,8 @@ impl Db {
             // blob (no migration), like modes.
             "zone_like": r.zone_like,
             "confirm_label": r.confirm_label,
-            "confirm_within": r.confirm_within_secs
+            "confirm_within": r.confirm_within_secs,
+            "vlm_prompt": r.vlm_prompt
         })
         .to_string();
         // Persist the full scene, and dual-write the legacy action/target/priority
@@ -1995,6 +2007,7 @@ impl Db {
                     zone_like: sched["zone_like"].as_str().map(str::to_string),
                     confirm_label: sched["confirm_label"].as_str().map(str::to_string),
                     confirm_within_secs: sched["confirm_within"].as_i64(),
+                    vlm_prompt: sched["vlm_prompt"].as_str().map(str::to_string),
                     min_score: r.get(7)?,
                     action,
                     target,
@@ -3964,6 +3977,7 @@ mod tests {
             zone_like: None,
             confirm_label: None,
             confirm_within_secs: None,
+            vlm_prompt: None,
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
@@ -4074,6 +4088,7 @@ mod tests {
                 zone_like: Some("Door".into()),
                 confirm_label: Some("person".into()),
                 confirm_within_secs: Some(10),
+                vlm_prompt: None,
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
@@ -4254,6 +4269,7 @@ mod tests {
             zone_like: None,
             confirm_label: None,
             confirm_within_secs: None,
+            vlm_prompt: None,
             min_score: 0.0,
             action: "webhook".into(),
             target: "http://x".into(),

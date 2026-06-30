@@ -6,7 +6,7 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
-  IconAlert, IconCheck, IconLayers,
+  IconAlert, IconCheck, IconLayers, IconUpload,
 } from "../icons";
 
 // --- A3: smart-detection grouping --------------------------------------------
@@ -223,6 +223,10 @@ export default function Events({
   const [open, setOpen] = useState<CamEvent | null>(null);
   const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
   const [similar, setSimilar] = useState<{ ev: CamEvent; res: SimilarResult | null } | null>(null);
+  // Upload-a-photo appearance search: query is a local object-URL preview.
+  const [imgSearch, setImgSearch] = useState<{ url: string; res: SimilarResult | null } | null>(null);
+  const imgReq = useRef(0);
+  const imgFileRef = useRef<HTMLInputElement>(null);
   const [noClip, setNoClip] = useState<number | null>(null);
 
   // Deep-link from a notification: once events have loaded, open the matching
@@ -286,6 +290,28 @@ export default function Events({
       if (token === similarReq.current) {
         toast.error(String(e));
         setSimilar(null);
+      }
+    }
+  };
+
+  // Upload-a-reference-photo search: CLIP-rank the crop corpus against an image
+  // the user picks (a suspect/vehicle never enrolled or even seen by our cameras).
+  const runImageSearch = async (file: File) => {
+    const token = ++imgReq.current;
+    const url = URL.createObjectURL(file);
+    setImgSearch((prev) => {
+      if (prev) URL.revokeObjectURL(prev.url);
+      return { url, res: null };
+    });
+    try {
+      const res = await api.searchByImage(file, 24);
+      if (token === imgReq.current) setImgSearch({ url, res });
+      else URL.revokeObjectURL(url);
+    } catch (e) {
+      if (token === imgReq.current) {
+        toast.error(errMsg(e));
+        URL.revokeObjectURL(url);
+        setImgSearch(null);
       }
     }
   };
@@ -505,6 +531,24 @@ export default function Events({
         {(searchResults || interpreted.length > 0) && (
           <button className="btn btn-ghost" onClick={clearSearch}>clear</button>
         )}
+        <input
+          ref={imgFileRef}
+          type="file"
+          accept="image/*"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) runImageSearch(f);
+            e.target.value = ""; // allow re-picking the same file
+          }}
+        />
+        <button
+          className="btn btn-ghost"
+          title="Search by a reference photo — find this person/vehicle across all cameras (CLIP appearance match)"
+          onClick={() => imgFileRef.current?.click()}
+        >
+          <IconUpload size={16} /> Photo
+        </button>
         <button className="btn btn-primary" onClick={runSearch} disabled={searching || !query.trim()}>
           {searching ? "searching…" : "Search"}
         </button>
@@ -955,6 +999,85 @@ export default function Events({
                       onClick={() => {
                         similarReq.current++;
                         setSimilar(null);
+                        setOpen(m.event);
+                      }}
+                    >
+                      {m.event.snapshot ? (
+                        <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={m.event.label} loading="lazy" />
+                      ) : (
+                        <div style={{ aspectRatio: "4 / 3", background: "#000" }} />
+                      )}
+                      <div className="meta">
+                        <div className="ev-head">
+                          <span className="badge accent score">{(m.similarity * 100).toFixed(0)}%</span>
+                          <span className="muted">{m.event.camera}</span>
+                        </div>
+                        <RelTime ts={m.event.ts} className="muted ev-time" />
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {imgSearch && (
+        <Modal
+          title="Similar to your photo"
+          onClose={() => {
+            imgReq.current++; // ignore any in-flight response after close
+            URL.revokeObjectURL(imgSearch.url);
+            setImgSearch(null);
+          }}
+        >
+          <div className="row" style={{ alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
+            <div style={{ flex: "0 0 180px" }}>
+              <img
+                src={imgSearch.url}
+                alt="query"
+                style={{ width: "100%", borderRadius: 8, border: "2px solid var(--accent-border)" }}
+              />
+              <div className="muted" style={{ fontSize: "0.78rem", marginTop: 4 }}>
+                uploaded photo
+              </div>
+            </div>
+            <div style={{ flex: "1 1 320px", minWidth: 280 }}>
+              {!imgSearch.res ? (
+                <p className="muted">Matching your photo across cameras…</p>
+              ) : !imgSearch.res.available ? (
+                <p className="muted">
+                  Photo search needs the smart-search (CLIP) models installed; it ranks against
+                  stored object-detection crops.
+                </p>
+              ) : imgSearch.res.results.length === 0 ? (
+                <p className="muted">No similar appearances found on any camera yet.</p>
+              ) : (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+                    gap: 10,
+                  }}
+                >
+                  {imgSearch.res.results.map((m) => (
+                    <button
+                      key={m.event.id}
+                      className="event-card"
+                      style={{
+                        textAlign: "left",
+                        cursor: "pointer",
+                        appearance: "none",
+                        font: "inherit",
+                        color: "inherit",
+                        padding: 0,
+                        width: "100%",
+                      }}
+                      onClick={() => {
+                        imgReq.current++;
+                        URL.revokeObjectURL(imgSearch.url);
+                        setImgSearch(null);
                         setOpen(m.event);
                       }}
                     >

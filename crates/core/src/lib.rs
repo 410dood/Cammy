@@ -131,10 +131,12 @@ pub async fn run(
     let mqtt_tx_tr = mqtt_tx.clone();
     let mqtt_tx_pose = mqtt_tx.clone();
     let mqtt_tx_api = mqtt_tx.clone();
+    // The GenAI worker fires VLM-gated alarms after off-thread verification.
+    let mqtt_tx_genai = mqtt_tx.clone();
     // Shared per-rule cooldown clock across pipeline / audio / API dispatch.
     let alarm_throttle: notify::AlarmThrottle = Arc::new(std::sync::Mutex::new(Default::default()));
-    // GenAI caption worker channel (pipeline -> captioner).
-    let (genai_tx, genai_rx) = std::sync::mpsc::channel::<genai::CaptionJob>();
+    // GenAI worker channel (pipeline -> captioner + VLM alarm verification).
+    let (genai_tx, genai_rx) = std::sync::mpsc::channel::<genai::Job>();
     let det_thread = std::thread::Builder::new().name("detector".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -148,7 +150,7 @@ pub async fn run(
     })?;
     let genai_thread = std::thread::Builder::new().name("genai".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
-        move || genai::run(db, genai_rx, stop)
+        move || genai::run(db, genai_rx, mqtt_tx_genai, stop)
     })?;
     // Speech-to-text worker (audio event -> capture -> bundled whisper.cpp).
     let (transcribe_tx, transcribe_rx) = std::sync::mpsc::channel::<transcribe::TranscribeJob>();

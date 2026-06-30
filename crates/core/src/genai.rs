@@ -27,6 +27,32 @@ pub struct CaptionJob {
     pub camera: String,
 }
 
+/// A request to VLM-verify an alarm before firing it, off the detection thread.
+/// Carries owned event data; the settings-derived fields (base_url, webhook
+/// template, SMTP) are rebuilt from the DB at fire time so the job stays small.
+#[derive(Clone, Debug)]
+pub struct VlmGateJob {
+    pub rule: crate::db::AlarmRule,
+    pub event_id: i64,
+    pub camera: String,
+    pub label: String,
+    pub score: f32,
+    pub ts: i64,
+    pub snapshot_url: String,
+    pub snapshot_path: PathBuf,
+    pub face: Option<String>,
+    pub plate: Option<String>,
+}
+
+/// Work for the single GenAI worker thread (captioning + VLM alarm verification
+/// share the one loaded-model lifecycle and the off-detection-thread guarantee).
+pub enum Job {
+    Caption(CaptionJob),
+    // Boxed: a VlmGateJob carries a full AlarmRule, so box it to keep the enum
+    // (and the channel) small.
+    VlmGate(Box<VlmGateJob>),
+}
+
 /// The captioning prompt for a detection.
 fn prompt_for(label: &str, camera: &str) -> String {
     format!(
@@ -68,45 +94,207 @@ fn parse_response(body: &serde_json::Value) -> Option<String> {
     })
 }
 
-fn caption_one(db: &Db, job: &CaptionJob) {
-    let s = db.settings();
-    if !s.genai_enabled || s.genai_url.trim().is_empty() {
-        return;
-    }
-    let Ok(bytes) = std::fs::read(&job.snapshot_path) else {
-        return;
-    };
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    let req = build_request(&s.genai_model, &prompt_for(&job.label, &job.camera), &b64);
+/// Result of one caption attempt, so the worker can surface a *reachability*
+/// failure to the user instead of swallowing it at debug (the silent-failure gap).
+enum Outcome {
+    /// The model was reached (a caption was saved, or it replied with none).
+    Reached,
+    /// Disabled / no snapshot — nothing to do, not a failure.
+    Skipped,
+    /// The model could not be reached (network/HTTP/parse) — the user can't tell
+    /// their Ollama/endpoint is down without this.
+    Failed(String),
+}
 
-    let mut call = ureq::post(s.genai_url.trim()).timeout(Duration::from_secs(60));
-    if !s.genai_api_key.trim().is_empty() {
-        call = call.set(
-            "Authorization",
-            &format!("Bearer {}", s.genai_api_key.trim()),
-        );
+/// One GenAI vision call → the model's cleaned text reply. `Ok(Some)` = a reply,
+/// `Ok(None)` = reached but empty, `Err` = transport/parse failure (endpoint
+/// unreachable). Shared by the captioner and the VLM gate.
+fn call_vision(
+    url: &str,
+    api_key: &str,
+    body: serde_json::Value,
+) -> Result<Option<String>, String> {
+    let mut call = ureq::post(url.trim()).timeout(Duration::from_secs(60));
+    if !api_key.trim().is_empty() {
+        call = call.set("Authorization", &format!("Bearer {}", api_key.trim()));
     }
-    match call.send_json(req) {
+    match call.send_json(body) {
         Ok(resp) => match resp.into_json::<serde_json::Value>() {
-            Ok(body) => {
-                if let Some(caption) = parse_response(&body) {
-                    if let Err(e) = db.set_event_caption(job.event_id, &caption) {
-                        tracing::debug!("caption save failed: {e}");
-                    } else {
-                        tracing::info!(event = job.event_id, "genai caption: {caption}");
-                    }
-                }
-            }
-            Err(e) => tracing::debug!("genai response not JSON: {e}"),
+            Ok(body) => Ok(parse_response(&body)),
+            Err(e) => Err(format!("response not JSON: {e}")),
         },
-        Err(e) => tracing::debug!("genai request failed: {e}"),
+        Err(e) => Err(format!("request failed: {e}")),
     }
 }
 
-pub fn run(db: Db, rx: Receiver<CaptionJob>, shutdown: Arc<AtomicBool>) {
+fn caption_one(db: &Db, job: &CaptionJob) -> Outcome {
+    let s = db.settings();
+    if !s.genai_enabled || s.genai_url.trim().is_empty() {
+        return Outcome::Skipped;
+    }
+    let Ok(bytes) = std::fs::read(&job.snapshot_path) else {
+        return Outcome::Skipped;
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let req = build_request(&s.genai_model, &prompt_for(&job.label, &job.camera), &b64);
+    match call_vision(&s.genai_url, &s.genai_api_key, req) {
+        Ok(caption) => {
+            if let Some(caption) = caption {
+                if let Err(e) = db.set_event_caption(job.event_id, &caption) {
+                    // A DB write failure is a local problem, not "model down" —
+                    // don't trip the reachability notification for it.
+                    tracing::debug!("caption save failed: {e}");
+                } else {
+                    tracing::info!(event = job.event_id, "genai caption: {caption}");
+                }
+            }
+            Outcome::Reached
+        }
+        Err(e) => Outcome::Failed(e),
+    }
+}
+
+/// Interpret a model's yes/no answer. `Some(true)`/`Some(false)` only on a clear
+/// answer (we ask for a one-word reply); `None` when it can't be read — callers
+/// FAIL OPEN on `None`. Unit-tested.
+fn interpret_yes_no(text: &str) -> Option<bool> {
+    let t = text.trim().to_lowercase();
+    // Whole-word tokens (so "not"/"nobody"/"yesterday" never count as no/yes).
+    let words: Vec<&str> = t
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let is_yes = |w: &str| matches!(w, "yes" | "yep" | "yeah" | "true" | "y");
+    let is_no = |w: &str| matches!(w, "no" | "nope" | "false" | "n");
+    // The leading token is the reliable signal (we asked for a one-word answer).
+    match words.first().copied().unwrap_or("") {
+        w if is_yes(w) => Some(true),
+        w if is_no(w) => Some(false),
+        // Verbose reply: a single clear polarity word elsewhere wins, else give up
+        // (ambiguous → None → the gate fails OPEN).
+        _ => match (
+            words.iter().any(|w| is_yes(w)),
+            words.iter().any(|w| is_no(w)),
+        ) {
+            (true, false) => Some(true),
+            (false, true) => Some(false),
+            _ => None,
+        },
+    }
+}
+
+/// Ask the GenAI vision model a yes/no question about an image. `Some(true)` =
+/// confirmed, `Some(false)` = denied, `None` = couldn't tell (error/timeout/
+/// ambiguous). The VLM gate fails OPEN on `None`. Reuses the captioner's model +
+/// endpoint; appends a one-word-answer instruction to the rule's prompt.
+fn vlm_confirm(s: &crate::db::Settings, prompt: &str, image_b64: &str) -> Option<bool> {
+    let full = format!("{}\nAnswer with only one word: yes or no.", prompt.trim());
+    let req = build_request(&s.genai_model, &full, image_b64);
+    match call_vision(&s.genai_url, &s.genai_api_key, req) {
+        Ok(Some(text)) => interpret_yes_no(&text),
+        _ => None,
+    }
+}
+
+/// VLM-verify a matched alarm and fire it if confirmed. Runs in the worker (off
+/// the detection thread). **Fails OPEN**: fires unless the model gives a clear
+/// "no", so a missing/unreachable model or an ambiguous reply never silently
+/// suppresses a real alert.
+fn vlm_gate(db: &Db, j: &VlmGateJob, mqtt_tx: &std::sync::mpsc::Sender<crate::mqtt::EventMsg>) {
+    let s = db.settings();
+    let verdict = if s.genai_enabled && !s.genai_url.trim().is_empty() {
+        match (
+            std::fs::read(&j.snapshot_path),
+            j.rule.vlm_prompt.as_deref(),
+        ) {
+            (Ok(bytes), Some(prompt)) if !prompt.trim().is_empty() => {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                vlm_confirm(&s, prompt, &b64)
+            }
+            // No snapshot / no prompt → can't verify → fail open.
+            _ => None,
+        }
+    } else {
+        None // captioner/model disabled → can't verify → fail open
+    };
+    if verdict == Some(false) {
+        tracing::info!(rule = %j.rule.name, event = j.event_id, "vlm gate: suppressed (model said no)");
+        return;
+    }
+    let smtp = crate::notify::smtp_cfg(&s);
+    let ev = crate::notify::AlarmEvent {
+        event_id: j.event_id,
+        camera: &j.camera,
+        label: &j.label,
+        score: j.score,
+        ts: j.ts,
+        snapshot_url: &j.snapshot_url,
+        snapshot_path: Some(j.snapshot_path.as_path()),
+        face: j.face.as_deref(),
+        plate: j.plate.as_deref(),
+        gesture: None,
+        transcript: None,
+        speed: None,
+        base_url: &s.public_base_url,
+        webhook_template: &s.webhook_template,
+        smtp,
+        duress: false,
+    };
+    tracing::info!(
+        rule = %j.rule.name, event = j.event_id, confirmed = ?verdict,
+        "vlm gate: firing"
+    );
+    crate::notify::fire(&j.rule, &ev, mqtt_tx);
+}
+
+/// Decide the in-app notification (if any) for a caption outcome, given whether
+/// we've already notified about an ongoing failure. Returns
+/// `(new_notified_state, title, body)` when a notification should fire — edge-
+/// triggered like the offsite/health latches so a flapping endpoint can't spam
+/// the bell. Pure → unit-tested.
+fn err_transition(outcome: &Outcome, notified: bool) -> Option<(bool, &'static str, String)> {
+    match outcome {
+        Outcome::Failed(msg) if !notified => Some((
+            true,
+            "AI captions unavailable",
+            format!(
+                "The captioning model could not be reached ({}). Captions are paused \
+                 until it recovers; check the GenAI endpoint in Settings.",
+                msg.chars().take(200).collect::<String>()
+            ),
+        )),
+        Outcome::Reached if notified => Some((
+            false,
+            "AI captions recovered",
+            "The captioning model is reachable again.".to_string(),
+        )),
+        _ => None,
+    }
+}
+
+pub fn run(
+    db: Db,
+    rx: Receiver<Job>,
+    mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    shutdown: Arc<AtomicBool>,
+) {
+    // Edge-triggered failure surface: notify once when the endpoint goes
+    // unreachable, once when it recovers.
+    let mut err_notified = false;
     while !shutdown.load(Ordering::Relaxed) {
         match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(job) => caption_one(&db, &job),
+            Ok(Job::Caption(job)) => {
+                let outcome = caption_one(&db, &job);
+                if let Some((new_state, title, body)) = err_transition(&outcome, err_notified) {
+                    let now = chrono::Utc::now().timestamp();
+                    let _ = db.add_notification(now, "genai_error", title, Some(&body), None);
+                    err_notified = new_state;
+                    if new_state {
+                        tracing::warn!("genai captioner endpoint unreachable: {title}");
+                    }
+                }
+            }
+            Ok(Job::VlmGate(j)) => vlm_gate(&db, &j, &mqtt_tx),
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -142,5 +330,40 @@ mod tests {
         // Empty / missing → None.
         assert!(parse_response(&serde_json::json!({ "response": "   " })).is_none());
         assert!(parse_response(&serde_json::json!({ "x": 1 })).is_none());
+    }
+
+    #[test]
+    fn yes_no_interpretation() {
+        assert_eq!(interpret_yes_no("Yes"), Some(true));
+        assert_eq!(interpret_yes_no("  no.\n"), Some(false));
+        assert_eq!(interpret_yes_no("YES, a person is at the door"), Some(true));
+        assert_eq!(interpret_yes_no("No, there is nobody."), Some(false));
+        assert_eq!(interpret_yes_no("yep"), Some(true));
+        // "not"/"nobody" must NOT count as a "no" (whole-word matching).
+        assert_eq!(interpret_yes_no("I'm not sure, maybe"), None);
+        assert_eq!(interpret_yes_no(""), None);
+        // Leading token wins when both appear: "yes and no" answers yes.
+        assert_eq!(interpret_yes_no("yes and no"), Some(true));
+        // A mid-sentence lone polarity with no leading answer word.
+        assert_eq!(interpret_yes_no("definitely false"), Some(false));
+    }
+
+    #[test]
+    fn err_transition_is_edge_triggered() {
+        // First failure → notify + latch on.
+        let (state, title, _) =
+            err_transition(&Outcome::Failed("conn refused".into()), false).unwrap();
+        assert!(state);
+        assert_eq!(title, "AI captions unavailable");
+        // Repeat failure while latched → no spam.
+        assert!(err_transition(&Outcome::Failed("conn refused".into()), true).is_none());
+        // Recovery while latched → notify + latch off.
+        let (state, title, _) = err_transition(&Outcome::Reached, true).unwrap();
+        assert!(!state);
+        assert_eq!(title, "AI captions recovered");
+        // Success while not latched, and skips, are silent.
+        assert!(err_transition(&Outcome::Reached, false).is_none());
+        assert!(err_transition(&Outcome::Skipped, true).is_none());
+        assert!(err_transition(&Outcome::Skipped, false).is_none());
     }
 }

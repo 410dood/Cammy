@@ -1,0 +1,7 @@
+# Cammy reverse proxy — automatic HTTPS via Caddy. See DEPLOYMENT.md §3.
+# Run Cammy on loopback with --trusted-proxy; Caddy owns the certificate, forwards
+# X-Forwarded-For, and upgrades the /api/ws WebSocket (live video) automatically.
+
+nvr.example.com {
+    reverse_proxy 127.0.0.1:8080
+}

@@ -434,6 +434,7 @@ mod tests {
             zone_like: None,
             confirm_label: None,
             confirm_within_secs: None,
+            vlm_prompt: None,
             min_score: 0.0,
             action: "ntfy".into(),
             target: "t".into(),

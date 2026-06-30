@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, ArmMode, AuditEntry, Camera, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
@@ -1058,6 +1058,102 @@ function SettingsNav() {
   );
 }
 
+// Flags a public base URL that will silently produce dead tap-through links in
+// pushes: http:// (phones often block mixed/insecure links) or a private/LAN host
+// (won't resolve when you're away from home). Returns null when it looks fine.
+function baseUrlWarning(raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return null;
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return "Not a valid URL — include the scheme, e.g. https://nvr.example.com";
+  }
+  const h = u.hostname;
+  const isPrivate =
+    h === "localhost" ||
+    h.endsWith(".local") ||
+    /^127\./.test(h) ||
+    /^10\./.test(h) ||
+    /^192\.168\./.test(h) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+  if (u.protocol === "http:")
+    return "Uses http:// — phones may block the tap-through clip links; prefer https://.";
+  if (isPrivate)
+    return "Private/LAN host — clip links in pushes won't open when you're away from home.";
+  return null;
+}
+
+// Surfaces which optional AI models are actually present, so an enabled feature
+// whose model isn't downloaded reads as "not downloaded" instead of silently
+// no-op'ing (the dominant silent-failure gap). Read-only; fetches on mount.
+function ModelsCard() {
+  const [caps, setCaps] = useState<Capability[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .capabilities()
+      .then((r) => setCaps(r.features))
+      .catch((e) => setErr(String(e)));
+  }, []);
+  return (
+    <div className="card">
+      <h2>Models &amp; capabilities</h2>
+      <p className="muted" style={{ marginTop: -4 }}>
+        Optional AI features only run when their model file is in the app directory.
+        A missing model means the feature does nothing — download it (see the README)
+        and restart.
+      </p>
+      {err ? (
+        <p className="muted">Couldn't load capabilities: {err}</p>
+      ) : !caps ? (
+        <span className="skeleton" style={{ width: "100%", height: 36 }} />
+      ) : (
+        <div>
+          {caps.map((c) => (
+            <div
+              key={c.key}
+              className="row"
+              style={{
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+                padding: "8px 0",
+                borderBottom: "1px solid var(--border)",
+              }}
+            >
+              <div>
+                <strong>{c.label}</strong>{" "}
+                {c.required && <span className="badge">required</span>}
+                <div
+                  className="muted"
+                  style={{ fontSize: "var(--text-sm)", fontFamily: "ui-monospace, monospace" }}
+                >
+                  {c.model}
+                </div>
+              </div>
+              {c.present ? (
+                <span className="badge ok" style={{ whiteSpace: "nowrap" }}>
+                  <IconCheck size={13} /> installed
+                </span>
+              ) : (
+                <span
+                  className={`badge ${c.required ? "danger" : "warn"}`}
+                  style={{ whiteSpace: "nowrap" }}
+                  title="Model file not found — this feature will not run until the model is downloaded to the app directory."
+                >
+                  not downloaded
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Settings({ onError }: { onError: (e: string) => void }) {
   const toast = useToast();
   const [s, setS] = useState<S | null>(null);
@@ -1122,6 +1218,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
       <h1>Settings</h1>
       <SettingsNav />
       <form onSubmit={save}>
+        <ModelsCard />
         <div className="card">
           <h2>Detection</h2>
           <div className="row">
@@ -1787,6 +1884,14 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.public_base_url ?? ""}
                 onChange={(e) => set({ public_base_url: e.target.value })}
               />
+              {baseUrlWarning(s.public_base_url ?? "") && (
+                <span
+                  className="muted"
+                  style={{ color: "var(--warn)", fontSize: "var(--text-sm)", marginTop: 4 }}
+                >
+                  ⚠ {baseUrlWarning(s.public_base_url ?? "")}
+                </span>
+              )}
             </label>
             <label className="field" style={{ minWidth: 240 }}>
               MQTT broker (empty = off)

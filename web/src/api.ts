@@ -329,6 +329,11 @@ export interface AlarmRule {
    *  null = no confirmation. Fails open; don't gate life-safety rules on it. */
   confirm_label: string | null;
   confirm_within_secs: number | null;
+  /** VLM alert-verification gate: a yes/no question asked of the GenAI vision
+   *  model about the snapshot; the rule fires only when the model confirms
+   *  ("Is a real person at the door?"). Runs off-thread; fails OPEN. Needs GenAI
+   *  captions enabled. null/empty = no gate. Detection-event rules only. */
+  vlm_prompt: string | null;
   min_score: number;
   /** Legacy single action; kept in sync with actions[0]. Prefer `actions`. */
   action: string;
@@ -450,6 +455,18 @@ export interface SimilarResult {
   available: boolean;
 }
 
+/** Optional-model presence for one AI feature (so the UI can flag features whose
+ *  backing model isn't downloaded instead of letting them silently no-op). */
+export interface Capability {
+  key: string;
+  label: string;
+  /** Expected model filename(s) — never an absolute path. */
+  model: string;
+  present: boolean;
+  /** True for the mandatory object detector (others are optional add-ons). */
+  required: boolean;
+}
+
 export interface Liveview {
   name: string;
   cameras: string[];
@@ -501,6 +518,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   config: () => req<AppConfig>("/api/config"),
+  capabilities: () => req<{ features: Capability[] }>("/api/capabilities"),
   status: () => req<StatusMap>("/api/status"),
   cameras: () => req<Camera[]>("/api/cameras"),
   addCamera: (c: {
@@ -577,6 +595,16 @@ export const api = {
     req<{ results: { similarity: number; event: CamEvent }[] }>(
       `/api/search?q=${encodeURIComponent(q)}&limit=${limit}`
     ),
+  // Upload-a-reference-photo appearance search (UniFi "Find Anything"): POST the
+  // raw image bytes; the server CLIP-embeds it and ranks the crop corpus.
+  searchByImage: (file: File | Blob, limit = 24) =>
+    req<SimilarResult>(`/api/search/by-image?limit=${limit}`, {
+      method: "POST",
+      body: file,
+      // Clear the default JSON content-type so the browser tags the binary body;
+      // the server sniffs the image format regardless.
+      headers: {},
+    }),
   faces: () =>
     req<{ enrolled: { id: number; name: string; created_ts: number }[]; unknown: string[] }>(
       "/api/faces"

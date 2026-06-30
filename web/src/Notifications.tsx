@@ -15,6 +15,8 @@ const KIND_ICON: Record<string, (p: IconProps) => JSX.Element> = {
   stranger: IconStranger,
   digest: IconSparkles,
   anomaly: IconAlert,
+  backup: IconAlert,
+  genai_error: IconAlert,
 };
 
 export default function NotificationsPanel({
