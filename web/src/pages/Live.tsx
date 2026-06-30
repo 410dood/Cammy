@@ -7,7 +7,7 @@ import CameraDetail from "../CameraDetail";
 import LiveVideo from "../LiveVideo";
 import Wall from "../Wall";
 import PrivacyOverlay from "../PrivacyOverlay";
-import { useToast, useDialog, EmptyState } from "../ui";
+import { useToast, useDialog, EmptyState, TogglePill } from "../ui";
 import {
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight,
   IconPlus, IconMinus, IconExpand, IconRecDot, IconLayers, IconX, IconVideo, IconAlert,
@@ -72,27 +72,27 @@ function PtzPad({ cameraId }: { cameraId: number }) {
 export default function Live({
   cameras,
   config,
-  focusCamera,
-  onFocusHandled,
+  focusCameraId,
 }: {
   cameras: Camera[];
   config: AppConfig | null;
-  focusCamera?: Camera | null;
-  onFocusHandled?: () => void;
+  /** Camera id from the `#/live/<id>` hash; opens that camera's detail view. */
+  focusCameraId?: number | null;
 }) {
   const [status, setStatus] = useState<StatusMap>({});
   const [ptz, setPtz] = useState<Record<number, boolean>>({});
-  const [detail, setDetail] = useState<Camera | null>(null);
   const [wall, setWall] = useState(false);
 
-  // The command palette can ask Live to open a specific camera's detail view.
-  useEffect(() => {
-    if (focusCamera) {
-      setDetail(focusCamera);
-      onFocusHandled?.();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusCamera]);
+  // The detail view is derived from the URL hash (resolved against the loaded
+  // camera list), so opening a camera, refreshing, Back/Forward and bookmarks
+  // all stay in sync. Writing the hash is the single source of truth.
+  const detail = focusCameraId != null ? cameras.find((c) => c.id === focusCameraId) ?? null : null;
+  const showCamera = (cam: Camera) => {
+    window.location.hash = `#/live/${cam.id}`;
+  };
+  const closeCamera = () => {
+    window.location.hash = "#/live";
+  };
   const [mode, setMode] = useState<StreamMode>(getStreamMode());
   const [group, setGroup] = useState<string>(() => localStorage.getItem("zoomy-live-group") || "All");
   // A6 Liveviews: saved named camera layouts, persisted in Settings.
@@ -135,8 +135,10 @@ export default function Live({
           .catch(() => setPtz((p) => ({ ...p, [cam.id]: false })));
       }
     });
+    // Re-probe only when the set of camera ids changes (not on every new array
+    // reference from a parent re-render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cameras]);
+  }, [cameras.map((c) => c.id).join(",")]);
 
   const enabled = cameras.filter((c) => c.enabled);
   const groups = Array.from(
@@ -254,36 +256,35 @@ export default function Live({
           <IconLayers size={14} /> Views
         </span>
         {views.length === 0 && <span className="muted" style={{ fontSize: "var(--text-sm)" }}>none saved</span>}
-        {views.map((v) => (
-          <span
-            key={v.name}
-            className={`pill toggle ${viewName === v.name ? "on" : ""}`}
-            role="button"
-            tabIndex={0}
-            aria-pressed={viewName === v.name}
-            onClick={() => setViewName(viewName === v.name ? null : v.name)}
-            onKeyDown={(e) => {
-              if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
-                e.preventDefault();
-                setViewName(viewName === v.name ? null : v.name);
-              }
-            }}
-          >
-            {v.name}
-            {viewName === v.name && (
+        {views.map((v) =>
+          viewName === v.name ? (
+            // Active view: a sibling delete button beside the pill (not nested
+            // inside it — an interactive element must not contain another).
+            <span key={v.name} className="view-chip">
+              <TogglePill on ariaLabel={`View ${v.name}`} onClick={() => setViewName(null)}>
+                {v.name}
+              </TogglePill>
               <button
+                type="button"
                 className="view-x"
                 aria-label={`Delete view ${v.name}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteView(v.name);
-                }}
+                onClick={() => deleteView(v.name)}
               >
                 <IconX size={11} />
               </button>
-            )}
-          </span>
-        ))}
+            </span>
+          ) : (
+            <TogglePill
+              key={v.name}
+              on={false}
+              title="Show this saved view"
+              ariaLabel={`View ${v.name}`}
+              onClick={() => setViewName(v.name)}
+            >
+              {v.name}
+            </TogglePill>
+          ),
+        )}
         <button
           className="btn btn-ghost ev-act"
           onClick={saveView}
@@ -295,22 +296,14 @@ export default function Live({
       {groups.length > 0 && (
         <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
           {["All", ...groups, ...(hasUngrouped ? ["Ungrouped"] : [])].map((g) => (
-            <span
+            <TogglePill
               key={g}
-              className={`pill toggle ${!viewName && group === g ? "on" : ""}`}
-              role="button"
-              tabIndex={0}
-              aria-pressed={!viewName && group === g}
+              on={!viewName && group === g}
+              ariaLabel={`Show ${g} cameras`}
               onClick={() => pickGroup(g)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  pickGroup(g);
-                }
-              }}
             >
               {g}
-            </span>
+            </TogglePill>
           ))}
         </div>
       )}
@@ -350,7 +343,7 @@ export default function Live({
                 className="expand"
                 title="Open camera view"
                 aria-label={`Open ${cam.name} camera view`}
-                onClick={() => setDetail(cam)}
+                onClick={() => showCamera(cam)}
               >
                 <IconExpand size={16} />
               </button>
@@ -366,7 +359,7 @@ export default function Live({
         <CameraDetail
           camera={detail}
           ptz={!!ptz[detail.id]}
-          onClose={() => setDetail(null)}
+          onClose={closeCamera}
         />
       )}
 

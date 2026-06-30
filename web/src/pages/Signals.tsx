@@ -423,7 +423,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
                 style={{
                   height: "100%",
                   width: `${progress * 100}%`,
-                  background: progress >= 1 ? "var(--ok)" : "var(--accent, #4f8cff)",
+                  background: progress >= 1 ? "var(--success)" : "var(--accent)",
                   transition: "width 80ms linear",
                 }}
               />
@@ -436,16 +436,23 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
         <h2>Armed signals</h2>
         <p className="muted" style={{ marginTop: 0 }}>
           These hand signals create an event when held. Edit the list (and the hold time) in
-          Settings → Detection. Create an Alarm with a matching <b>gesture</b> condition to get a
+          Settings → Hand signals. Create an Alarm with a matching <b>gesture</b> condition to get a
           push notification.
         </p>
-        <div className="row" style={{ flexWrap: "wrap" }}>
-          {(armed.length ? armed : ["(any recognized signal)"]).map((g) => (
-            <span key={g} className="pill on">
-              {pretty(g)}
-            </span>
-          ))}
-        </div>
+        {armed.length ? (
+          <div className="row" style={{ flexWrap: "wrap" }}>
+            {armed.map((g) => (
+              <span key={g} className="pill on">
+                {pretty(g)}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="muted" style={{ marginBottom: 0 }}>
+            <b>Any</b> recognized signal is currently armed. To arm only specific ones, set the list
+            under Settings → Hand signals.
+          </p>
+        )}
         <p className="muted" style={{ marginBottom: 0 }}>
           Recognizes: open palm, fist, victory, pointing, thumb up/down, and I-love-you. Runs fully
           on this device — nothing leaves the browser except the recognized signal name.

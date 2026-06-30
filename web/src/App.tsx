@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, AppConfig, Camera, Notification } from "./api";
+import { useFocusTrap, useToast } from "./ui";
 import NotificationsPanel from "./Notifications";
 import Onboarding, { shouldOnboard } from "./Onboarding";
 import Home from "./pages/Home";
@@ -33,6 +34,7 @@ import {
   IconShield,
   IconGrid,
   IconRadar,
+  IconSparkles,
 } from "./icons";
 import CommandPalette, { Command } from "./CommandPalette";
 import { getTheme, toggleTheme, Theme } from "./theme";
@@ -92,12 +94,14 @@ const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
 function pageHash(p: Page): string {
   return `#/${p.toLowerCase()}`;
 }
-function parseHash(): { page: Page; eventId?: number } {
+function parseHash(): { page: Page; eventId?: number; cameraId?: number } {
   const raw = window.location.hash.replace(/^#\/?/, "");
   const [seg, arg] = raw.split("/");
   const page = PAGES.find((p) => p.toLowerCase() === seg.toLowerCase()) ?? "Home";
   const eventId = page === "Events" && arg ? Number(arg) || undefined : undefined;
-  return { page, eventId };
+  // `#/live/<id>` deep-links a camera's detail view (refresh / Back / bookmark).
+  const cameraId = page === "Live" && arg ? Number(arg) || undefined : undefined;
+  return { page, eventId, cameraId };
 }
 
 function LoginOverlay() {
@@ -135,8 +139,14 @@ function LoginOverlay() {
   };
   return (
     <div className="modal-bg">
-      <form className="card login-card" onSubmit={submit}>
-        <h2 className="login-title">
+      <form
+        className="card login-card"
+        onSubmit={submit}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="login-title"
+      >
+        <h2 className="login-title" id="login-title">
           <IconLock size={18} /> Cammy
         </h2>
         {!needOtp ? (
@@ -159,6 +169,8 @@ function LoginOverlay() {
                 type="password"
                 placeholder="password"
                 aria-label="Password"
+                aria-invalid={!!err || undefined}
+                aria-describedby={err ? "login-err" : undefined}
                 value={pw}
                 autoFocus={!hasUsers}
                 autoComplete="current-password"
@@ -180,10 +192,12 @@ function LoginOverlay() {
                 inputMode="numeric"
                 placeholder="123456"
                 aria-label="Authentication code"
+                aria-invalid={!!err || undefined}
+                aria-describedby={err ? "login-err" : undefined}
                 value={otp}
                 autoFocus
                 autoComplete="one-time-code"
-                onChange={(e) => setOtp(e.target.value)}
+                onChange={(e) => setOtp(e.target.value.replace(/\s/g, ""))}
                 style={{ flex: 1 }}
               />
               <button className="btn btn-primary">Verify</button>
@@ -202,8 +216,69 @@ function LoginOverlay() {
             </button>
           </>
         )}
-        {err && <p role="alert" style={{ color: "var(--danger)" }}>{err}</p>}
+        {err && <p id="login-err" role="alert" style={{ color: "var(--danger)" }}>{err}</p>}
       </form>
+    </div>
+  );
+}
+
+// Mobile "More" overflow sheet, extracted so it can own its own focus trap,
+// focus-on-open, focus-restore-on-close, and Escape handler (an inline element
+// can't call hooks). role=dialog + aria-modal match the other overlays.
+function MoreSheet({
+  page,
+  onClose,
+  onGo,
+}: {
+  page: Page;
+  onClose: () => void;
+  onGo: (p: Page) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useFocusTrap(ref);
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    ref.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (prev && prev.isConnected && document.activeElement !== prev) prev.focus?.();
+    };
+  }, [onClose]);
+  return (
+    <div className="more-overlay" onClick={onClose}>
+      <div
+        ref={ref}
+        tabIndex={-1}
+        className="more-sheet"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="More pages"
+      >
+        <div className="more-grid">
+          {PAGES.filter((p) => !MOBILE_PRIMARY.includes(p)).map((p) => {
+            const Icon = ICONS[p];
+            return (
+              <button
+                key={p}
+                className={`more-item ${page === p ? "active" : ""}`}
+                onClick={() => onGo(p)}
+                aria-current={page === p ? "page" : undefined}
+              >
+                <Icon size={22} />
+                <span>{LABELS[p]}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -215,7 +290,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
   const [palette, setPalette] = useState(false);
-  const [focusCamera, setFocusCamera] = useState<Camera | null>(null);
+  const [focusCameraId, setFocusCameraId] = useState<number | null>(() => parseHash().cameraId ?? null);
   const [focusEvent, setFocusEvent] = useState<number | null>(null);
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [notifOpen, setNotifOpen] = useState(false);
@@ -223,6 +298,7 @@ export default function App() {
   const [notifs, setNotifs] = useState<Notification[]>([]);
   const [camerasLoaded, setCamerasLoaded] = useState(false);
   const [dismissedOnboard, setDismissedOnboard] = useState(false);
+  const toast = useToast();
 
   const loadNotifs = () => api.notifications({ limit: 50 }).then(setNotifs).catch(() => {});
   const unread = notifs.filter((n) => !n.read).length;
@@ -253,10 +329,7 @@ export default function App() {
     else window.location.hash = hash;
   };
   const go = (p: Page) => navigate(pageHash(p));
-  const openCamera = (c: Camera) => {
-    setFocusCamera(c);
-    navigate(pageHash("Live"));
-  };
+  const openCamera = (c: Camera) => navigate(`#/live/${c.id}`);
   const openEvent = (eventId: number) => navigate(`#/events/${eventId}`);
   const flipTheme = () => setThemeState(toggleTheme());
 
@@ -267,9 +340,12 @@ export default function App() {
     // Keep state in sync with the URL: applies the initial hash (incl. an event
     // deep-link) and reacts to Back/Forward + manual hash edits.
     const applyHash = () => {
-      const { page: p, eventId } = parseHash();
+      const { page: p, eventId, cameraId } = parseHash();
       setPage(p);
       if (eventId != null) setFocusEvent(eventId);
+      // Camera detail is fully URL-driven: `#/live/<id>` opens it, `#/live` (or any
+      // other page) closes it. Resolution against the camera list happens in Live.
+      setFocusCameraId(cameraId ?? null);
       refresh();
     };
     applyHash();
@@ -330,6 +406,50 @@ export default function App() {
       keywords: "find smart search",
       icon: <IconSearch size={16} />,
       run: () => go("Events"),
+    },
+    {
+      id: "action-arm-home",
+      label: "Arm — Home",
+      group: "Actions",
+      keywords: "arm home mode security",
+      icon: <IconHome size={16} />,
+      run: () =>
+        api.arm("home").then(() => toast.success("Armed — Home")).catch((e) => toast.error(String(e))),
+    },
+    {
+      id: "action-arm-away",
+      label: "Arm — Away",
+      group: "Actions",
+      keywords: "arm away mode security",
+      icon: <IconShield size={16} />,
+      run: () =>
+        api.arm("away").then(() => toast.success("Armed — Away")).catch((e) => toast.error(String(e))),
+    },
+    {
+      id: "action-disarm",
+      label: "Disarm",
+      group: "Actions",
+      keywords: "disarm off mode security pause",
+      icon: <IconLock size={16} />,
+      run: () =>
+        api.arm("disarmed").then(() => toast.success("System disarmed")).catch((e) => toast.error(String(e))),
+    },
+    {
+      id: "action-add-camera",
+      label: "Add a camera",
+      group: "Actions",
+      keywords: "add new camera setup onvif rtsp",
+      icon: <IconVideo size={16} />,
+      run: () => go("Cameras"),
+    },
+    {
+      id: "action-run-digest",
+      label: "Generate daily digest",
+      group: "Actions",
+      keywords: "digest summary recap report",
+      icon: <IconSparkles size={16} />,
+      run: () =>
+        api.runDigest().then(() => toast.success("Digest generated — see Home")).catch((e) => toast.error(String(e))),
     },
   ];
 
@@ -435,12 +555,7 @@ export default function App() {
           />
         )}
         {page === "Live" && (
-          <Live
-            cameras={cameras}
-            config={config}
-            focusCamera={focusCamera}
-            onFocusHandled={() => setFocusCamera(null)}
-          />
+          <Live cameras={cameras} config={config} focusCameraId={focusCameraId} />
         )}
         {page === "Events" && (
           <Events
@@ -470,35 +585,14 @@ export default function App() {
         />
       )}
       {moreOpen && (
-        <div className="more-overlay" onClick={() => setMoreOpen(false)}>
-          <div
-            className="more-sheet"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-label="More pages"
-          >
-            <div className="more-grid">
-              {PAGES.filter((p) => !MOBILE_PRIMARY.includes(p)).map((p) => {
-                const Icon = ICONS[p];
-                return (
-                  <button
-                    key={p}
-                    className={`more-item ${page === p ? "active" : ""}`}
-                    onClick={() => {
-                      go(p);
-                      setMoreOpen(false);
-                    }}
-                    aria-current={page === p ? "page" : undefined}
-                  >
-                    <Icon size={22} />
-                    <span>{LABELS[p]}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+        <MoreSheet
+          page={page}
+          onClose={() => setMoreOpen(false)}
+          onGo={(p) => {
+            go(p);
+            setMoreOpen(false);
+          }}
+        />
       )}
       {palette && <CommandPalette commands={commands} onClose={() => setPalette(false)} />}
       {notifOpen && (

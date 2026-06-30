@@ -65,14 +65,16 @@ export default function Wall({
       }
     };
     acquire();
-    document.addEventListener("visibilitychange", () => {
+    const onVis = () => {
       if (document.visibilityState === "visible") acquire();
       else sentinel = null;
-    });
+    };
+    document.addEventListener("visibilitychange", onVis);
 
     return () => {
       clearInterval(t);
       window.removeEventListener("keydown", esc);
+      document.removeEventListener("visibilitychange", onVis);
       sentinel?.release?.().catch(() => {});
     };
   }, [onClose]);

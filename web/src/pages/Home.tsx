@@ -263,10 +263,10 @@ export default function Home({
 
           <h2 style={{ marginTop: 18 }}>Last seen</h2>
           <div className="lastseen">
-            <LastSeen icon={<IconUser size={15} />} label="Person" ev={lastPerson} />
-            <LastSeen icon={<IconCar size={15} />} label="Vehicle" ev={lastVehicle} />
+            <LastSeen icon={<IconUser size={15} />} label="Person" ev={lastPerson} onOpen={onOpenEvent} />
+            <LastSeen icon={<IconCar size={15} />} label="Vehicle" ev={lastVehicle} onOpen={onOpenEvent} />
             {lastStranger && (
-              <LastSeen icon={<IconStranger size={15} />} label="Stranger" ev={lastStranger} tone="warn" />
+              <LastSeen icon={<IconStranger size={15} />} label="Stranger" ev={lastStranger} tone="warn" onOpen={onOpenEvent} />
             )}
           </div>
 
@@ -325,7 +325,7 @@ export default function Home({
                         <IconHand size={11} /> {e.gesture}
                       </span>
                     )}
-                    <RelTime ts={e.ts} className="muted clock" style={{ display: "block", fontSize: "0.75rem" }} />
+                    <RelTime ts={e.ts} className="muted clock" style={{ display: "block", fontSize: "var(--text-xs)" }} />
                   </div>
                 </div>
               ))}
@@ -340,7 +340,7 @@ export default function Home({
             <div className="card">
               <h2>Throughput today</h2>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <div className="muted" style={{ display: "flex", fontSize: "0.75rem" }}>
+                <div className="muted" style={{ display: "flex", fontSize: "var(--text-xs)" }}>
                   <span style={{ flex: 1 }}>Line</span>
                   <span style={{ width: 48, textAlign: "right" }}>In</span>
                   <span style={{ width: 48, textAlign: "right" }}>Out</span>
@@ -384,7 +384,7 @@ export default function Home({
               <div>
                 <b>{n.title}</b>
                 {n.body && <span className="muted"> — {n.body}</span>}
-                <RelTime ts={n.ts} className="muted clock" style={{ display: "block", fontSize: "0.75rem" }} />
+                <RelTime ts={n.ts} className="muted clock" style={{ display: "block", fontSize: "var(--text-xs)" }} />
               </div>
             );
             return clickable ? (
@@ -437,14 +437,16 @@ function LastSeen({
   label,
   ev,
   tone,
+  onOpen,
 }: {
   icon: React.ReactNode;
   label: string;
   ev?: CamEvent;
   tone?: "warn";
+  onOpen?: (eventId: number) => void;
 }) {
-  return (
-    <div className="lastseen-item">
+  const body = (
+    <>
       <span className={`lastseen-ico ${tone ?? ""}`}>{icon}</span>
       <div className="lastseen-body">
         <div className="lastseen-label">{label}</div>
@@ -456,7 +458,16 @@ function LastSeen({
           <div className="muted">not seen recently</div>
         )}
       </div>
-      {ev?.snapshot && <img className="lastseen-thumb" src={`/api/snapshots/${ev.snapshot}?w=120`} alt={label} loading="lazy" />}
-    </div>
+      {ev?.snapshot && <img className="lastseen-thumb" src={`/api/snapshots/${ev.snapshot}?w=120`} alt={label} loading="lazy" decoding="async" />}
+    </>
   );
+  // Clickable (opens the underlying event) only when there's an event and a handler.
+  if (ev && onOpen) {
+    return (
+      <button type="button" className="lastseen-item" aria-label={`Open last ${label.toLowerCase()} event`} onClick={() => onOpen(ev.id)}>
+        {body}
+      </button>
+    );
+  }
+  return <div className="lastseen-item">{body}</div>;
 }

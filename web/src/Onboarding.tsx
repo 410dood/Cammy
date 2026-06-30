@@ -26,6 +26,7 @@ export default function Onboarding({
   const toast = useToast();
   const [step, setStep] = useState(0);
   const [pw, setPw] = useState("");
+  const [saving, setSaving] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [found, setFound] = useState<DiscoveredCam[] | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -40,12 +41,16 @@ export default function Onboarding({
   };
 
   const setPassword = async () => {
+    if (saving) return;
+    setSaving(true);
     try {
       await api.setPassword(pw);
       toast.success("Password set — other devices will need it");
       setStep(2);
     } catch (e) {
       toast.error(String(e));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -65,7 +70,7 @@ export default function Onboarding({
     <div className="modal-bg">
       <div ref={cardRef} tabIndex={-1} className="onb" role="dialog" aria-modal="true" aria-label="Welcome to Cammy">
         <div className="onb-steps">
-          {["Welcome", "Secure", "Cameras"].map((s, i) => (
+          {["Welcome", "Security", "Cameras"].map((s, i) => (
             <span key={s} className={`onb-step ${i === step ? "active" : ""} ${i < step ? "done" : ""}`}>
               <span className="onb-dot">{i < step ? <IconCheck size={12} /> : i + 1}</span>
               {s}
@@ -100,16 +105,18 @@ export default function Onboarding({
               <span className="onb-ico"><IconLock size={16} /></span>
               <input
                 type="password"
+                autoComplete="new-password"
                 placeholder="new password (min 6 chars)"
                 value={pw}
                 onChange={(e) => setPw(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && pw.trim().length >= 6 && setPassword()}
                 style={{ flex: 1 }}
               />
             </div>
             <div className="onb-actions">
               <button className="btn btn-ghost" onClick={() => setStep(2)}>Skip</button>
-              <button className="btn btn-primary" disabled={pw.trim().length < 6} onClick={setPassword}>
-                Set password
+              <button className="btn btn-primary" disabled={saving || pw.trim().length < 6} onClick={setPassword}>
+                {saving ? "Setting…" : "Set password"}
               </button>
             </div>
           </div>
@@ -120,8 +127,8 @@ export default function Onboarding({
             <span className="onb-hero"><IconRadar size={26} /></span>
             <h2>Add your first camera</h2>
             <p className="muted">
-              Scan your network for ONVIF cameras, or add one by hand. You'll finish adding it on the
-              Cameras page, where you can enter credentials and pick what to record.
+              Scan your network for cameras, or add one by typing its IP address. You'll finish
+              adding it on the Cameras page, where you can enter credentials and pick what to record.
             </p>
             <button className="btn btn-secondary" disabled={scanning} onClick={scan}>
               <IconRadar size={15} /> {scanning ? "Scanning…" : "Scan network"}

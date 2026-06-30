@@ -10,7 +10,9 @@ type Draw =
   | { kind: "calib"; points: Mask }
   | null;
 
-const COLORS: Record<string, string> = {
+/** Zone-overlay colors. Exported so the Cameras legend draws from the same
+ *  source as the canvas (legend ↔ drawing can't drift). */
+export const COLORS: Record<string, string> = {
   required: "#36d399",
   ignore: "#f87272",
   mask: "#a3a3a3",
@@ -185,8 +187,8 @@ export default function ZoneEditor({
               inset: 0,
               display: "grid",
               placeItems: "center",
-              color: "#888",
-              fontSize: "0.85rem",
+              color: "var(--text-subtle)",
+              fontSize: "var(--text-sm)",
               padding: 12,
               textAlign: "center",
             }}
@@ -512,7 +514,7 @@ export default function ZoneEditor({
             </div>
           ))}
           {zones.some((z) => z.child_watch || z.supervise || z.water) && (
-            <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            <p className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 4 }}>
               * Assistive / experimental safety hints — best-effort only, not a
               medical device or drowning detection. child/alone need per-camera child
               calibration (below). Never rely on them in place of supervision or a fence.
@@ -538,7 +540,7 @@ export default function ZoneEditor({
 
       {tripwires.length > 0 && (
         <div style={{ marginTop: 10 }}>
-          <div className="muted" style={{ fontSize: "0.8rem", marginBottom: 4 }}>
+          <div className="muted" style={{ fontSize: "var(--text-sm)", marginBottom: 4 }}>
             Tripwires — an object crossing the line fires a <code>crossing</code> event (in/out counting,
             perimeter, one-way enforcement).
           </div>
@@ -613,7 +615,7 @@ export default function ZoneEditor({
 
       {calib && (
         <div style={{ marginTop: 10 }}>
-          <div className="muted" style={{ fontSize: "0.8rem", marginBottom: 4 }}>
+          <div className="muted" style={{ fontSize: "var(--text-sm)", marginBottom: 4 }}>
             Ground calibration — speed estimation. The 4 marked corners are a real ground
             rectangle; enter its size so pixel motion becomes km/h on crossing events.
           </div>
