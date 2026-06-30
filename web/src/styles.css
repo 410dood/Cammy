@@ -1169,14 +1169,15 @@ button.feed-item {
   }
 }
 
-/* Smallest phones: several form fields carry a desktop min-width inline (so two
-   sit per row, then wrap). Below ~480px those can exceed the viewport and force
-   horizontal scroll. These are all flex:1 fields, so dropping the min lets them
-   fill the row width instead of overflowing. Scoped to flex form rows + alarm
-   action rows; !important is required to beat the inline min-width. */
+/* Smallest phones: form fields carry desktop min-widths inline (so two sit per
+   row, then wrap). Below ~480px those either overflow the viewport OR — in a
+   crowded row — shrink-and-tile into an unreadable multi-column mess. Force each
+   field onto its own full-width line (the standard mobile form pattern) instead.
+   Scoped to flex form fields; the alarm action-row input only needs to shrink to
+   fill (its select stays inline). !important beats the inline min-width/flex. */
 @media (max-width: 480px) {
   .row > label.field,
-  .row > .field,
+  .row > .field { flex-basis: 100% !important; min-width: 0 !important; }
   .action-row > input { min-width: 0 !important; }
 }
 
