@@ -86,6 +86,33 @@ fn stationary_keep(
     }
 }
 
+/// Whether a detection box `dbox` (frame fractions) of class `label` should fire
+/// an event under stationary suppression: match it to its best-IoU confirmed
+/// track of the same label in this frame's `sup_tracks` snapshot
+/// `(id, label, box, reacquired)`, then defer to [`stationary_keep`]. A detection
+/// with no confirmed-track match (brand-new / tentative object) fires (fail-open).
+/// This is the actual per-detection decision the pipeline applies — factored out
+/// so it can be integration-tested against a real [`tracker::Tracker`].
+fn stationary_should_fire(
+    dbox: tracker::BBox,
+    label: &str,
+    sup_tracks: &[(u64, String, tracker::BBox, bool)],
+    alerted: &mut HashMap<u64, (f32, f32)>,
+) -> bool {
+    let best = sup_tracks
+        .iter()
+        .filter(|(_, lbl, _, _)| lbl.as_str() == label)
+        .map(|(id, _, bb, reacq)| (*id, bb.iou(&dbox), *reacq))
+        .filter(|(_, iou, _)| *iou >= STATIONARY_MATCH_IOU)
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    match best {
+        None => true,
+        Some((id, _, reacquired)) => {
+            stationary_keep(alerted, id, dbox.anchor(), reacquired, STATIONARY_MOVE_FRAC)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     db: Db,
@@ -758,22 +785,7 @@ pub fn run(
                 alerted.retain(|id, _| sup_live.contains(id));
                 wanted.retain(|d| {
                     let dbox = tracker::BBox::new(d.x1 / fw, d.y1 / fh, d.x2 / fw, d.y2 / fh);
-                    let best = sup_tracks
-                        .iter()
-                        .filter(|(_, lbl, _, _)| lbl.as_str() == d.label)
-                        .map(|(id, _, bb, reacq)| (*id, bb.iou(&dbox), *reacq))
-                        .filter(|(_, iou, _)| *iou >= STATIONARY_MATCH_IOU)
-                        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                    match best {
-                        None => true, // brand-new / tentative object → fire
-                        Some((id, _, reacquired)) => stationary_keep(
-                            alerted,
-                            id,
-                            dbox.anchor(),
-                            reacquired,
-                            STATIONARY_MOVE_FRAC,
-                        ),
-                    }
+                    stationary_should_fire(dbox, d.label, &sup_tracks, alerted)
                 });
                 if wanted.is_empty() {
                     continue;
@@ -1827,10 +1839,95 @@ fn draw_rect(
 
 #[cfg(test)]
 mod tests {
-    use super::{moved_enough, passes_zones_and_size, stationary_keep, STATIONARY_MOVE_FRAC};
+    use super::{
+        moved_enough, passes_zones_and_size, stationary_keep, stationary_should_fire,
+        STATIONARY_MOVE_FRAC, STATIONARY_REACQUIRE_GAP,
+    };
     use crate::db::{DetectConfig, PolyZone, Zone, ZoneKind};
     use detector::Detection;
     use std::collections::HashMap;
+
+    /// Drive a real tracker one frame exactly like the pipeline does, then apply
+    /// the production stationary decision to each detection. Returns the per-
+    /// detection fire/suppress result. Mirrors the pipeline's prev-miss capture →
+    /// update → confirmed snapshot (with the re-acquisition flag) → prune → filter.
+    fn run_frame(
+        trk: &mut tracker::Tracker,
+        alerted: &mut HashMap<u64, (f32, f32)>,
+        dets: &[(&'static str, tracker::BBox)],
+        ts: i64,
+    ) -> Vec<bool> {
+        let prev_misses: HashMap<u64, u32> =
+            trk.tracks().iter().map(|t| (t.id, t.misses)).collect();
+        let tdets: Vec<tracker::Det> = dets
+            .iter()
+            .map(|(l, b)| tracker::Det {
+                label: l,
+                score: 0.9,
+                bbox: *b,
+            })
+            .collect();
+        trk.update(&tdets, ts);
+        let sup_tracks: Vec<(u64, String, tracker::BBox, bool)> = trk
+            .confirmed()
+            .map(|t| {
+                let reacq =
+                    prev_misses.get(&t.id).copied().unwrap_or(0) >= STATIONARY_REACQUIRE_GAP;
+                (t.id, t.label.clone(), t.bbox, reacq)
+            })
+            .collect();
+        let live: std::collections::HashSet<u64> = trk.tracks().iter().map(|t| t.id).collect();
+        alerted.retain(|id, _| live.contains(id));
+        dets.iter()
+            .map(|(l, b)| stationary_should_fire(*b, l, &sup_tracks, alerted))
+            .collect()
+    }
+
+    #[test]
+    fn integration_parked_car_suppresses_then_new_arrival_fires() {
+        // End-to-end through a REAL tracker: reproduce "8 identical parked-car
+        // events" and the adversarial-review re-acquisition hole in one go.
+        let mut trk = tracker::Tracker::new(tracker::TrackerConfig::default());
+        let mut alerted: HashMap<u64, (f32, f32)> = HashMap::new();
+        let car = tracker::BBox::new(0.55, 0.30, 0.80, 0.62); // the parked SUV box
+        let dets = [("car", car)];
+
+        // Frames 0..15: the car sits parked (same box every frame, ambient motion
+        // re-running detection each tick). It must NOT spam an event per frame.
+        let mut fires = 0;
+        for f in 0..15i64 {
+            let fired = run_frame(&mut trk, &mut alerted, &dets, f * 1000);
+            if fired[0] {
+                fires += 1;
+            }
+            if f >= 5 {
+                // Well past confirmation: steady-state suppression, zero events.
+                assert!(!fired[0], "parked car must be suppressed at frame {f}");
+            }
+        }
+        // Only the brief pre-confirmation transient fired (fail-open until the
+        // track confirms, then the first confirmed alert) — not one per frame.
+        assert!(
+            fires <= 3,
+            "parked car fired {fires} times; expected the bounded arrival transient"
+        );
+
+        // The car leaves: 5 frames with no detection. The track lingers (misses
+        // grow but stay < max_age = 30), so its id survives — the exact condition
+        // for the inheritance bug.
+        for f in 15..20i64 {
+            run_frame(&mut trk, &mut alerted, &[], f * 1000);
+        }
+
+        // A DIFFERENT car pulls into the SAME spot. It re-associates to the old
+        // id, but the re-acquisition guard treats it as new → it MUST fire, not be
+        // suppressed by the previous occupant's stale anchor.
+        let fired = run_frame(&mut trk, &mut alerted, &dets, 20 * 1000);
+        assert!(
+            fired[0],
+            "a new arrival in a just-vacated spot must fire (re-acquisition guard)"
+        );
+    }
 
     #[test]
     fn moved_enough_first_alert_always_fires() {
