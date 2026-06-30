@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { api, CamEvent, Camera, Segment, getStreamMode } from "./api";
-import { RelTime, Modal, useToast } from "./ui";
+import { RelTime, Modal, useToast, useFocusTrap } from "./ui";
 import Timeline from "./Timeline";
 import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
@@ -30,6 +30,13 @@ export default function CameraDetail({
   const [online, setOnline] = useState<boolean | undefined>(undefined);
   const twoWay = !!camera.detect_config.two_way_audio;
   const toast = useToast();
+  // Full-screen overlay acts as a modal dialog: trap Tab focus inside it and
+  // move focus into it on open (Esc-to-close is wired in the effect below).
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(overlayRef);
+  useEffect(() => {
+    overlayRef.current?.focus();
+  }, []);
   // Tracks whether the talk button is still held, so an async permission probe
   // that resolves AFTER release can't latch the "Talking…" state on.
   const holdingTalk = useRef(false);
@@ -94,7 +101,14 @@ export default function CameraDetail({
   };
 
   return (
-    <div className="detail-overlay">
+    <div
+      className="detail-overlay"
+      ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={camera.name}
+      tabIndex={-1}
+    >
       <div className="detail-head">
         <h1 style={{ border: "none", margin: 0, padding: 0 }}>{camera.name}</h1>
         <div className="spacer" />
@@ -152,13 +166,19 @@ export default function CameraDetail({
         </div>
 
         <div className="detail-side">
-          <h2 style={{ margin: "4px 0 10px", fontSize: "0.78rem", textTransform: "uppercase", color: "var(--muted)" }}>
+          <h2 className="eyebrow" style={{ margin: "4px 0 10px" }}>
             Recent detections
           </h2>
           {events.length === 0 && <p className="muted">No events for this camera yet.</p>}
           {events.slice(0, 20).map((ev) => (
-            <div className="feed-item" key={ev.id} onClick={() => seekTo(ev.ts)}>
-              {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}`} alt={ev.label} loading="lazy" />}
+            <button
+              type="button"
+              className="feed-item"
+              key={ev.id}
+              aria-label={`Jump to this ${ev.label} detection in the recording`}
+              onClick={() => seekTo(ev.ts)}
+            >
+              {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}`} alt={ev.label} loading="lazy" decoding="async" />}
               <div>
                 <b style={{ textTransform: "capitalize" }}>{ev.label}</b>{" "}
                 <span className="score">{(ev.score * 100).toFixed(0)}%</span>
@@ -172,15 +192,15 @@ export default function CameraDetail({
                     <IconCar size={12} /> {ev.plate}
                   </span>
                 )}
-                <RelTime ts={ev.ts} className="muted clock" style={{ display: "block", fontSize: "0.75rem" }} />
+                <RelTime ts={ev.ts} className="muted clock" style={{ display: "block", fontSize: "var(--text-xs)" }} />
               </div>
-            </div>
+            </button>
           ))}
         </div>
       </div>
 
       <div className="card" style={{ marginTop: 14 }}>
-        <h2 style={{ margin: "0 0 10px", fontSize: "0.78rem", textTransform: "uppercase", color: "var(--muted)" }}>
+        <h2 className="eyebrow" style={{ margin: "0 0 10px" }}>
           Activity heatmap
         </h2>
         <Heatmap camera={camera} />

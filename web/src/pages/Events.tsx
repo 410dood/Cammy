@@ -1,6 +1,6 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import { api, CamEvent, Camera, fmtTime, Segment, SimilarResult } from "../api";
-import { useToast, useDialog, Modal, RelTime, EmptyState, ErrorState } from "../ui";
+import { useToast, useDialog, Modal, RelTime, EmptyState, ErrorState, TogglePill } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 import {
@@ -158,6 +158,7 @@ export default function Events({
   const dialog = useDialog();
   const [events, setEvents] = useState<CamEvent[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [cameraId, setCameraId] = useState<number | "">("");
   const [label, setLabel] = useState("");
   const [review, setReview] = useState<"all" | "alerts">("all");
@@ -208,8 +209,11 @@ export default function Events({
     try {
       const r = await api.search(p.residual, 48);
       setSearchResults(r.results.map((x) => x.event));
-    } catch {
-      setSearchResults([]);
+    } catch (e) {
+      // null (not []) falls back to the normal event list instead of showing a
+      // false "no events match" — and the toast says why the search didn't run.
+      toast.error(`Search failed: ${errMsg(e)}`);
+      setSearchResults(null);
     } finally {
       setSearching(false);
     }
@@ -434,7 +438,8 @@ export default function Events({
         setEvents(d);
         setLoadError(null);
       })
-      .catch((e) => setLoadError(errMsg(e)));
+      .catch((e) => setLoadError(errMsg(e)))
+      .finally(() => setLoaded(true));
   };
 
   // Download the current filter set as a CSV (server streams it with the same
@@ -529,7 +534,7 @@ export default function Events({
           onKeyDown={(e) => e.key === "Enter" && runSearch()}
         />
         {(searchResults || interpreted.length > 0) && (
-          <button className="btn btn-ghost" onClick={clearSearch}>clear</button>
+          <button className="btn btn-ghost" onClick={clearSearch}>Clear</button>
         )}
         <input
           ref={imgFileRef}
@@ -652,7 +657,7 @@ export default function Events({
               setToTime("");
             }}
           >
-            clear time
+            Clear time
           </button>
         )}
         <input
@@ -671,38 +676,18 @@ export default function Events({
       {topLabels.length > 0 && !searchResults && (
         <div className="row" style={{ marginBottom: 12, flexWrap: "wrap" }}>
           <span className="muted">Explore:</span>
-          <span
-            className={`pill toggle ${label === "" ? "on" : ""}`}
-            role="button"
-            tabIndex={0}
-            aria-pressed={label === ""}
-            onClick={() => setLabel("")}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                setLabel("");
-              }
-            }}
-          >
+          <TogglePill on={label === ""} ariaLabel="Show all objects" onClick={() => setLabel("")}>
             all ({exploreBase.length})
-          </span>
+          </TogglePill>
           {topLabels.map(([l, n]) => (
-            <span
+            <TogglePill
               key={l}
-              className={`pill toggle ${label === l ? "on" : ""}`}
-              role="button"
-              tabIndex={0}
-              aria-pressed={label === l}
+              on={label === l}
+              ariaLabel={`Filter to ${l}`}
               onClick={() => setLabel(label === l ? "" : l)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setLabel(label === l ? "" : l);
-                }
-              }}
             >
               {l} ({n})
-            </span>
+            </TogglePill>
           ))}
         </div>
       )}
@@ -744,7 +729,18 @@ export default function Events({
       )}
 
       {list.length === 0 ? (
-        loadError && !searchResults ? (
+        !loaded && !searchResults && interpreted.length === 0 && !loadError ? (
+          <div className="event-grid" aria-busy="true">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div className="event-card" key={i}>
+                <span className="skeleton" style={{ display: "block", aspectRatio: "4 / 3" }} />
+                <div className="meta">
+                  <span className="skeleton" style={{ height: 14, width: "70%" }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : loadError && !searchResults ? (
           <ErrorState what="events" message={loadError} onRetry={load} />
         ) : searchResults || interpreted.length > 0 ? (
           <EmptyState
@@ -792,9 +788,9 @@ export default function Events({
                 </span>
               )}
               {ev.snapshot ? (
-                <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={ev.label} loading="lazy" />
+                <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={`${ev.label} on ${ev.camera}`} loading="lazy" decoding="async" />
               ) : (
-                <div style={{ aspectRatio: "4 / 3", background: "#000" }} />
+                <div style={{ aspectRatio: "4 / 3", background: "var(--bg-sunken)" }} />
               )}
               <div className="meta">
                 <div className="ev-head">
@@ -956,10 +952,11 @@ export default function Events({
               <div style={{ flex: "0 0 180px" }}>
                 <img
                   src={`/api/snapshots/${similar.ev.snapshot}?w=360`}
-                  alt={similar.ev.label}
+                  alt={`${similar.ev.label} on ${similar.ev.camera}`}
+                  decoding="async"
                   style={{ width: "100%", borderRadius: 8, border: "2px solid var(--accent-border)" }}
                 />
-                <div className="muted" style={{ fontSize: "0.78rem", marginTop: 4 }}>
+                <div className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
                   query · {fmtTime(similar.ev.ts)}
                 </div>
               </div>
@@ -1003,9 +1000,9 @@ export default function Events({
                       }}
                     >
                       {m.event.snapshot ? (
-                        <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={m.event.label} loading="lazy" />
+                        <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={`${m.event.label} on ${m.event.camera}`} loading="lazy" decoding="async" />
                       ) : (
-                        <div style={{ aspectRatio: "4 / 3", background: "#000" }} />
+                        <div style={{ aspectRatio: "4 / 3", background: "var(--bg-sunken)" }} />
                       )}
                       <div className="meta">
                         <div className="ev-head">
@@ -1036,7 +1033,7 @@ export default function Events({
             <div style={{ flex: "0 0 180px" }}>
               <img
                 src={imgSearch.url}
-                alt="query"
+                alt="Your uploaded query photo"
                 style={{ width: "100%", borderRadius: 8, border: "2px solid var(--accent-border)" }}
               />
               <div className="muted" style={{ fontSize: "0.78rem", marginTop: 4 }}>
@@ -1082,9 +1079,9 @@ export default function Events({
                       }}
                     >
                       {m.event.snapshot ? (
-                        <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={m.event.label} loading="lazy" />
+                        <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={`${m.event.label} on ${m.event.camera}`} loading="lazy" decoding="async" />
                       ) : (
-                        <div style={{ aspectRatio: "4 / 3", background: "#000" }} />
+                        <div style={{ aspectRatio: "4 / 3", background: "var(--bg-sunken)" }} />
                       )}
                       <div className="meta">
                         <div className="ev-head">

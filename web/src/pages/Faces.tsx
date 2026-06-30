@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, CamEvent, GaitProfile, PlateEntry, PlateCategory } from "../api";
 import { useToast, useDialog, Modal, RelTime, ErrorState } from "../ui";
 
@@ -207,55 +207,61 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   };
 
   // --- A5 aggregation: people + vehicles seen, from the event history ---------
-  const idMap: Record<string, IdentityStat> = {};
-  let strangerCount = 0;
-  let lastStranger: CamEvent | undefined;
-  const strangerSightings: CamEvent[] = [];
-  const plateMap: Record<string, PlateStat> = {};
-  const libMap: Record<string, PlateEntry> = {};
-  for (const p of lib) libMap[p.plate] = p;
+  // Memoized: this scans the full event window (up to 3000 rows) and re-runs on
+  // every render otherwise — including the 15s poll re-render and every keystroke.
+  const { identities, plates, strangerCount, lastStranger, strangerSightings, sightingsByLib } =
+    useMemo(() => {
+      const idMap: Record<string, IdentityStat> = {};
+      let strangerCount = 0;
+      let lastStranger: CamEvent | undefined;
+      const strangerSightings: CamEvent[] = [];
+      const plateMap: Record<string, PlateStat> = {};
+      const libMap: Record<string, PlateEntry> = {};
+      for (const p of lib) libMap[p.plate] = p;
 
-  // The library entry wins; otherwise fall back to the legacy allow/deny lists.
-  const plateClass = (plate: string, entry?: PlateEntry): "deny" | "allow" | "" => {
-    if (entry) return entry.category === "watch" ? "deny" : "allow";
-    const p = plate.toUpperCase();
-    if (plateDeny.some((e) => e.trim() && p.includes(e.trim().toUpperCase()))) return "deny";
-    if (plateAllow.some((e) => e.trim() && p.includes(e.trim().toUpperCase()))) return "allow";
-    return "";
-  };
+      // The library entry wins; otherwise fall back to the legacy allow/deny lists.
+      const plateClass = (plate: string, entry?: PlateEntry): "deny" | "allow" | "" => {
+        if (entry) return entry.category === "watch" ? "deny" : "allow";
+        const p = plate.toUpperCase();
+        if (plateDeny.some((e) => e.trim() && p.includes(e.trim().toUpperCase()))) return "deny";
+        if (plateAllow.some((e) => e.trim() && p.includes(e.trim().toUpperCase()))) return "allow";
+        return "";
+      };
 
-  for (const e of events) {
-    if (e.face === "?") {
-      strangerCount++;
-      if (!lastStranger) lastStranger = e;
-      if (strangerSightings.length < 24) strangerSightings.push(e);
-    } else if (e.face) {
-      const s =
-        idMap[e.face] ??
-        (idMap[e.face] = { name: e.face, count: 0, last: e, cameras: {}, sightings: [] });
-      s.count++;
-      s.cameras[e.camera] = (s.cameras[e.camera] ?? 0) + 1;
-      if (s.sightings.length < 24) s.sightings.push(e);
-    }
-    if (e.plate) {
-      const entry = libMap[normalizePlate(e.plate)];
-      const s =
-        plateMap[e.plate] ??
-        (plateMap[e.plate] = { plate: e.plate, count: 0, last: e, cameras: {}, cls: plateClass(e.plate, entry), entry });
-      s.count++;
-      s.cameras[e.camera] = (s.cameras[e.camera] ?? 0) + 1;
-    }
-  }
-  // Enrolled people with zero recent sightings still get a card.
-  for (const f of enrolled) {
-    if (idMap[f.name]) idMap[f.name].enrolled = f;
-    else idMap[f.name] = { name: f.name, enrolled: f, count: 0, last: undefined as unknown as CamEvent, cameras: {}, sightings: [] };
-  }
-  const identities = Object.values(idMap).sort((a, b) => b.count - a.count);
-  const plates = Object.values(plateMap).sort((a, b) => b.count - a.count);
-  // Sightings per library entry (by normalized key), for the library table.
-  const sightingsByLib: Record<string, number> = {};
-  for (const s of plates) sightingsByLib[normalizePlate(s.plate)] = (sightingsByLib[normalizePlate(s.plate)] ?? 0) + s.count;
+      for (const e of events) {
+        if (e.face === "?") {
+          strangerCount++;
+          if (!lastStranger) lastStranger = e;
+          if (strangerSightings.length < 24) strangerSightings.push(e);
+        } else if (e.face) {
+          const s =
+            idMap[e.face] ??
+            (idMap[e.face] = { name: e.face, count: 0, last: e, cameras: {}, sightings: [] });
+          s.count++;
+          s.cameras[e.camera] = (s.cameras[e.camera] ?? 0) + 1;
+          if (s.sightings.length < 24) s.sightings.push(e);
+        }
+        if (e.plate) {
+          const entry = libMap[normalizePlate(e.plate)];
+          const s =
+            plateMap[e.plate] ??
+            (plateMap[e.plate] = { plate: e.plate, count: 0, last: e, cameras: {}, cls: plateClass(e.plate, entry), entry });
+          s.count++;
+          s.cameras[e.camera] = (s.cameras[e.camera] ?? 0) + 1;
+        }
+      }
+      // Enrolled people with zero recent sightings still get a card.
+      for (const f of enrolled) {
+        if (idMap[f.name]) idMap[f.name].enrolled = f;
+        else idMap[f.name] = { name: f.name, enrolled: f, count: 0, last: undefined as unknown as CamEvent, cameras: {}, sightings: [] };
+      }
+      const identities = Object.values(idMap).sort((a, b) => b.count - a.count);
+      const plates = Object.values(plateMap).sort((a, b) => b.count - a.count);
+      // Sightings per library entry (by normalized key), for the library table.
+      const sightingsByLib: Record<string, number> = {};
+      for (const s of plates) sightingsByLib[normalizePlate(s.plate)] = (sightingsByLib[normalizePlate(s.plate)] ?? 0) + s.count;
+      return { identities, plates, strangerCount, lastStranger, strangerSightings, sightingsByLib };
+    }, [events, enrolled, lib, plateDeny, plateAllow]);
 
   return (
     <>
@@ -278,6 +284,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
           <div className="identity-grid">
             {strangerCount > 0 && lastStranger && (
               <button
+                type="button"
                 className="identity-card"
                 onClick={() =>
                   setOpenId({
@@ -300,43 +307,45 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
               </button>
             )}
             {identities.map((s) => (
-              <button key={s.name} className="identity-card" onClick={() => s.count > 0 && setOpenId(s)}>
-                {s.last?.snapshot ? (
-                  <img className="identity-thumb" src={`/api/snapshots/${s.last.snapshot}?w=120`} alt={s.name} loading="lazy" />
-                ) : (
-                  <span className="identity-thumb"><IconUser size={22} /></span>
-                )}
-                <div className="identity-body">
-                  <div className="identity-head">
-                    <b>{s.name}</b>
-                    {!s.enrolled && <span className="badge" title="Seen in past events but no longer enrolled">past</span>}
-                  </div>
-                  <div className="muted">
-                    {s.count === 0
-                      ? "no recent sightings"
-                      : `${s.count} sighting${s.count === 1 ? "" : "s"} · ${topCamera(s.cameras)}`}
-                  </div>
-                  {s.count > 0 && (
-                    <RelTime ts={s.last.ts} prefix="last " className="muted clock" style={{ display: "block", fontSize: "0.72rem" }} />
+              <div key={s.name} className="identity-card">
+                <button
+                  type="button"
+                  className="identity-open"
+                  disabled={s.count === 0}
+                  aria-label={`View ${s.name} sightings`}
+                  onClick={() => s.count > 0 && setOpenId(s)}
+                >
+                  {s.last?.snapshot ? (
+                    <img className="identity-thumb" src={`/api/snapshots/${s.last.snapshot}?w=120`} alt={s.name} loading="lazy" decoding="async" />
+                  ) : (
+                    <span className="identity-thumb"><IconUser size={22} /></span>
                   )}
-                </div>
+                  <div className="identity-body">
+                    <div className="identity-head">
+                      <b>{s.name}</b>
+                      {!s.enrolled && <span className="badge" title="Seen in past events but no longer enrolled">past</span>}
+                    </div>
+                    <div className="muted">
+                      {s.count === 0
+                        ? "no recent sightings"
+                        : `${s.count} sighting${s.count === 1 ? "" : "s"} · ${topCamera(s.cameras)}`}
+                    </div>
+                    {s.count > 0 && (
+                      <RelTime ts={s.last.ts} prefix="last " className="muted clock" style={{ display: "block", fontSize: "var(--text-xs)" }} />
+                    )}
+                  </div>
+                </button>
                 {s.enrolled && (
                   <div className="identity-actions">
-                    <button
-                      className="btn btn-ghost ev-act"
-                      onClick={(e) => { e.stopPropagation(); rename(s.enrolled!); }}
-                    >
+                    <button type="button" className="btn btn-ghost ev-act" onClick={() => rename(s.enrolled!)}>
                       Rename
                     </button>
-                    <button
-                      className="btn btn-danger ev-act"
-                      onClick={(e) => { e.stopPropagation(); forget(s.enrolled!); }}
-                    >
+                    <button type="button" className="btn btn-danger ev-act" onClick={() => forget(s.enrolled!)}>
                       Forget
                     </button>
                   </div>
                 )}
-              </button>
+              </div>
             ))}
           </div>
         )}
@@ -366,7 +375,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                     {!s.entry && (
                       <button
                         className="btn btn-ghost"
-                        style={{ padding: "2px 8px", fontSize: "0.72rem" }}
+                        style={{ padding: "2px 8px", fontSize: "var(--text-xs)" }}
                         title="Add this plate to the library"
                         onClick={() => {
                           setPPlate(s.plate);
@@ -375,14 +384,14 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                             ?.scrollIntoView({ behavior: "smooth", block: "center" });
                         }}
                       >
-                        <IconPlus size={11} /> name
+                        <IconPlus size={11} /> Name
                       </button>
                     )}
                   </div>
                   <div className="muted">
                     {s.count} sighting{s.count === 1 ? "" : "s"} · {topCamera(s.cameras)}
                   </div>
-                  <RelTime ts={s.last.ts} prefix="last " className="muted clock" style={{ display: "block", fontSize: "0.72rem" }} />
+                  <RelTime ts={s.last.ts} prefix="last " className="muted clock" style={{ display: "block", fontSize: "var(--text-xs)" }} />
                 </div>
               </div>
             ))}
@@ -478,7 +487,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
           <div className="event-grid">
             {unknown.map((file) => (
               <div className="event-card" key={file} style={{ cursor: "default" }}>
-                <img src={`/api/faces/unknown/${file}`} alt="unknown face" loading="lazy" />
+                <img src={`/api/faces/unknown/${file}`} alt="unknown face" loading="lazy" decoding="async" />
                 <div className="meta">
                   <div className="row">
                     <input
@@ -541,10 +550,10 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
           <div className="event-grid">
             {gaitCands.map((ev) => (
               <div className="event-card" key={ev.id} style={{ cursor: "default" }}>
-                {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}?w=240`} alt="unknown walker" loading="lazy" />}
+                {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}?w=240`} alt="unknown walker" loading="lazy" decoding="async" />}
                 <div className="meta">
                   <span className="muted">{ev.camera}</span>
-                  <RelTime ts={ev.ts} className="muted clock" style={{ display: "block", fontSize: "0.72rem" }} />
+                  <RelTime ts={ev.ts} className="muted clock" style={{ display: "block", fontSize: "var(--text-xs)" }} />
                   <div className="row" style={{ marginTop: 6 }}>
                     <input
                       type="text"
@@ -574,10 +583,10 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
           <div className="event-grid" style={{ padding: 16 }}>
             {openId.sightings.map((ev) => (
               <div className="event-card" key={ev.id} style={{ cursor: "default" }}>
-                {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}?w=300`} alt={openId.name} loading="lazy" />}
+                {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}?w=300`} alt={openId.name} loading="lazy" decoding="async" />}
                 <div className="meta">
                   <span className="muted">{ev.camera}</span>
-                  <RelTime ts={ev.ts} className="muted clock" style={{ display: "block", fontSize: "0.75rem" }} />
+                  <RelTime ts={ev.ts} className="muted clock" style={{ display: "block", fontSize: "var(--text-xs)" }} />
                 </div>
               </div>
             ))}

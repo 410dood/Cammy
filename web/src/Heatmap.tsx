@@ -102,7 +102,7 @@ export default function Heatmap({ camera }: { camera: Camera }) {
             {r.label}
           </button>
         ))}
-        <span className="muted" style={{ marginLeft: "auto", fontSize: "0.8rem" }}>
+        <span className="muted" style={{ marginLeft: "auto", fontSize: "var(--text-xs)" }}>
           where objects were detected
         </span>
       </div>

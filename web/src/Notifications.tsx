@@ -39,6 +39,17 @@ export default function NotificationsPanel({
   useEffect(() => {
     panelRef.current?.focus();
   }, []);
+  // Escape closes the panel (the slide-in overlay otherwise had no keyboard exit).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   return (
     <div className="notif-overlay" onClick={onClose}>
       <div

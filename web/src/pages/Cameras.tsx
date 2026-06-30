@@ -1,8 +1,10 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
 import { api, Camera, DetectConfig, DiscoveredCam, StatusMap, Zone } from "../api";
-import ZoneEditor from "../ZoneEditor";
+import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { Modal, EmptyState, TogglePill, useToast, useDialog } from "../ui";
 import { IconRadar, IconSearch, IconCheck, IconVideo, IconAlert } from "../icons";
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function TuneModal({
   camera,
@@ -118,7 +120,7 @@ function TuneModal({
               value={dc.min_score ?? ""}
               placeholder="inherit"
               onChange={(e) =>
-                setDc({ ...dc, min_score: e.target.value === "" ? null : Number(e.target.value) })
+                setDc({ ...dc, min_score: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
               }
             />
           </label>
@@ -131,7 +133,7 @@ function TuneModal({
               onChange={(e) =>
                 setDc({
                   ...dc,
-                  motion_threshold: e.target.value === "" ? null : Number(e.target.value),
+                  motion_threshold: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)),
                 })
               }
             />
@@ -143,7 +145,7 @@ function TuneModal({
               value={dc.min_area ?? ""}
               placeholder="none"
               onChange={(e) =>
-                setDc({ ...dc, min_area: e.target.value === "" ? null : Number(e.target.value) })
+                setDc({ ...dc, min_area: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
               }
             />
           </label>
@@ -154,7 +156,7 @@ function TuneModal({
               value={dc.max_area ?? ""}
               placeholder="none"
               onChange={(e) =>
-                setDc({ ...dc, max_area: e.target.value === "" ? null : Number(e.target.value) })
+                setDc({ ...dc, max_area: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
               }
             />
           </label>
@@ -356,7 +358,7 @@ function TuneModal({
                         key={d}
                         type="button"
                         className={`btn ${on ? "btn-primary" : "btn-ghost"}`}
-                        style={{ padding: "2px 8px", fontSize: "0.72rem" }}
+                        style={{ padding: "2px 8px", fontSize: "var(--text-xs)" }}
                         onClick={() =>
                           setDc({
                             ...dc,
@@ -398,7 +400,7 @@ function TuneModal({
                     }
                   />
                 </div>
-                <p className="muted" style={{ fontSize: "0.72rem", marginTop: 4 }}>
+                <p className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 4 }}>
                   No days selected = every day. End before start = overnight (e.g. 22:00→06:00).
                   Outside the window this camera stops recording; detection &amp; event clips still run.
                 </p>
@@ -434,10 +436,10 @@ function TuneModal({
             {poseModelMissing && (
               <span
                 className="muted"
-                style={{ color: "var(--warn)", fontSize: "var(--text-sm)", marginTop: -6 }}
+                style={{ color: "var(--warn)", fontSize: "var(--text-sm)", marginTop: -6, display: "inline-flex", alignItems: "center", gap: 5 }}
                 title="The pose model file (yolov8n-pose.onnx) isn't in the app directory, so this toggle does nothing until you download it. See Settings → Models & capabilities."
               >
-                ⚠ pose model not downloaded — this won't run until yolov8n-pose.onnx is added
+                <IconAlert size={13} /> pose model not downloaded — this won't run until yolov8n-pose.onnx is added
               </span>
             )}
             <label
@@ -484,9 +486,9 @@ function TuneModal({
 
         <h2 style={{ marginTop: 18 }}>Zones &amp; privacy masks</h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          Draw polygons on the live frame. <b style={{ color: "#36d399" }}>Required</b> zones keep
-          only objects inside them; <b style={{ color: "#f87272" }}>ignore</b> zones drop objects
-          inside; <b style={{ color: "#a3a3a3" }}>privacy masks</b> are blacked out before any
+          Draw polygons on the live frame. <b style={{ color: COLORS.required }}>Required</b> zones keep
+          only objects inside them; <b style={{ color: COLORS.ignore }}>ignore</b> zones drop objects
+          inside; <b style={{ color: COLORS.mask }}>privacy masks</b> are blacked out before any
           analysis or snapshot (continuous recordings are not masked).
         </p>
         <ZoneEditor
@@ -521,7 +523,7 @@ function TuneModal({
               className="btn btn-danger ev-act"
               onClick={() => setDc({ ...dc, ignore_zones: dc.ignore_zones.filter((_, j) => j !== i) })}
             >
-              remove
+              Remove
             </button>
           </div>
         ))}
@@ -532,7 +534,7 @@ function TuneModal({
               setDc({ ...dc, ignore_zones: [...dc.ignore_zones, { x: 0, y: 0, w: 0.25, h: 0.25 }] })
             }
           >
-            + add zone
+            + Add zone
           </button>
           <div className="spacer" />
           <button className="btn btn-ghost" onClick={onClose}>
@@ -679,7 +681,7 @@ export default function Cameras({
       const r = await api.scanNetwork();
       setScanned(r.cameras);
     } catch (e) {
-      onError(`network scan failed: ${e}`);
+      onError(`Couldn't scan the network for cameras — check the server can reach your LAN. (${errMsg(e)})`);
     } finally {
       setScanning(false);
     }
@@ -696,9 +698,18 @@ export default function Cameras({
       if (streams.length > 1) setDetectSource(streams[1].url);
       setFound(`${streams[0].name.replace(/ stream\d+$/, "")} — ${streams.length} streams`);
     } catch (e) {
-      onError(`ONVIF resolve failed: ${e}`);
+      onError(`Couldn't get streams from that camera over ONVIF — check the IP, username and password. (${errMsg(e)})`);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Enter in any of the IP / username / password fields triggers Resolve (these
+  // inputs aren't inside a <form>, so there's no implicit submit to rely on).
+  const onResolveKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && ip.trim() && !busy) {
+      e.preventDefault();
+      resolve();
     }
   };
 
@@ -794,15 +805,15 @@ export default function Cameras({
         <div className="row" style={{ marginBottom: 14 }}>
           <label className="field">
             camera IP / host
-            <input type="text" placeholder="192.168.1.50" value={ip} onChange={(e) => setIp(e.target.value)} />
+            <input type="text" inputMode="url" placeholder="192.168.1.50" value={ip} onChange={(e) => setIp(e.target.value)} onKeyDown={onResolveKey} />
           </label>
           <label className="field">
             username
-            <input type="text" value={user} onChange={(e) => setUser(e.target.value)} />
+            <input type="text" autoComplete="off" value={user} onChange={(e) => setUser(e.target.value)} onKeyDown={onResolveKey} />
           </label>
           <label className="field">
             password
-            <input type="password" autoComplete="off" value={pass} onChange={(e) => setPass(e.target.value)} />
+            <input type="password" autoComplete="off" value={pass} onChange={(e) => setPass(e.target.value)} onKeyDown={onResolveKey} />
           </label>
           <button type="button" className="btn btn-ghost" disabled={busy || !ip.trim()} onClick={resolve}>
             <IconSearch size={15} /> Resolve via ONVIF

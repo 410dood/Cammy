@@ -73,8 +73,14 @@ export default function LiveVideo({
   // in CSS): "connecting" until the first frame plays, then "live".
   const [phase, setPhase] = useState<"connecting" | "live">("connecting");
 
+  // Collapse `online: boolean | undefined` to a stable boolean: `undefined`
+  // (status not loaded yet) and `true` both mean "try to connect", so keying the
+  // effect on `offline` instead of raw `online` stops the first status poll
+  // (undefined → true) from needlessly tearing down and remounting the player.
+  const offline = online === false;
+
   useEffect(() => {
-    if (online === false) return; // offline: don't even mount the player
+    if (offline) return; // offline: don't even mount the player
     setPhase("connecting");
     let el: VideoStreamEl | null = null;
     let video: HTMLVideoElement | null = null;
@@ -123,11 +129,11 @@ export default function LiveVideo({
         el.parentNode?.removeChild(el);
       }
     };
-  }, [name, mode, audio, mic, online]);
+  }, [name, mode, audio, mic, offline]);
 
   return (
     <div className="live-video-host" ref={host}>
-      {online === false ? (
+      {offline ? (
         <div className="live-state offline">
           <IconWifiOff size={30} />
           <span>Camera offline</span>

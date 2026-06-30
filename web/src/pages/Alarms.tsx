@@ -17,6 +17,22 @@ const LABELS = [
   // Server-side pose events (enable "body pose monitoring" on the camera).
   "standing", "covered_face",
 ];
+// Friendly names for the non-obvious analytics / residential event labels, shown
+// in the dropdowns. The raw token is kept in parentheses (and as the option
+// `value`) so it still matches what the Family page and docs refer to.
+const LABEL_PRETTY: Record<string, string> = {
+  crossing: "Line crossing",
+  wrong_way: "Wrong way",
+  loiter: "Loitering",
+  occupancy: "Occupancy limit",
+  child: "Child*",
+  child_alone: "Child alone*",
+  fall: "Fall*",
+  still_water: "Motionless in water*",
+  standing: "Standing — crib climb-out*",
+  covered_face: "Covered face*",
+};
+const labelText = (l: string) => (LABEL_PRETTY[l] ? `${LABEL_PRETTY[l]} (${l})` : l);
 const GESTURES = ["open_palm", "fist", "victory", "point", "thumb_up", "thumb_down", "love", "ok", "call_me"];
 const ARM_OPTS: { id: ArmMode; label: string }[] = [
   { id: "home", label: "Home" },
@@ -26,7 +42,7 @@ const ARM_OPTS: { id: ArmMode; label: string }[] = [
 const ACTION_KINDS: { id: ActionKind; label: string }[] = [
   { id: "webhook", label: "POST webhook" },
   { id: "mqtt", label: "publish MQTT" },
-  { id: "ntfy", label: "push via ntfy" },
+  { id: "ntfy", label: "push to phone (ntfy app)" },
   { id: "email", label: "send email" },
 ];
 const targetHint = (kind: ActionKind) =>
@@ -36,7 +52,7 @@ const targetHint = (kind: ActionKind) =>
       ? "topic suffix → zoomy/alarms/<suffix>"
       : kind === "email"
         ? "recipient@example.com (blank = default from Settings)"
-        : "https://ntfy.sh/your-secret-topic (push, snapshot attached)";
+        : "https://ntfy.sh/your-private-topic — free phone push, snapshot attached";
 
 export default function Alarms({
   cameras,
@@ -50,6 +66,7 @@ export default function Alarms({
   const [rules, setRules] = useState<AlarmRule[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
   const [cameraId, setCameraId] = useState<number | "">("");
   const [label, setLabel] = useState("");
@@ -110,6 +127,19 @@ export default function Alarms({
       onError("every action needs a target (URL or MQTT topic)");
       return;
     }
+    const badEmail = acts.find((a) => a.kind === "email" && a.target && !/.+@.+/.test(a.target));
+    if (badEmail) {
+      onError("the email action needs a valid recipient address (or leave it blank to use the Settings default)");
+      return;
+    }
+    const badUrl = acts.find(
+      (a) => (a.kind === "webhook" || a.kind === "ntfy") && a.target && !/^https?:\/\//i.test(a.target),
+    );
+    if (badUrl) {
+      onError(`the ${badUrl.kind} action's target must start with http:// or https://`);
+      return;
+    }
+    setBusy(true);
     try {
       await api.addAlarm({
         name: name.trim(),
@@ -140,6 +170,7 @@ export default function Alarms({
         modes,
         actions: acts,
       });
+      toast.success(`Rule “${name.trim()}” created`);
       setName("");
       setActions([{ kind: "webhook", target: "", priority: 0 }]);
       setModes([]);
@@ -159,6 +190,8 @@ export default function Alarms({
       load();
     } catch (err) {
       onError(String(err));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -277,7 +310,7 @@ export default function Alarms({
                 <option value="">any</option>
                 {LABELS.map((l) => (
                   <option key={l} value={l}>
-                    {l}
+                    {labelText(l)}
                   </option>
                 ))}
               </select>
@@ -354,7 +387,7 @@ export default function Alarms({
                   <option value="">none</option>
                   {LABELS.map((l) => (
                     <option key={l} value={l}>
-                      {l}
+                      {labelText(l)}
                     </option>
                   ))}
                 </select>
@@ -375,7 +408,7 @@ export default function Alarms({
               <label
                 className="field"
                 style={{ flex: "1 1 100%" }}
-                title="AI verification (needs GenAI captions + a vision model in Settings): before firing, the vision model is asked this yes/no question about the snapshot and the rule only fires if it answers yes — phrase it as the condition to confirm, e.g. 'Is a real person actually at the front door?' to filter out shadows/animals/headlights. Runs off the detection thread; FAILS OPEN (fires) if the model is unavailable, so it never silently drops a real alert. Detection-event rules only."
+                title="Before firing, a local vision model is asked this yes/no question about the snapshot, and the rule fires only if it answers yes — e.g. 'Is a real person at the door?' to filter out shadows, animals and headlights. Needs AI captions + a vision model (Settings); fails open (fires) if the model is unavailable. Detection events only."
               >
                 AI verification — fire only if the vision model confirms (optional)
                 <input
@@ -439,6 +472,7 @@ export default function Alarms({
                 </select>
                 <input
                   type="text"
+                  inputMode={a.kind === "email" ? "email" : a.kind === "webhook" || a.kind === "ntfy" ? "url" : undefined}
                   style={{ flex: 1, minWidth: 240 }}
                   value={a.target}
                   onChange={(e) => updateAction(i, { target: e.target.value })}
@@ -485,7 +519,9 @@ export default function Alarms({
               />
             </label>
             <div className="spacer" />
-            <button className="btn btn-primary">Create rule</button>
+            <button className="btn btn-primary" disabled={busy || !name.trim()}>
+              {busy ? "Creating…" : "Create rule"}
+            </button>
           </div>
         </form>
       </div>
@@ -577,7 +613,7 @@ export default function Alarms({
                           load();
                         }}
                       >
-                        wake
+                        Wake
                       </button>
                     ) : (
                       <button
@@ -590,7 +626,7 @@ export default function Alarms({
                           load();
                         }}
                       >
-                        snooze 1h
+                        Snooze 1h
                       </button>
                     )}
                     <button

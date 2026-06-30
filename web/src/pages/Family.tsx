@@ -47,6 +47,8 @@ const MODES: Mode[] = [
       "Turn on “audio detection” and enable the “Dog bark” / “Cat meow” sounds in Settings.",
       "On the Alarms page add rules scoped by object (dog/cat) and zone.",
     ],
+    safety:
+      "Assistive only — best-effort detection that can miss a pet (small breeds, odd angles, poor light) and isn’t a substitute for secure fencing, gates or supervision.",
   },
   {
     key: "pool",
@@ -78,7 +80,11 @@ const MODES: Mode[] = [
   },
 ];
 
-type GoPage = "Cameras" | "Alarms" | "Settings";
+type GoPage = "Cameras" | "Alarms" | "Settings" | "Live";
+
+// Modes where jumping straight to the live view is useful (watch the crib, pool
+// deck, or a room). Pets is about zones/audio, so it doesn't get a Live shortcut.
+const LIVE_MODES = ["baby", "pool", "aging"];
 
 function ModeCard({
   mode,
@@ -120,6 +126,9 @@ function ModeCard({
         </ol>
         {onGo && (
           <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+            {LIVE_MODES.includes(mode.key) && (
+              <button className="btn btn-ghost ev-act" onClick={() => onGo("Live")}>Open Live →</button>
+            )}
             <button className="btn btn-ghost ev-act" onClick={() => onGo("Cameras")}>Open Cameras →</button>
             <button className="btn btn-ghost ev-act" onClick={() => onGo("Alarms")}>Open Alarms →</button>
             <button className="btn btn-ghost ev-act" onClick={() => onGo("Settings")}>Open Settings →</button>

@@ -1,10 +1,12 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
-import { useToast, useDialog, RelTime, TogglePill } from "../ui";
+import { useToast, useDialog, RelTime, TogglePill, ErrorState } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
   IconDownload, IconUpload, IconCheck, IconUser, IconShield, IconAlert,
 } from "../icons";
+
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const AUDIT_META: Record<string, { label: string; Icon: (p: IconProps) => JSX.Element; cls: string }> = {
   login_success: { label: "login", Icon: IconLogIn, cls: "ok" },
@@ -58,6 +60,7 @@ function AuditCard() {
         Logins, password changes, and API-token changes — most recent first. Useful for
         spotting unexpected access on a WAN-exposed server.
       </p>
+      <div className="table-scroll">
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <tbody>
           {rows.map((r) => {
@@ -81,6 +84,7 @@ function AuditCard() {
           })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -169,8 +173,8 @@ function PushCard({ onError }: { onError: (e: string) => void }) {
       <h2>Push notifications</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         Get native notifications on this device when alarms fire or a camera goes offline — even
-        when Cammy isn&apos;t open. Encrypted and delivered straight from your own server (VAPID /
-        Web Push); no third-party push service or account.
+        when Cammy isn&apos;t open. Encrypted and sent straight from your own server, with no
+        third-party push service or account.
       </p>
       {!supported ? (
         <p className="muted">This browser doesn&apos;t support Web Push.</p>
@@ -228,11 +232,13 @@ function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
         <span className={`pill ${enabled ? "on" : ""}`}>{enabled ? "protected" : "open"}</span>
         <input
           type="password"
-          placeholder="new password (min 6 chars)"
+          autoComplete="new-password"
+          placeholder="new password"
           value={pw}
           onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && pw.length >= 6 && apply(pw)}
         />
-        <button type="button" className="btn btn-primary" disabled={pw.trim().length < 6} onClick={() => apply(pw)}>
+        <button type="button" className="btn btn-primary" disabled={pw.length < 6} onClick={() => apply(pw)}>
           Set password
         </button>
         {enabled && (
@@ -241,6 +247,7 @@ function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
           </button>
         )}
       </div>
+      <small className="muted" style={{ display: "block", marginTop: 6 }}>At least 6 characters.</small>
     </div>
   );
 }
@@ -252,6 +259,7 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("operator");
   const [fresh, setFresh] = useState<{ name: string; role: Role; token: string } | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const load = () => {
     api.tokens().then(setTokens).catch(() => {});
@@ -260,14 +268,18 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
 
   const create = async () => {
     const n = name.trim();
-    if (!n) return;
+    if (!n || busy) return;
+    setBusy(true);
     try {
       const r = await api.createToken(n, role);
       setFresh({ name: r.name, role: r.role, token: r.token });
+      toast.success(`Token “${r.name}” created`);
       setName("");
       load();
     } catch (e) {
       onError(String(e));
+    } finally {
+      setBusy(false);
     }
   };
   const remove = async (id: number) => {
@@ -312,8 +324,8 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
           <option value="operator">operator</option>
           <option value="admin">admin</option>
         </select>
-        <button type="button" className="primary" disabled={!name.trim()} onClick={create}>
-          Create token
+        <button type="button" className="primary" disabled={busy || !name.trim()} onClick={create}>
+          {busy ? "Creating…" : "Create token"}
         </button>
       </div>
       {fresh && (
@@ -328,6 +340,7 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
         </div>
       )}
       {tokens.length > 0 && (
+        <div className="table-scroll">
         <table style={{ marginTop: 12, width: "100%", borderCollapse: "collapse" }}>
           <tbody>
             {tokens.map((t) => (
@@ -348,6 +361,7 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
@@ -568,12 +582,12 @@ function TwoFactorCard({ onError }: { onError: (e: string) => void }) {
           <div
             style={{
               fontFamily: "var(--font-mono)",
-              fontSize: "1.05em",
+              fontSize: "var(--text-md)",
               letterSpacing: 1,
               wordBreak: "break-all",
               padding: "8px 10px",
               background: "var(--surface-hover)",
-              borderRadius: 6,
+              borderRadius: "var(--radius-sm)",
             }}
           >
             {setup.secret}
@@ -582,7 +596,7 @@ function TwoFactorCard({ onError }: { onError: (e: string) => void }) {
             <summary className="muted" style={{ cursor: "pointer" }}>
               Show otpauth link
             </summary>
-            <code style={{ wordBreak: "break-all", fontSize: "0.85em" }}>{setup.otpauth_uri}</code>
+            <code style={{ wordBreak: "break-all", fontSize: "var(--text-sm)" }}>{setup.otpauth_uri}</code>
           </details>
           <p className="muted" style={{ marginBottom: 4 }}>
             2. Enter the 6-digit code it shows to confirm:
@@ -641,15 +655,22 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
     if (!ok) return;
     setBusy(true);
     setMsg("");
+    let backup: unknown;
     try {
-      const backup = JSON.parse(await file.text());
+      backup = JSON.parse(await file.text());
+    } catch {
+      onError("That file isn't a valid Cammy backup — it isn't valid JSON. Pick the .json file you exported with “Download backup”.");
+      setBusy(false);
+      return;
+    }
+    try {
       const r = await api.restore(backup);
       toast.success("Configuration restored — reload to see changes");
       setMsg(
         `Restored — ${r.cameras_added} camera(s) added, ${r.cameras_skipped} skipped, ${r.alarms_added} alarm(s) added, settings applied. Reload to see changes.`,
       );
     } catch (err) {
-      onError(`restore failed: ${err}`);
+      onError(`Couldn't restore that backup. (${errMsg(err)})`);
     } finally {
       setBusy(false);
     }
@@ -885,12 +906,14 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
         never lock yourself out locally.
       </p>
       <div className="row">
-        <input type="text" placeholder="username" value={name} onChange={(e) => setName(e.target.value)} />
+        <input type="text" autoComplete="off" placeholder="username" value={name} onChange={(e) => setName(e.target.value)} />
         <input
           type="password"
+          autoComplete="new-password"
           placeholder="password (min 6)"
           value={pw}
           onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && create()}
         />
         <select value={role} onChange={(e) => setRole(e.target.value as Role)} aria-label="Role">
           <RoleOptions />
@@ -905,6 +928,7 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
         </button>
       </div>
       {users.length > 0 && (
+        <div className="table-scroll">
         <table style={{ marginTop: 12, width: "100%", borderCollapse: "collapse" }}>
           <tbody>
             {users.map((u) => (
@@ -923,31 +947,34 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
                   </select>
                 </td>
                 <td className="muted">created <RelTime ts={u.created_ts} /></td>
-                <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                  {u.role !== "admin" && (
-                    <button
-                      type="button"
-                      className={`btn ev-act ${editing === u.id ? "btn-primary" : "btn-ghost"}`}
-                      onClick={() => openScope(u)}
-                      title="Restrict which cameras this user can see"
-                    >
-                      Cameras
+                <td style={{ textAlign: "right" }}>
+                  <div className="ev-actions" style={{ justifyContent: "flex-end" }}>
+                    {u.role !== "admin" && (
+                      <button
+                        type="button"
+                        className={`btn ev-act ${editing === u.id ? "btn-primary" : "btn-ghost"}`}
+                        onClick={() => openScope(u)}
+                        title="Restrict which cameras this user can see"
+                      >
+                        Cameras
+                      </button>
+                    )}
+                    <button type="button" className="btn btn-ghost ev-act" onClick={() => resetPw(u)}>
+                      Reset password
                     </button>
-                  )}
-                  <button type="button" className="btn btn-ghost ev-act" onClick={() => resetPw(u)}>
-                    Reset password
-                  </button>
-                  <button type="button" className="btn btn-ghost ev-act" onClick={() => reset2fa(u)}>
-                    Reset 2FA
-                  </button>
-                  <button type="button" className="btn btn-danger ev-act" onClick={() => remove(u)}>
-                    Delete
-                  </button>
+                    <button type="button" className="btn btn-ghost ev-act" onClick={() => reset2fa(u)}>
+                      Reset 2FA
+                    </button>
+                    <button type="button" className="btn btn-danger ev-act" onClick={() => remove(u)}>
+                      Delete
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       )}
       {editing !== null && (
         <div className="card" style={{ background: "var(--surface-hover)", marginTop: 12, marginBottom: 0 }}>
@@ -1159,10 +1186,14 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
   const [s, setS] = useState<S | null>(null);
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
-    api.settings().then(setS).catch((e) => onError(String(e)));
-  }, [onError]);
+  const load = () => {
+    setLoadError(null);
+    api.settings().then(setS).catch((e) => setLoadError(errMsg(e)));
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(load, []);
 
   // Warn before a refresh/close/navigation-away discards unsaved global edits.
   // (In-app page switches surface the "Unsaved changes" cue on the save bar.)
@@ -1175,6 +1206,14 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
+
+  if (loadError && !s)
+    return (
+      <div className="settings-page">
+        <h1>Settings</h1>
+        <ErrorState what="settings" message={loadError} onRetry={load} />
+      </div>
+    );
 
   if (!s)
     return (
@@ -1590,7 +1629,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 className="danger"
                 onClick={() => set({ arm_schedule: s.arm_schedule.filter((_, j) => j !== i) })}
               >
-                remove
+                Remove
               </button>
             </div>
           ))}
@@ -1601,7 +1640,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               set({ arm_schedule: [...(s.arm_schedule ?? []), { days: [], hhmm: "08:00", mode: "away" }] })
             }
           >
-            + add schedule
+            + Add schedule
           </button>
           <small className="muted" style={{ display: "block", marginTop: 8 }}>
             No days selected = every day. The change applies at the start of the matching minute.
@@ -1785,7 +1824,9 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             <label className="field" style={{ flex: 1, minWidth: 240 }}>
               from address
               <input
-                type="text"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
                 placeholder="nvr@example.com"
                 value={s.smtp_from}
                 onChange={(e) => set({ smtp_from: e.target.value })}
@@ -1795,6 +1836,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               default recipient(s), comma-separated
               <input
                 type="text"
+                inputMode="email"
                 placeholder="me@example.com"
                 value={s.smtp_to}
                 onChange={(e) => set({ smtp_to: e.target.value })}
@@ -1887,9 +1929,9 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               {baseUrlWarning(s.public_base_url ?? "") && (
                 <span
                   className="muted"
-                  style={{ color: "var(--warn)", fontSize: "var(--text-sm)", marginTop: 4 }}
+                  style={{ color: "var(--warn)", fontSize: "var(--text-sm)", marginTop: 4, display: "inline-flex", alignItems: "center", gap: 5 }}
                 >
-                  ⚠ {baseUrlWarning(s.public_base_url ?? "")}
+                  <IconAlert size={13} /> {baseUrlWarning(s.public_base_url ?? "")}
                 </span>
               )}
             </label>
