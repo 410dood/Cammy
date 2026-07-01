@@ -1609,11 +1609,6 @@ fn passes_zones_and_size(
         }
     }
 
-    // Legacy rectangle ignore zones.
-    if cfg.ignore_zones.iter().any(|z| z.contains(cx, cy)) {
-        return false;
-    }
-
     // Polygon ignore zones that apply to this label.
     if cfg
         .zones
@@ -1843,7 +1838,7 @@ mod tests {
         moved_enough, passes_zones_and_size, stationary_keep, stationary_should_fire,
         STATIONARY_MOVE_FRAC, STATIONARY_REACQUIRE_GAP,
     };
-    use crate::db::{DetectConfig, PolyZone, Zone, ZoneKind};
+    use crate::db::{DetectConfig, PolyZone, ZoneKind};
     use detector::Detection;
     use std::collections::HashMap;
 
@@ -2029,37 +2024,6 @@ mod tests {
             x2: cx + w / 2.0,
             y2: cy + h / 2.0,
         }
-    }
-
-    #[test]
-    fn legacy_rect_ignore_zone_drops_center_hits_only() {
-        let cfg = DetectConfig {
-            ignore_zones: vec![Zone {
-                x: 0.8,
-                y: 0.0,
-                w: 0.2,
-                h: 1.0,
-            }],
-            ..Default::default()
-        };
-        assert!(!passes_zones_and_size(
-            &det_at("person", 90.0, 50.0, 4.0, 4.0),
-            &cfg,
-            100.0,
-            100.0
-        ));
-        assert!(passes_zones_and_size(
-            &det_at("person", 50.0, 50.0, 4.0, 4.0),
-            &cfg,
-            100.0,
-            100.0
-        ));
-        assert!(passes_zones_and_size(
-            &det_at("person", 90.0, 50.0, 4.0, 4.0),
-            &DetectConfig::default(),
-            100.0,
-            100.0
-        ));
     }
 
     #[test]

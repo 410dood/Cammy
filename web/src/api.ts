@@ -1,12 +1,5 @@
 // Typed client for the zoomy core API.
 
-export interface Zone {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
 export type ZoneKind = "ignore" | "required";
 
 export interface PolyZone {
@@ -67,7 +60,6 @@ export interface DetectConfig {
   labels: string[] | null;
   min_score: number | null;
   motion_threshold: number | null;
-  ignore_zones: Zone[];
   zones: PolyZone[];
   tripwires: Tripwire[];
   ground_calib?: GroundCalib | null;

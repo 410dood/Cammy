@@ -40,22 +40,6 @@ pub struct Camera {
     pub group: Option<String>,
 }
 
-/// A rectangle in frame-fraction coordinates (0..1), so it survives resolution
-/// changes and sub-stream switches.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Zone {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-}
-
-impl Zone {
-    pub fn contains(&self, fx: f32, fy: f32) -> bool {
-        fx >= self.x && fx <= self.x + self.w && fy >= self.y && fy <= self.y + self.h
-    }
-}
-
 /// What a polygon zone does to detections whose anchor point falls inside it.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -70,8 +54,7 @@ pub enum ZoneKind {
 
 /// An arbitrary polygon zone in frame-fraction coordinates (0..1), so it
 /// survives resolution changes and sub-stream switches. Rectangles are just a
-/// 4-point special case — this supersedes [`Zone`] for new cameras while old
-/// rectangle `ignore_zones` keep working.
+/// 4-point special case.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PolyZone {
@@ -181,13 +164,10 @@ pub struct DetectConfig {
     pub min_score: Option<f32>,
     /// Override of the global motion threshold; `None` inherits.
     pub motion_threshold: Option<f32>,
-    /// Detections whose box center falls in any of these are dropped —
-    /// e.g. a busy street at the edge of a driveway camera. Legacy rectangles;
-    /// new cameras use `zones` (polygons). Both are honored.
-    pub ignore_zones: Vec<Zone>,
-    /// Polygon zones (required / ignore), the richer successor to
-    /// `ignore_zones`. A `Required` zone makes detections valid only when their
-    /// anchor lands inside one; `Ignore` zones drop them.
+    /// Polygon zones (required / ignore). A `Required` zone makes detections
+    /// valid only when their anchor lands inside one; `Ignore` zones drop
+    /// detections whose anchor falls inside (e.g. a busy street at the edge of
+    /// a driveway camera).
     pub zones: Vec<PolyZone>,
     /// Directed virtual lines for line-crossing analytics (in/out counting,
     /// perimeter, one-way enforcement). Requires object tracking; a confirmed
@@ -3876,12 +3856,6 @@ mod tests {
             labels: Some(vec!["person".into()]),
             min_score: Some(0.6),
             motion_threshold: Some(0.05),
-            ignore_zones: vec![Zone {
-                x: 0.0,
-                y: 0.0,
-                w: 0.5,
-                h: 0.5,
-            }],
             zones: vec![PolyZone {
                 name: "driveway".into(),
                 points: vec![[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
@@ -3939,10 +3913,6 @@ mod tests {
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
         assert_eq!(back.detect_config, cam.detect_config);
-
-        let z = back.detect_config.ignore_zones[0];
-        assert!(z.contains(0.25, 0.25));
-        assert!(!z.contains(0.75, 0.25));
 
         let pz = &back.detect_config.zones[0];
         assert_eq!(pz.kind, ZoneKind::Required);

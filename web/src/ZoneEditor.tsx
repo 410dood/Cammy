@@ -288,7 +288,11 @@ export default function ZoneEditor({
                 vectorEffect="non-scaling-stroke"
               />
               {draw.points.map((p, i) => (
-                <circle key={i} cx={p[0]} cy={p[1]} r={4} fill="#fff" vectorEffect="non-scaling-stroke" />
+                // Radius is in viewBox units (0..1 frame-fraction) — like the
+                // tripwire markers. A pixel-scale r here (e.g. 4) is 4× the
+                // whole frame with preserveAspectRatio="none", so the vertex dot
+                // fills the canvas white the moment the first point is placed.
+                <circle key={i} cx={p[0]} cy={p[1]} r={0.008} fill="#fff" stroke="#000" strokeWidth={0.002} />
               ))}
             </>
           )}

@@ -1377,15 +1377,6 @@ async fn patch_camera(
     cam.detect = patch.detect.unwrap_or(cam.detect);
     cam.record = patch.record.unwrap_or(cam.record);
     if let Some(dc) = patch.detect_config {
-        for z in &dc.ignore_zones {
-            if !(0.0..=1.0).contains(&z.x)
-                || !(0.0..=1.0).contains(&z.y)
-                || !(0.0..=1.0).contains(&z.w)
-                || !(0.0..=1.0).contains(&z.h)
-            {
-                return Err(bad_request("zone coordinates must be fractions 0..1"));
-            }
-        }
         let in_unit = |p: &[f32; 2]| (0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]);
         for z in &dc.zones {
             if z.points.len() < 3 {
