@@ -48,6 +48,7 @@ function TuneModal({
     pose_detect: camera.detect_config.pose_detect ?? false,
     no_clip: camera.detect_config.no_clip ?? false,
     record_schedule: camera.detect_config.record_schedule ?? null,
+    suppress_stationary: camera.detect_config.suppress_stationary ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
   // Flag toggles whose backing model isn't downloaded, so an enabled feature
@@ -218,6 +219,17 @@ function TuneModal({
               type="checkbox"
               checked={dc.gait_identify}
               onChange={() => setDc({ ...dc, gait_identify: !dc.gait_identify })}
+            />
+          </label>
+          <label
+            className="toggle field"
+            title="Only alert on new or moving objects. Suppresses repeat events for a parked car / idle object that keeps re-tripping the motion gate (wind, shadows, lighting). A new arrival or an object that moves still fires; the event cooldown still rate-limits moving objects. Leave off for a doorway counter that wants every detection."
+          >
+            suppress stationary repeats
+            <input
+              type="checkbox"
+              checked={dc.suppress_stationary ?? false}
+              onChange={() => setDc({ ...dc, suppress_stationary: !dc.suppress_stationary })}
             />
           </label>
           <label className="field" title="Per-camera model override (e.g. a specialized .onnx). Empty inherits the global model.">

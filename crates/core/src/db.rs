@@ -301,6 +301,16 @@ pub struct DetectConfig {
     /// model has one.
     #[serde(default)]
     pub package_labels: Vec<String>,
+    /// Stationary-object suppression: only emit a detection event when the object
+    /// is **new or has moved**, not on every motion-gate trip while a parked car /
+    /// idle object sits in view. Runs the object tracker for this camera and
+    /// drops a detection whose matching confirmed track was already alerted and
+    /// hasn't moved past a small threshold. New arrivals and objects that move
+    /// still fire (rate-limited by `event_cooldown_secs`). Off by default — a
+    /// people-counter or doorway that wants every detection leaves it off. See
+    /// `pipeline.rs` (`moved_enough`).
+    #[serde(default)]
+    pub suppress_stationary: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1103,6 +1113,12 @@ pub struct Settings {
     pub offsite_access_key: String,
     #[serde(default)]
     pub offsite_secret_key: String,
+    /// Burn an amber outline of the motion region(s) that tripped the gate onto
+    /// each detection snapshot (alongside the red object boxes), so a viewer can
+    /// see *what actually triggered* an event — wind in the trees vs. the object.
+    /// On by default; purely cosmetic on the saved JPEG.
+    #[serde(default = "default_true")]
+    pub highlight_motion: bool,
 }
 
 fn default_arm_mode() -> String {
@@ -1223,6 +1239,7 @@ impl Default for Settings {
             offsite_prefix: String::new(),
             offsite_access_key: String::new(),
             offsite_secret_key: String::new(),
+            highlight_motion: true,
         }
     }
 }
@@ -3917,6 +3934,7 @@ mod tests {
             package_detect: true,
             package_zone: Some(vec![[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]),
             package_labels: vec!["package".to_string()],
+            suppress_stationary: true,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();

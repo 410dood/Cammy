@@ -1323,6 +1323,17 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(e) => set({ event_cooldown_secs: num(e.target.value, s.event_cooldown_secs) })}
               />
             </label>
+            <label
+              className="toggle field"
+              title="Burn an amber outline of the motion region(s) that tripped the gate onto each detection snapshot (next to the red object boxes), so you can see what actually triggered an event — e.g. wind in the trees vs. the object itself."
+            >
+              highlight motion on snapshots
+              <input
+                type="checkbox"
+                checked={s.highlight_motion ?? true}
+                onChange={() => set({ highlight_motion: !(s.highlight_motion ?? true) })}
+              />
+            </label>
             <label className="toggle field">
               force CPU
               <input type="checkbox" checked={s.force_cpu} onChange={() => set({ force_cpu: !s.force_cpu })} />

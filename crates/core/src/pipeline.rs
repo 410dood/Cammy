@@ -31,6 +31,88 @@ const MAX_FRAME_BYTES: u64 = 32 * 1024 * 1024;
 const GAIT_SAMPLE_CAP: usize = 64;
 const GAIT_RETIRE_MS: i64 = 30_000;
 
+/// Stationary-object suppression: minimum IoU between a detection box and a
+/// confirmed track's box to treat them as the same physical object.
+const STATIONARY_MATCH_IOU: f32 = 0.3;
+/// Stationary-object suppression: how far an already-alerted object's ground
+/// anchor must move (frame-fraction Euclidean distance) before it re-alerts —
+/// above per-frame box jitter, below a real repositioning.
+const STATIONARY_MOVE_FRAC: f32 = 0.05;
+/// Stationary-object suppression: a confirmed track that went unobserved for at
+/// least this many frames before re-matching is treated as a NEW object, not a
+/// continuation. The tracker keeps a vacated track alive (up to `max_age`) and
+/// can re-associate a *different* object that later occupies the same spot to the
+/// old id; without this guard that new arrival would inherit the old track's
+/// stale alert anchor and be wrongly suppressed. A 1-frame detector flicker on a
+/// continuously-present object stays below this, so it doesn't re-fire.
+const STATIONARY_REACQUIRE_GAP: u32 = 2;
+
+/// Has an alerted object's anchor moved at least `thresh` (frame fractions) from
+/// where it last fired? `None` (never alerted) always counts as moved, so a
+/// newly-matched track fires once. Pure so it can be unit-tested.
+fn moved_enough(prev: Option<(f32, f32)>, cur: (f32, f32), thresh: f32) -> bool {
+    match prev {
+        None => true,
+        Some((px, py)) => {
+            let (dx, dy) = (cur.0 - px, cur.1 - py);
+            (dx * dx + dy * dy).sqrt() >= thresh
+        }
+    }
+}
+
+/// Stationary-suppression decision for a detection matched to confirmed track
+/// `id` at ground anchor `cur`. Returns whether to KEEP (fire) the event and
+/// records the new anchor on a keep. `reacquired` means the track had a
+/// continuity gap before this frame (its prior occupant likely left and a
+/// different object took its place), so its stale anchor is ignored and it fires
+/// as new. Pure (mutates only the passed map) so it can be unit-tested.
+fn stationary_keep(
+    alerted: &mut HashMap<u64, (f32, f32)>,
+    id: u64,
+    cur: (f32, f32),
+    reacquired: bool,
+    move_thresh: f32,
+) -> bool {
+    let prev = if reacquired {
+        None
+    } else {
+        alerted.get(&id).copied()
+    };
+    if moved_enough(prev, cur, move_thresh) {
+        alerted.insert(id, cur);
+        true
+    } else {
+        false
+    }
+}
+
+/// Whether a detection box `dbox` (frame fractions) of class `label` should fire
+/// an event under stationary suppression: match it to its best-IoU confirmed
+/// track of the same label in this frame's `sup_tracks` snapshot
+/// `(id, label, box, reacquired)`, then defer to [`stationary_keep`]. A detection
+/// with no confirmed-track match (brand-new / tentative object) fires (fail-open).
+/// This is the actual per-detection decision the pipeline applies — factored out
+/// so it can be integration-tested against a real [`tracker::Tracker`].
+fn stationary_should_fire(
+    dbox: tracker::BBox,
+    label: &str,
+    sup_tracks: &[(u64, String, tracker::BBox, bool)],
+    alerted: &mut HashMap<u64, (f32, f32)>,
+) -> bool {
+    let best = sup_tracks
+        .iter()
+        .filter(|(_, lbl, _, _)| lbl.as_str() == label)
+        .map(|(id, _, bb, reacq)| (*id, bb.iou(&dbox), *reacq))
+        .filter(|(_, iou, _)| *iou >= STATIONARY_MATCH_IOU)
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    match best {
+        None => true,
+        Some((id, _, reacquired)) => {
+            stationary_keep(alerted, id, dbox.anchor(), reacquired, STATIONARY_MOVE_FRAC)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     db: Db,
@@ -76,6 +158,11 @@ pub fn run(
     let mut gait_states: HashMap<i64, crate::gait::GaitState> = HashMap::new();
     // Per-camera parcel presence (package-delivered / -removed monitoring).
     let mut packages: HashMap<i64, crate::parcel::PackageState> = HashMap::new();
+    // Stationary-object suppression (`suppress_stationary`): per camera, the
+    // ground-anchor (frame fractions) at which each confirmed track last fired an
+    // event. A track already in here that hasn't moved past `STATIONARY_MOVE_FRAC`
+    // is suppressed (a parked car re-tripping the gate via ambient motion).
+    let mut alerted_tracks: HashMap<i64, HashMap<u64, (f32, f32)>> = HashMap::new();
 
     while !shutdown.load(Ordering::Relaxed) {
         let tick = Instant::now();
@@ -104,6 +191,7 @@ pub fn run(
             residential.retain(|k, _| live.contains(k));
             tamper_gates.retain(|k, _| live.contains(k));
             gait_states.retain(|k, _| live.contains(k));
+            alerted_tracks.retain(|k, _| live.contains(k));
             // Drop parcel state for cameras that are gone OR have package
             // detection off, so toggling it back on starts from a clean slate
             // (a stale `present` state would otherwise fire a spurious
@@ -251,6 +339,11 @@ pub fn run(
             if !cam.detect_config.gait_identify {
                 gait_states.remove(&cam.id);
             }
+            // Same for stationary suppression: drop a camera's last-alerted
+            // anchors when the feature is off, so re-enabling starts clean.
+            if !cam.detect_config.suppress_stationary {
+                alerted_tracks.remove(&cam.id);
+            }
 
             // Privacy masks: black out the polygons before anything looks at the
             // frame — motion gate, detector and snapshot all see the masked view.
@@ -273,6 +366,15 @@ pub fn run(
                 }
             };
             let verdict = gate.update(&frame);
+            // Capture WHERE the motion was (for the snapshot highlight) right
+            // after the diff, while the gate's mask is fresh — an owned Vec so we
+            // can release the gate borrow. Only when a snapshot will actually be
+            // drawn (motion frame + the global highlight setting on).
+            let motion_boxes: Vec<[f32; 4]> = if settings.highlight_motion && verdict.is_motion() {
+                gate.motion_regions()
+            } else {
+                Vec::new()
+            };
             // Tracker-driven analytics (line-crossing / loitering) must keep
             // advancing even on motionless frames: a person standing still
             // produces no pixel change yet is exactly what a loiter alert
@@ -295,7 +397,13 @@ pub fn run(
             // Gait identification (#64) also needs the tracker running for person
             // tracks (even across motionless frames, to keep the trajectory).
             let gait_on = cam.detect_config.gait_identify;
-            let tracker_on = analytics_on || gait_on;
+            // Stationary-object suppression also drives the tracker: it needs
+            // persistent IDs to tell a re-detected parked car from a new arrival,
+            // and the tracker must keep advancing on motionless frames so a
+            // still object's track stays alive (and `misses` reset) between the
+            // ambient-motion frames that would otherwise re-fire it.
+            let suppress_stationary = cam.detect_config.suppress_stationary;
+            let tracker_on = analytics_on || gait_on || suppress_stationary;
             // Parcel monitoring must also keep sampling motionless frames: a
             // package sits perfectly still, and we still need to notice it appear
             // (delivered) and later vanish (removed).
@@ -332,7 +440,7 @@ pub fn run(
                 .unwrap_or(&settings.detect_labels);
             let min_score = cam.detect_config.min_score.unwrap_or(0.0);
             let (fw, fh) = (frame.width() as f32, frame.height() as f32);
-            let wanted: Vec<_> = dets
+            let mut wanted: Vec<_> = dets
                 .iter()
                 .filter(|d| labels.is_empty() || labels.iter().any(|l| l == d.label))
                 .filter(|d| d.score >= min_score)
@@ -353,6 +461,15 @@ pub fn run(
             // `(frame-fraction box, identity, signature_json)`, for attributing
             // the gait identity to this frame's person events below.
             let mut gait_attr: Vec<(tracker::BBox, String, Option<String>)> = Vec::new();
+            // Stationary suppression: owned snapshot of this frame's confirmed
+            // tracks `(id, label, box, reacquired)` plus every live track id,
+            // captured inside the tracker block (where the borrow is held) for the
+            // `wanted` filter applied once we know an event would fire. `reacquired`
+            // marks a track that had a continuity gap before this frame, so a new
+            // object inheriting a vacated track's id isn't wrongly suppressed.
+            // Empty unless opted in.
+            let mut sup_tracks: Vec<(u64, String, tracker::BBox, bool)> = Vec::new();
+            let mut sup_live: std::collections::HashSet<u64> = std::collections::HashSet::new();
             if tracker_on {
                 let tdets: Vec<tracker::Det> = dets
                     .iter()
@@ -379,8 +496,34 @@ pub fn run(
                 // the unit is irrelevant to confirmation/retirement; only history
                 // (consumed by `track_speed_kmh`) cares, and it wants millis.
                 let now_ms = chrono::Local::now().timestamp_millis();
+                // Capture each existing track's consecutive-miss count BEFORE the
+                // update re-matches it (update resets misses to 0 on a match), so
+                // stationary suppression can tell a continuously-present object
+                // from a vacated track that a different object just re-occupied.
+                let prev_misses: HashMap<u64, u32> = if suppress_stationary {
+                    trk.tracks().iter().map(|t| (t.id, t.misses)).collect()
+                } else {
+                    HashMap::new()
+                };
                 trk.update(&tdets, now_ms);
                 let confirmed: Vec<&tracker::Track> = trk.confirmed().collect();
+
+                // Snapshot the tracker state for stationary suppression before
+                // its borrow ends (matching set = confirmed tracks; pruning set =
+                // every live id so an occluded-but-alive track keeps its anchor).
+                // `reacquired` = the track had a gap of >= STATIONARY_REACQUIRE_GAP
+                // frames before this frame re-matched it → treat as a new object.
+                if suppress_stationary {
+                    sup_tracks = confirmed
+                        .iter()
+                        .map(|t| {
+                            let reacquired = prev_misses.get(&t.id).copied().unwrap_or(0)
+                                >= STATIONARY_REACQUIRE_GAP;
+                            (t.id, t.label.clone(), t.bbox, reacquired)
+                        })
+                        .collect();
+                    sup_live = trk.tracks().iter().map(|t| t.id).collect();
+                }
 
                 // Gait identification (#64): accumulate body samples for each
                 // confirmed person track and attribute an identity (an enrolled
@@ -630,10 +773,29 @@ pub fn run(
                 continue;
             }
 
+            // Stationary-object suppression: now that an event WOULD fire, drop
+            // any detection that's an already-alerted, non-moving object. Match
+            // each detection to its best-IoU confirmed track of the same label;
+            // a track we've alerted before that hasn't moved past the threshold is
+            // suppressed. A new/tentative object (no confirmed track yet) fires
+            // (fail-open), preserving first-arrival latency. The per-label
+            // cooldown still rate-limits the genuinely-moving objects that pass.
+            if suppress_stationary {
+                let alerted = alerted_tracks.entry(cam.id).or_default();
+                alerted.retain(|id, _| sup_live.contains(id));
+                wanted.retain(|d| {
+                    let dbox = tracker::BBox::new(d.x1 / fw, d.y1 / fh, d.x2 / fw, d.y2 / fh);
+                    stationary_should_fire(dbox, d.label, &sup_tracks, alerted)
+                });
+                if wanted.is_empty() {
+                    continue;
+                }
+            }
+
             // One annotated snapshot per frame, shared by its events.
             let snap_rel = format!("{}-{}.jpg", cam.name, now);
             let snap_abs = snapshots_dir.join(&snap_rel);
-            if let Err(e) = save_snapshot(&frame, &wanted, &snap_abs) {
+            if let Err(e) = save_snapshot(&frame, &wanted, &motion_boxes, &snap_abs) {
                 tracing::warn!("snapshot save failed: {e:#}");
             }
 
@@ -1601,33 +1763,69 @@ fn fetch_frame(api_base: &str, camera: &str) -> Result<DynamicImage> {
     image::load_from_memory(&bytes).context("decoding frame JPEG")
 }
 
-/// Save the frame with red detection boxes burned in.
+/// Object detection box color (red).
+const DETECT_COLOR: Rgb<u8> = Rgb([255, 40, 40]);
+/// Motion-region highlight color (amber) — visually distinct from the red
+/// detection boxes so a viewer can tell "what moved" from "what was detected".
+const MOTION_COLOR: Rgb<u8> = Rgb([255, 176, 0]);
+
+/// Save the frame with the motion region(s) that tripped the gate burned in
+/// (amber, drawn first) and the matched detection boxes on top (red).
 fn save_snapshot(
     frame: &DynamicImage,
     dets: &[&detector::Detection],
+    motion_boxes: &[[f32; 4]],
     path: &std::path::Path,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     let mut img = frame.to_rgb8();
+    let (w, h) = (img.width() as f32, img.height() as f32);
+    // Motion boxes are 0..1 fractions; scale to pixels and draw under the
+    // detection boxes (thinner, so an overlapping detection stays legible).
+    for b in motion_boxes {
+        draw_rect(
+            &mut img,
+            (b[0] * w) as i64,
+            (b[1] * h) as i64,
+            (b[2] * w) as i64,
+            (b[3] * h) as i64,
+            MOTION_COLOR,
+            2,
+        );
+    }
     for d in dets {
-        draw_rect(&mut img, d.x1 as i64, d.y1 as i64, d.x2 as i64, d.y2 as i64);
+        draw_rect(
+            &mut img,
+            d.x1 as i64,
+            d.y1 as i64,
+            d.x2 as i64,
+            d.y2 as i64,
+            DETECT_COLOR,
+            3,
+        );
     }
     img.save(path)
         .with_context(|| format!("writing {}", path.display()))
 }
 
-fn draw_rect(img: &mut image::RgbImage, x1: i64, y1: i64, x2: i64, y2: i64) {
-    const COLOR: Rgb<u8> = Rgb([255, 40, 40]);
-    const THICKNESS: i64 = 3;
+fn draw_rect(
+    img: &mut image::RgbImage,
+    x1: i64,
+    y1: i64,
+    x2: i64,
+    y2: i64,
+    color: Rgb<u8>,
+    thickness: i64,
+) {
     let (w, h) = (img.width() as i64, img.height() as i64);
     let mut put = |x: i64, y: i64| {
         if x >= 0 && x < w && y >= 0 && y < h {
-            img.put_pixel(x as u32, y as u32, COLOR);
+            img.put_pixel(x as u32, y as u32, color);
         }
     };
-    for t in 0..THICKNESS {
+    for t in 0..thickness {
         for x in x1..=x2 {
             put(x, y1 + t);
             put(x, y2 - t);
@@ -1641,9 +1839,184 @@ fn draw_rect(img: &mut image::RgbImage, x1: i64, y1: i64, x2: i64, y2: i64) {
 
 #[cfg(test)]
 mod tests {
-    use super::passes_zones_and_size;
+    use super::{
+        moved_enough, passes_zones_and_size, stationary_keep, stationary_should_fire,
+        STATIONARY_MOVE_FRAC, STATIONARY_REACQUIRE_GAP,
+    };
     use crate::db::{DetectConfig, PolyZone, Zone, ZoneKind};
     use detector::Detection;
+    use std::collections::HashMap;
+
+    /// Drive a real tracker one frame exactly like the pipeline does, then apply
+    /// the production stationary decision to each detection. Returns the per-
+    /// detection fire/suppress result. Mirrors the pipeline's prev-miss capture →
+    /// update → confirmed snapshot (with the re-acquisition flag) → prune → filter.
+    fn run_frame(
+        trk: &mut tracker::Tracker,
+        alerted: &mut HashMap<u64, (f32, f32)>,
+        dets: &[(&'static str, tracker::BBox)],
+        ts: i64,
+    ) -> Vec<bool> {
+        let prev_misses: HashMap<u64, u32> =
+            trk.tracks().iter().map(|t| (t.id, t.misses)).collect();
+        let tdets: Vec<tracker::Det> = dets
+            .iter()
+            .map(|(l, b)| tracker::Det {
+                label: l,
+                score: 0.9,
+                bbox: *b,
+            })
+            .collect();
+        trk.update(&tdets, ts);
+        let sup_tracks: Vec<(u64, String, tracker::BBox, bool)> = trk
+            .confirmed()
+            .map(|t| {
+                let reacq =
+                    prev_misses.get(&t.id).copied().unwrap_or(0) >= STATIONARY_REACQUIRE_GAP;
+                (t.id, t.label.clone(), t.bbox, reacq)
+            })
+            .collect();
+        let live: std::collections::HashSet<u64> = trk.tracks().iter().map(|t| t.id).collect();
+        alerted.retain(|id, _| live.contains(id));
+        dets.iter()
+            .map(|(l, b)| stationary_should_fire(*b, l, &sup_tracks, alerted))
+            .collect()
+    }
+
+    #[test]
+    fn integration_parked_car_suppresses_then_new_arrival_fires() {
+        // End-to-end through a REAL tracker: reproduce "8 identical parked-car
+        // events" and the adversarial-review re-acquisition hole in one go.
+        let mut trk = tracker::Tracker::new(tracker::TrackerConfig::default());
+        let mut alerted: HashMap<u64, (f32, f32)> = HashMap::new();
+        let car = tracker::BBox::new(0.55, 0.30, 0.80, 0.62); // the parked SUV box
+        let dets = [("car", car)];
+
+        // Frames 0..15: the car sits parked (same box every frame, ambient motion
+        // re-running detection each tick). It must NOT spam an event per frame.
+        let mut fires = 0;
+        for f in 0..15i64 {
+            let fired = run_frame(&mut trk, &mut alerted, &dets, f * 1000);
+            if fired[0] {
+                fires += 1;
+            }
+            if f >= 5 {
+                // Well past confirmation: steady-state suppression, zero events.
+                assert!(!fired[0], "parked car must be suppressed at frame {f}");
+            }
+        }
+        // Only the brief pre-confirmation transient fired (fail-open until the
+        // track confirms, then the first confirmed alert) — not one per frame.
+        assert!(
+            fires <= 3,
+            "parked car fired {fires} times; expected the bounded arrival transient"
+        );
+
+        // The car leaves: 5 frames with no detection. The track lingers (misses
+        // grow but stay < max_age = 30), so its id survives — the exact condition
+        // for the inheritance bug.
+        for f in 15..20i64 {
+            run_frame(&mut trk, &mut alerted, &[], f * 1000);
+        }
+
+        // A DIFFERENT car pulls into the SAME spot. It re-associates to the old
+        // id, but the re-acquisition guard treats it as new → it MUST fire, not be
+        // suppressed by the previous occupant's stale anchor.
+        let fired = run_frame(&mut trk, &mut alerted, &dets, 20 * 1000);
+        assert!(
+            fired[0],
+            "a new arrival in a just-vacated spot must fire (re-acquisition guard)"
+        );
+    }
+
+    #[test]
+    fn moved_enough_first_alert_always_fires() {
+        // No prior alert (a freshly-matched track) → fires.
+        assert!(moved_enough(None, (0.5, 0.5), STATIONARY_MOVE_FRAC));
+    }
+
+    #[test]
+    fn moved_enough_stationary_object_is_suppressed() {
+        // Same spot (within jitter) → suppressed.
+        assert!(!moved_enough(
+            Some((0.50, 0.50)),
+            (0.51, 0.49),
+            STATIONARY_MOVE_FRAC
+        ));
+    }
+
+    #[test]
+    fn moved_enough_real_move_re_alerts() {
+        // Object slid well past the threshold → fires again.
+        assert!(moved_enough(
+            Some((0.20, 0.20)),
+            (0.40, 0.40),
+            STATIONARY_MOVE_FRAC
+        ));
+        // Exactly at the threshold distance also fires (>=).
+        assert!(moved_enough(
+            Some((0.0, 0.0)),
+            (STATIONARY_MOVE_FRAC, 0.0),
+            STATIONARY_MOVE_FRAC
+        ));
+    }
+
+    #[test]
+    fn stationary_keep_fires_new_track_then_suppresses_repeat() {
+        let mut alerted: HashMap<u64, (f32, f32)> = HashMap::new();
+        // First sighting of track 7: no prior anchor → fires and records.
+        assert!(stationary_keep(
+            &mut alerted,
+            7,
+            (0.30, 0.60),
+            false,
+            STATIONARY_MOVE_FRAC
+        ));
+        assert_eq!(alerted.get(&7), Some(&(0.30, 0.60)));
+        // Same track, still parked → suppressed.
+        assert!(!stationary_keep(
+            &mut alerted,
+            7,
+            (0.31, 0.59),
+            false,
+            STATIONARY_MOVE_FRAC
+        ));
+        // It then drives off (moves a lot) → re-fires and the anchor advances.
+        assert!(stationary_keep(
+            &mut alerted,
+            7,
+            (0.70, 0.60),
+            false,
+            STATIONARY_MOVE_FRAC
+        ));
+        assert_eq!(alerted.get(&7), Some(&(0.70, 0.60)));
+    }
+
+    #[test]
+    fn stationary_keep_reacquired_track_is_treated_as_new() {
+        // Regression for the track-id-inheritance bug: a vacated track id is
+        // re-associated to a DIFFERENT object that took the same spot. Even though
+        // the stored anchor matches the spot, `reacquired` must force a fire so the
+        // genuinely-new arrival isn't dropped.
+        let mut alerted: HashMap<u64, (f32, f32)> = HashMap::new();
+        alerted.insert(9, (0.40, 0.80)); // prior occupant alerted here
+                                         // Same id, same spot, but reacquired after a gap → fires (not suppressed).
+        assert!(stationary_keep(
+            &mut alerted,
+            9,
+            (0.40, 0.80),
+            true,
+            STATIONARY_MOVE_FRAC
+        ));
+        // And the new occupant's anchor is recorded, so its own repeats suppress.
+        assert!(!stationary_keep(
+            &mut alerted,
+            9,
+            (0.40, 0.80),
+            false,
+            STATIONARY_MOVE_FRAC
+        ));
+    }
 
     /// A detection whose box center is (cx, cy) in a 100x100 frame, sized w×h.
     fn det_at(label: &'static str, cx: f32, cy: f32, w: f32, h: f32) -> Detection {

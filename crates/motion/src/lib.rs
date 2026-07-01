@@ -8,11 +8,21 @@
 use image::{imageops::FilterType, DynamicImage, GrayImage};
 
 /// Thumbnail edge used for diffing. Small enough to be ~free, large enough to
-/// catch a person-sized object in a 4K frame.
+/// catch a person-sized object in a 4K frame. [`MotionGate::motion_regions`]
+/// reports at this resolution (as 0..1 frame fractions).
 const DIFF_SIZE: u32 = 64;
 
 /// Per-pixel luma delta (0-255) below which a change is treated as noise.
 const PIXEL_NOISE_FLOOR: u8 = 25;
+
+/// A connected blob of changed cells smaller than this is dropped as noise when
+/// computing [`MotionGate::motion_regions`] (a single flickering cell is not a
+/// real moving object).
+const MIN_REGION_CELLS: usize = 2;
+
+/// Cap on the number of motion regions returned, largest first — keeps a busy
+/// frame (rain, foliage) from drawing dozens of boxes.
+const MAX_REGIONS: usize = 8;
 
 /// Result of feeding one frame to the gate.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,6 +46,11 @@ pub struct MotionGate {
     prev: Option<GrayImage>,
     /// Fraction of pixels (0..1) that must change to call it motion.
     threshold: f32,
+    /// Changed-cell mask from the most recent [`MotionGate::update`], row-major
+    /// over the `DIFF_SIZE × DIFF_SIZE` thumbnail (`true` = changed past the
+    /// noise floor). Empty until the first diff. Drives [`motion_regions`] so the
+    /// snapshot can highlight *where* the motion that fired detection actually was.
+    mask: Vec<bool>,
 }
 
 impl MotionGate {
@@ -43,6 +58,7 @@ impl MotionGate {
         Self {
             prev: None,
             threshold,
+            mask: Vec::new(),
         }
     }
 
@@ -53,15 +69,19 @@ impl MotionGate {
             .to_luma8();
 
         let verdict = match &self.prev {
-            None => Verdict::Baseline,
+            None => {
+                self.mask.clear();
+                Verdict::Baseline
+            }
             Some(prev) => {
                 let total = (DIFF_SIZE * DIFF_SIZE) as f32;
-                let changed = prev
-                    .pixels()
-                    .zip(thumb.pixels())
-                    .filter(|(a, b)| a.0[0].abs_diff(b.0[0]) > PIXEL_NOISE_FLOOR)
-                    .count() as f32
-                    / total;
+                self.mask.clear();
+                self.mask.extend(
+                    prev.pixels()
+                        .zip(thumb.pixels())
+                        .map(|(a, b)| a.0[0].abs_diff(b.0[0]) > PIXEL_NOISE_FLOOR),
+                );
+                let changed = self.mask.iter().filter(|&&c| c).count() as f32 / total;
                 if changed >= self.threshold {
                     Verdict::Motion { changed }
                 } else {
@@ -72,6 +92,81 @@ impl MotionGate {
 
         self.prev = Some(thumb);
         verdict
+    }
+
+    /// Bounding boxes (0..1 frame fractions) of the connected blobs of changed
+    /// cells from the most recent [`MotionGate::update`], largest first and
+    /// capped at [`MAX_REGIONS`]. Single-cell noise blobs are dropped. Empty when
+    /// the last frame was a baseline or had no meaningful change. The caller burns
+    /// these onto the snapshot so a viewer can see what tripped the gate.
+    pub fn motion_regions(&self) -> Vec<[f32; 4]> {
+        let n = DIFF_SIZE as usize;
+        if self.mask.len() != n * n {
+            return Vec::new();
+        }
+        // 4-connectivity flood fill: label each unvisited changed cell's blob and
+        // accumulate its cell bounding box.
+        let mut visited = vec![false; self.mask.len()];
+        let mut stack: Vec<usize> = Vec::new();
+        // (min_x, min_y, max_x, max_y, cells)
+        let mut regions: Vec<(usize, usize, usize, usize, usize)> = Vec::new();
+        for start in 0..self.mask.len() {
+            if !self.mask[start] || visited[start] {
+                continue;
+            }
+            let (mut minx, mut miny, mut maxx, mut maxy, mut cells) =
+                (n, n, 0usize, 0usize, 0usize);
+            stack.push(start);
+            visited[start] = true;
+            while let Some(idx) = stack.pop() {
+                let (x, y) = (idx % n, idx / n);
+                minx = minx.min(x);
+                miny = miny.min(y);
+                maxx = maxx.max(x);
+                maxy = maxy.max(y);
+                cells += 1;
+                // 4-connected neighbors, inlined (a closure here would need to
+                // borrow both `stack` and `visited` mutably alongside the loop).
+                let mut neigh = [None; 4];
+                if x > 0 {
+                    neigh[0] = Some(idx - 1);
+                }
+                if x + 1 < n {
+                    neigh[1] = Some(idx + 1);
+                }
+                if y > 0 {
+                    neigh[2] = Some(idx - n);
+                }
+                if y + 1 < n {
+                    neigh[3] = Some(idx + n);
+                }
+                for ni in neigh.into_iter().flatten() {
+                    if self.mask[ni] && !visited[ni] {
+                        visited[ni] = true;
+                        stack.push(ni);
+                    }
+                }
+            }
+            if cells >= MIN_REGION_CELLS {
+                regions.push((minx, miny, maxx, maxy, cells));
+            }
+        }
+        // Largest blobs first, then map cell boxes to frame fractions. A cell at
+        // index x spans [x, x+1) of the grid, so the box runs to (max+1)/n.
+        regions.sort_by_key(|r| std::cmp::Reverse(r.4));
+        regions.truncate(MAX_REGIONS);
+        let d = DIFF_SIZE as f32;
+        regions
+            .into_iter()
+            .map(|(minx, miny, maxx, maxy, _)| {
+                [
+                    minx as f32 / d,
+                    miny as f32 / d,
+                    (maxx + 1) as f32 / d,
+                    (maxy + 1) as f32 / d,
+                ]
+            })
+            .collect()
     }
 }
 
@@ -124,5 +219,51 @@ mod tests {
             }
         }
         assert!(gate.update(&DynamicImage::ImageRgb8(img)).is_motion());
+    }
+
+    #[test]
+    fn baseline_frame_has_no_regions() {
+        let mut gate = MotionGate::new(0.02);
+        gate.update(&solid([0, 0, 0]));
+        assert!(gate.motion_regions().is_empty());
+    }
+
+    #[test]
+    fn localized_change_yields_one_region_over_that_corner() {
+        let mut gate = MotionGate::new(0.02);
+        let mut img = RgbImage::from_pixel(128, 128, Rgb([0, 0, 0]));
+        gate.update(&DynamicImage::ImageRgb8(img.clone()));
+        // Bright top-left quadrant (the upper-left ~quarter of the frame).
+        for y in 0..64 {
+            for x in 0..64 {
+                img.put_pixel(x, y, Rgb([255, 255, 255]));
+            }
+        }
+        gate.update(&DynamicImage::ImageRgb8(img));
+        let regions = gate.motion_regions();
+        assert_eq!(regions.len(), 1, "one connected blob");
+        let [x1, y1, x2, y2] = regions[0];
+        // The blob sits in the top-left and covers roughly the upper-left quarter.
+        assert!(x1 < 0.1 && y1 < 0.1, "anchored at the top-left corner");
+        assert!(
+            x2 > 0.4 && x2 <= 0.6 && y2 > 0.4 && y2 <= 0.6,
+            "extends to about the frame center, got x2={x2} y2={y2}"
+        );
+    }
+
+    #[test]
+    fn two_separated_changes_yield_two_regions() {
+        let mut gate = MotionGate::new(0.0);
+        let mut img = RgbImage::from_pixel(128, 128, Rgb([0, 0, 0]));
+        gate.update(&DynamicImage::ImageRgb8(img.clone()));
+        // Two well-separated bright blocks: top-left and bottom-right corners.
+        for y in 0..24 {
+            for x in 0..24 {
+                img.put_pixel(x, y, Rgb([255, 255, 255]));
+                img.put_pixel(127 - x, 127 - y, Rgb([255, 255, 255]));
+            }
+        }
+        gate.update(&DynamicImage::ImageRgb8(img));
+        assert_eq!(gate.motion_regions().len(), 2, "two disjoint blobs");
     }
 }
