@@ -82,18 +82,52 @@ const MODES: Mode[] = [
 
 type GoPage = "Cameras" | "Alarms" | "Settings" | "Live";
 
+/// Best-effort "is this mode wired up anywhere?" from the per-camera detect
+/// config the page already has. Deliberately coarse — a check means "the enabling
+/// toggle is on somewhere", NOT "fully configured for this room" (zones/alarms
+/// can't be inferred cheaply). Drives the status badge so a set-up mode looks
+/// different from an untouched one.
+function modeStatus(mode: Mode, cams: Camera[]): "active" | "partial" | "off" {
+  const any = (pick: (c: Camera) => boolean) => cams.some(pick);
+  const pose = any((c) => !!c.detect_config.pose_detect);
+  const audio = any((c) => !!c.detect_config.audio_detect);
+  const fall = any((c) => !!c.detect_config.fall_detect);
+  const child = any((c) => c.detect_config.child_height_frac != null);
+  const tri = (n: number, total: number) => (n >= total ? "active" : n > 0 ? "partial" : "off");
+  switch (mode.key) {
+    case "baby":
+      return tri([pose, audio].filter(Boolean).length, 2);
+    case "pet":
+      return audio ? "active" : "off"; // object detection is on by default
+    case "pool":
+      return child ? "active" : "off";
+    case "aging":
+      return tri([pose, fall].filter(Boolean).length, 2);
+    default:
+      return "off";
+  }
+}
+
+const STATUS_BADGE: Record<"active" | "partial" | "off", { cls: string; text: string }> = {
+  active: { cls: "badge ok", text: "On" },
+  partial: { cls: "badge warn", text: "Partly set up" },
+  off: { cls: "badge", text: "Not set up" },
+};
+
 // Modes where jumping straight to the live view is useful (watch the crib, pool
 // deck, or a room). Pets is about zones/audio, so it doesn't get a Live shortcut.
 const LIVE_MODES = ["baby", "pool", "aging"];
 
 function ModeCard({
   mode,
+  cameras,
   events,
   loaded,
   loadError,
   onGo,
 }: {
   mode: Mode;
+  cameras: Camera[];
   events: CamEvent[];
   loaded: boolean;
   loadError: string | null;
@@ -103,9 +137,13 @@ function ModeCard({
     () => events.filter((e) => mode.labels.includes(e.label)).slice(0, 4),
     [events, mode.labels]
   );
+  const badge = STATUS_BADGE[modeStatus(mode, cameras)];
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <h2 style={{ margin: 0 }}>{mode.title}</h2>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <h2 style={{ margin: 0 }}>{mode.title}</h2>
+        <span className={badge.cls} style={{ marginLeft: "auto" }}>{badge.text}</span>
+      </div>
       <p className="muted" style={{ margin: 0 }}>{mode.blurb}</p>
 
       <div>
@@ -159,7 +197,7 @@ function ModeCard({
       {mode.safety && (
         <p
           className="muted"
-          style={{ fontSize: "var(--text-xs)", margin: 0, borderTop: "1px solid var(--border)", paddingTop: 8 }}
+          style={{ fontSize: "var(--text-xs)", margin: 0, marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: 8 }}
         >
           <IconInfo size={12} /> {mode.safety}
         </p>
@@ -201,7 +239,7 @@ export default function Family({ cameras, onGo }: { cameras: Camera[]; onGo?: (p
       )}
       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
         {MODES.map((m) => (
-          <ModeCard key={m.key} mode={m} events={events} loaded={loaded} loadError={loadError} onGo={onGo} />
+          <ModeCard key={m.key} mode={m} cameras={cameras} events={events} loaded={loaded} loadError={loadError} onGo={onGo} />
         ))}
       </div>
     </div>

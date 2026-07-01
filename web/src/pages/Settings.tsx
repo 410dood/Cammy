@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState } from "../ui";
 import {
@@ -228,6 +228,15 @@ function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
         When a password is set, other devices on your network must log in. This computer
         (localhost / the desktop app) is always exempt.
       </p>
+      {!enabled && (
+        <div className="callout callout-warn" role="status">
+          <span className="callout-ico"><IconAlert size={16} /></span>
+          <div>
+            <b>No password set</b> — anyone who can reach this server has full access. Set a password
+            before exposing it beyond this computer.
+          </div>
+        </div>
+      )}
       <div className="row">
         <span className={`pill ${enabled ? "on" : ""}`}>{enabled ? "protected" : "open"}</span>
         <input
@@ -1025,63 +1034,91 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
 // Sticky in-page section nav for the long Settings page. Self-scanning: it reads
 // each rendered `.card`'s <h2>, gives the card a slug id, and renders jump chips
 // with scroll-spy — so new cards appear in the nav automatically, no wiring.
-function SettingsNav() {
-  const [sections, setSections] = useState<{ id: string; label: string }[]>([]);
-  const [active, setActive] = useState("");
+// Settings is ~20 self-contained cards; a flat scroll is a wall. Group them into
+// a few tabs WITHOUT touching card markup: each top-level card is matched by its
+// <h2> text to a group and shown/hidden imperatively. Cards are only HIDDEN
+// (never unmounted), so the 9 stateful cards (Push/Account/2FA/Users/Tokens/
+// Audit/Backup/RemoteAccess/Models) keep in-flight edits when switching tabs,
+// and the single wrapping <form> + sticky save bar are untouched.
+type GroupKey = "detection" | "modes" | "security" | "recording";
+const SETTINGS_GROUPS: { key: GroupKey; label: string }[] = [
+  { key: "detection", label: "Detection & AI" },
+  { key: "modes", label: "Modes & alerts" },
+  { key: "security", label: "Access & security" },
+  { key: "recording", label: "Recording & backup" },
+];
+// Exact <h2> textContent → group (note: "&amp;" renders as "&" in textContent).
+const SETTINGS_GROUP_OF: Record<string, GroupKey> = {
+  "Models & capabilities": "detection",
+  "Detection": "detection",
+  "Hand signals": "detection",
+  "AI event captions (opt-in)": "detection",
+  "Audio transcription": "detection",
+  "Audio detection": "detection",
+  "AI insights": "detection",
+  "Modes schedule (auto-arm / disarm)": "modes",
+  "Push notifications": "modes",
+  "Notifications": "modes",
+  "Email (SMTP)": "modes",
+  "Remote access": "security",
+  "Your account": "security",
+  "Two-factor authentication": "security",
+  "Users & roles": "security",
+  "API tokens": "security",
+  "Recent security activity": "security",
+  "Reverse-proxy SSO": "security",
+  "Recording & retention": "recording",
+  "Backup & restore": "recording",
+  "Offsite backup": "recording",
+};
 
-  useEffect(() => {
-    const scan = () => {
-      const root = document.querySelector(".settings-page");
-      if (!root) return;
-      const secs = [...root.querySelectorAll<HTMLElement>(".card")]
-        .map((c) => {
-          const label = c.querySelector("h2")?.textContent?.trim();
-          if (!label) return null;
-          const id = "set-" + label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-          c.id = id;
-          return { id, label };
-        })
-        .filter((x): x is { id: string; label: string } => x !== null);
-      setSections(secs);
-    };
-    scan();
-    // Re-scan once for cards that appear after an async load (Users, AI insights).
-    const t = setTimeout(scan, 700);
-    return () => clearTimeout(t);
+function SettingsTabs() {
+  const [active, setActive] = useState<GroupKey>("detection");
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  // Toggle each mapped top-level card's visibility for the active group. Unmapped
+  // or heading-less cards are left visible so nothing can silently disappear.
+  const apply = useCallback(() => {
+    const cards = document.querySelectorAll<HTMLElement>(".settings-page > form > .card");
+    cards.forEach((c) => {
+      const label = c.querySelector("h2")?.textContent?.trim();
+      const g = label ? SETTINGS_GROUP_OF[label] : undefined;
+      if (!g) return;
+      c.hidden = g !== activeRef.current;
+    });
   }, []);
 
   useEffect(() => {
-    if (!sections.length) return;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) if (e.isIntersecting) setActive((e.target as HTMLElement).id);
-      },
-      { rootMargin: "-72px 0px -70% 0px" },
-    );
-    for (const s of sections) {
-      const el = document.getElementById(s.id);
-      if (el) obs.observe(el);
-    }
-    return () => obs.disconnect();
-  }, [sections]);
+    apply();
+  }, [active, apply]);
 
-  if (sections.length < 3) return null;
+  // Re-apply when cards mount later (Users appears once admin loads, AI insights,
+  // the token-reveal row) so an async card doesn't render in the wrong tab.
+  useEffect(() => {
+    const form = document.querySelector<HTMLElement>(".settings-page > form");
+    if (!form) return;
+    const obs = new MutationObserver(() => apply());
+    obs.observe(form, { childList: true });
+    apply();
+    return () => obs.disconnect();
+  }, [apply]);
 
   return (
-    <nav className="settings-nav" aria-label="Settings sections">
-      {sections.map((s) => (
+    <div className="arm-bar settings-tabs" role="tablist" aria-label="Settings sections">
+      {SETTINGS_GROUPS.map((g) => (
         <button
-          key={s.id}
+          key={g.key}
           type="button"
-          className={`settings-nav-chip ${active === s.id ? "active" : ""}`}
-          onClick={() =>
-            document.getElementById(s.id)?.scrollIntoView({ behavior: "smooth", block: "start" })
-          }
+          role="tab"
+          aria-selected={active === g.key}
+          className={`arm-opt ${active === g.key ? "active" : ""}`}
+          onClick={() => setActive(g.key)}
         >
-          {s.label}
+          {g.label}
         </button>
       ))}
-    </nav>
+    </div>
   );
 }
 
@@ -1255,7 +1292,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
   return (
     <div className="settings-page">
       <h1>Settings</h1>
-      <SettingsNav />
+      <SettingsTabs />
       <form onSubmit={save}>
         <ModelsCard />
         <div className="card">

@@ -859,9 +859,11 @@ export default function Cameras({
         ))}
       </datalist>
 
-      <div className="card">
-        <h2>Add camera</h2>
-        <div className="row" style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div className="card" style={{ order: cameras.length > 0 ? 2 : 1, margin: 0 }}>
+        <details className="adv tune-sec" open={cameras.length === 0}>
+        <summary><IconVideo size={15} /> Add a camera</summary>
+        <div className="row" style={{ marginBottom: 10, marginTop: 8 }}>
           <button type="button" className="btn btn-ghost" disabled={scanning} onClick={scan}>
             {scanning ? "Scanning…" : (<><IconRadar size={15} /> Scan network for cameras</>)}
           </button>
@@ -957,9 +959,10 @@ export default function Cameras({
           Names: lowercase letters, digits, "-", "_". The source is passed to go2rtc verbatim, so{" "}
           <code>rtsp://</code>, <code>ffmpeg:</code>, <code>exec:</code>… all work.
         </p>
+        </details>
       </div>
 
-      <div className="card">
+      <div className="card" style={{ order: cameras.length > 0 ? 1 : 2, margin: 0 }}>
         <h2>Registered</h2>
         {cameras.length === 0 ? (
           <EmptyState
@@ -1042,6 +1045,7 @@ export default function Cameras({
           </table>
           </div>
         )}
+      </div>
       </div>
 
       {tuning && (

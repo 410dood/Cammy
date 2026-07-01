@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, CamEvent, GaitProfile, PlateEntry, PlateCategory } from "../api";
-import { useToast, useDialog, Modal, RelTime, ErrorState } from "../ui";
+import { useToast, useDialog, Modal, RelTime, ErrorState, EmptyState } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 import { IconUser, IconStranger, IconCar, IconAlert, IconCheck, IconTrash, IconPlus } from "../icons";
@@ -55,6 +55,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   const [gaitNames, setGaitNames] = useState<Record<number, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [showAllUnknown, setShowAllUnknown] = useState(false);
 
   const load = () => {
     api.faces().then((r) => {
@@ -275,10 +276,11 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
           ) : !loaded ? (
             <span className="skeleton" style={{ height: 60 }} aria-busy="true" />
           ) : (
-            <p className="muted">
-              Nobody enrolled or seen yet. Name a face from the unknown gallery below — detections of
-              that person will then carry their name.
-            </p>
+            <EmptyState
+              icon={<IconUser />}
+              title="Nobody enrolled or seen yet"
+              hint="Name a face from the unknown gallery below — detections of that person will then carry their name."
+            />
           )
         ) : (
           <div className="identity-grid">
@@ -357,9 +359,19 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
           <div className="identity-grid">
             {plates.map((s) => (
               <div key={s.plate} className="identity-card" style={{ cursor: "default" }}>
-                <span className={`identity-thumb ${s.cls === "deny" ? "danger" : s.cls === "allow" ? "ok" : ""}`}>
-                  <IconCar size={20} />
-                </span>
+                {s.last?.snapshot ? (
+                  <img
+                    className={`identity-thumb ${s.cls === "deny" ? "danger" : s.cls === "allow" ? "ok" : ""}`}
+                    src={`/api/snapshots/${s.last.snapshot}?w=120`}
+                    alt={s.plate}
+                    loading="lazy"
+                    decoding="async"
+                  />
+                ) : (
+                  <span className={`identity-thumb ${s.cls === "deny" ? "danger" : s.cls === "allow" ? "ok" : ""}`}>
+                    <IconCar size={20} />
+                  </span>
+                )}
                 <div className="identity-body">
                   <div className="identity-head">
                     <b style={{ letterSpacing: "0.04em" }}>{s.plate}</b>
@@ -478,38 +490,50 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
       <div className="card">
         <h2>Unknown faces</h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          Confident face detections that didn't match anyone. Name one to enroll that person
-          (a clear, frontal crop works best).
+          Confident face detections that didn't match anyone. The same person may appear more than
+          once — name any one crop to enroll them (a clear, frontal crop works best).
         </p>
         {unknown.length === 0 ? (
           <p className="muted">None waiting.</p>
         ) : (
-          <div className="event-grid">
-            {unknown.map((file) => (
-              <div className="event-card" key={file} style={{ cursor: "default" }}>
-                <img src={`/api/faces/unknown/${file}`} alt="unknown face" loading="lazy" decoding="async" />
-                <div className="meta">
-                  <div className="row">
-                    <input
-                      type="text"
-                      placeholder="who is this?"
-                      value={names[file] || ""}
-                      onChange={(e) => setNames((n) => ({ ...n, [file]: e.target.value }))}
-                      style={{ flex: 1 }}
-                      onKeyDown={(e) => e.key === "Enter" && enroll(file)}
-                    />
-                    <button
-                      className="btn btn-primary"
-                      disabled={!(names[file] || "").trim()}
-                      onClick={() => enroll(file)}
-                    >
-                      Enroll
-                    </button>
+          <>
+            <div className="event-grid">
+              {(showAllUnknown ? unknown : unknown.slice(0, 12)).map((file) => (
+                <div className="event-card" key={file} style={{ cursor: "default" }}>
+                  <img src={`/api/faces/unknown/${file}`} alt="unknown face" loading="lazy" decoding="async" />
+                  <div className="meta">
+                    <div className="row">
+                      <input
+                        type="text"
+                        placeholder="who is this?"
+                        value={names[file] || ""}
+                        onChange={(e) => setNames((n) => ({ ...n, [file]: e.target.value }))}
+                        style={{ flex: 1 }}
+                        onKeyDown={(e) => e.key === "Enter" && enroll(file)}
+                      />
+                      <button
+                        className="btn btn-primary"
+                        disabled={!(names[file] || "").trim()}
+                        onClick={() => enroll(file)}
+                      >
+                        Enroll
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+            {unknown.length > 12 && (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ marginTop: 12 }}
+                onClick={() => setShowAllUnknown((v) => !v)}
+              >
+                {showAllUnknown ? "Show fewer" : `Show all ${unknown.length} unknown faces`}
+              </button>
+            )}
+          </>
         )}
       </div>
 

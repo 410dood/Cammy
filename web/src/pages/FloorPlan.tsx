@@ -4,8 +4,8 @@
 
 import { ChangeEvent, MouseEvent, useEffect, useRef, useState } from "react";
 import { api, Camera, FloorPlan, Settings, StatusMap } from "../api";
-import { useToast, TogglePill, ErrorState } from "../ui";
-import { IconUpload, IconVideo, IconCheck } from "../icons";
+import { useToast, TogglePill, ErrorState, EmptyState } from "../ui";
+import { IconUpload, IconVideo, IconCheck, IconMap } from "../icons";
 
 async function resizeToDataUrl(file: File, maxDim: number): Promise<string> {
   const bitmap = await createImageBitmap(file);
@@ -117,15 +117,17 @@ export default function FloorPlanPage({
       ) : loadError && !plan.image ? (
         <ErrorState what="your floor plan" message={loadError} onRetry={loadPlan} />
       ) : !plan.image ? (
-        <label className="empty fp-drop">
-          <IconUpload size={22} />
-          <b>Upload a floor plan</b>
-          <p className="muted" style={{ margin: 0 }}>
-            A PNG or JPG of your home or property. Then drop camera markers onto it and click a
-            marker to jump to that camera live.
-          </p>
-          <input type="file" accept="image/*" style={{ display: "none" }} onChange={onFile} />
-        </label>
+        <EmptyState
+          icon={<IconMap />}
+          title="Upload a floor plan"
+          hint="A PNG or JPG of your home or property. Then drop camera markers onto it and click a marker to jump to that camera live."
+          action={
+            <label className="btn btn-primary">
+              <IconUpload size={15} /> Choose image
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={onFile} />
+            </label>
+          }
+        />
       ) : (
         <>
           {editing && (

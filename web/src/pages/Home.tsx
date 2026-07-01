@@ -228,12 +228,29 @@ export default function Home({
           value={loaded ? today.length : <SkelValue />}
           sub={stats ? `${stats.events_total.toLocaleString()} all time` : ""}
         />
-        <StatCard
-          icon={<IconDatabase size={20} />}
-          label="Free space"
-          value={stats ? fmtBytes(stats.disk_free_bytes) : <SkelValue />}
-          sub={stats ? `${fmtBytes(stats.total_bytes)} recorded` : ""}
-        />
+        {(() => {
+          // Escalate the disk tile when the drive is filling up (data-loss risk),
+          // matching the Recordings capacity thresholds. days_until_full is the
+          // only clean signal (Stats carries no disk-total to derive a fraction).
+          const dtf = stats?.days_until_full ?? null;
+          const diskTone: "warn" | "danger" | undefined =
+            dtf == null ? undefined : dtf < 2 ? "danger" : dtf < 7 ? "warn" : undefined;
+          return (
+            <StatCard
+              icon={<IconDatabase size={20} />}
+              label="Free space"
+              value={stats ? fmtBytes(stats.disk_free_bytes) : <SkelValue />}
+              sub={
+                stats
+                  ? diskTone
+                    ? `~${Math.round(dtf!)} days until full`
+                    : `${fmtBytes(stats.total_bytes)} recorded`
+                  : ""
+              }
+              tone={diskTone}
+            />
+          );
+        })()}
       </div>
 
       {digest && (
@@ -242,7 +259,23 @@ export default function Home({
             <span className="eyebrow"><IconSparkles size={13} /> Daily digest</span>
             <span className="muted clock" style={{ marginLeft: "auto" }}>{fmtTime(digest.ts)}</span>
           </div>
-          <p className="digest-text">{digest.text}</p>
+          {(() => {
+            // The digest is a run-on paragraph; split into sentences so it reads
+            // as a scannable list rather than a wall of prose.
+            const sentences = digest.text
+              .split(/(?<=\.)\s+/)
+              .map((s) => s.trim())
+              .filter(Boolean);
+            return sentences.length > 1 ? (
+              <ul className="digest-list">
+                {sentences.map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="digest-text">{digest.text}</p>
+            );
+          })()}
         </div>
       )}
 

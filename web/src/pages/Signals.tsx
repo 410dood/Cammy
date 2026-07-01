@@ -396,6 +396,29 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
             aria-label="Live hand-landmark overlay for gesture detection"
             style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
           />
+          {!running && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                textAlign: "center",
+                padding: 16,
+                color: "var(--text-muted)",
+                pointerEvents: "none",
+                // Un-mirror the placeholder inside the selfie-mirrored webcam box.
+                transform: isWebcam ? "scaleX(-1)" : "none",
+              }}
+            >
+              <IconSiren size={30} />
+              <div style={{ fontWeight: 600, color: "var(--text)" }}>Ready to read hand signals</div>
+              <div style={{ fontSize: "var(--text-sm)" }}>{status}</div>
+            </div>
+          )}
           {current && (
             <div
               style={{
@@ -442,7 +465,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
         {armed.length ? (
           <div className="row" style={{ flexWrap: "wrap" }}>
             {armed.map((g) => (
-              <span key={g} className="pill on">
+              <span key={g} className="badge ok">
                 {pretty(g)}
               </span>
             ))}

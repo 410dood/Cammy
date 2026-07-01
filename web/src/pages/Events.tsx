@@ -13,7 +13,7 @@ import {
 // Collapse a run of same-camera, same-label detections that happen close in
 // time into one "activity" card (best frame + count + duration), the way
 // UniFi Protect groups motion into a single smart detection.
-interface Cluster {
+export interface Cluster {
   rep: CamEvent; // best (highest-score) frame in the run
   count: number;
   startTs: number; // oldest
@@ -21,7 +21,10 @@ interface Cluster {
 }
 const GROUP_GAP = 120; // seconds between detections that still count as one activity
 
-function groupEvents(list: CamEvent[]): Cluster[] {
+// Collapse a run of same-camera/same-label detections within GROUP_GAP into one
+// representative cluster (highest-score frame + a count). Shared with the camera
+// detail rail so a parked car doesn't flood it with identical thumbnails.
+export function groupEvents(list: CamEvent[]): Cluster[] {
   const out: Cluster[] = [];
   for (const e of list) {
     // `list` is newest-first, so the cluster's first member is its newest (endTs).
@@ -623,55 +626,66 @@ export default function Events({
             </option>
           ))}
         </select>
-        {gestures.length > 0 && (
-          <select value={gestureFilter} onChange={(e) => setGestureFilter(e.target.value)} aria-label="Filter by hand signal">
-            <option value="">any signal</option>
-            {gestures.map((g) => (
-              <option key={g} value={g}>
-                {g}
-              </option>
-            ))}
-          </select>
-        )}
-        {zones.length > 0 && (
-          <select value={zoneFilter} onChange={(e) => setZoneFilter(e.target.value)} aria-label="Filter by zone">
-            <option value="">any zone</option>
-            {zones.map((z) => (
-              <option key={z} value={z}>
-                {z}
-              </option>
-            ))}
-          </select>
-        )}
-        <label className="field" title="from">
-          <input type="datetime-local" value={fromTime} onChange={(e) => setFromTime(e.target.value)} />
-        </label>
-        <label className="field" title="to">
-          <input type="datetime-local" value={toTime} onChange={(e) => setToTime(e.target.value)} />
-        </label>
-        {(fromTime || toTime) && (
-          <button
-            className="ghost"
-            onClick={() => {
-              setFromTime("");
-              setToTime("");
-            }}
-          >
-            Clear time
-          </button>
-        )}
-        <input
-          type="text"
-          placeholder="plate…"
-          style={{ width: 110 }}
-          value={plateFilter}
-          onChange={(e) => setPlateFilter(e.target.value)}
-        />
         <span className="muted count">{shown.length} events · auto-refreshing</span>
         <a className="btn btn-ghost" href={exportUrl()} title="Download the current filter as a CSV">
           <IconDownload size={15} /> Export CSV
         </a>
       </div>
+
+      {/* Power-user filters tucked behind a disclosure so the everyday triage row
+          stays scannable; force-open whenever one of them is active. */}
+      <details
+        className="adv"
+        open={!!(gestureFilter || zoneFilter || fromTime || toTime || plateFilter)}
+      >
+        <summary>More filters — hand signal, zone, time range, plate</summary>
+        <div className="row" style={{ marginTop: 8, marginBottom: 16 }}>
+          {gestures.length > 0 && (
+            <select value={gestureFilter} onChange={(e) => setGestureFilter(e.target.value)} aria-label="Filter by hand signal">
+              <option value="">any signal</option>
+              {gestures.map((g) => (
+                <option key={g} value={g}>
+                  {g}
+                </option>
+              ))}
+            </select>
+          )}
+          {zones.length > 0 && (
+            <select value={zoneFilter} onChange={(e) => setZoneFilter(e.target.value)} aria-label="Filter by zone">
+              <option value="">any zone</option>
+              {zones.map((z) => (
+                <option key={z} value={z}>
+                  {z}
+                </option>
+              ))}
+            </select>
+          )}
+          <label className="field" title="from">
+            <input type="datetime-local" value={fromTime} onChange={(e) => setFromTime(e.target.value)} />
+          </label>
+          <label className="field" title="to">
+            <input type="datetime-local" value={toTime} onChange={(e) => setToTime(e.target.value)} />
+          </label>
+          {(fromTime || toTime) && (
+            <button
+              className="ghost"
+              onClick={() => {
+                setFromTime("");
+                setToTime("");
+              }}
+            >
+              Clear time
+            </button>
+          )}
+          <input
+            type="text"
+            placeholder="plate…"
+            style={{ width: 110 }}
+            value={plateFilter}
+            onChange={(e) => setPlateFilter(e.target.value)}
+          />
+        </div>
+      </details>
 
       {topLabels.length > 0 && !searchResults && (
         <div className="row" style={{ marginBottom: 12, flexWrap: "wrap" }}>

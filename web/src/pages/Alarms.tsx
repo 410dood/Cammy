@@ -65,6 +65,7 @@ export default function Alarms({
   const toast = useToast();
   const [rules, setRules] = useState<AlarmRule[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
@@ -108,6 +109,12 @@ export default function Alarms({
       .finally(() => setLoaded(true));
   };
   useEffect(load, []);
+  // First-run: open the builder when there are no rules yet (gated on `loaded`
+  // so it doesn't flash open before the list resolves). Once rules exist the
+  // list leads and the builder stays collapsed behind the "New rule" button.
+  useEffect(() => {
+    if (loaded && rules.length === 0) setCreating(true);
+  }, [loaded, rules.length]);
 
   const removeRule = async (r: AlarmRule) => {
     if (!(await dialog.confirm({ title: `Delete rule “${r.name}”?`, confirmLabel: "Delete", danger: true }))) return;
@@ -171,6 +178,7 @@ export default function Alarms({
         actions: acts,
       });
       toast.success(`Rule “${name.trim()}” created`);
+      setCreating(false);
       setName("");
       setActions([{ kind: "webhook", target: "", priority: 0 }]);
       setModes([]);
@@ -285,7 +293,9 @@ export default function Alarms({
     <>
       <h1>Alarm manager</h1>
 
-      <div className="card">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {creating && (
+      <div className="card" style={{ order: 2, margin: 0 }}>
         <h2>New rule — when this happens…</h2>
         <form onSubmit={add}>
           <div className="row" style={{ marginBottom: 8 }}>
@@ -518,16 +528,33 @@ export default function Alarms({
                 title="Minimum seconds between firings of this rule (debounces the whole scene)."
               />
             </label>
-            <div className="spacer" />
+          </div>
+          <div
+            className="row"
+            style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)", justifyContent: "flex-end" }}
+          >
             <button className="btn btn-primary" disabled={busy || !name.trim()}>
               {busy ? "Creating…" : "Create rule"}
             </button>
           </div>
         </form>
       </div>
+      )}
 
-      <div className="card">
-        <h2>Rules</h2>
+      <div className="card" style={{ order: 1, margin: 0 }}>
+        <div className="card-head">
+          <h2 style={{ margin: 0 }}>
+            Rules{loaded && rules.length > 0 ? <span className="tune-count"> ({rules.length})</span> : null}
+          </h2>
+          <button
+            type="button"
+            className="btn btn-primary ev-act"
+            style={{ marginLeft: "auto" }}
+            onClick={() => setCreating((v) => !v)}
+          >
+            <IconPlus size={14} /> {creating ? "Close" : "New rule"}
+          </button>
+        </div>
         {!loaded ? (
           <div aria-busy="true">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -541,7 +568,7 @@ export default function Alarms({
             <EmptyState
               icon={<IconSiren />}
               title="No alarm rules yet"
-              hint="Rules fire actions the moment a matching event is detected. Create one using the form above."
+              hint="Rules fire actions the moment a matching event is detected. Create one with the New rule button above."
             />
           )
         ) : (
@@ -644,6 +671,7 @@ export default function Alarms({
           </table>
           </div>
         )}
+      </div>
       </div>
     </>
   );

@@ -6,9 +6,10 @@ import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
 import Heatmap from "./Heatmap";
 import {
-  IconX, IconMic, IconUser, IconCar,
+  IconX, IconMic, IconUser, IconCar, IconDownload,
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight, IconPlus, IconMinus,
 } from "./icons";
+import { groupEvents } from "./pages/Events";
 
 /// UniFi Protect-style camera view: large live player with the camera's own
 /// timeline underneath and its recent detections alongside. Esc closes.
@@ -170,7 +171,7 @@ export default function CameraDetail({
             Recent detections
           </h2>
           {events.length === 0 && <p className="muted">No events for this camera yet.</p>}
-          {events.slice(0, 20).map((ev) => (
+          {groupEvents(events).slice(0, 20).map(({ rep: ev, count }) => (
             <button
               type="button"
               className="feed-item"
@@ -182,6 +183,9 @@ export default function CameraDetail({
               <div>
                 <b style={{ textTransform: "capitalize" }}>{ev.label}</b>{" "}
                 <span className="score">{(ev.score * 100).toFixed(0)}%</span>
+                {count > 1 && (
+                  <span className="badge" style={{ marginLeft: 6 }}>×{count}</span>
+                )}
                 {ev.face && (
                   <span className="badge ok" style={{ marginLeft: 6 }}>
                     <IconUser size={12} /> {ev.face}
@@ -208,16 +212,26 @@ export default function CameraDetail({
 
       {playing && (
         <Modal bare onClose={() => setPlaying(null)}>
-          <video
-            src={`/api/recordings/${playing.segment.id}/video`}
-            controls
-            autoPlay
-            onLoadedMetadata={(e) => {
-              const v = e.currentTarget;
-              if (playing.offset > 0)
-                v.currentTime = Math.min(playing.offset, Math.max(0, v.duration - 2));
-            }}
-          />
+          <div style={{ position: "relative", lineHeight: 0 }}>
+            <video
+              src={`/api/recordings/${playing.segment.id}/video`}
+              controls
+              autoPlay
+              onLoadedMetadata={(e) => {
+                const v = e.currentTarget;
+                if (playing.offset > 0)
+                  v.currentTime = Math.min(playing.offset, Math.max(0, v.duration - 2));
+              }}
+            />
+            <a
+              className="btn btn-ghost ev-act"
+              href={`/api/recordings/${playing.segment.id}/video`}
+              download
+              style={{ position: "absolute", top: 8, right: 8 }}
+            >
+              <IconDownload size={14} /> Download
+            </a>
+          </div>
         </Modal>
       )}
     </div>

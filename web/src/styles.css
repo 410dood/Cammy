@@ -371,7 +371,9 @@ body {
 /* --- live grid -------------------------------------------------------------- */
 .live-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  /* auto-fit (not auto-fill) so a trailing lone tile stretches to fill the row
+     instead of leaving a dead half-row of phantom tracks. */
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
   gap: 12px;
 }
 .tile {
@@ -1061,7 +1063,7 @@ button.feed-item {
 @media (min-width: 769px) and (max-width: 1024px) {
   .sidebar { width: 184px; }
   .main { padding: 20px 22px 40px; }
-  .live-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+  .live-grid { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
   .event-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
   .detail-body { grid-template-columns: 1fr 280px; }
 }
@@ -1475,9 +1477,13 @@ button.primary:disabled, button.secondary:disabled, button.ghost:disabled, butto
 .stat-value { font-size: var(--text-xl); font-weight: var(--fw-semibold); line-height: 1.1; letter-spacing: var(--ls-tight); }
 .stat-label { font-size: var(--text-sm); color: var(--text-muted); margin-top: 2px; }
 .stat-sub { font-size: var(--text-xs); margin-top: 1px; }
-.home-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+/* auto-fit so a lone card (e.g. Live occupancy with no Throughput) spans the
+   full width instead of leaving a dead half-row beside empty space. */
+.home-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; align-items: start; }
 @media (max-width: 900px) { .home-cols { grid-template-columns: 1fr; } }
 .digest-card .digest-text { margin: 0; line-height: 1.6; color: var(--text); }
+.digest-card .digest-list { margin: 0; padding-left: 18px; line-height: 1.6; color: var(--text); }
+.digest-card .digest-list li { margin: 2px 0; }
 .lastseen { display: flex; flex-direction: column; gap: 8px; }
 .lastseen-item { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: var(--r-sm); background: var(--bg); }
 /* Clickable last-seen rows render as a <button>: reset UA chrome, keep the row. */
@@ -1498,7 +1504,9 @@ button.lastseen-item:hover { background: var(--surface-hover); }
 }
 .attn-row:hover { background: var(--warn-bg); }
 .attn-row b { color: var(--text); }
-.recent-feed { display: flex; flex-direction: column; gap: 2px; }
+/* Cap the feed so a long activity list can't tower over the short left card
+   (which produced the lower-left whitespace void). Scrolls like the other rails. */
+.recent-feed { display: flex; flex-direction: column; gap: 2px; max-height: 460px; overflow-y: auto; }
 
 /* --- cross-camera timeline (A2) -------------------------------------------- */
 .xtl { position: relative; padding: 14px 16px 28px; }
@@ -1975,6 +1983,9 @@ img.identity-thumb { background: var(--n-0); }
   background: var(--accent-tint);
 }
 .settings-page .card { scroll-margin-top: 62px; }
+/* Settings section tabs reuse the .arm-bar segmented control; allow wrapping on
+   narrow screens and give it a little breathing room under the page title. */
+.settings-tabs { display: flex; flex-wrap: wrap; margin: 2px 0 18px; max-width: 100%; }
 
 /* Home security mode segmented control (Home / Away / Disarmed) */
 .arm-bar {

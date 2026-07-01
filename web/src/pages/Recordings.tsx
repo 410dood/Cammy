@@ -2,7 +2,7 @@
 import { api, CamEvent, Camera, fmtBytes, fmtTime, Segment, Stats } from "../api";
 import Timeline from "../Timeline";
 import CrossTimeline from "../CrossTimeline";
-import { IconPlay, IconFilm } from "../icons";
+import { IconPlay, IconFilm, IconAlert } from "../icons";
 import { EmptyState, ErrorState, Modal } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -70,9 +70,48 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
         Continuous footage and storage. For AI detections (person, vehicle, and more), see Events.
       </p>
 
-      {stats && (
+      {stats && (() => {
+        // Severity for the storage horizon: whichever limiter (disk filling up
+        // OR retention pruning) bites soonest. This is a data-loss warning, so
+        // <7 days gets a warn callout and <2 a danger one instead of muted text.
+        const horizons = [stats.days_until_full, stats.retention_horizon_days].filter(
+          (d): d is number => d != null,
+        );
+        const soonest = horizons.length ? Math.min(...horizons) : null;
+        const capTone: "warn" | "danger" | null =
+          soonest == null ? null : soonest < 2 ? "danger" : soonest < 7 ? "warn" : null;
+        const rh = stats.retention_horizon_days;
+        const capDetail = (
+          <>
+            writing ~{fmtBytes(stats.write_bytes_per_day)}/day
+            {stats.days_until_full != null && (
+              <>
+                {" "}
+                · ~{Math.round(stats.days_until_full)} days until full
+                {stats.est_full_ts != null && (
+                  <> ({new Date(stats.est_full_ts * 1000).toLocaleDateString()})</>
+                )}
+              </>
+            )}
+            {rh != null && (
+              <> · retention caps history at {rh < 1 ? "under a day" : `~${Math.round(rh)} days`}</>
+            )}
+            <span style={{ opacity: 0.7 }}> · estimated</span>
+          </>
+        );
+        // Name the actual limiter so the fix is obvious (add disk vs. shorten retention).
+        const diskFirst =
+          stats.days_until_full != null && (rh == null || stats.days_until_full <= rh);
+        return (
         <div className="card">
-          <h2>Storage</h2>
+          <div className="card-head">
+            <h2 style={{ margin: 0 }}>Storage</h2>
+            {capTone && (
+              <span className={`badge ${capTone}`} style={{ marginLeft: 8 }}>
+                <IconAlert size={11} /> {capTone === "danger" ? "Nearly full" : "Filling up"}
+              </span>
+            )}
+          </div>
           <div className="row" style={{ marginBottom: 10 }}>
             <span className="muted">
               {fmtBytes(stats.total_bytes)} of recordings · {fmtBytes(stats.snapshots_bytes)} of
@@ -80,26 +119,34 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
               {stats.disk_free_bytes != null && <> · {fmtBytes(stats.disk_free_bytes)} free on disk</>}
             </span>
           </div>
-          {stats.write_bytes_per_day > 0 && (
-            <div className="row" style={{ marginBottom: 12 }}>
-              <span className="muted">
-                <b>Capacity</b> — writing ~{fmtBytes(stats.write_bytes_per_day)}/day
-                {stats.days_until_full != null && (
-                  <>
-                    {" "}
-                    · ~{Math.round(stats.days_until_full)} days until full
-                    {stats.est_full_ts != null && (
-                      <> ({new Date(stats.est_full_ts * 1000).toLocaleDateString()})</>
-                    )}
-                  </>
-                )}
-                {stats.retention_horizon_days != null && (
-                  <> · retention caps history at ~{Math.round(stats.retention_horizon_days)} days</>
-                )}
-                <span style={{ opacity: 0.7 }}> · estimated</span>
-              </span>
-            </div>
-          )}
+          {stats.write_bytes_per_day > 0 &&
+            (capTone ? (
+              <div
+                className={`callout callout-${capTone}`}
+                role={capTone === "danger" ? "alert" : "status"}
+                style={{ marginBottom: 12 }}
+              >
+                <span className="callout-ico">
+                  <IconAlert size={16} />
+                </span>
+                <div>
+                  <b>
+                    {diskFirst ? "Disk is filling up" : "Retention is pruning old footage"}
+                  </b>{" "}
+                  — {diskFirst ? "add disk or shorten retention" : "raise retention or add disk"} to
+                  keep more history.
+                  <div className="muted" style={{ marginTop: 2 }}>
+                    {capDetail}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="row" style={{ marginBottom: 12 }}>
+                <span className="muted">
+                  <b>Capacity</b> — {capDetail}
+                </span>
+              </div>
+            ))}
           {stats.cameras.map((c) => (
             <div className="row" key={c.camera_id} style={{ marginBottom: 6 }}>
               <span style={{ width: 120 }}>
@@ -120,7 +167,8 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             </div>
           ))}
         </div>
-      )}
+        );
+      })()}
 
       <div className="row" style={{ marginBottom: 16 }}>
         <select value={cameraId} onChange={(e) => setCameraId(e.target.value === "" ? "" : Number(e.target.value))}>
