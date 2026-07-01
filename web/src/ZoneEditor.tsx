@@ -86,7 +86,11 @@ export default function ZoneEditor({
     });
   };
 
-  const addPoint = (e: React.MouseEvent) => {
+  // Pointer (not click) so a finger placing points works on tablets/phones —
+  // clientX/Y are identical for mouse + touch, and the tap-to-place model is
+  // unchanged. touchAction:'none' (set on the surface while drawing) stops the
+  // touch from scrolling/zooming the modal instead of dropping a point.
+  const addPoint = (e: React.PointerEvent) => {
     if (!draw) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     placePoint((e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
@@ -154,7 +158,7 @@ export default function ZoneEditor({
   return (
     <div>
       <div
-        onClick={addPoint}
+        onPointerDown={addPoint}
         onKeyDown={onCanvasKey}
         tabIndex={draw ? 0 : undefined}
         aria-label={
@@ -171,6 +175,7 @@ export default function ZoneEditor({
           borderRadius: 8,
           overflow: "hidden",
           cursor: draw ? "crosshair" : "default",
+          touchAction: draw ? "none" : undefined,
         }}
       >
         <img

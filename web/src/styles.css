@@ -1316,6 +1316,37 @@ button.primary:disabled, button.secondary:disabled, button.ghost:disabled, butto
   to { opacity: 1; transform: none; }
 }
 
+/* --- Detection-tuning modal: wide card, sectioned body, sticky header + footer -- */
+.modal-card.modal-wide { max-width: min(820px, calc(100vw - 32px)); }
+/* .modal-card is itself the scroll region (overflow:auto), so a sticky header and
+   footer keep the title + Save reachable past the long body (the ZoneEditor canvas
+   sits at the bottom of the same scroll). */
+.modal-card.modal-wide > .modal-head { position: sticky; top: 0; z-index: 3; background: var(--overlay); }
+.tune-body { padding: 16px 18px; }
+.tune-foot { position: sticky; bottom: 0; z-index: 3; background: var(--overlay); }
+
+/* Collapsible section headers reuse the details.adv recipe, lifted to a real
+   heading weight and separated by hairline dividers. */
+.tune-sec { margin: 0; border-top: 1px solid var(--border); }
+.tune-sec:first-of-type { border-top: 0; }
+.tune-sec > summary { padding: 12px 2px; color: var(--text); font-size: var(--text-sm); font-weight: var(--fw-semibold); }
+.tune-sec > summary svg { color: var(--text-muted); }
+.tune-count { color: var(--text-muted); font-weight: var(--fw-medium); }
+
+/* Even, aligned field grid — replaces the flat flex-wrap wall. The inner min()
+   collapses each track to one full-width column on narrow screens. */
+.tune-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(210px, 100%), 1fr)); gap: 12px 14px; align-items: start; padding: 2px 0 6px; }
+.tune-grid .span-full { grid-column: 1 / -1; }
+.tune-grid label.field > input,
+.tune-grid label.field > select { width: 100%; box-sizing: border-box; }
+
+/* Capability switch bank: a TogglePill over a visible one-line description (the
+   meaning that used to hide in a title= tooltip). */
+.feat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(210px, 100%), 1fr)); gap: 10px 12px; align-items: start; padding: 2px 0 4px; }
+.feat { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; max-width: 100%; }
+.feat .pill { max-width: 100%; white-space: normal; text-align: left; }
+.feat-help { font-size: var(--text-xs); color: var(--text-muted); line-height: 1.45; }
+
 /* --- chips (interactive filters) + badges (static status) ------------------ */
 .chip {
   display: inline-flex;

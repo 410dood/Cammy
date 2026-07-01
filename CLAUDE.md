@@ -16,7 +16,43 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.3 — full competitor suite (#1–#70) integrated on main + cross-feature simplify, 2026-06-22
 
-### Latest: stationary-object suppression + motion highlight, 2026-06-30
+### Latest: Detection-tuning modal UX redesign, 2026-07-01
+
+The per-camera **"Detection tuning"** modal (`web/src/pages/Cameras.tsx`
+`TuneModal`) was a single flat `flex-wrap` `.row` cramming ~20 heterogeneous
+controls (thresholds, ~10 feature checkboxes, stream/perf knobs, recording,
+retention, schedule) with meaning hidden in `title=` tooltips, five different
+words for "inherit/default", and Save buried past the ZoneEditor canvas. Driven
+by an 8-lens multi-agent UX audit (adversarially verified → ranked plan), it was
+**rebuilt web-only** — no backend/API change, `null`-on-clear inherit semantics
+preserved verbatim — and **live-validated in Chrome against the running backend
+(:8080, 7 real cameras)**:
+
+- **Sectioned** into collapsible `details.adv` groups (reusing the existing
+  recipe): *Detection sensitivity* (open by default) · *Detection features
+  (N on)* · *Stream & performance* · *Recording & retention* · *Residential
+  safety*, then the Zones/ZoneEditor. Each summary shows a live "(N on)" count.
+- **Wider card** (`Modal className="modal-wide"` → `max-width: min(820px,…)`) with
+  a **sticky header + sticky footer** (`.tune-foot`) so Save is always reachable;
+  fields laid on an aligned **CSS grid** (`.tune-grid` / `.feat-grid`) that
+  collapses to 1–2 columns on mobile.
+- **Boolean capabilities → `TogglePill`** (accessible `<button aria-pressed>`)
+  in a switch bank, each with a **visible one-line helper** promoted out of the
+  `title=` tooltip (the real a11y fix); day-toggles became `TogglePill`s too.
+- **Unified empty-state copy**: "Inherit global" (real fallback) vs "Off (no
+  limit)" (disable fields), plus live **"using global: X"** hints (fetched
+  `api.settings()`) on min-score / motion / interval / retention.
+- **Liability caveats surfaced**: the residential disclaimer + the "pose model
+  not downloaded" note are now always-visible `.callout callout-warn`/`-info`
+  blocks (role="status"), not hover-only. Recording schedule shows a **live
+  plain-language summary** ("Records Mon, Fri, 08:00–18:00 (overnight)…").
+- **ZoneEditor touch fix** (`onPointerDown` + `touchAction:'none'` while drawing)
+  so zone/mask drawing works on tablets/phones.
+
+`tsc` + `vite build` green. Files: `web/src/pages/Cameras.tsx`,
+`web/src/ZoneEditor.tsx`, `web/src/styles.css`. Not yet committed.
+
+### Earlier: stationary-object suppression + motion highlight, 2026-06-30
 
 Fix for "8 near-identical events of a parked car in 10 min, no actual motion":
 ambient motion (wind/shadows/auto-exposure) keeps tripping the gate, YOLO re-sees

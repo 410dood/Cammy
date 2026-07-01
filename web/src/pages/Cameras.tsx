@@ -1,10 +1,70 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
-import { api, Camera, DetectConfig, DiscoveredCam, StatusMap } from "../api";
+import { api, Camera, DetectConfig, DiscoveredCam, Settings, StatusMap } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { Modal, EmptyState, TogglePill, useToast, useDialog } from "../ui";
-import { IconRadar, IconSearch, IconCheck, IconVideo, IconAlert } from "../icons";
+import {
+  IconRadar,
+  IconSearch,
+  IconCheck,
+  IconVideo,
+  IconAlert,
+  IconInfo,
+  IconSliders,
+  IconLayers,
+  IconCctv,
+  IconFilm,
+  IconShield,
+  IconZone,
+} from "../icons";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/// Plain-language recap of a recording schedule, shown live under the controls
+/// so the user reads intent ("Records Mon–Fri, 22:00–06:00 (overnight)") rather
+/// than decoding day chips + time pickers. Mirrors the server's window logic.
+function scheduleSummary(s: NonNullable<DetectConfig["record_schedule"]>): string {
+  const days =
+    s.days.length === 0 || s.days.length === 7
+      ? "every day"
+      : s.days
+          .slice()
+          .sort((a, b) => a - b)
+          .map((i) => DAYS[i])
+          .join(", ");
+  const start = s.start_hhmm || "00:00";
+  const end = s.end_hhmm || "00:00";
+  const overnight = !!s.start_hhmm && !!s.end_hhmm && end < start;
+  return `Records ${days}, ${start}–${end}${overnight ? " (overnight)" : ""}. Outside the window this camera stops recording; detection & event clips still run.`;
+}
+
+/// A pure on/off capability rendered as an accessible TogglePill (a real
+/// <button aria-pressed>) with a visible one-line description. The meaning used
+/// to live only in a `title=` tooltip — invisible on touch and to screen
+/// readers — so the `help` line is the real accessibility fix, not the pill.
+function Feature({
+  on,
+  onToggle,
+  label,
+  help,
+  title,
+}: {
+  on: boolean;
+  onToggle: () => void;
+  label: string;
+  help?: string;
+  title?: string;
+}) {
+  return (
+    <div className="feat">
+      <TogglePill on={on} onClick={onToggle} ariaLabel={label} title={title}>
+        {label}
+      </TogglePill>
+      {help && <span className="feat-help">{help}</span>}
+    </div>
+  );
+}
 
 function TuneModal({
   camera,
@@ -53,11 +113,15 @@ function TuneModal({
   // Flag toggles whose backing model isn't downloaded, so an enabled feature
   // doesn't silently no-op (the gitignored-pose-model case CLAUDE.md flags).
   const [poseModelMissing, setPoseModelMissing] = useState(false);
+  // Global Settings, so a blank inherit-field can show the value it resolves to
+  // ("using global: 0.4") instead of leaving per-camera tuning to guesswork.
+  const [settings, setSettings] = useState<Settings | null>(null);
   useEffect(() => {
     api
       .capabilities()
       .then((r) => setPoseModelMissing(!(r.features.find((f) => f.key === "pose")?.present ?? true)))
       .catch(() => {});
+    api.settings().then(setSettings).catch(() => {});
   }, []);
 
   const toast = useToast();
@@ -75,221 +139,178 @@ function TuneModal({
     }
   };
 
+  const featCount = [
+    dc.autotrack,
+    dc.audio_detect,
+    dc.two_way_audio,
+    dc.gesture_detect,
+    dc.tamper_detect,
+    dc.gait_identify,
+    dc.package_detect,
+  ].filter(Boolean).length;
+
   return (
-    <Modal onClose={onClose} title={`Detection tuning — ${camera.name}`}>
-      <div style={{ padding: "16px 18px 18px" }}>
-        <p className="muted" style={{ marginTop: 0 }}>
-          Empty fields inherit the global Settings values.
-        </p>
-        <div className="row" style={{ marginBottom: 10 }}>
-          <label className="field" style={{ flex: 1, minWidth: "min(380px, 100%)" }}>
-            low-res sub-stream for detection (empty = detect on main stream)
-            <input
-              type="text"
-              placeholder="rtsp://user:pass@cam/...subtype=1"
-              value={subSource}
-              onChange={(e) => setSubSource(e.target.value)}
-            />
-          </label>
+    <Modal onClose={onClose} title={`Detection tuning — ${camera.name}`} className="modal-wide">
+      <div className="tune-body">
+        <div className="callout callout-info">
+          <span className="callout-ico">
+            <IconInfo size={16} />
+          </span>
+          <span>
+            Empty fields <b>inherit the global Settings value</b> — clear a field to fall back to the
+            default. Size filters and child height are simply <b>off</b> when left blank.
+          </span>
         </div>
-        <div className="row">
-          <label className="field" style={{ flex: 1 }}>
-            objects (comma-separated override)
-            <input
-              type="text"
-              value={dc.labels ? dc.labels.join(", ") : ""}
-              placeholder="inherit global"
-              onChange={(e) => {
-                const v = e.target.value.trim();
-                setDc({
-                  ...dc,
-                  labels: v === "" ? null : v.split(",").map((x) => x.trim()).filter(Boolean),
-                });
-              }}
-            />
-          </label>
-          <label className="field">
-            min score (0-1)
-            <input
-              type="number" step="0.05" min="0" max="1"
-              value={dc.min_score ?? ""}
-              placeholder="inherit"
-              onChange={(e) =>
-                setDc({ ...dc, min_score: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
-              }
-            />
-          </label>
-          <label className="field">
-            motion threshold (0-1)
-            <input
-              type="number" step="0.005" min="0" max="1"
-              value={dc.motion_threshold ?? ""}
-              placeholder="inherit"
-              onChange={(e) =>
-                setDc({
-                  ...dc,
-                  motion_threshold: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)),
-                })
-              }
-            />
-          </label>
-          <label className="field" title="Drop detections smaller than this fraction of the frame area (kills far-field blips).">
-            min object size (0-1)
-            <input
-              type="number" step="0.005" min="0" max="1"
-              value={dc.min_area ?? ""}
-              placeholder="none"
-              onChange={(e) =>
-                setDc({ ...dc, min_area: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
-              }
-            />
-          </label>
-          <label className="field" title="Drop detections larger than this fraction of the frame area (kills whole-frame lighting flips).">
-            max object size (0-1)
-            <input
-              type="number" step="0.05" min="0" max="1"
-              value={dc.max_area ?? ""}
-              placeholder="none"
-              onChange={(e) =>
-                setDc({ ...dc, max_area: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
-              }
-            />
-          </label>
-          <label className="toggle field">
-            PTZ autotrack
-            <input
-              type="checkbox"
-              checked={dc.autotrack}
-              onChange={() => setDc({ ...dc, autotrack: !dc.autotrack })}
-            />
-          </label>
-          <label className="toggle field">
-            audio detection
-            <input
-              type="checkbox"
-              checked={dc.audio_detect}
-              onChange={() => setDc({ ...dc, audio_detect: !dc.audio_detect })}
-            />
-          </label>
-          <label
-            className="toggle field"
-            title="Show a hold-to-talk button in this camera's detail view (streams your mic to the camera over WebRTC). Only works on cameras with a speaker / ONVIF backchannel."
-          >
-            two-way audio (talk)
-            <input
-              type="checkbox"
-              checked={dc.two_way_audio}
-              onChange={() => setDc({ ...dc, two_way_audio: !dc.two_way_audio })}
-            />
-          </label>
-          <label
-            className="toggle field"
-            title="Offer the live hand-signal overlay (Signals page) for this camera."
-          >
-            hand signals
-            <input
-              type="checkbox"
-              checked={dc.gesture_detect}
-              onChange={() => setDc({ ...dc, gesture_detect: !dc.gesture_detect })}
-            />
-          </label>
-          <label
-            className="toggle field"
-            title="Watch this camera's optical integrity: alert when the lens is covered/blacked out, defocused, or the camera is moved/redirected."
-          >
-            tamper detection
-            <input
-              type="checkbox"
-              checked={dc.tamper_detect}
-              onChange={() => setDc({ ...dc, tamper_detect: !dc.tamper_detect })}
-            />
-          </label>
-          <label
-            className="toggle field"
-            title="Build a walking-signature for each person tracked here and attribute the event to an enrolled gait identity (works at distance / when the face isn't visible). Enroll on the People page."
-          >
-            gait identification
-            <input
-              type="checkbox"
-              checked={dc.gait_identify}
-              onChange={() => setDc({ ...dc, gait_identify: !dc.gait_identify })}
-            />
-          </label>
-          <label
-            className="toggle field"
-            title="Only alert on new or moving objects. Suppresses repeat events for a parked car / idle object that keeps re-tripping the motion gate (wind, shadows, lighting). A new arrival or an object that moves still fires; the event cooldown still rate-limits moving objects. Leave off for a doorway counter that wants every detection."
-          >
-            suppress stationary repeats
-            <input
-              type="checkbox"
-              checked={dc.suppress_stationary ?? false}
-              onChange={() => setDc({ ...dc, suppress_stationary: !dc.suppress_stationary })}
-            />
-          </label>
-          <label className="field" title="Per-camera model override (e.g. a specialized .onnx). Empty inherits the global model.">
-            model override
-            <input
-              type="text"
-              placeholder="inherit global"
-              value={dc.model ?? ""}
-              onChange={(e) => setDc({ ...dc, model: e.target.value.trim() || null })}
-            />
-          </label>
-          <label className="field" title="Accelerator assignment for this camera's detector.">
-            accelerator
-            <select
-              value={dc.force_cpu === null ? "" : dc.force_cpu ? "cpu" : "gpu"}
-              onChange={(e) =>
-                setDc({ ...dc, force_cpu: e.target.value === "" ? null : e.target.value === "cpu" })
-              }
-            >
-              <option value="">inherit</option>
-              <option value="gpu">GPU</option>
-              <option value="cpu">CPU</option>
-            </select>
-          </label>
-          <label className="field" title="Per-camera sample-interval cap (resource governance). Only slows this camera down.">
-            FPS cap — sample every (ms)
-            <input
-              type="number" step="100" min="0"
-              placeholder="inherit"
-              value={dc.poll_ms ?? ""}
-              onChange={(e) => setDc({ ...dc, poll_ms: e.target.value === "" ? null : Number(e.target.value) })}
-            />
-          </label>
-          <label className="field" title="Opt this camera into (or out of) face recognition. Inherit uses the global Settings switch.">
-            face recognition
-            <select
-              value={dc.face_recognize === null ? "" : dc.face_recognize ? "on" : "off"}
-              onChange={(e) =>
-                setDc({ ...dc, face_recognize: e.target.value === "" ? null : e.target.value === "on" })
-              }
-            >
-              <option value="">inherit</option>
-              <option value="on">on</option>
-              <option value="off">off</option>
-            </select>
-          </label>
-          <label
-            className="toggle field"
-            title="Porch-piracy alerts: fire a 'package' event when a parcel-like object sits in view for a while, and 'package_removed' when it's taken. Watches the whole frame (a package zone is API-settable). Make alarm rules with label 'package' / 'package_removed'."
-          >
-            package detection
-            <input
-              type="checkbox"
-              checked={dc.package_detect ?? false}
-              onChange={() => setDc({ ...dc, package_detect: !dc.package_detect })}
-            />
-          </label>
-          {dc.package_detect && (
-            <label
-              className="field"
-              title="Labels that count as a parcel (comma-separated). Blank uses the defaults: suitcase, backpack, handbag. Add 'package' if your model has that class."
-            >
-              package labels (blank = default)
+
+        {/* 1. Detection sensitivity — the recurring false-positive tuning task; open by default. */}
+        <details className="adv tune-sec" open>
+          <summary>
+            <IconSliders size={15} /> Detection sensitivity
+          </summary>
+          <div className="tune-grid">
+            <label className="field span-full">
+              Objects to detect
               <input
                 type="text"
-                style={{ width: 220 }}
+                value={dc.labels ? dc.labels.join(", ") : ""}
+                placeholder="Inherit global"
+                onChange={(e) => {
+                  const v = e.target.value.trim();
+                  setDc({
+                    ...dc,
+                    labels: v === "" ? null : v.split(",").map((x) => x.trim()).filter(Boolean),
+                  });
+                }}
+              />
+              <span className="feat-help">Comma-separated; overrides the global object list.</span>
+            </label>
+            <label className="field">
+              Minimum score
+              <input
+                type="number" step="0.05" min="0" max="1"
+                value={dc.min_score ?? ""}
+                placeholder="Inherit global"
+                onChange={(e) =>
+                  setDc({ ...dc, min_score: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
+                }
+              />
+              {dc.min_score == null && settings && (
+                <span className="feat-help">using global: {settings.confidence}</span>
+              )}
+            </label>
+            <label className="field">
+              Motion threshold
+              <input
+                type="number" step="0.005" min="0" max="1"
+                value={dc.motion_threshold ?? ""}
+                placeholder="Inherit global"
+                onChange={(e) =>
+                  setDc({
+                    ...dc,
+                    motion_threshold: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)),
+                  })
+                }
+              />
+              {dc.motion_threshold == null && settings ? (
+                <span className="feat-help">using global: {settings.motion_threshold}</span>
+              ) : (
+                <span className="feat-help">Fraction of frame that must change to run detection.</span>
+              )}
+            </label>
+            <label className="field" title="Drop detections smaller than this fraction of the frame area (kills far-field blips).">
+              Min object size
+              <input
+                type="number" step="0.005" min="0" max="1"
+                value={dc.min_area ?? ""}
+                placeholder="Off (no limit)"
+                onChange={(e) =>
+                  setDc({ ...dc, min_area: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
+                }
+              />
+              <span className="feat-help">Fraction of frame area; drops far-field blips.</span>
+            </label>
+            <label className="field" title="Drop detections larger than this fraction of the frame area (kills whole-frame lighting flips).">
+              Max object size
+              <input
+                type="number" step="0.05" min="0" max="1"
+                value={dc.max_area ?? ""}
+                placeholder="Off (no limit)"
+                onChange={(e) =>
+                  setDc({ ...dc, max_area: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
+                }
+              />
+              <span className="feat-help">Fraction of frame area; drops whole-frame lighting flips.</span>
+            </label>
+          </div>
+          <div className="feat-grid" style={{ marginTop: 12 }}>
+            <Feature
+              on={dc.suppress_stationary ?? false}
+              onToggle={() => setDc({ ...dc, suppress_stationary: !dc.suppress_stationary })}
+              label="Suppress stationary repeats"
+              help="Only alert on new or moving objects — mutes a parked car re-tripping the gate."
+              title="Only alert on new or moving objects. Suppresses repeat events for a parked car / idle object that keeps re-tripping the motion gate (wind, shadows, lighting). A new arrival or an object that moves still fires; the event cooldown still rate-limits moving objects. Leave off for a doorway counter that wants every detection."
+            />
+          </div>
+        </details>
+
+        {/* 2. Detection features — install-once capability toggles. */}
+        <details className="adv tune-sec">
+          <summary>
+            <IconLayers size={15} /> Detection features <span className="tune-count">({featCount} on)</span>
+          </summary>
+          <div className="feat-grid">
+            <Feature
+              on={dc.autotrack}
+              onToggle={() => setDc({ ...dc, autotrack: !dc.autotrack })}
+              label="PTZ autotrack"
+              help="Pan/tilt the camera to follow a tracked object."
+            />
+            <Feature
+              on={dc.audio_detect}
+              onToggle={() => setDc({ ...dc, audio_detect: !dc.audio_detect })}
+              label="Audio detection"
+              help="Classify sounds (baby cry, bark, glass, smoke alarm…)."
+            />
+            <Feature
+              on={dc.two_way_audio}
+              onToggle={() => setDc({ ...dc, two_way_audio: !dc.two_way_audio })}
+              label="Two-way audio"
+              help="Adds a hold-to-talk button (camera needs a speaker/backchannel)."
+              title="Show a hold-to-talk button in this camera's detail view (streams your mic to the camera over WebRTC). Only works on cameras with a speaker / ONVIF backchannel."
+            />
+            <Feature
+              on={dc.gesture_detect}
+              onToggle={() => setDc({ ...dc, gesture_detect: !dc.gesture_detect })}
+              label="Hand signals"
+              help="Offer the live hand-signal panic overlay (Signals page)."
+            />
+            <Feature
+              on={dc.tamper_detect}
+              onToggle={() => setDc({ ...dc, tamper_detect: !dc.tamper_detect })}
+              label="Tamper detection"
+              help="Alert when the lens is covered, defocused, or the camera is moved."
+              title="Watch this camera's optical integrity: alert when the lens is covered/blacked out, defocused, or the camera is moved/redirected."
+            />
+            <Feature
+              on={dc.gait_identify}
+              onToggle={() => setDc({ ...dc, gait_identify: !dc.gait_identify })}
+              label="Gait identification"
+              help="Attribute events by walking signature when the face isn't visible."
+              title="Build a walking-signature for each person tracked here and attribute the event to an enrolled gait identity (works at distance / when the face isn't visible). Enroll on the People page."
+            />
+            <Feature
+              on={dc.package_detect ?? false}
+              onToggle={() => setDc({ ...dc, package_detect: !dc.package_detect })}
+              label="Package detection"
+              help="Alert when a parcel appears or is taken (porch piracy)."
+              title="Porch-piracy alerts: fire a 'package' event when a parcel-like object sits in view for a while, and 'package_removed' when it's taken. Watches the whole frame (a package zone is API-settable). Make alarm rules with label 'package' / 'package_removed'."
+            />
+          </div>
+          {dc.package_detect && (
+            <label className="field span-full" style={{ marginTop: 12 }}>
+              Package objects
+              <input
+                type="text"
                 placeholder="suitcase, backpack, handbag"
                 value={(dc.package_labels ?? []).join(", ")}
                 onChange={(e) =>
@@ -302,175 +323,256 @@ function TuneModal({
                   })
                 }
               />
+              <span className="feat-help">
+                Labels that count as a parcel. Blank uses the defaults: suitcase, backpack, handbag.
+              </span>
             </label>
           )}
-          <label
-            className="toggle field"
-            title="Keep only footage near events: segments with no detection within a segment-length margin are deleted after a 15-minute grace period. Saves most of the disk on quiet cameras."
-          >
-            event-only recording
-            <input
-              type="checkbox"
-              checked={dc.event_only_recording}
-              onChange={() => setDc({ ...dc, event_only_recording: !dc.event_only_recording })}
+        </details>
+
+        {/* 3. Stream & performance — install-once / expert knobs, off the everyday path. */}
+        <details className="adv tune-sec">
+          <summary>
+            <IconCctv size={15} /> Stream &amp; performance
+          </summary>
+          <div className="tune-grid">
+            <label className="field span-full">
+              Detection sub-stream
+              <input
+                type="text"
+                placeholder="rtsp://user:pass@cam/...subtype=1"
+                value={subSource}
+                onChange={(e) => setSubSource(e.target.value)}
+              />
+              <span className="feat-help">Low-res stream to run detection on; empty = detect on the main stream.</span>
+            </label>
+            <label className="field" title="Per-camera model override (e.g. a specialized .onnx). Empty inherits the global model.">
+              Model override
+              <input
+                type="text"
+                placeholder="Inherit global"
+                value={dc.model ?? ""}
+                onChange={(e) => setDc({ ...dc, model: e.target.value.trim() || null })}
+              />
+            </label>
+            <label className="field" title="Accelerator assignment for this camera's detector.">
+              Accelerator
+              <select
+                value={dc.force_cpu === null ? "" : dc.force_cpu ? "cpu" : "gpu"}
+                onChange={(e) =>
+                  setDc({ ...dc, force_cpu: e.target.value === "" ? null : e.target.value === "cpu" })
+                }
+              >
+                <option value="">Inherit global</option>
+                <option value="gpu">GPU</option>
+                <option value="cpu">CPU</option>
+              </select>
+            </label>
+            <label className="field" title="Per-camera sample-interval cap (resource governance). Only slows this camera down.">
+              Detection interval (ms)
+              <input
+                type="number" step="100" min="0"
+                placeholder="Inherit global"
+                value={dc.poll_ms ?? ""}
+                onChange={(e) => setDc({ ...dc, poll_ms: e.target.value === "" ? null : Number(e.target.value) })}
+              />
+              {dc.poll_ms == null && settings ? (
+                <span className="feat-help">using global: {settings.poll_ms} ms</span>
+              ) : (
+                <span className="feat-help">ms between analyzed frames; higher = lighter load.</span>
+              )}
+            </label>
+            <label className="field" title="Opt this camera into (or out of) face recognition. Inherit uses the global Settings switch.">
+              Face recognition
+              <select
+                value={dc.face_recognize === null ? "" : dc.face_recognize ? "on" : "off"}
+                onChange={(e) =>
+                  setDc({ ...dc, face_recognize: e.target.value === "" ? null : e.target.value === "on" })
+                }
+              >
+                <option value="">Inherit global</option>
+                <option value="on">On</option>
+                <option value="off">Off</option>
+              </select>
+            </label>
+          </div>
+        </details>
+
+        {/* 4. Recording & retention. */}
+        <details className="adv tune-sec">
+          <summary>
+            <IconFilm size={15} /> Recording &amp; retention
+          </summary>
+          <div className="feat-grid">
+            <Feature
+              on={dc.event_only_recording}
+              onToggle={() => setDc({ ...dc, event_only_recording: !dc.event_only_recording })}
+              label="Event-only recording"
+              help="Keep only footage near events; delete quiet segments after a grace period."
+              title="Keep only footage near events: segments with no detection within a segment-length margin are deleted after a 15-minute grace period. Saves most of the disk on quiet cameras."
             />
-          </label>
-          <label
-            className="field"
-            title="Keep this camera's footage for a custom number of days (e.g. a doorbell 30, a quiet side camera 3). Blank inherits the global retention. The global disk size cap still applies as the safety net."
-          >
-            retention (days, blank = global)
-            <input
-              type="number"
-              min="0"
-              style={{ width: 110 }}
-              value={dc.retention_days ?? ""}
-              placeholder="global"
-              onChange={(e) =>
+            <Feature
+              on={dc.record_schedule != null}
+              onToggle={() =>
                 setDc({
                   ...dc,
-                  retention_days: e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0),
+                  record_schedule:
+                    dc.record_schedule != null
+                      ? null
+                      : { days: [], start_hhmm: "08:00", end_hhmm: "18:00" },
                 })
               }
+              label="Recording schedule"
+              help="Record continuously only on chosen days/times (off = always record)."
+              title="Record continuously only during these days/times (Blue Iris-style schedule). Off = always record. Detection and event clips are unaffected."
             />
-          </label>
-          <div
-            className="field"
-            style={{ minWidth: 320, flex: 1 }}
-            title="Record continuously only during these days/times (Blue Iris-style schedule). Off = always record. Detection and event clips are unaffected."
-          >
-            <label className="toggle" style={{ marginBottom: 4 }}>
-              recording schedule
+          </div>
+          <div className="tune-grid" style={{ marginTop: 12 }}>
+            <label
+              className="field"
+              title="Keep this camera's footage for a custom number of days (e.g. a doorbell 30, a quiet side camera 3). Blank inherits the global retention. The global disk size cap still applies as the safety net."
+            >
+              Retention (days)
               <input
-                type="checkbox"
-                checked={dc.record_schedule != null}
+                type="number"
+                min="0"
+                value={dc.retention_days ?? ""}
+                placeholder="Inherit global"
                 onChange={(e) =>
                   setDc({
                     ...dc,
-                    record_schedule: e.target.checked
-                      ? { days: [], start_hhmm: "08:00", end_hhmm: "18:00" }
-                      : null,
+                    retention_days: e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0),
                   })
                 }
               />
+              {dc.retention_days == null && settings && (
+                <span className="feat-help">using global: {settings.retention_days} days</span>
+              )}
             </label>
-            {dc.record_schedule && (
-              <div>
-                <div className="row" style={{ gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
-                  {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d, i) => {
-                    const on = dc.record_schedule!.days.includes(i);
-                    return (
-                      <button
-                        key={d}
-                        type="button"
-                        className={`btn ${on ? "btn-primary" : "btn-ghost"}`}
-                        style={{ padding: "2px 8px", fontSize: "var(--text-xs)" }}
-                        onClick={() =>
-                          setDc({
-                            ...dc,
-                            record_schedule: {
-                              ...dc.record_schedule!,
-                              days: on
-                                ? dc.record_schedule!.days.filter((x) => x !== i)
-                                : [...dc.record_schedule!.days, i].sort((a, b) => a - b),
-                            },
-                          })
-                        }
-                      >
-                        {d}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                  <span className="muted">from</span>
-                  <input
-                    type="time"
-                    value={dc.record_schedule.start_hhmm ?? ""}
-                    onChange={(e) =>
-                      setDc({
-                        ...dc,
-                        record_schedule: { ...dc.record_schedule!, start_hhmm: e.target.value || null },
-                      })
-                    }
-                  />
-                  <span className="muted">to</span>
-                  <input
-                    type="time"
-                    value={dc.record_schedule.end_hhmm ?? ""}
-                    onChange={(e) =>
-                      setDc({
-                        ...dc,
-                        record_schedule: { ...dc.record_schedule!, end_hhmm: e.target.value || null },
-                      })
-                    }
-                  />
-                </div>
-                <p className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 4 }}>
-                  No days selected = every day. End before start = overnight (e.g. 22:00→06:00).
-                  Outside the window this camera stops recording; detection &amp; event clips still run.
-                </p>
-              </div>
-            )}
           </div>
-        </div>
-        <details className="adv">
-          <summary>Residential safety &amp; privacy (assistive*)</summary>
-          <div className="row" style={{ marginTop: 8 }}>
-            <label
-              className="toggle field"
+          {dc.record_schedule && (
+            <div className="sched" style={{ marginTop: 12 }}>
+              <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                {DAYS.map((d, i) => {
+                  const on = dc.record_schedule!.days.includes(i);
+                  return (
+                    <TogglePill
+                      key={d}
+                      on={on}
+                      ariaLabel={`${d} ${on ? "on" : "off"}`}
+                      onClick={() =>
+                        setDc({
+                          ...dc,
+                          record_schedule: {
+                            ...dc.record_schedule!,
+                            days: on
+                              ? dc.record_schedule!.days.filter((x) => x !== i)
+                              : [...dc.record_schedule!.days, i].sort((a, b) => a - b),
+                          },
+                        })
+                      }
+                    >
+                      {d}
+                    </TogglePill>
+                  );
+                })}
+              </div>
+              <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                <span className="muted">from</span>
+                <input
+                  type="time"
+                  value={dc.record_schedule.start_hhmm ?? ""}
+                  onChange={(e) =>
+                    setDc({
+                      ...dc,
+                      record_schedule: { ...dc.record_schedule!, start_hhmm: e.target.value || null },
+                    })
+                  }
+                />
+                <span className="muted">to</span>
+                <input
+                  type="time"
+                  value={dc.record_schedule.end_hhmm ?? ""}
+                  onChange={(e) =>
+                    setDc({
+                      ...dc,
+                      record_schedule: { ...dc.record_schedule!, end_hhmm: e.target.value || null },
+                    })
+                  }
+                />
+              </div>
+              <p className="feat-help" style={{ marginTop: 6 }}>
+                {scheduleSummary(dc.record_schedule)}
+              </p>
+            </div>
+          )}
+        </details>
+
+        {/* 5. Residential safety & privacy — assistive, liability-sensitive. */}
+        <details className="adv tune-sec">
+          <summary>
+            <IconShield size={15} /> Residential safety &amp; privacy (assistive*)
+          </summary>
+          <div className="callout callout-warn" style={{ marginTop: 8 }}>
+            <span className="callout-ico">
+              <IconAlert size={16} />
+            </span>
+            <span>
+              Fall detection and child classification are <b>assistive, best-effort</b> safety aids —
+              not medical devices and not guaranteed. They can miss events and must never replace
+              supervision or a personal alarm.
+            </span>
+          </div>
+          <div className="feat-grid">
+            <Feature
+              on={dc.fall_detect ?? false}
+              onToggle={() => setDc({ ...dc, fall_detect: !dc.fall_detect })}
+              label="Fall detection (assistive*)"
+              help="A person going motionless low in frame fires a 'fall' event. Not a medical device."
               title="Residential ASSISTIVE fall hint: a tracked person who goes motionless low in the frame fires a 'fall' event. Best-effort at ~1 fps — it MISSES occluded, soft, or slow falls. NOT a medical-alert device; pair it with a pendant and never auto-dial emergency services off a single visual trigger."
-            >
-              fall detection (assistive*)
-              <input
-                type="checkbox"
-                checked={dc.fall_detect}
-                onChange={() => setDc({ ...dc, fall_detect: !dc.fall_detect })}
-              />
-            </label>
-            <label
-              className="toggle field"
+            />
+            <Feature
+              on={dc.pose_detect ?? false}
+              onToggle={() => setDc({ ...dc, pose_detect: !dc.pose_detect })}
+              label="Body pose monitoring (assistive*)"
+              help="24/7 pose model: fall, crib climb-out, covered face. Draw a crib/bed zone."
               title="Server-side 24/7 body-pose monitoring for the nursery/elder camera: emits 'fall' (lying on the floor), 'standing' (a child standing up in a crib zone — climb-out) and 'covered_face' (body present but face not visible in a zone — rollover / blanket). Runs a YOLOv8-pose model on the server (download yolov8n-pose.onnx; set the path in Settings). ASSISTIVE only — not a medical/SIDS device, draw a crib/bed zone for standing + covered-face."
-            >
-              body pose monitoring (assistive*)
-              <input
-                type="checkbox"
-                checked={dc.pose_detect}
-                onChange={() => setDc({ ...dc, pose_detect: !dc.pose_detect })}
-              />
-            </label>
-            {poseModelMissing && (
-              <span
-                className="muted"
-                style={{ color: "var(--warn)", fontSize: "var(--text-sm)", marginTop: -6, display: "inline-flex", alignItems: "center", gap: 5 }}
-                title="The pose model file (yolov8n-pose.onnx) isn't in the app directory, so this toggle does nothing until you download it. See Settings → Models & capabilities."
-              >
-                <IconAlert size={13} /> pose model not downloaded — this won't run until yolov8n-pose.onnx is added
-              </span>
-            )}
-            <label
-              className="toggle field"
+            />
+            <Feature
+              on={dc.no_clip ?? false}
+              onToggle={() => setDc({ ...dc, no_clip: !dc.no_clip })}
+              label="No snapshot on safety events"
+              help="Safety events still fire, but no image is saved (nursery/bathroom dignity)."
               title="Privacy / dignity for a sensitive camera (nursery, bedroom, bathroom): residential + pose safety events still fire (you get the alert — label, zone, time), but NO snapshot image is saved to disk or sent to webhook/MQTT/email. Pair with a privacy mask for live view."
+            />
+          </div>
+          {poseModelMissing && (
+            <div
+              className="callout callout-warn"
+              role="status"
+              style={{ marginTop: 10, marginBottom: 0 }}
             >
-              no snapshot on safety events (privacy)
-              <input
-                type="checkbox"
-                checked={dc.no_clip}
-                onChange={() => setDc({ ...dc, no_clip: !dc.no_clip })}
-              />
-            </label>
+              <span className="callout-ico">
+                <IconAlert size={16} />
+              </span>
+              <span>
+                Pose model not downloaded — body pose monitoring won't run until
+                <code> yolov8n-pose.onnx</code> is added (see Settings → Models &amp; capabilities).
+              </span>
+            </div>
+          )}
+          <div className="tune-grid" style={{ marginTop: 12 }}>
             <label
               className="field"
               title="Residential child calibration: a tracked person whose normalized bbox HEIGHT (0..1 of the frame) is at/below this fraction is treated as a 'child', enabling the child / child-alone zone rules. Blank disables child features. FRAGILE — bbox height depends on camera angle/distance; tune per camera and treat results as a detection aid only."
             >
-              child height ≤ (frac, blank = off*)
+              Child height ≤ (fraction)
               <input
                 type="number"
                 step="0.05"
                 min="0"
                 max="1"
-                style={{ width: 110 }}
-                placeholder="off"
+                placeholder="Off"
                 value={dc.child_height_frac ?? ""}
                 onChange={(e) =>
                   setDc({
@@ -480,17 +582,22 @@ function TuneModal({
                   })
                 }
               />
+              <span className="feat-help">
+                Fraction of frame height at/below which a person counts as a child (fragile — tune per
+                camera). Blank = off.
+              </span>
             </label>
           </div>
-          <p className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 6 }}>
-            * Fall detection and child classification are <b>assistive, best-effort</b>{" "}
-            safety aids — not medical devices and not guaranteed. They can miss events
-            and must never replace supervision or a personal alarm. See the zone editor
-            below to arm child / unattended / pool-water hints.
-          </p>
         </details>
 
-        <h2 style={{ marginTop: 18 }}>Zones &amp; privacy masks</h2>
+        {/* 6. Zones & privacy masks. */}
+        <div className="card-head" style={{ marginTop: 16, marginBottom: 8 }}>
+          <IconZone size={18} />
+          <div>
+            <p className="eyebrow">Detection areas</p>
+            <h2 style={{ margin: 0 }}>Zones &amp; privacy masks</h2>
+          </div>
+        </div>
         <p className="muted" style={{ marginTop: 0 }}>
           Draw polygons on the live frame. <b style={{ color: COLORS.required }}>Required</b> zones keep
           only objects inside them; <b style={{ color: COLORS.ignore }}>ignore</b> zones drop objects
@@ -507,16 +614,15 @@ function TuneModal({
           onTripwires={(tripwires) => setDc({ ...dc, tripwires })}
           onCalib={(ground_calib) => setDc({ ...dc, ground_calib })}
         />
+      </div>
 
-        <div className="row" style={{ marginTop: 18 }}>
-          <div className="spacer" />
-          <button className="btn btn-ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn btn-primary" onClick={save}>
-            Save
-          </button>
-        </div>
+      <div className="dialog-actions tune-foot">
+        <button className="btn btn-ghost" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn btn-primary" onClick={save}>
+          Save
+        </button>
       </div>
     </Modal>
   );
