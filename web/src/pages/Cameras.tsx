@@ -1,5 +1,5 @@
 ﻿import { FormEvent, useEffect, useState } from "react";
-import { api, Camera, DetectConfig, DiscoveredCam, StatusMap, Zone } from "../api";
+import { api, Camera, DetectConfig, DiscoveredCam, StatusMap } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { Modal, EmptyState, TogglePill, useToast, useDialog } from "../ui";
 import { IconRadar, IconSearch, IconCheck, IconVideo, IconAlert } from "../icons";
@@ -21,7 +21,6 @@ function TuneModal({
     labels: camera.detect_config.labels,
     min_score: camera.detect_config.min_score,
     motion_threshold: camera.detect_config.motion_threshold,
-    ignore_zones: [...camera.detect_config.ignore_zones],
     zones: camera.detect_config.zones ? [...camera.detect_config.zones] : [],
     tripwires: camera.detect_config.tripwires ? [...camera.detect_config.tripwires] : [],
     ground_calib: camera.detect_config.ground_calib ?? null,
@@ -60,11 +59,6 @@ function TuneModal({
       .then((r) => setPoseModelMissing(!(r.features.find((f) => f.key === "pose")?.present ?? true)))
       .catch(() => {});
   }, []);
-
-  const setZone = (i: number, field: keyof Zone, v: number) => {
-    const zones = dc.ignore_zones.map((z, j) => (j === i ? { ...z, [field]: v } : z));
-    setDc({ ...dc, ignore_zones: zones });
-  };
 
   const toast = useToast();
   const save = async () => {
@@ -514,40 +508,7 @@ function TuneModal({
           onCalib={(ground_calib) => setDc({ ...dc, ground_calib })}
         />
 
-        <h2 style={{ marginTop: 18 }}>Ignore zones (legacy rectangles)</h2>
-        <p className="muted" style={{ marginTop: 0 }}>
-          Detections whose center falls inside a rectangle are dropped. Coordinates are fractions of
-          the frame (0–1) from the top-left. Prefer the polygon zones above for new setups.
-        </p>
-        {dc.ignore_zones.map((z, i) => (
-          <div className="row" key={i} style={{ marginBottom: 8 }}>
-            {(["x", "y", "w", "h"] as const).map((f) => (
-              <label className="field" key={f}>
-                {f}
-                <input
-                  type="number" step="0.05" min="0" max="1" style={{ width: 80 }}
-                  value={z[f]}
-                  onChange={(e) => setZone(i, f, Number(e.target.value))}
-                />
-              </label>
-            ))}
-            <button
-              className="btn btn-danger ev-act"
-              onClick={() => setDc({ ...dc, ignore_zones: dc.ignore_zones.filter((_, j) => j !== i) })}
-            >
-              Remove
-            </button>
-          </div>
-        ))}
-        <div className="row" style={{ marginTop: 12 }}>
-          <button
-            className="btn btn-ghost"
-            onClick={() =>
-              setDc({ ...dc, ignore_zones: [...dc.ignore_zones, { x: 0, y: 0, w: 0.25, h: 0.25 }] })
-            }
-          >
-            + Add zone
-          </button>
+        <div className="row" style={{ marginTop: 18 }}>
           <div className="spacer" />
           <button className="btn btn-ghost" onClick={onClose}>
             Cancel
