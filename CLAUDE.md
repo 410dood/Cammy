@@ -16,7 +16,44 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.3 — full competitor suite (#1–#70) integrated on main + cross-feature simplify, 2026-06-22
 
-### Latest: Detection-tuning modal UX redesign, 2026-07-01
+### Latest: cross-page UX pass, 2026-07-01
+
+A live E2E tour of every page (Chrome vs the running :8080 backend, 7 cameras)
+plus a **13-target grounded multi-agent UX audit** (adversarially verified → ranked)
+drove a **web-only** improvement pass across 12 files, all reusing existing
+design-system primitives (`callout`/`EmptyState`/`badge`/`details.adv`/`TogglePill`)
+— no backend/API change. `tsc`+`vite` green, **each surface live-validated in
+Chrome**. Committed on branch `ux/detection-tuning-modal-redesign` (`7e5ccbf`,
+stacked on the tuning-modal redesign `f82ef6a`). The audit found three systemic
+gaps; the fixes:
+
+- **Severity is now encoded** (action-required status escalates out of muted
+  grey): Recordings' near-full-disk/retention-pruning capacity line → a
+  `callout-warn`/`-danger` + "Filling up"/"Nearly full" Storage badge naming the
+  limiter + a fix action ("~0 days" copy → "under a day"); Home's Free-space stat
+  card takes a warn/danger tone (+ "~N days until full") from `days_until_full`;
+  Settings' passwordless remote access shows a `callout-warn`.
+- **Empty/idle states unified**: Map's broken bespoke drop-box → centered
+  `EmptyState`; Signals' black video void → in-box idle placeholder (+ armed tags
+  → `badge ok`); People's unknown-face wall capped at 12 + "Show all N" + real
+  vehicle-crop thumbnails + `EmptyState` for the empty People list.
+- **Config pages lead with the list, creation forms collapse**: Cameras' "Add a
+  camera" and Alarms' "New rule" builder both fold behind `details.adv`/a toggle
+  (auto-open on first run); the Registered/Rules list leads once populated, with a
+  count + "New rule" button and a footer-row Create.
+- **Settings ~20-card scroll wall → 4 tabbed groups** (Detection & AI / Modes &
+  alerts / Access & security / Recording & backup) — one `<form>` preserved
+  (sticky save bar + dirty guard intact), cards **hidden not unmounted** (imperative
+  `SettingsTabs` keyed off each card's `<h2>`), so the 9 stateful cards keep
+  in-flight edits across tabs.
+- **Polish**: Events' 14-control filter strip → primary row + "More filters"
+  `details.adv` (force-open when a hidden filter is active); Home digest → bullet
+  list + height-capped recent-activity feed + `.home-cols`/`.live-grid`
+  auto-fill→auto-fit (kills lone-tile voids); Family per-mode "On/Partly set
+  up/Not set up" badge from `detect_config` + bottom-aligned disclaimers; camera
+  detail rail reuses Events' `groupEvents` (×N badge) + a Download-clip button.
+
+### Earlier: Detection-tuning modal UX redesign, 2026-07-01
 
 The per-camera **"Detection tuning"** modal (`web/src/pages/Cameras.tsx`
 `TuneModal`) was a single flat `flex-wrap` `.row` cramming ~20 heterogeneous
