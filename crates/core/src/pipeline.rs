@@ -1093,6 +1093,12 @@ pub fn run(
                 }
             }
 
+            // Activity signal for the Live grid's sort — stamped once per
+            // event-bearing frame.
+            if !new_event_ids.is_empty() {
+                status.detection(cam.id, now);
+            }
+
             // GenAI captioning (opt-in): one job per event-frame, captioned
             // off-thread so the LLM call never stalls detection.
             if settings.genai_enabled {

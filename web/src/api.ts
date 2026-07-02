@@ -387,6 +387,8 @@ export interface CamStatus {
   model: string | null;
   /** Active tamper kind (blackout/defocus/scene_change) if compromised (#63). */
   tamper?: string | null;
+  /** Last detection event on this camera (unix secs) — drives the Live activity sort. */
+  last_detection_ts?: number | null;
 }
 
 export type StatusMap = Record<string, CamStatus>;

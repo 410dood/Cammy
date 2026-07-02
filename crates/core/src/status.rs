@@ -31,6 +31,9 @@ pub struct CamHealth {
     /// when tamper detection is off for the camera (#63).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
+    /// Last time this camera recorded a detection event (unix secs) — drives the
+    /// Live grid's activity sort (cameras with something happening float up).
+    pub last_detection_ts: Option<i64>,
 }
 
 /// Seconds within which a camera must have delivered a frame to count as
@@ -100,6 +103,11 @@ impl StatusBoard {
     /// Publish the camera's current tamper kind (`None` = healthy / off).
     pub fn set_tamper(&self, camera_id: i64, kind: Option<String>) {
         self.write().entry(camera_id).or_default().tamper = kind;
+    }
+
+    /// Stamp that the camera just recorded a detection event.
+    pub fn detection(&self, camera_id: i64, ts: i64) {
+        self.write().entry(camera_id).or_default().last_detection_ts = Some(ts);
     }
 
     /// Drop state for cameras that no longer exist.
