@@ -55,7 +55,10 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   const [gaitNames, setGaitNames] = useState<Record<number, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [showAllUnknown, setShowAllUnknown] = useState(false);
+  // Reveal the unknown-face wall in pages, not all-at-once — "Show all 1900"
+  // would render 1900 cards in one go.
+  const [unknownCap, setUnknownCap] = useState(12);
+  const [showAllPlates, setShowAllPlates] = useState(false);
 
   const load = () => {
     api.faces().then((r) => {
@@ -357,7 +360,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
         <div className="card">
           <h2>Vehicles seen</h2>
           <div className="identity-grid">
-            {plates.map((s) => (
+            {(showAllPlates ? plates : plates.slice(0, 9)).map((s) => (
               <div key={s.plate} className="identity-card" style={{ cursor: "default" }}>
                 {s.last?.snapshot ? (
                   <img
@@ -408,6 +411,16 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
               </div>
             ))}
           </div>
+          {plates.length > 9 && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              style={{ marginTop: 12 }}
+              onClick={() => setShowAllPlates((v) => !v)}
+            >
+              {showAllPlates ? "Show fewer" : `Show all ${plates.length} vehicles`}
+            </button>
+          )}
         </div>
       )}
 
@@ -498,7 +511,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
         ) : (
           <>
             <div className="event-grid">
-              {(showAllUnknown ? unknown : unknown.slice(0, 12)).map((file) => (
+              {unknown.slice(0, unknownCap).map((file) => (
                 <div className="event-card" key={file} style={{ cursor: "default" }}>
                   <img src={`/api/faces/unknown/${file}`} alt="unknown face" loading="lazy" decoding="async" />
                   <div className="meta">
@@ -524,14 +537,22 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
               ))}
             </div>
             {unknown.length > 12 && (
-              <button
-                type="button"
-                className="btn btn-ghost"
-                style={{ marginTop: 12 }}
-                onClick={() => setShowAllUnknown((v) => !v)}
-              >
-                {showAllUnknown ? "Show fewer" : `Show all ${unknown.length} unknown faces`}
-              </button>
+              <div className="row" style={{ marginTop: 12 }}>
+                {unknownCap < unknown.length && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => setUnknownCap((c) => c + 48)}
+                  >
+                    Show {Math.min(48, unknown.length - unknownCap)} more ({unknown.length - unknownCap} hidden)
+                  </button>
+                )}
+                {unknownCap > 12 && (
+                  <button type="button" className="btn btn-ghost" onClick={() => setUnknownCap(12)}>
+                    Show fewer
+                  </button>
+                )}
+              </div>
             )}
           </>
         )}

@@ -6,10 +6,11 @@ import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
 import Heatmap from "./Heatmap";
 import {
-  IconX, IconMic, IconUser, IconCar, IconDownload,
+  IconX, IconMic, IconUser, IconCar, IconDownload, IconVideo,
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight, IconPlus, IconMinus,
 } from "./icons";
 import { groupEvents } from "./eventGroups";
+import { isCameraSide, prettyLabel } from "./labels";
 
 /// UniFi Protect-style camera view: large live player with the camera's own
 /// timeline underneath and its recent detections alongside. Esc closes.
@@ -204,13 +205,27 @@ export default function CameraDetail({
               type="button"
               className="feed-item"
               key={ev.id}
-              aria-label={`Jump to this ${ev.label} detection in the recording`}
+              aria-label={`Jump to this ${prettyLabel(ev.label)} detection in the recording`}
               onClick={() => seekTo(ev.ts)}
             >
-              {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}?w=160`} alt={ev.label} loading="lazy" decoding="async" />}
+              {ev.snapshot ? (
+                <img src={`/api/snapshots/${ev.snapshot}?w=160`} alt={prettyLabel(ev.label)} loading="lazy" decoding="async" />
+              ) : (
+                // Keep the thumbnail column so snapshot-less rows stay aligned.
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 84, aspectRatio: "4 / 3", borderRadius: 6, flexShrink: 0,
+                    background: "var(--bg-sunken)", display: "grid", placeItems: "center",
+                    color: "var(--text-faint)",
+                  }}
+                >
+                  <IconVideo size={16} />
+                </span>
+              )}
               <div>
-                <b style={{ textTransform: "capitalize" }}>{ev.label}</b>{" "}
-                <span className="score">{(ev.score * 100).toFixed(0)}%</span>
+                <b style={{ textTransform: "capitalize" }}>{prettyLabel(ev.label)}</b>{" "}
+                {!isCameraSide(ev.label) && <span className="score">{(ev.score * 100).toFixed(0)}%</span>}
                 {count > 1 && (
                   <span className="badge" style={{ marginLeft: 6 }}>×{count}</span>
                 )}

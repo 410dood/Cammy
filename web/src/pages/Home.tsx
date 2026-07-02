@@ -32,6 +32,8 @@ import {
   IconLock,
 } from "../icons";
 
+import { prettyLabel } from "../labels";
+
 const VEHICLES = ["car", "truck", "bus", "motorcycle", "bicycle"];
 
 const ARM_MODES: { id: ArmMode; label: string; icon: JSX.Element; hint: string }[] = [
@@ -275,7 +277,14 @@ export default function Home({
         <div className="card digest-card">
           <div className="card-head">
             <span className="eyebrow"><IconSparkles size={13} /> Daily digest</span>
-            <span className="muted clock" style={{ marginLeft: "auto" }}>{fmtTime(digest.ts)}</span>
+            <span className="muted clock" style={{ marginLeft: "auto" }} title={fmtTime(digest.ts)}>
+              {Date.now() / 1000 - digest.ts > 26 * 3600 && (
+                <span className="badge warn" style={{ marginRight: 8 }} title="No newer digest has been generated — check 'daily digest' in Settings → Detection & AI">
+                  outdated
+                </span>
+              )}
+              <RelTime ts={digest.ts} />
+            </span>
           </div>
           {digestSentences.length > 1 ? (
             <ul className="digest-list">
@@ -298,7 +307,7 @@ export default function Home({
             <div className="row" style={{ flexWrap: "wrap" }}>
               {counts.map(([label, n]) => (
                 <span key={label} className="badge" style={{ textTransform: "capitalize" }}>
-                  {label} <b className="tnum">{n}</b>
+                  {prettyLabel(label)} <b className="tnum">{n}</b>
                 </span>
               ))}
             </div>
@@ -352,7 +361,7 @@ export default function Home({
                     </button>
                   )}
                   <div>
-                    <b style={{ textTransform: "capitalize" }}>{e.label}</b>{" "}
+                    <b style={{ textTransform: "capitalize" }}>{prettyLabel(e.label)}</b>{" "}
                     <span className="muted">· {e.camera}</span>
                     {e.face === "?" ? (
                       <span className="badge warn" style={{ marginLeft: 6 }}>
@@ -405,14 +414,22 @@ export default function Home({
           {occRows.length > 0 && (
             <div className="card">
               <h2>Live occupancy</h2>
-              <div className="row" style={{ flexWrap: "wrap" }}>
-                {occRows.map((r) => (
-                  <span key={`${r.camera}-${r.zone}`} className="badge">
-                    {r.zone} <b className="tnum">{r.count}</b>
-                    <span className="muted"> · {r.camera}</span>
-                  </span>
-                ))}
-              </div>
+              {occRows.some((r) => r.count > 0) ? (
+                <div className="row" style={{ flexWrap: "wrap" }}>
+                  {occRows
+                    .filter((r) => r.count > 0)
+                    .map((r) => (
+                      <span key={`${r.camera}-${r.zone}`} className="badge">
+                        {r.camera} · {r.zone} <b className="tnum">{r.count}</b>
+                      </span>
+                    ))}
+                </div>
+              ) : (
+                <p className="muted" style={{ margin: 0 }}>
+                  No one in any monitored zone right now
+                  <span className="muted"> · watching {occRows.length} zone{occRows.length === 1 ? "" : "s"}</span>
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -423,10 +440,19 @@ export default function Home({
           <h2><IconBell size={13} /> Latest notifications</h2>
           {notes.map((n) => {
             const clickable = n.event_id != null && !!onOpenEvent;
+            // Health notifications append the raw fetch error (URL, status code)
+            // after an em dash — keep the plain-language clause, tuck the
+            // technical tail into a hover title.
+            const tech = n.body != null && /https?:\/\//.test(n.body);
+            const shownBody = tech ? n.body!.split(" — ")[0] : n.body;
             const body = (
               <div>
                 <b>{n.title}</b>
-                {n.body && <span className="muted"> — {n.body}</span>}
+                {shownBody && (
+                  <span className="muted" title={tech ? (n.body ?? undefined) : undefined}>
+                    {" "}— {shownBody}
+                  </span>
+                )}
                 <RelTime ts={n.ts} className="muted clock" style={{ display: "block", fontSize: "var(--text-xs)" }} />
               </div>
             );

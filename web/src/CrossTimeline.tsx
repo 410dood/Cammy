@@ -5,6 +5,7 @@
 
 import { useState } from "react";
 import { CamEvent, Camera, Segment } from "./api";
+import { prettyLabel } from "./labels";
 
 const HOUR = 3600;
 const VEHICLES = ["car", "truck", "bus", "motorcycle", "bicycle"];
@@ -175,7 +176,7 @@ export default function CrossTimeline({
                   key={ev.id}
                   className={`xtl-evt ${eventClass(ev.label)}`}
                   style={{ left: `${pct(ev.ts)}%` }}
-                  title={`${ev.label} · ${new Date(ev.ts * 1000).toLocaleTimeString()}`}
+                  title={`${prettyLabel(ev.label)} · ${new Date(ev.ts * 1000).toLocaleTimeString()}`}
                 />
               ))}
             </div>

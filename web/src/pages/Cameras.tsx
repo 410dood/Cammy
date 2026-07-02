@@ -947,18 +947,29 @@ export default function Cameras({
                 const s = status[String(cam.id)];
                 return (
                 <tr key={cam.id}>
-                  <td title={s?.last_error ?? ""}>
-                    <span
-                      className={`dot ${s ? (s.online ? "on" : "off") : ""}`}
-                      aria-hidden="true"
-                    />{" "}
-                    <span className="muted">
-                      {s?.online ? "online" : s ? "offline" : "checking…"}
-                    </span>
-                    {s && !s.online && s.last_error && (
-                      <span className="badge danger" style={{ marginLeft: 6 }} title={s.last_error}>
-                        <IconAlert size={11} /> error
-                      </span>
+                  <td title={cam.enabled ? (s?.last_error ?? "") : "Turned off on purpose — not a fault"}>
+                    {/* A deliberately disabled camera is not a fault — show it
+                        neutral, not as a red "offline". */}
+                    {!cam.enabled ? (
+                      <>
+                        <span className="dot" aria-hidden="true" />{" "}
+                        <span className="muted">disabled</span>
+                      </>
+                    ) : (
+                      <>
+                        <span
+                          className={`dot ${s ? (s.online ? "on" : "off") : ""}`}
+                          aria-hidden="true"
+                        />{" "}
+                        <span className="muted">
+                          {s?.online ? "online" : s ? "offline" : "checking…"}
+                        </span>
+                        {s && !s.online && s.last_error && (
+                          <span className="badge danger" style={{ marginLeft: 6 }} title={s.last_error}>
+                            <IconAlert size={11} /> error
+                          </span>
+                        )}
+                      </>
                     )}
                   </td>
                   <td>

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { CamEvent, Segment } from "./api";
 import { eventClass } from "./CrossTimeline";
+import { isCameraSide, prettyLabel } from "./labels";
 
 /// UniFi-style scrubber: recorded coverage as blocks, events as ticks.
 /// Click anywhere in a recorded span to start playback at that instant.
@@ -128,7 +129,7 @@ export default function Timeline({
           className={`tl-tick ${eventClass(e.label)}`}
           key={i}
           style={{ left: `${left * 100}%` }}
-          title={`${e.label} ${(e.score * 100).toFixed(0)}% @ ${new Date(e.ts * 1000).toLocaleTimeString()}`}
+          title={`${prettyLabel(e.label)}${isCameraSide(e.label) ? "" : ` ${(e.score * 100).toFixed(0)}%`} @ ${new Date(e.ts * 1000).toLocaleTimeString()}`}
         />
       ))}
       {cursor != null && (

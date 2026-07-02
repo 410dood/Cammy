@@ -102,7 +102,13 @@ export default function NotificationsPanel({
                   <span className={`notif-ico ${tone}`}><Icon size={16} /></span>
                   <div className="notif-body">
                     <b>{n.title}</b>
-                    {n.body && <div className="muted notif-text">{n.body}</div>}
+                    {n.body && (
+                      // Health errors carry a raw URL/status tail after the em
+                      // dash — show the plain clause, full text on hover.
+                      <div className="muted notif-text" title={/https?:\/\//.test(n.body) ? n.body : undefined}>
+                        {/https?:\/\//.test(n.body) ? n.body.split(" — ")[0] : n.body}
+                      </div>
+                    )}
                     <RelTime ts={n.ts} className="muted clock notif-time" />
                   </div>
                   {!n.read && <span className="notif-dot" aria-hidden="true" />}

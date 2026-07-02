@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, Camera, CamEvent, fmtTime } from "../api";
 import { IconInfo, IconAlert } from "../icons";
+import { prettyLabel } from "../labels";
 
 /// A residential "mode": a plain-language recipe that ties together the camera
 /// toggles, zones, sounds and alarm rules already shipped — so a non-expert can
@@ -190,7 +191,7 @@ function ModeCard({
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: "var(--text-sm)" }}>
             {recent.map((e) => (
               <li key={e.id}>
-                <b>{e.label}</b> on {e.camera}
+                <b>{prettyLabel(e.label)}</b> on {e.camera}
                 {e.zone ? ` · ${e.zone}` : ""} · {fmtTime(e.ts)}
               </li>
             ))}

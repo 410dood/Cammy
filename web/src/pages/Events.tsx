@@ -20,6 +20,7 @@ import {
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
 // uses it too) — see eventGroups.ts.
 import { Cluster, groupEvents } from "../eventGroups";
+import { isCameraSide, prettyLabel, prettyZone } from "../labels";
 
 function durationLabel(secs: number): string {
   if (secs < 60) return `${secs}s`;
@@ -648,7 +649,7 @@ export default function Events({
           <option value="">all objects</option>
           {labels.map((l) => (
             <option key={l} value={l}>
-              {l}
+              {prettyLabel(l)}
             </option>
           ))}
         </select>
@@ -745,7 +746,7 @@ export default function Events({
               ariaLabel={`Filter to ${l}`}
               onClick={() => setLabel(label === l ? "" : l)}
             >
-              {l} ({n})
+              {prettyLabel(l)} ({n})
             </TogglePill>
           ))}
         </div>
@@ -863,8 +864,10 @@ export default function Events({
               )}
               <div className="meta">
                 <div className="ev-head">
-                  <b className="ev-label">{ev.label}</b>
-                  <span className="ev-score score">{(ev.score * 100).toFixed(0)}%</span>
+                  <b className="ev-label">{prettyLabel(ev.label)}</b>
+                  {!isCameraSide(ev.label) && (
+                    <span className="ev-score score">{(ev.score * 100).toFixed(0)}%</span>
+                  )}
                   <span className="muted">{ev.camera}</span>
                   {(ev.severity ?? 2) >= 4 ? (
                     <span className="badge danger" title="Critical severity — safety or security-integrity event">
@@ -904,7 +907,11 @@ export default function Events({
                       </>
                     )}
                     {ev.gesture && <span className="badge accent"><IconHand size={13} /> {ev.gesture}</span>}
-                    {ev.zone && <span className="badge"><IconZone size={13} /> {ev.zone}</span>}
+                    {ev.zone && (
+                      <span className="badge" title={ev.zone}>
+                        <IconZone size={13} /> {prettyZone(ev.zone)}
+                      </span>
+                    )}
                     {ev.gait === "?" ? (
                       <span className="badge warn" title="Tracked walking but matched no enrolled gait">
                         <IconStranger size={13} /> unknown walk
@@ -1023,7 +1030,7 @@ export default function Events({
       )}
 
       {open && (
-        <Modal className="lightbox" title={`${open.label} · ${open.camera}`} onClose={() => setOpen(null)}>
+        <Modal className="lightbox" title={`${prettyLabel(open.label)} · ${open.camera}`} onClose={() => setOpen(null)}>
           {open.snapshot && (
             <img
               className="lightbox-img"
@@ -1032,7 +1039,9 @@ export default function Events({
             />
           )}
           <div className="lightbox-meta">
-            <span className="badge accent score">{(open.score * 100).toFixed(0)}%</span>
+            {!isCameraSide(open.label) && (
+              <span className="badge accent score">{(open.score * 100).toFixed(0)}%</span>
+            )}
             {open.face === "?" ? (
               <span className="badge warn"><IconStranger size={13} /> stranger</span>
             ) : open.face ? (
@@ -1040,7 +1049,9 @@ export default function Events({
             ) : null}
             {open.plate && <span className="badge warn"><IconCar size={13} /> {open.plate}</span>}
             {open.gesture && <span className="badge accent"><IconHand size={13} /> {open.gesture}</span>}
-            {open.zone && <span className="badge"><IconZone size={13} /> {open.zone}</span>}
+            {open.zone && (
+              <span className="badge" title={open.zone}><IconZone size={13} /> {prettyZone(open.zone)}</span>
+            )}
             <span className="muted clock" style={{ marginLeft: "auto" }}>{fmtTime(open.ts)}</span>
           </div>
           {open.transcript && <p className="ev-line" style={{ margin: "10px 0 0" }}><IconMic size={14} /> <span>“{open.transcript}”</span></p>}
@@ -1049,7 +1060,7 @@ export default function Events({
 
       {similar && (
         <Modal
-          title={`Similar to this ${similar.ev.label} · ${similar.ev.camera}`}
+          title={`Similar to this ${prettyLabel(similar.ev.label)} · ${similar.ev.camera}`}
           onClose={() => {
             similarReq.current++; // ignore any in-flight response after close
             setSimilar(null);

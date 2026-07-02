@@ -1,11 +1,13 @@
-﻿import { useEffect, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { api, CamEvent, Camera, capacityTone, fmtBytes, fmtDaysLeft, fmtTime, Segment, Stats } from "../api";
 import Timeline from "../Timeline";
 import CrossTimeline from "../CrossTimeline";
-import { IconPlay, IconFilm, IconAlert } from "../icons";
+import { IconPlay, IconFilm, IconAlert, IconChevronDown, IconChevronRight } from "../icons";
 import { Callout, EmptyState, ErrorState, Modal } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+type HourGroup = { key: string; camera: string; hourTs: number; segs: Segment[]; bytes: number };
 
 const WINDOWS = [
   { label: "1h", secs: 3600 },
@@ -22,6 +24,10 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // The raw segment list is minute-granularity — hundreds of near-identical
+  // rows. Fold it into one row per camera-hour, expandable to the segments.
+  const [openHours, setOpenHours] = useState<Set<string>>(new Set());
 
   // Day picker: "" = live (anchored at now); a date scrubs that day's history.
   const [day, setDay] = useState("");
@@ -80,6 +86,27 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       /* clicked a gap — nothing recorded there */
     }
   };
+
+  const hourGroups = useMemo<HourGroup[]>(() => {
+    const map = new Map<string, HourGroup>();
+    for (const s of segments) {
+      const hourTs = Math.floor(s.start_ts / 3600) * 3600;
+      const key = `${s.camera}|${hourTs}`;
+      let g = map.get(key);
+      if (!g) {
+        g = { key, camera: s.camera, hourTs, segs: [], bytes: 0 };
+        map.set(key, g);
+      }
+      g.segs.push(s);
+      g.bytes += s.bytes;
+    }
+    // Newest hour first; within an hour, clips run oldest-first (scrub order).
+    const groups = [...map.values()].sort(
+      (a, b) => b.hourTs - a.hourTs || a.camera.localeCompare(b.camera)
+    );
+    for (const g of groups) g.segs.sort((a, b) => a.start_ts - b.start_ts);
+    return groups;
+  }, [segments]);
 
   return (
     <>
@@ -219,7 +246,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           </button>
         )}
         <span className="muted">
-          {segments.length} segments · {fmtBytes(segments.reduce((a, s) => a + s.bytes, 0))} total
+          {segments.length} clips · {fmtBytes(segments.reduce((a, s) => a + s.bytes, 0))} total
         </span>
       </div>
 
@@ -263,26 +290,50 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             <thead>
               <tr>
                 <th>Camera</th>
-                <th>Start</th>
+                <th>When</th>
                 <th>Size</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {segments.slice(0, 200).map((s) => (
-                <tr key={s.id}>
-                  <td>
-                    <b>{s.camera}</b>
-                  </td>
-                  <td>{fmtTime(s.start_ts)}</td>
-                  <td className="muted">{fmtBytes(s.bytes)}</td>
-                  <td>
-                    <button className="btn btn-ghost ev-act" onClick={() => setPlaying({ segment: s, offset: 0 })}>
-                      <IconPlay size={13} /> Play
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {hourGroups.map((g) => {
+                const open = openHours.has(g.key);
+                const hourLabel = `${new Date(g.hourTs * 1000).toLocaleString([], {
+                  month: "numeric", day: "numeric", hour: "numeric",
+                })} – ${new Date((g.hourTs + 3600) * 1000).toLocaleTimeString([], { hour: "numeric" })}`;
+                if (g.segs.length === 1) {
+                  const s = g.segs[0];
+                  return (
+                    <tr key={g.key}>
+                      <td><b>{s.camera}</b></td>
+                      <td>{fmtTime(s.start_ts)}</td>
+                      <td className="muted">{fmtBytes(s.bytes)}</td>
+                      <td>
+                        <button className="btn btn-ghost ev-act" onClick={() => setPlaying({ segment: s, offset: 0 })}>
+                          <IconPlay size={13} /> Play
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                }
+                return (
+                  <HourRows
+                    key={g.key}
+                    group={g}
+                    open={open}
+                    hourLabel={hourLabel}
+                    onToggle={() =>
+                      setOpenHours((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(g.key)) next.delete(g.key);
+                        else next.add(g.key);
+                        return next;
+                      })
+                    }
+                    onPlay={(s) => setPlaying({ segment: s, offset: 0 })}
+                  />
+                );
+              })}
             </tbody>
           </table>
           </div>
@@ -305,6 +356,56 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           />
         </Modal>
       )}
+    </>
+  );
+}
+
+/// One camera-hour of footage: a summary row that expands into its clips.
+function HourRows({
+  group,
+  open,
+  hourLabel,
+  onToggle,
+  onPlay,
+}: {
+  group: HourGroup;
+  open: boolean;
+  hourLabel: string;
+  onToggle: () => void;
+  onPlay: (s: Segment) => void;
+}) {
+  return (
+    <>
+      <tr>
+        <td><b>{group.camera}</b></td>
+        <td>
+          <button
+            type="button"
+            className="btn btn-ghost ev-act"
+            style={{ marginLeft: -8 }}
+            aria-expanded={open}
+            onClick={onToggle}
+          >
+            {open ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />} {hourLabel}
+            <span className="muted"> · {group.segs.length} clips</span>
+          </button>
+        </td>
+        <td className="muted">{fmtBytes(group.bytes)}</td>
+        <td></td>
+      </tr>
+      {open &&
+        group.segs.map((s) => (
+          <tr key={s.id}>
+            <td></td>
+            <td style={{ paddingLeft: 26 }}>{fmtTime(s.start_ts)}</td>
+            <td className="muted">{fmtBytes(s.bytes)}</td>
+            <td>
+              <button className="btn btn-ghost ev-act" onClick={() => onPlay(s)}>
+                <IconPlay size={13} /> Play
+              </button>
+            </td>
+          </tr>
+        ))}
     </>
   );
 }
