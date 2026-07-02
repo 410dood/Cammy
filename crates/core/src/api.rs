@@ -2183,8 +2183,9 @@ async fn record_gesture(
     let snapshot = {
         let api_base = st.go2rtc.api_base();
         let key = cam.name.clone();
+        let masks = cam.detect_config.privacy_masks.clone();
         let abs = snap_abs.clone();
-        tokio::task::spawn_blocking(move || save_gesture_snapshot(&api_base, &key, &abs))
+        tokio::task::spawn_blocking(move || save_gesture_snapshot(&api_base, &key, &masks, &abs))
             .await
             .ok()
             .and_then(|r| r.ok())
@@ -2380,8 +2381,9 @@ async fn soft_trigger(
     let snapshot = {
         let api_base = st.go2rtc.api_base();
         let key = cam.name.clone();
+        let masks = cam.detect_config.privacy_masks.clone();
         let abs = snap_abs.clone();
-        tokio::task::spawn_blocking(move || save_gesture_snapshot(&api_base, &key, &abs))
+        tokio::task::spawn_blocking(move || save_gesture_snapshot(&api_base, &key, &masks, &abs))
             .await
             .ok()
             .and_then(|r| r.ok())
@@ -2497,10 +2499,14 @@ async fn soft_trigger(
     })))
 }
 
-/// Fetch the camera's current frame from go2rtc and write it to `path`.
+/// Fetch the camera's current frame from go2rtc and write it to `path`, with
+/// the camera's privacy masks burned in — this is a raw frame grab (unlike the
+/// detection pipeline, which masks before analysis), so without this the
+/// gesture/soft-trigger snapshots would leak masked regions into pushes.
 fn save_gesture_snapshot(
     api_base: &str,
     camera: &str,
+    masks: &[Vec<[f32; 2]>],
     path: &std::path::Path,
 ) -> anyhow::Result<()> {
     use std::io::Read as _;
@@ -2515,6 +2521,13 @@ fn save_gesture_snapshot(
     resp.into_reader()
         .take(32 * 1024 * 1024)
         .read_to_end(&mut bytes)?;
+    if !masks.is_empty() {
+        // Fail CLOSED on a decode error: better no snapshot than an unmasked one.
+        let mut img = image::load_from_memory(&bytes)?;
+        crate::pipeline::apply_privacy_masks(&mut img, masks);
+        img.save(path)?;
+        return Ok(());
+    }
     std::fs::write(path, &bytes)?;
     Ok(())
 }

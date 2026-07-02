@@ -216,12 +216,23 @@ pub fn run(
                 }
                 last_fire.insert(key, now);
 
-                // Grab a frame for visual context where possible.
+                // Grab a frame for visual context where possible. This is a raw
+                // frame grab (not the masked detection pipeline), so burn the
+                // camera's privacy masks in before it can reach a push/webhook;
+                // fail CLOSED (no snapshot) if the masked re-encode fails.
                 let snap_rel = format!("{}-{}-audio.jpg", cam.name, now);
+                let masks = &cam.detect_config.privacy_masks;
                 let snapshot = fetch_snapshot(&go2rtc.api_base(), &cam.name)
                     .and_then(|bytes| {
                         std::fs::create_dir_all(&snapshots_dir).ok();
-                        std::fs::write(snapshots_dir.join(&snap_rel), bytes).ok()
+                        let path = snapshots_dir.join(&snap_rel);
+                        if masks.is_empty() {
+                            std::fs::write(path, bytes).ok()
+                        } else {
+                            let mut img = image::load_from_memory(&bytes).ok()?;
+                            crate::pipeline::apply_privacy_masks(&mut img, masks);
+                            img.save(path).ok()
+                        }
                     })
                     .map(|_| snap_rel.clone());
 

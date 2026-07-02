@@ -1731,7 +1731,10 @@ fn zone_for(
 }
 
 /// Black out the privacy-mask polygons (frame-fraction coordinates) in place.
-fn apply_privacy_masks(frame: &mut DynamicImage, masks: &[Vec<[f32; 2]>]) {
+/// Shared with the side-channel snapshot paths (gesture / soft-trigger / audio
+/// frame grabs), which fetch raw frames from go2rtc and would otherwise leak
+/// masked regions into pushes/webhooks.
+pub(crate) fn apply_privacy_masks(frame: &mut DynamicImage, masks: &[Vec<[f32; 2]>]) {
     let mut img = frame.to_rgb8();
     let (w, h) = (img.width(), img.height());
     for mask in masks {
