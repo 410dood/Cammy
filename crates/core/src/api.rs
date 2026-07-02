@@ -69,6 +69,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(bookmark_event),
         )
         .route("/api/gesture", axum::routing::post(record_gesture))
+        .route(
+            "/api/cameras/:id/trigger",
+            axum::routing::post(soft_trigger),
+        )
         .route("/api/events/{id}/clip", get(event_clip))
         .route("/api/events/{id}/similar", get(event_similar))
         .route("/api/search", get(smart_search))
@@ -2280,6 +2284,161 @@ async fn record_gesture(
         "gesture": canonical,
         "camera": cam.name,
         "duress": is_duress,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct SoftTriggerReq {
+    #[serde(default)]
+    label: Option<String>,
+}
+
+/// Soft trigger (Nx Witness style): a user-pressed button on a camera creates a
+/// first-class **bookmarked** event ("Delivery arrived", "Let the dog out")
+/// with a context snapshot, riding the normal MQTT/webhook/alarm machinery —
+/// an alarm rule matching the label fires. Bookmarked so it survives event
+/// retention like any manually-saved moment.
+async fn soft_trigger(
+    State(st): State<AppState>,
+    Path(cam_id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<SoftTriggerReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let label = req.label.as_deref().unwrap_or("manual").trim().to_string();
+    if label.is_empty() || label.chars().count() > 48 || label.chars().any(|c| c.is_control()) {
+        return Err(bad_request("label must be 1–48 printable characters"));
+    }
+    let cam = st
+        .db
+        .list_cameras()?
+        .into_iter()
+        .find(|c| c.id == cam_id)
+        .ok_or_else(not_found)?;
+    // A scoped user can't create events / fire alarms on a camera they can't see.
+    require_camera(&allowed_cameras(&st, &p)?, cam.id)?;
+    let settings = st.db.settings();
+    let now = chrono::Local::now().timestamp();
+
+    // Best-effort context snapshot of what the camera sees right now.
+    let snap_rel = format!("{}-trigger-{}.jpg", cam.name, now);
+    let snap_abs = st.snapshots_dir.join(&snap_rel);
+    let snapshot = {
+        let api_base = st.go2rtc.api_base();
+        let key = cam.name.clone();
+        let abs = snap_abs.clone();
+        tokio::task::spawn_blocking(move || save_gesture_snapshot(&api_base, &key, &abs))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .map(|_| snap_rel.clone())
+    };
+
+    let id = st.db.add_event(
+        cam.id,
+        now,
+        &label,
+        1.0,
+        [0.0; 4],
+        snapshot.as_deref(),
+        None,
+        None,
+        None,
+        None,
+    )?;
+    // Bookmark it: a deliberate button press is a moment the user chose to keep.
+    let _ = st.db.set_event_bookmark(id, true, None);
+    tracing::info!(camera = %cam.name, label = %label, event = id, "soft trigger recorded");
+
+    let snap_url = snapshot
+        .as_ref()
+        .map(|s| format!("/api/snapshots/{s}"))
+        .unwrap_or_default();
+    let _ = st.mqtt_tx.send(crate::mqtt::EventMsg {
+        event_id: id,
+        camera: cam.name.clone(),
+        label: label.clone(),
+        score: 1.0,
+        ts: now,
+        snapshot: snap_url.clone(),
+        topic: None,
+    });
+
+    // Fire matching alarm rules off-thread (blocking I/O must not stall the
+    // response), mirroring the gesture endpoint.
+    let rules: Vec<(crate::db::AlarmRule, u32)> = st
+        .db
+        .list_alarms()?
+        .into_iter()
+        .filter(|r| {
+            r.matches(cam.id, &label, 1.0, None, None, None, None)
+                && r.zone_ok(None)
+                && r.confirm_ok(&st.db, cam.id, now)
+                && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
+                && crate::notify::ready(r, &st.alarm_throttle, now)
+        })
+        .map(|r| {
+            let suppressed = crate::notify::take_suppressed(&st.alarm_throttle, r.id);
+            (r, suppressed)
+        })
+        .collect();
+    if !rules.is_empty() {
+        let mqtt_tx = st.mqtt_tx.clone();
+        let base_url = settings.public_base_url.clone();
+        let webhook_template = settings.webhook_template.clone();
+        let notify_min_severity = settings.notify_min_severity;
+        let smtp_owned = (!settings.smtp_url.trim().is_empty()).then(|| {
+            (
+                settings.smtp_url.clone(),
+                settings.smtp_user.clone(),
+                settings.smtp_pass.clone(),
+                settings.smtp_from.clone(),
+                settings.smtp_to.clone(),
+            )
+        });
+        let camera = cam.name.clone();
+        let label_owned = label.clone();
+        let snap_path = snapshot.as_ref().map(|_| snap_abs.clone());
+        tokio::task::spawn_blocking(move || {
+            let ev = crate::notify::AlarmEvent {
+                event_id: id,
+                camera: &camera,
+                label: &label_owned,
+                score: 1.0,
+                ts: now,
+                snapshot_url: &snap_url,
+                snapshot_path: snap_path.as_deref(),
+                face: None,
+                plate: None,
+                gesture: None,
+                transcript: None,
+                speed: None,
+                base_url: &base_url,
+                webhook_template: &webhook_template,
+                smtp: smtp_owned
+                    .as_ref()
+                    .map(|(u, us, pw, f, t)| crate::notify::SmtpConfig {
+                        url: u,
+                        user: us,
+                        pass: pw,
+                        from: f,
+                        to: t,
+                    }),
+                duress: false,
+                severity: crate::severity::severity_for(&label_owned, None, None),
+                min_push_severity: notify_min_severity,
+                caption: None,
+            };
+            for (rule, suppressed) in &rules {
+                crate::notify::fire(rule, &ev, &mqtt_tx, *suppressed);
+            }
+        });
+    }
+
+    Ok(Json(serde_json::json!({
+        "recorded": true,
+        "event_id": id,
+        "label": label,
+        "camera": cam.name,
     })))
 }
 

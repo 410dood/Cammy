@@ -544,6 +544,13 @@ export const api = {
   patchCamera: (id: number, patch: Partial<Camera>) =>
     req<Camera>(`/api/cameras/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteCamera: (id: number) => req<void>(`/api/cameras/${id}`, { method: "DELETE" }),
+  /** Soft trigger: create a bookmarked event ("Delivery arrived") with a live
+   *  snapshot on a camera; alarm rules matching the label fire. */
+  softTrigger: (id: number, label?: string) =>
+    req<{ recorded: boolean; event_id: number; label: string }>(
+      `/api/cameras/${id}/trigger`,
+      { method: "POST", body: JSON.stringify({ label: label ?? null }) },
+    ),
   restore: (backup: unknown) =>
     req<{
       settings_applied: boolean;
