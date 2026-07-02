@@ -3106,16 +3106,24 @@ impl Db {
         Ok(())
     }
 
-    pub fn list_segments(&self, camera_id: Option<i64>, limit: u32) -> Result<Vec<SegmentRow>> {
+    /// Newest-first segments, optionally only those starting before `before`
+    /// (exclusive) — lets the Recordings day picker page into history.
+    pub fn list_segments(
+        &self,
+        camera_id: Option<i64>,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<SegmentRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path
              FROM segments s JOIN cameras c ON c.id = s.camera_id
              WHERE (?1 IS NULL OR s.camera_id = ?1)
-             ORDER BY s.start_ts DESC LIMIT ?2",
+               AND (?2 IS NULL OR s.start_ts < ?2)
+             ORDER BY s.start_ts DESC LIMIT ?3",
         )?;
         let rows = stmt
-            .query_map(params![camera_id, limit], |r| {
+            .query_map(params![camera_id, before, limit], |r| {
                 Ok(SegmentRow {
                     id: r.get(0)?,
                     camera_id: r.get(1)?,
@@ -3131,7 +3139,7 @@ impl Db {
 
     pub fn get_segment(&self, id: i64) -> Result<Option<SegmentRow>> {
         Ok(self
-            .list_segments(None, u32::MAX)?
+            .list_segments(None, None, u32::MAX)?
             .into_iter()
             .find(|s| s.id == id))
     }

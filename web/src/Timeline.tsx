@@ -10,14 +10,18 @@ export default function Timeline({
   segments,
   events,
   onSeek,
+  nowTs,
 }: {
   windowSecs: number;
   segmentSecs: number;
   segments: Segment[];
   events: CamEvent[];
   onSeek: (ts: number) => void;
+  /** Right edge of the window (unix secs); defaults to now — a day picker
+   *  passes end-of-day to scrub history. */
+  nowTs?: number;
 }) {
-  const now = Math.floor(Date.now() / 1000);
+  const now = nowTs ?? Math.floor(Date.now() / 1000);
   const start = now - windowSecs;
 
   const frac = (ts: number) => (ts - start) / windowSecs;

@@ -611,9 +611,10 @@ export const api = {
       "/api/gesture",
       { method: "POST", body: JSON.stringify(body) }
     ),
-  recordings: (q: { camera_id?: number; limit?: number } = {}) => {
+  recordings: (q: { camera_id?: number; before?: number; limit?: number } = {}) => {
     const p = new URLSearchParams();
     if (q.camera_id != null) p.set("camera_id", String(q.camera_id));
+    if (q.before != null) p.set("before", String(q.before));
     if (q.limit) p.set("limit", String(q.limit));
     return req<Segment[]>(`/api/recordings?${p}`);
   },

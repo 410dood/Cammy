@@ -3286,6 +3286,8 @@ async fn delete_plate_api(
 #[derive(Deserialize)]
 struct RecordingQuery {
     camera_id: Option<i64>,
+    /// Only segments starting before this unix ts (exclusive) — day-picker paging.
+    before: Option<i64>,
     #[serde(default = "default_limit")]
     limit: u32,
 }
@@ -3299,7 +3301,7 @@ async fn list_recordings(
     if let Some(cid) = q.camera_id {
         require_camera(&allow, cid)?;
     }
-    let mut segs = st.db.list_segments(q.camera_id, q.limit.min(1000))?;
+    let mut segs = st.db.list_segments(q.camera_id, q.before, q.limit.min(1000))?;
     if let Some(set) = &allow {
         segs.retain(|s| set.contains(&s.camera_id));
     }

@@ -23,9 +23,23 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   const [segmentSecs, setSegmentSecs] = useState(60);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // Day picker: "" = live (anchored at now); a date scrubs that day's history.
+  const [day, setDay] = useState("");
+  const dayAnchor = () => {
+    const nowSecs = Math.floor(Date.now() / 1000);
+    if (!day) return nowSecs;
+    const end = Math.floor(new Date(`${day}T23:59:59`).getTime() / 1000);
+    return Number.isFinite(end) ? Math.min(end, nowSecs) : nowSecs;
+  };
+  const anchor = dayAnchor();
+
   const load = () => {
     api
-      .recordings({ camera_id: cameraId === "" ? undefined : cameraId, limit: 1000 })
+      .recordings({
+        camera_id: cameraId === "" ? undefined : cameraId,
+        before: day ? anchor + 1 : undefined,
+        limit: 1000,
+      })
       .then((s) => {
         setSegments(s);
         setLoadError(null);
@@ -34,7 +48,11 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
     api.stats().then(setStats).catch(() => {});
     // Fetch events for the timeline: all cameras (cross-camera lanes) or just one.
     api
-      .events({ camera_id: cameraId === "" ? undefined : cameraId, limit: 1500 })
+      .events({
+        camera_id: cameraId === "" ? undefined : cameraId,
+        before: day ? anchor + 1 : undefined,
+        limit: 1500,
+      })
       .then(setEvents)
       .catch(() => {});
   };
@@ -48,7 +66,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
     const t = setInterval(load, 10000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cameraId]);
+  }, [cameraId, day]);
 
   const seekTo = async (ts: number) => {
     if (cameraId === "") return;
@@ -169,6 +187,22 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             {w.label}
           </button>
         ))}
+        <input
+          type="date"
+          aria-label="Jump to a day"
+          title="Scrub a past day's recordings; clear to return to live"
+          value={day}
+          max={new Date().toISOString().slice(0, 10)}
+          onChange={(e) => {
+            setDay(e.target.value);
+            if (e.target.value) setWindowSecs(24 * 3600);
+          }}
+        />
+        {day && (
+          <button className="btn btn-ghost" onClick={() => setDay("")} title="Back to live">
+            Today
+          </button>
+        )}
         <span className="muted">
           {segments.length} segments · {fmtBytes(segments.reduce((a, s) => a + s.bytes, 0))} total
         </span>
@@ -182,7 +216,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             events={events}
             windowSecs={windowSecs}
             segmentSecs={segmentSecs}
-            nowTs={Math.floor(Date.now() / 1000)}
+            nowTs={anchor}
             onSeek={seekCamera}
           />
         )
@@ -193,6 +227,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           segments={segments}
           events={events}
           onSeek={seekTo}
+          nowTs={anchor}
         />
       )}
 
