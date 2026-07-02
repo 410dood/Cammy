@@ -172,10 +172,10 @@ function TuneModal({
       toggle: () => setDc({ ...dc, gesture_detect: !dc.gesture_detect }),
     },
     {
-      label: "Camera-side detection (ONVIF)",
-      help: "Ingest the camera's own AI (motion, IVS tripwire/intrusion, person/vehicle) as camera_* events — no server GPU cost.",
+      label: "Camera-side detection",
+      help: "Ingest the camera's own AI (ONVIF: motion, tripwire, intrusion, person/vehicle) as camera_* events — no server GPU cost.",
       title:
-        "Subscribe to this camera's ONVIF events and record what ITS chip detects as first-class camera_motion / camera_tripwire / camera_intrusion / camera_person / camera_vehicle events (alarm rules match those labels). The camera source must carry ONVIF credentials (user:pass@host). Vendor dialects vary — check what arrives with the ONVIF inspector API before writing rules.",
+        "Subscribe to this camera's ONVIF events and record what its chip detects as camera_motion / camera_tripwire / camera_intrusion / camera_person / camera_vehicle events (alarm rules match those labels). Needs ONVIF credentials (user:pass@host) in the camera source.",
       on: dc.onvif_events ?? false,
       toggle: () => setDc({ ...dc, onvif_events: !dc.onvif_events }),
     },

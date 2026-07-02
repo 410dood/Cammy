@@ -187,20 +187,26 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             {w.label}
           </button>
         ))}
-        <input
-          type="date"
-          aria-label="Jump to a day"
-          title="Scrub a past day's recordings; clear to return to live"
-          value={day}
-          max={new Date().toISOString().slice(0, 10)}
-          onChange={(e) => {
-            setDay(e.target.value);
-            if (e.target.value) setWindowSecs(24 * 3600);
-          }}
-        />
+        <label className="field" title="Scrub a past day's recordings; clear to return to live">
+          day
+          <input
+            type="date"
+            aria-label="Jump to a day"
+            value={day}
+            max={(() => {
+              // Local date, not UTC — toISOString() flips days near midnight.
+              const d = new Date();
+              return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+            })()}
+            onChange={(e) => {
+              setDay(e.target.value);
+              if (e.target.value) setWindowSecs(24 * 3600);
+            }}
+          />
+        </label>
         {day && (
-          <button className="btn btn-ghost" onClick={() => setDay("")} title="Back to live">
-            Today
+          <button className="btn btn-primary" onClick={() => setDay("")} title="Back to the live, auto-refreshing view">
+            Live
           </button>
         )}
         <span className="muted">

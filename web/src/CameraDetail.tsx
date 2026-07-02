@@ -39,7 +39,7 @@ export default function CameraDetail({
     const label = (
       await dialog.prompt({
         title: "Log an event",
-        label: "What happened? (becomes the event label; an alarm rule matching it fires)",
+        label: "What happened? Saved as a bookmarked event with a snapshot; alarm rules matching the label will fire.",
         placeholder: "e.g. Delivery arrived",
         maxLength: 48,
       })
@@ -151,7 +151,7 @@ export default function CameraDetail({
           ))}
         </div>
         <button
-          className="btn btn-secondary"
+          className="btn btn-primary"
           onClick={logEvent}
           title="Create a bookmarked event with a snapshot of this moment (soft trigger)"
         >

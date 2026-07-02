@@ -6,7 +6,7 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
-  IconAlert, IconCheck, IconLayers, IconUpload,
+  IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX,
 } from "../icons";
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
 // uses it too) — see eventGroups.ts.
@@ -597,8 +597,9 @@ export default function Events({
             className="btn btn-primary"
             onClick={() => setTagFilter(null)}
             title="Showing only this tag — click to clear"
+            aria-label={`Clear tag filter ${tagFilter}`}
           >
-            #{tagFilter} ✕
+            <IconTag size={13} /> {tagFilter} <IconX size={12} />
           </button>
         )}
         <button
@@ -839,7 +840,9 @@ export default function Events({
                       <IconAlert size={12} /> critical
                     </span>
                   ) : (ev.severity ?? 2) === 3 ? (
-                    <span className="badge warn" title="High severity — likely worth a look">high</span>
+                    <span className="badge warn" title="High severity — likely worth a look">
+                      <IconAlert size={12} /> high
+                    </span>
                   ) : null}
                   {cluster && cluster.count > 1 && (
                     <span className="badge" title={`${cluster.count} detections in this activity`}>
@@ -899,14 +902,13 @@ export default function Events({
                       <button
                         key={t}
                         className="badge"
-                        style={{ cursor: "pointer" }}
                         title={`Show only events tagged “${t}”`}
                         onClick={(e) => {
                           e.stopPropagation();
                           setTagFilter(t);
                         }}
                       >
-                        #{t}
+                        <IconTag size={11} /> {t}
                       </button>
                     ))}
                   </div>
@@ -948,7 +950,7 @@ export default function Events({
                       editTags(ev);
                     }}
                   >
-                    #
+                    <IconTag size={14} />
                   </button>
                   <button
                     className="btn btn-ghost ev-act"

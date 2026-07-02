@@ -377,7 +377,7 @@ export default function Alarms({
                   <td title={describe(r)}>
                     <div className="ev-chips" style={{ marginBottom: 4 }}>
                       {parts.trigger.map((t, i) => (
-                        <span key={i} className="badge accent" style={{ textTransform: "capitalize" }}>{t}</span>
+                        <span key={i} className="badge accent">{t}</span>
                       ))}
                     </div>
                     {parts.scope.length > 0 && (
@@ -401,7 +401,7 @@ export default function Alarms({
                         })}
                         {stats[String(r.id)].suppressed_since > 0 && (
                           <div style={{ fontSize: "var(--text-sm)" }}>
-                            +{stats[String(r.id)].suppressed_since} muted since
+                            +{stats[String(r.id)].suppressed_since} held back by cooldown
                           </div>
                         )}
                       </>
@@ -462,7 +462,9 @@ export default function Alarms({
                       onClick={async () => {
                         try {
                           await api.testAlarm(r.id);
-                          toast.success(`Test fired — check the rule's ${ruleActions(r).map((a) => a.kind).join(" + ")} target`);
+                          toast.success(
+                            `Test sent — check that the ${[...new Set(ruleActions(r).map((a) => a.kind))].join(" + ")} target received it`,
+                          );
                         } catch (e) {
                           onError(String(e));
                         }
@@ -534,7 +536,7 @@ export default function Alarms({
             </label>
           </div>
           <details className="adv">
-            <summary>Advanced conditions — stranger, hand signal, spoken phrase, zone, confirmation</summary>
+            <summary>Advanced conditions — stranger, hand signal, spoken phrase, zone, confirmation, AI watch &amp; verification</summary>
             <div className="row" style={{ marginTop: 8, marginBottom: 12 }}>
               <label
                 className="field"
@@ -620,6 +622,11 @@ export default function Alarms({
                   onChange={(e) => setPromptLike(e.target.value)}
                   placeholder='e.g. "someone climbing the fence", "a red pickup truck"'
                 />
+                <small className="muted">
+                  Adds matches: fires when a detected object visually resembles this description
+                  (needs the smart-search models). Best-effort — pair with an object/camera/zone
+                  scope for precision.
+                </small>
               </label>
               <label
                 className="field"
@@ -633,6 +640,11 @@ export default function Alarms({
                   onChange={(e) => setVlmPrompt(e.target.value)}
                   placeholder='e.g. "Is a real person actually at the door?"'
                 />
+                <small className="muted">
+                  Filters matches: a yes/no question the vision model answers about the snapshot
+                  before this rule fires (needs AI captions in Settings). Fails open — a model
+                  outage never silences the rule. Detection events only.
+                </small>
               </label>
               <div
                 className="row"
@@ -643,7 +655,8 @@ export default function Alarms({
                   AI description in the notification
                 </TogglePill>
                 <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
-                  the push leads with what the camera saw, in plain language
+                  The push leads with what the camera saw, in plain language (needs AI captions in
+                  Settings; falls back to a normal alert if the model is unavailable).
                 </span>
               </div>
             </div>

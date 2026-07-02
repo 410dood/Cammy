@@ -128,14 +128,13 @@ export default function Wall({
         </div>
       )}
       <div className="wall-clock">{clock}</div>
-      <div className="wall-hint" style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span>Press Esc to exit</span>
-        {cameras.length > PAGE && (
+      <div className="wall-hint">Press Esc to exit</div>
+      {cameras.length > PAGE && (
+        <div className="wall-controls">
           <select
             aria-label="Camera tour interval"
             title="Rotate through all cameras, 4 at a time"
             value={cycleSecs}
-            style={{ background: "transparent", color: "inherit", border: "1px solid currentColor", borderRadius: 6, padding: "1px 4px", font: "inherit" }}
             onChange={(e) => {
               const v = Number(e.target.value);
               setCycleSecs(v);
@@ -143,14 +142,16 @@ export default function Wall({
               localStorage.setItem("zoomy-wall-cycle", String(v));
             }}
           >
-            <option value={0}>tour off</option>
-            <option value={10}>tour 10s</option>
-            <option value={30}>tour 30s</option>
-            <option value={60}>tour 60s</option>
+            <option value={0}>Tour off</option>
+            <option value={10}>Every 10s</option>
+            <option value={30}>Every 30s</option>
+            <option value={60}>Every 60s</option>
           </select>
-        )}
-        {pages > 1 && <span>{safePage + 1}/{pages}</span>}
-      </div>
+          {pages > 1 && (
+            <span aria-live="polite">{safePage + 1}/{pages}</span>
+          )}
+        </div>
+      )}
       <button className="wall-exit" aria-label="Exit wall mode" onClick={onClose}>
         <IconX size={20} />
       </button>

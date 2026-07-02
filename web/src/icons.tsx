@@ -238,6 +238,16 @@ export const IconX = (p: IconProps) => (
   </Svg>
 );
 
+/// Hash / tag mark (event tags).
+export const IconTag = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 9h16" />
+    <path d="M4 15h16" />
+    <path d="M10 3 8 21" />
+    <path d="M16 3l-2 18" />
+  </Svg>
+);
+
 export const IconSearch = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="11" cy="11" r="8" />

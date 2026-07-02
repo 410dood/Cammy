@@ -313,7 +313,8 @@ export default function Live({
         >
           <IconPlus size={13} /> Save view
         </button>
-        <span style={{ marginLeft: "auto" }}>
+        <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span className="muted" style={{ fontSize: "var(--text-sm)" }}>Sort</span>
           <TogglePill
             on={activitySort}
             onClick={toggleActivitySort}
