@@ -16,7 +16,28 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.3 — full competitor suite (#1–#70) integrated on main + cross-feature simplify, 2026-06-22
 
-### Latest: cross-page UX pass, 2026-07-01
+### Latest: 2026-07 competitor parity study → docs/08, 2026-07-02
+
+A 4-agent research pass over a 30-product field (UniFi Protect deep-dive as the
+"balance" benchmark; enterprise Nx Witness/Eagle Eye/Qognify/Axis ACS/Hanwha
+WAVE; prosumer Synology/ZoneMinder 1.38/Shinobi/Bluecherry/Agent DVR/HA + Blue
+Iris 6/Frigate 0.17/Scrypted refresh; consumer Lorex/Amcrest/Blink/Tapo-Aireal +
+Ring/Nest-Gemini/Arlo 6/Eufy S4/Wyze/Reolink-ReoNeura), every candidate checked
+against shipped #1–70/R01–24. Output: **`docs/08-competitor-parity-2026-07.md`**
+— a unified ranked roadmap (absorbs the docs/06 backlog) in 3 phases: P1
+notification-quality + curation quick wins (severity-tiered push, burst
+consolidation, caption-in-push, photo-upload search, detection sessions +
+motion-path thumbnails, soft triggers, absence detection, deployment/remote
+docs), P2 forensic + ecosystem (ONVIF camera-side analytics ingestion — the
+field's most-repeated gap, prompt-based NL alert rules, retro region motion
+search, thumbnail scrub, attribute facets, Spotlights-style feed, deterrence
+actions), P3 strategic (journey fusion, ask-your-cameras, HA/HomeKit, worker
+pool). Key theses: Cammy exceeds the field on capability, loses on curation;
+Blue Iris 6 shipped built-in DirectML YOLO; Eufy S4 Max + Reolink AI Box now
+sell "local AI, no subscription" as appliances. Includes an explicit
+anti-feature list (the UniFi leanness lesson).
+
+### Earlier: cross-page UX pass, 2026-07-01
 
 A live E2E tour of every page (Chrome vs the running :8080 backend, 7 cameras)
 plus a **13-target grounded multi-agent UX audit** (adversarially verified → ranked)
