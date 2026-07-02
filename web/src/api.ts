@@ -544,6 +544,13 @@ export const api = {
   patchCamera: (id: number, patch: Partial<Camera>) =>
     req<Camera>(`/api/cameras/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteCamera: (id: number) => req<void>(`/api/cameras/${id}`, { method: "DELETE" }),
+  /** Fire a rule's actions once with a synthetic TEST event (no event created,
+   *  cooldown untouched) — verifies the webhook/ntfy/email wiring. */
+  testAlarm: (id: number) =>
+    req<{ fired: boolean }>(`/api/alarms/${id}/test`, { method: "POST" }),
+  /** Per-rule throttle stats (this run): last-fired ts + cooldown-suppressed count. */
+  alarmStats: () =>
+    req<Record<string, { last_fired_ts: number; suppressed_since: number }>>("/api/alarms/stats"),
   /** Soft trigger: create a bookmarked event ("Delivery arrived") with a live
    *  snapshot on a camera; alarm rules matching the label fire. */
   softTrigger: (id: number, label?: string) =>

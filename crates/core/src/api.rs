@@ -70,7 +70,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/gesture", axum::routing::post(record_gesture))
         .route(
-            "/api/cameras/:id/trigger",
+            "/api/cameras/{id}/trigger",
             axum::routing::post(soft_trigger),
         )
         .route("/api/events/{id}/clip", get(event_clip))
@@ -82,6 +82,8 @@ pub fn router(state: AppState) -> Router {
             "/api/alarms/{id}",
             axum::routing::patch(patch_alarm_api).delete(delete_alarm_api),
         )
+        .route("/api/alarms/{id}/test", axum::routing::post(test_alarm_api))
+        .route("/api/alarms/stats", get(alarm_stats_api))
         .route("/api/tokens", get(list_tokens).post(create_token))
         .route("/api/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/audit", get(list_audit))
@@ -2696,6 +2698,70 @@ async fn delete_alarm_api(
 ) -> ApiResult<StatusCode> {
     st.db.delete_alarm(id)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Fire a rule's actions once with a synthetic TEST event (UniFi Alarm Manager
+/// "test" button) — verifies the webhook URL / ntfy topic / SMTP end-to-end
+/// without waiting for a real detection. Bypasses schedule/mode/cooldown gates
+/// and the severity knob (a test the user just clicked must always deliver);
+/// does NOT create an event or stamp the cooldown clock.
+async fn test_alarm_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let rule = st
+        .db
+        .list_alarms()?
+        .into_iter()
+        .find(|r| r.id == id)
+        .ok_or_else(not_found)?;
+    let s = st.db.settings();
+    let now = chrono::Local::now().timestamp();
+    let mqtt_tx = st.mqtt_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let ev = crate::notify::AlarmEvent {
+            event_id: 0,
+            camera: "TEST",
+            label: "test alarm",
+            score: 1.0,
+            ts: now,
+            snapshot_url: "",
+            snapshot_path: None,
+            face: None,
+            plate: None,
+            gesture: None,
+            transcript: None,
+            speed: None,
+            base_url: &s.public_base_url,
+            webhook_template: &s.webhook_template,
+            smtp: crate::notify::smtp_cfg(&s),
+            duress: false,
+            severity: 2,
+            min_push_severity: 1, // a clicked test always delivers
+            caption: Some("This is a test of this alarm rule — no event occurred."),
+        };
+        crate::notify::fire(&rule, &ev, &mqtt_tx, 0);
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "fired": true })))
+}
+
+/// Per-rule live throttle stats: when each rule last fired (this run — the
+/// throttle is in-memory) and how many matches its cooldown has swallowed
+/// since. Complements the rules list for a UniFi-style "last triggered" column.
+async fn alarm_stats_api(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let map = st.alarm_throttle.lock().expect("alarm throttle poisoned");
+    let stats: serde_json::Map<String, serde_json::Value> = map
+        .iter()
+        .map(|(rule_id, (last, suppressed))| {
+            (
+                rule_id.to_string(),
+                serde_json::json!({ "last_fired_ts": last, "suppressed_since": suppressed }),
+            )
+        })
+        .collect();
+    Json(serde_json::Value::Object(stats))
 }
 
 // --- smart search ------------------------------------------------------------

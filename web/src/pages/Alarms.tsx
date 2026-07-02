@@ -102,6 +102,7 @@ export default function Alarms({
   // load may open it (never a fetch error, never a later refetch — e.g. after
   // deleting the last rule the list should lead, not the builder).
   const firstLoad = useRef(true);
+  const [stats, setStats] = useState<Record<string, { last_fired_ts: number; suppressed_since: number }>>({});
   const load = () => {
     api
       .alarms()
@@ -113,6 +114,7 @@ export default function Alarms({
       })
       .catch((e) => setLoadError(errMsg(e)))
       .finally(() => setLoaded(true));
+    api.alarmStats().then(setStats).catch(() => {});
   };
   useEffect(load, []);
 
@@ -347,6 +349,7 @@ export default function Alarms({
                 <th>Rule</th>
                 <th>When</th>
                 <th>Then</th>
+                <th>Last fired</th>
                 <th>Active</th>
                 <th></th>
               </tr>
@@ -377,6 +380,22 @@ export default function Alarms({
                     {ruleActions(r).map((a, i) => (
                       <div key={i}>{actionText(a)}</div>
                     ))}
+                  </td>
+                  <td className="muted" title="Since the server last started (live stat, not history)">
+                    {stats[String(r.id)]?.last_fired_ts ? (
+                      <>
+                        {new Date(stats[String(r.id)].last_fired_ts * 1000).toLocaleString([], {
+                          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                        })}
+                        {stats[String(r.id)].suppressed_since > 0 && (
+                          <div style={{ fontSize: "var(--text-sm)" }}>
+                            +{stats[String(r.id)].suppressed_since} muted since
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td>
                     <TogglePill
@@ -424,6 +443,21 @@ export default function Alarms({
                         Snooze 1h
                       </button>
                     )}
+                    <button
+                      className="btn btn-ghost ev-act"
+                      style={{ marginLeft: 8 }}
+                      title="Fire this rule's actions once with a synthetic test event — verifies the webhook/push/email wiring without waiting for a detection"
+                      onClick={async () => {
+                        try {
+                          await api.testAlarm(r.id);
+                          toast.success(`Test fired — check the rule's ${ruleActions(r).map((a) => a.kind).join(" + ")} target`);
+                        } catch (e) {
+                          onError(String(e));
+                        }
+                      }}
+                    >
+                      Test
+                    </button>
                     <button
                       className="btn btn-danger ev-act"
                       style={{ marginLeft: 8 }}
