@@ -344,7 +344,11 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
               <input type="checkbox" checked={touchless} onChange={() => setTouchless((t) => !t)} />
             </label>
           )}
-          <span className="muted" role="status" aria-live="polite">{status}</span>
+          {/* The idle string already fills the stage's EmptyState — only voice
+              live status changes here (screen readers still get everything). */}
+          <span className="muted" role="status" aria-live="polite">
+            {running ? status : ""}
+          </span>
         </div>
 
         {duressFlash && (
@@ -359,7 +363,8 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
             position: "relative",
             width: "100%",
             maxWidth: 720,
-            aspectRatio: "4 / 3",
+            // Idle: a short strip, not an 800px black void; full 4:3 once live.
+            aspectRatio: running ? "4 / 3" : "16 / 5",
             background: "#000",
             borderRadius: 12,
             overflow: "hidden",

@@ -150,6 +150,15 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             <div className="row" key={c.camera_id} style={{ marginBottom: 6 }}>
               <span style={{ width: 120 }}>
                 <b>{c.camera}</b>
+                {cameras.find((cc) => cc.id === c.camera_id)?.enabled === false && (
+                  <span
+                    className="badge"
+                    style={{ marginLeft: 6 }}
+                    title="This camera is disabled (Cameras page) — old footage is kept until retention prunes it"
+                  >
+                    disabled
+                  </span>
+                )}
               </span>
               <div className="usage-bar">
                 <div

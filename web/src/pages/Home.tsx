@@ -229,7 +229,18 @@ export default function Home({
           icon={<IconVideo size={20} />}
           label="Cameras online"
           value={loaded ? `${online}/${enabled.length}` : <SkelValue />}
-          sub={loaded ? (offline.length ? `${offline.length} offline` : "all healthy") : undefined}
+          sub={
+            loaded
+              ? [
+                  offline.length ? `${offline.length} offline` : "all healthy",
+                  cameras.length > enabled.length
+                    ? `${cameras.length - enabled.length} disabled`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : undefined
+          }
           tone={loaded ? (offline.length ? "warn" : "ok") : undefined}
         />
         <StatCard

@@ -298,14 +298,24 @@ export default function Alarms({
     return { trigger, scope };
   };
 
+  /// Humanized action line: kind + just the host/topic (the full URL stays in
+  /// the tooltip — a raw ntfy secret-topic URL in a table cell is noise AND a
+  /// shoulder-surf leak).
+  const actionHost = (target: string) => {
+    try {
+      return new URL(target).host || target;
+    } catch {
+      return target;
+    }
+  };
   const actionText = (a: Action) =>
     a.kind === "webhook"
-      ? `POST ${a.target}`
+      ? `Webhook → ${actionHost(a.target)}`
       : a.kind === "mqtt"
-        ? `MQTT zoomy/alarms/${a.target}`
+        ? `MQTT → alarms/${a.target}`
         : a.kind === "email"
-          ? `email → ${a.target || "default recipient"}`
-          : `ntfy → ${a.target}${a.priority ? ` (p${a.priority})` : ""}`;
+          ? `Email → ${a.target || "default recipient"}`
+          : `Push (ntfy)${a.priority ? ` · priority ${a.priority}` : ""}`;
 
   const ruleActions = (r: AlarmRule): Action[] =>
     r.actions && r.actions.length > 0
@@ -393,7 +403,7 @@ export default function Alarms({
                       <div key={i}>{actionText(a)}</div>
                     ))}
                   </td>
-                  <td className="muted" title="Since the server last started (live stat, not history)">
+                  <td className="muted" title="A live counter since the server last started — not stored history">
                     {stats[String(r.id)]?.last_fired_ts ? (
                       <>
                         {new Date(stats[String(r.id)].last_fired_ts * 1000).toLocaleString([], {
@@ -406,7 +416,7 @@ export default function Alarms({
                         )}
                       </>
                     ) : (
-                      "—"
+                      <span style={{ fontSize: "var(--text-sm)" }}>not since startup</span>
                     )}
                   </td>
                   <td>

@@ -3,10 +3,19 @@ import { api, CamEvent, Camera, fmtTime, Segment, SimilarResult } from "../api";
 import { useToast, useDialog, Modal, RelTime, EmptyState, ErrorState, TogglePill } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/// Hide an AI caption that argues with the detection ("No cat detected, just a
+/// swimming pool…") — the card contradicting itself erodes trust more than a
+/// missing caption does. Cheap heuristic: the caption denies the event label.
+function captionContradicts(ev: { label: string; caption: string | null }): boolean {
+  const c = (ev.caption ?? "").toLowerCase();
+  const l = ev.label.toLowerCase();
+  return c.includes(`no ${l}`) || c.includes(`not a ${l}`);
+}
 import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
-  IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX,
+  IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX, IconVideo,
 } from "../icons";
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
 // uses it too) — see eventGroups.ts.
@@ -151,6 +160,7 @@ export default function Events({
   const [toTime, setToTime] = useState("");
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [highOnly, setHighOnly] = useState(false);
   const [grouped, setGrouped] = useState(false);
   // "More filters" disclosure is state-driven (not derived from the filters), so
   // clearing the last active filter can't collapse the panel around the control
@@ -501,6 +511,7 @@ export default function Events({
   if (faceFilter) shown = shown.filter((e) => e.face === faceFilter);
   if (gestureFilter) shown = shown.filter((e) => e.gesture === gestureFilter);
   if (zoneFilter) shown = shown.filter((e) => e.zone === zoneFilter);
+  if (highOnly) shown = shown.filter((e) => (e.severity ?? 2) >= 3);
   if (plateFilter.trim())
     shown = shown.filter((e) =>
       (e.plate ?? "").toUpperCase().includes(plateFilter.trim().toUpperCase())
@@ -591,6 +602,14 @@ export default function Events({
           title="Show only bookmarked events (kept past retention)"
         >
           <IconStar size={15} filled={flaggedOnly} /> Saved
+        </button>
+        <button
+          className={`btn ${highOnly ? "btn-primary" : "btn-ghost"}`}
+          onClick={() => setHighOnly((v) => !v)}
+          aria-pressed={highOnly}
+          title="Show only high & critical severity events (strangers, safety events, loitering…) — the same tiers the notification filter in Settings uses"
+        >
+          <IconAlert size={15} /> High &amp; up
         </button>
         {tagFilter && (
           <button
@@ -684,10 +703,12 @@ export default function Events({
               ))}
             </select>
           )}
-          <label className="field" title="from">
+          <label className="field">
+            from
             <input type="datetime-local" value={fromTime} onChange={(e) => setFromTime(e.target.value)} />
           </label>
-          <label className="field" title="to">
+          <label className="field">
+            to
             <input type="datetime-local" value={toTime} onChange={(e) => setToTime(e.target.value)} />
           </label>
           {(fromTime || toTime) && (
@@ -828,7 +849,17 @@ export default function Events({
               {ev.snapshot ? (
                 <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={`${ev.label} on ${ev.camera}`} loading="lazy" decoding="async" />
               ) : (
-                <div style={{ aspectRatio: "4 / 3", background: "var(--bg-sunken)" }} />
+                <div
+                  style={{
+                    aspectRatio: "4 / 3", background: "var(--bg-sunken)",
+                    display: "grid", placeItems: "center", color: "var(--text-muted)",
+                    fontSize: "var(--text-sm)", gap: 6,
+                  }}
+                >
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <IconVideo size={16} /> No snapshot for this event
+                  </span>
+                </div>
               )}
               <div className="meta">
                 <div className="ev-head">
@@ -885,7 +916,9 @@ export default function Events({
                     ) : null}
                   </div>
                 )}
-                {ev.caption && <div className="ev-caption">“{ev.caption}”</div>}
+                {ev.caption && !captionContradicts(ev) && (
+                  <div className="ev-caption">“{ev.caption}”</div>
+                )}
                 {ev.transcript && (
                   <div className="ev-line" title="Speech-to-text of the event audio">
                     <IconMic size={13} /> <span>“{ev.transcript}”</span>

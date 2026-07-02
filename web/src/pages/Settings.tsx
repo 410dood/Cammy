@@ -2043,9 +2043,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
           <div className="row" style={{ marginTop: 10 }}>
             <label className="field" style={{ flex: 1, minWidth: 420 }}>
-              webhook body template (empty = default JSON; placeholders like{" "}
-              <code>{"{{camera}}"}</code> <code>{"{{label}}"}</code> <code>{"{{score}}"}</code>{" "}
-              <code>{"{{snapshot}}"}</code> — see docs/03)
+              webhook body template (empty = default JSON)
               <textarea
                 rows={2}
                 placeholder='{"text":"{{label}} on {{camera}} ({{score}})"}'
@@ -2053,6 +2051,9 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(e) => set({ webhook_template: e.target.value })}
                 style={{ width: "100%", fontFamily: "monospace" }}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Placeholders: {"{{camera}} {{label}} {{score}} {{snapshot}} {{face}} {{plate}} {{transcript}} {{caption}} {{severity}}"} — see docs/03.
+              </span>
             </label>
           </div>
         </div>

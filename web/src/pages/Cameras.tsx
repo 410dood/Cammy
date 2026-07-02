@@ -18,6 +18,16 @@ import {
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/// Hide the password (and blur the username) in a displayed camera URL so a
+/// glance / screenshot / screen-share can't leak camera credentials. The full
+/// URL stays available in the edit form, where showing it is deliberate.
+function maskSource(src: string): string {
+  return src.replace(/^(\w+:\/\/)([^/@\s]+)@/, (_, scheme, userinfo) => {
+    const user = String(userinfo).split(":")[0];
+    return `${scheme}${user}:•••@`;
+  });
+}
+
 /// Plain-language recap of a recording schedule, shown live under the controls
 /// so the user reads intent ("Records Mon–Fri, 22:00–06:00 (overnight)") rather
 /// than decoding day chips + time pickers. Mirrors the server's window logic:
@@ -954,8 +964,12 @@ export default function Cameras({
                   <td>
                     <NameCell cam={cam} onChange={onChange} onError={onError} />
                   </td>
-                  <td className="muted" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {cam.source}
+                  <td
+                    className="muted"
+                    style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    title="Credentials are hidden here — edit the camera to see the full URL"
+                  >
+                    {maskSource(cam.source)}
                   </td>
                   {(["enabled", "detect", "record"] as const).map((f) => (
                     <td key={f}>

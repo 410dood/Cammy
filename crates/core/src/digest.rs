@@ -110,7 +110,7 @@ pub fn summarize(events: &[Event]) -> String {
     let mut by_label: BTreeMap<&str, u32> = BTreeMap::new();
     let mut by_camera: BTreeMap<&str, u32> = BTreeMap::new();
     let mut known_people: BTreeSet<&str> = BTreeSet::new();
-    let mut plates: BTreeSet<&str> = BTreeSet::new();
+    let mut plates: BTreeMap<&str, u32> = BTreeMap::new();
     let mut strangers = 0u32;
     let mut hours = [0u32; 24];
 
@@ -125,7 +125,7 @@ pub fn summarize(events: &[Event]) -> String {
             None => {}
         }
         if let Some(p) = e.plate.as_deref() {
-            plates.insert(p);
+            *plates.entry(p).or_default() += 1;
         }
         if let Some(dt) = Local.timestamp_opt(e.ts, 0).single() {
             hours[dt.hour() as usize] += 1;
@@ -157,10 +157,17 @@ pub fn summarize(events: &[Event]) -> String {
             if strangers == 1 { "" } else { "s" }
         ));
     }
-    if !plates.is_empty() {
+    // One-off plate reads are usually OCR noise (HOR/BIN/HNY…); a plate worth a
+    // recap line was read at least twice in the window.
+    let repeat_plates: Vec<&str> = plates
+        .iter()
+        .filter(|(_, n)| **n >= 2)
+        .map(|(p, _)| *p)
+        .collect();
+    if !repeat_plates.is_empty() {
         parts.push(format!(
             "Plates seen: {}.",
-            plates.into_iter().take(6).collect::<Vec<_>>().join(", ")
+            repeat_plates.into_iter().take(6).collect::<Vec<_>>().join(", ")
         ));
     }
     if let Some((cam, n)) = by_camera.iter().max_by_key(|(_, n)| **n) {
