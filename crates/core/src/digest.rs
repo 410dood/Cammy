@@ -201,6 +201,7 @@ mod tests {
             speed: None,
             gait: None,
             severity,
+            tags: vec![],
         }
     }
 

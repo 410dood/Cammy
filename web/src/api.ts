@@ -147,6 +147,8 @@ export interface CamEvent {
   gait?: string | null;
   /** Severity tier 1 (low) .. 4 (critical) — drives push gating + badges. */
   severity?: number;
+  /** User-applied tags (multi-tag taxonomy beyond flag+note). */
+  tags?: string[];
 }
 
 export interface GaitProfile {
@@ -547,6 +549,12 @@ export const api = {
   patchCamera: (id: number, patch: Partial<Camera>) =>
     req<Camera>(`/api/cameras/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteCamera: (id: number) => req<void>(`/api/cameras/${id}`, { method: "DELETE" }),
+  /** Replace an event's user tags (≤8, sanitized server-side). */
+  setEventTags: (id: number, tags: string[]) =>
+    req<{ tags: string[] }>(`/api/events/${id}/tags`, {
+      method: "POST",
+      body: JSON.stringify({ tags }),
+    }),
   /** Fire a rule's actions once with a synthetic TEST event (no event created,
    *  cooldown untouched) — verifies the webhook/ntfy/email wiring. */
   testAlarm: (id: number) =>
@@ -577,6 +585,7 @@ export const api = {
       after?: number;
       before?: number;
       flagged?: boolean;
+      tag?: string;
       limit?: number;
     } = {}
   ) => {
@@ -588,6 +597,7 @@ export const api = {
     if (q.after != null) p.set("after", String(q.after));
     if (q.before != null) p.set("before", String(q.before));
     if (q.flagged) p.set("flagged", "true");
+    if (q.tag) p.set("tag", q.tag);
     if (q.limit) p.set("limit", String(q.limit));
     return req<CamEvent[]>(`/api/events?${p}`);
   },

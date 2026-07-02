@@ -150,6 +150,7 @@ export default function Events({
   const [fromTime, setFromTime] = useState("");
   const [toTime, setToTime] = useState("");
   const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [grouped, setGrouped] = useState(false);
   // "More filters" disclosure is state-driven (not derived from the filters), so
   // clearing the last active filter can't collapse the panel around the control
@@ -409,6 +410,25 @@ export default function Events({
     }
   };
 
+  const editTags = async (ev: CamEvent) => {
+    const raw = await dialog.prompt({
+      title: (ev.tags ?? []).length ? "Edit tags" : "Add tags",
+      label: "Tags for this event (comma-separated, up to 8)",
+      defaultValue: (ev.tags ?? []).join(", "),
+      placeholder: "e.g. insurance, wildlife",
+      maxLength: 200,
+    });
+    if (raw === null) return; // cancelled
+    const tags = raw.split(",").map((t) => t.trim()).filter(Boolean);
+    try {
+      const res = await api.setEventTags(ev.id, tags);
+      setEvents((list) => list.map((e) => (e.id === ev.id ? { ...e, tags: res.tags } : e)));
+      toast.success(res.tags.length ? "Tags saved" : "Tags cleared");
+    } catch (e) {
+      toast.error(`Couldn't save tags: ${e}`);
+    }
+  };
+
   const load = () => {
     const after = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
     const before = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
@@ -419,6 +439,7 @@ export default function Events({
         after,
         before,
         flagged: flaggedOnly || undefined,
+        tag: tagFilter || undefined,
         limit: 200,
       })
       .then((d) => {
@@ -468,7 +489,7 @@ export default function Events({
     const t = setInterval(load, 5000); // events appear as they happen
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cameraId, label, fromTime, toTime, flaggedOnly]);
+  }, [cameraId, label, fromTime, toTime, flaggedOnly, tagFilter]);
 
   const labels = [...new Set(events.map((e) => e.label))];
   const faces = [...new Set(events.map((e) => e.face).filter(Boolean))] as string[];
@@ -571,6 +592,15 @@ export default function Events({
         >
           <IconStar size={15} filled={flaggedOnly} /> Saved
         </button>
+        {tagFilter && (
+          <button
+            className="btn btn-primary"
+            onClick={() => setTagFilter(null)}
+            title="Showing only this tag — click to clear"
+          >
+            #{tagFilter} ✕
+          </button>
+        )}
         <button
           className={`btn ${grouped ? "btn-primary" : "btn-ghost"}`}
           onClick={() => setGrouped((v) => !v)}
@@ -863,6 +893,24 @@ export default function Events({
                     <IconPencil size={13} /> <span>{ev.note}</span>
                   </div>
                 )}
+                {(ev.tags ?? []).length > 0 && (
+                  <div className="ev-chips">
+                    {(ev.tags ?? []).map((t) => (
+                      <button
+                        key={t}
+                        className="badge"
+                        style={{ cursor: "pointer" }}
+                        title={`Show only events tagged “${t}”`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTagFilter(t);
+                        }}
+                      >
+                        #{t}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <RelTime ts={ev.ts} className="muted ev-time" />
                 <div className="ev-actions">
                   <button
@@ -890,6 +938,17 @@ export default function Events({
                     }}
                   >
                     <IconPencil size={14} />
+                  </button>
+                  <button
+                    className="btn btn-ghost ev-act"
+                    aria-label="Edit tags"
+                    title={(ev.tags ?? []).length ? "Edit tags" : "Add tags"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      editTags(ev);
+                    }}
+                  >
+                    #
                   </button>
                   <button
                     className="btn btn-ghost ev-act"

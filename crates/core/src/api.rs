@@ -68,6 +68,7 @@ pub fn router(state: AppState) -> Router {
             "/api/events/{id}/bookmark",
             axum::routing::post(bookmark_event),
         )
+        .route("/api/events/{id}/tags", axum::routing::post(set_event_tags))
         .route("/api/gesture", axum::routing::post(record_gesture))
         .route(
             "/api/cameras/{id}/trigger",
@@ -1880,6 +1881,8 @@ struct EventQuery {
     /// When true, return only bookmarked (flagged) events.
     #[serde(default)]
     flagged: bool,
+    /// Only events carrying this user tag (exact, case-insensitive).
+    tag: Option<String>,
     #[serde(default = "default_limit")]
     limit: u32,
 }
@@ -1912,7 +1915,46 @@ async fn list_events(
     if let Some(set) = &allow {
         events.retain(|e| set.contains(&e.camera_id));
     }
+    // Tag filter is post-query (tags live in a JSON column); like the RBAC
+    // retain above, a page may under-fill — acceptable.
+    if let Some(tag) = q.tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        events.retain(|e| e.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)));
+    }
     Ok(Json(events))
+}
+
+#[derive(Deserialize)]
+struct TagsReq {
+    tags: Vec<String>,
+}
+
+/// Replace an event's user tags (ZoneMinder 1.38-style multi-tag taxonomy).
+/// Sanitized: trimmed, deduped case-insensitively, ≤8 tags × ≤24 chars, no
+/// control characters. Empty array clears.
+async fn set_event_tags(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<TagsReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    let mut tags: Vec<String> = Vec::new();
+    for t in &req.tags {
+        let t = t.trim();
+        if t.is_empty() || t.chars().any(|c| c.is_control()) {
+            continue;
+        }
+        let t: String = t.chars().take(24).collect();
+        if !tags.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
+            tags.push(t);
+        }
+        if tags.len() >= 8 {
+            break;
+        }
+    }
+    st.db.set_event_tags(id, &tags)?;
+    Ok(Json(serde_json::json!({ "tags": tags })))
 }
 
 /// Quote a CSV field per RFC 4180, and neutralize spreadsheet formula injection
@@ -4345,6 +4387,7 @@ mod tests {
             speed: Some(32.4),
             gait: None,
             severity: 2,
+            tags: vec![],
         };
         let csv = events_to_csv(std::slice::from_ref(&ev));
         let mut lines = csv.lines();

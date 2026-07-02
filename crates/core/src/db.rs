@@ -352,6 +352,10 @@ pub struct Event {
     /// at emit time; rows from before the column existed are re-derived on read.
     #[serde(default)]
     pub severity: u8,
+    /// User-applied tags ("insurance", "wildlife", …) — free multi-tag taxonomy
+    /// beyond flag+note. Stored as a JSON array.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// One enrolled gait identity (its averaged signature stays server-side).
@@ -1319,6 +1323,8 @@ impl Db {
         let _ = conn.execute("ALTER TABLE events ADD COLUMN speed REAL", []);
         // Severity tier 1..4 (see crate::severity); NULL rows are re-derived on read.
         let _ = conn.execute("ALTER TABLE events ADD COLUMN severity INTEGER", []);
+        // User-applied tags (ZoneMinder 1.38-style): a JSON array of strings.
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN tags TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
@@ -1653,7 +1659,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -1688,7 +1694,7 @@ impl Db {
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                         e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity
+                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
@@ -1732,7 +1738,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE e.gait = ?1 AND e.gait_sig IS NOT NULL
              ORDER BY e.ts DESC, e.id DESC LIMIT ?2",
@@ -2786,6 +2792,21 @@ impl Db {
         Ok(())
     }
 
+    /// Replace an event's user tags (already sanitized by the API layer).
+    /// Returns whether the event existed. Empty = clear (NULL, not "[]").
+    pub fn set_event_tags(&self, id: i64, tags: &[String]) -> Result<bool> {
+        let json = if tags.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(tags)?)
+        };
+        let n = self.conn().execute(
+            "UPDATE events SET tags = ?1 WHERE id = ?2",
+            params![json, id],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Most recent person/pet event timestamp on a camera (the absence watch's
     /// presence signal).
     pub fn last_presence_ts(&self, camera_id: i64) -> Result<Option<i64>> {
@@ -3492,6 +3513,10 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         speed: r.get(21)?,
         gait: r.get(22)?,
         severity,
+        tags: r
+            .get::<_, Option<String>>(24)?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
     })
 }
 
