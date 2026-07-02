@@ -9,6 +9,7 @@
 //!   - runs continuous packet-copy recording with retention (ffmpeg)
 //!   - runs the motion-gated AI detection pipeline (ONNX Runtime)
 
+mod absence;
 mod analytics;
 mod anomaly;
 mod api;
@@ -194,6 +195,11 @@ pub async fn run(
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || anomaly::run(db, stop)
     })?;
+    // Absence/inactivity watch: idles unless a camera sets absence_hours.
+    let absence_thread = std::thread::Builder::new().name("absence".into()).spawn({
+        let (db, stop) = (db.clone(), workers_stop.clone());
+        move || absence::run(db, stop)
+    })?;
     // Auto-arm/disarm scheduler (residential modes automation); idles unless
     // Settings.arm_schedule has entries. Re-reads config each tick.
     let schedule_thread = std::thread::Builder::new().name("schedule".into()).spawn({
@@ -354,6 +360,7 @@ pub async fn run(
         let _ = transcribe_thread.join();
         let _ = digest_thread.join();
         let _ = anomaly_thread.join();
+        let _ = absence_thread.join();
         let _ = schedule_thread.join();
         let _ = pose_thread.join();
         let _ = push_thread.join();

@@ -118,6 +118,7 @@ function TuneModal({
     package_labels: camera.detect_config.package_labels ?? [],
     fall_detect: camera.detect_config.fall_detect ?? false,
     child_height_frac: camera.detect_config.child_height_frac ?? null,
+    absence_hours: camera.detect_config.absence_hours ?? null,
     pose_detect: camera.detect_config.pose_detect ?? false,
     no_clip: camera.detect_config.no_clip ?? false,
     record_schedule: camera.detect_config.record_schedule ?? null,
@@ -577,6 +578,30 @@ function TuneModal({
               <span className="feat-help">
                 Fraction of frame height at/below which a person counts as a child (fragile — tune per
                 camera). Blank = off.
+              </span>
+            </label>
+            <label
+              className="field"
+              title="Inactivity watch (aging-in-place & pets): notify when this camera has seen NO person or pet for this many hours. One alert per quiet spell, cleared by the next sighting. Assistive only — absence of detections is not proof of absence of activity."
+            >
+              Alert if no one seen for (hours)
+              <input
+                type="number"
+                step="0.5"
+                min="0.25"
+                placeholder="Off"
+                value={dc.absence_hours ?? ""}
+                onChange={(e) =>
+                  setDc({
+                    ...dc,
+                    absence_hours:
+                      e.target.value === "" ? null : Math.max(0.25, Number(e.target.value) || 0.25),
+                  })
+                }
+              />
+              <span className="feat-help">
+                No person/pet detected for this long → a notification + health push (assistive*).
+                Blank = off.
               </span>
             </label>
           </div>

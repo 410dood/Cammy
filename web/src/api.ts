@@ -91,6 +91,9 @@ export interface DetectConfig {
    *  is ≤ this fraction is treated as a "child". null disables child features
    *  (the default). FRAGILE without per-camera setup. */
   child_height_frac?: number | null;
+  /** Inactivity watch: alert when no person/pet seen for this many hours
+   *  (edge-triggered; assistive only). null = off. */
+  absence_hours?: number | null;
   /** Server-side 24/7 body-pose monitoring (fall posture, crib standing/rollover,
    *  covered-face). Runs a YOLOv8-pose model. Opt-in + ASSISTIVE only. */
   pose_detect?: boolean;

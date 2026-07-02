@@ -261,6 +261,13 @@ pub struct DetectConfig {
     /// with privacy masks for live view. Off by default.
     #[serde(default)]
     pub no_clip: bool,
+    /// Absence / inactivity watch (Verkada-style, aging-in-place & pets): alert
+    /// when this camera has seen NO person/pet event for this many hours. Edge-
+    /// triggered (one notification per quiet spell, cleared by the next
+    /// sighting). ASSISTIVE only — absence of detections is not proof of
+    /// absence of activity (camera angle, lighting, model misses). `None` = off.
+    #[serde(default)]
+    pub absence_hours: Option<f32>,
     /// Per-camera recording schedule (#67, Blue Iris "profiles/schedules"): when
     /// set, continuous recording runs ONLY during the window (day-of-week +
     /// time-of-day, overnight-aware). `None` = always record (the default).
@@ -2779,6 +2786,16 @@ impl Db {
         Ok(())
     }
 
+    /// Most recent person/pet event timestamp on a camera (the absence watch's
+    /// presence signal).
+    pub fn last_presence_ts(&self, camera_id: i64) -> Result<Option<i64>> {
+        Ok(self.conn().query_row(
+            "SELECT MAX(ts) FROM events WHERE camera_id = ?1 AND label IN ('person','cat','dog')",
+            [camera_id],
+            |r| r.get::<_, Option<i64>>(0),
+        )?)
+    }
+
     /// The stored caption for an event, if the captioner already wrote one —
     /// lets a describe-in-notification fire reuse it instead of a second call.
     pub fn event_caption(&self, event_id: i64) -> Result<Option<String>> {
@@ -3949,6 +3966,7 @@ mod tests {
             retention_days: Some(14),
             fall_detect: true,
             child_height_frac: Some(0.45),
+            absence_hours: Some(12.0),
             pose_detect: true,
             no_clip: false,
             record_schedule: Some(Schedule {
