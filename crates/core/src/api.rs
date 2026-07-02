@@ -1981,6 +1981,8 @@ fn events_to_csv(events: &[crate::db::Event]) -> String {
 /// generous cap). Useful for record-keeping / insurance / sharing.
 async fn export_events_csv(
     State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Query(q): Query<EventQuery>,
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<impl IntoResponse> {
@@ -1988,6 +1990,15 @@ async fn export_events_csv(
     if let Some(cid) = q.camera_id {
         require_camera(&allow, cid)?;
     }
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "events_exported",
+        Some("CSV export"),
+    );
     let mut events = st.db.list_events(
         q.camera_id,
         q.label.as_deref(),
@@ -2478,6 +2489,8 @@ struct ClipQuery {
 /// segment (no re-encode) and cached under data/clips. Frigate-style clips.
 async fn event_clip(
     State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
     Query(q): Query<ClipQuery>,
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
@@ -2485,6 +2498,17 @@ async fn event_clip(
 ) -> ApiResult<Response> {
     let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
     require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    // Footage-access accountability (UniFi 6.0-style): clip retrievals are
+    // security-relevant in a shared household — record who pulled what.
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "clip_accessed",
+        Some(&format!("event {id} ({} on {})", ev.label, ev.camera)),
+    );
     let seg = st
         .db
         .find_segment_at(ev.camera_id, ev.ts)?
