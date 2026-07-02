@@ -9,7 +9,7 @@ import {
   IconX, IconMic, IconUser, IconCar, IconDownload,
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight, IconPlus, IconMinus,
 } from "./icons";
-import { groupEvents } from "./pages/Events";
+import { groupEvents } from "./eventGroups";
 
 /// UniFi Protect-style camera view: large live player with the camera's own
 /// timeline underneath and its recent detections alongside. Esc closes.
@@ -179,7 +179,7 @@ export default function CameraDetail({
               aria-label={`Jump to this ${ev.label} detection in the recording`}
               onClick={() => seekTo(ev.ts)}
             >
-              {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}`} alt={ev.label} loading="lazy" decoding="async" />}
+              {ev.snapshot && <img src={`/api/snapshots/${ev.snapshot}?w=160`} alt={ev.label} loading="lazy" decoding="async" />}
               <div>
                 <b style={{ textTransform: "capitalize" }}>{ev.label}</b>{" "}
                 <span className="score">{(ev.score * 100).toFixed(0)}%</span>

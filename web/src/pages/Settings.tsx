@@ -1,6 +1,6 @@
-import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
-import { useToast, useDialog, RelTime, TogglePill, ErrorState } from "../ui";
+import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, DAY_NAMES, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout } from "../ui";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
   IconDownload, IconUpload, IconCheck, IconUser, IconShield, IconAlert,
@@ -44,9 +44,6 @@ const AUDIO_SOUNDS: { label: string; values: string[] }[] = [
   { label: "Child crying", values: ["Crying, sobbing"] },
 ];
 
-// Day-of-week labels for the auto-arm schedule (0 = Sunday, matches the worker).
-const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
 function AuditCard() {
   const [rows, setRows] = useState<AuditEntry[]>([]);
   useEffect(() => {
@@ -54,7 +51,7 @@ function AuditCard() {
   }, []);
   if (rows.length === 0) return null;
   return (
-    <div className="card">
+    <div className="card" data-settings-group="security">
       <h2>Recent security activity</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         Logins, password changes, and API-token changes — most recent first. Useful for
@@ -169,7 +166,7 @@ function PushCard({ onError }: { onError: (e: string) => void }) {
   };
 
   return (
-    <div className="card">
+    <div className="card" data-settings-group="modes">
       <h2>Push notifications</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         Get native notifications on this device when alarms fire or a camera goes offline — even
@@ -201,19 +198,24 @@ function PushCard({ onError }: { onError: (e: string) => void }) {
   );
 }
 
-function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
+// Auth state (`enabled`) is owned by the Settings page — it also drives the
+// page-level passwordless banner above the tabs — and updated via onEnabled.
+function RemoteAccessCard({
+  enabled,
+  onEnabled,
+  onError,
+}: {
+  enabled: boolean | null; // null = still loading
+  onEnabled: (on: boolean) => void;
+  onError: (e: string) => void;
+}) {
   const toast = useToast();
-  const [enabled, setEnabled] = useState(false);
   const [pw, setPw] = useState("");
-
-  useEffect(() => {
-    api.authStatus().then((a) => setEnabled(a.enabled)).catch(() => {});
-  }, []);
 
   const apply = async (password: string) => {
     try {
       const r = await api.setPassword(password);
-      setEnabled(r.enabled);
+      onEnabled(r.enabled);
       setPw("");
       toast.success(r.enabled ? "Password set — other devices must now log in." : "Password cleared.");
     } catch (e) {
@@ -222,20 +224,17 @@ function RemoteAccessCard({ onError }: { onError: (e: string) => void }) {
   };
 
   return (
-    <div className="card">
+    <div className="card" data-settings-group="security">
       <h2>Remote access</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         When a password is set, other devices on your network must log in. This computer
         (localhost / the desktop app) is always exempt.
       </p>
-      {!enabled && (
-        <div className="callout callout-warn" role="status">
-          <span className="callout-ico"><IconAlert size={16} /></span>
-          <div>
-            <b>No password set</b> — anyone who can reach this server has full access. Set a password
-            before exposing it beyond this computer.
-          </div>
-        </div>
+      {enabled === false && (
+        <Callout tone="warn">
+          <b>No password set</b> — anyone who can reach this server has full access. Set a password
+          before exposing it beyond this computer.
+        </Callout>
       )}
       <div className="row">
         <span className={`pill ${enabled ? "on" : ""}`}>{enabled ? "protected" : "open"}</span>
@@ -309,7 +308,7 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
   };
 
   return (
-    <div className="card">
+    <div className="card" data-settings-group="security">
       <h2>API tokens</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         Bearer tokens let scripts and integrations (Home Assistant, MQTT automations) call the
@@ -410,7 +409,7 @@ function AccountCard({ onError }: { onError: (e: string) => void }) {
   };
 
   return (
-    <div className="card">
+    <div className="card" data-settings-group="security">
       <h2>Your account</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         Signed in as <b>{me.username}</b>{" "}
@@ -524,7 +523,7 @@ function TwoFactorCard({ onError }: { onError: (e: string) => void }) {
   };
 
   return (
-    <div className="card">
+    <div className="card" data-settings-group="security">
       <h2>Two-factor authentication</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         Require a one-time code from an authenticator app (Google Authenticator, Aegis, 1Password, …)
@@ -686,7 +685,7 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
   };
 
   return (
-    <div className="card">
+    <div className="card" data-settings-group="recording">
       <h2>Backup &amp; restore</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         Export your configuration — cameras, settings and alarm rules — to a JSON file to move to
@@ -906,7 +905,7 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
   );
 
   return (
-    <div className="card">
+    <div className="card" data-settings-group="security">
       <h2>Users &amp; roles</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         Named accounts, each with a role: <b>admin</b> (full control, incl. users),{" "}
@@ -1031,15 +1030,15 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
   );
 }
 
-// Sticky in-page section nav for the long Settings page. Self-scanning: it reads
-// each rendered `.card`'s <h2>, gives the card a slug id, and renders jump chips
-// with scroll-spy — so new cards appear in the nav automatically, no wiring.
 // Settings is ~20 self-contained cards; a flat scroll is a wall. Group them into
-// a few tabs WITHOUT touching card markup: each top-level card is matched by its
-// <h2> text to a group and shown/hidden imperatively. Cards are only HIDDEN
-// (never unmounted), so the 9 stateful cards (Push/Account/2FA/Users/Tokens/
-// Audit/Backup/RemoteAccess/Models) keep in-flight edits when switching tabs,
-// and the single wrapping <form> + sticky save bar are untouched.
+// a few tab-like filters WITHOUT restructuring the page: each top-level card
+// declares its group via `data-settings-group` on its own div, and the switcher
+// shows/hides them imperatively. Cards are only HIDDEN (never unmounted), so the
+// stateful cards (Push/Account/2FA/Users/Tokens/Audit/Backup/RemoteAccess/Models)
+// keep in-flight edits when switching, and the single wrapping <form> + sticky
+// save bar are untouched. Not ARIA tabs on purpose: the "panels" are scattered
+// cards inside one form, so these are plain pressed/unpressed filter buttons
+// (the TogglePill / arm-bar convention) rather than a half-implemented tablist.
 type GroupKey = "detection" | "modes" | "security" | "recording";
 const SETTINGS_GROUPS: { key: GroupKey; label: string }[] = [
   { key: "detection", label: "Detection & AI" },
@@ -1047,73 +1046,40 @@ const SETTINGS_GROUPS: { key: GroupKey; label: string }[] = [
   { key: "security", label: "Access & security" },
   { key: "recording", label: "Recording & backup" },
 ];
-// Exact <h2> textContent → group (note: "&amp;" renders as "&" in textContent).
-const SETTINGS_GROUP_OF: Record<string, GroupKey> = {
-  "Models & capabilities": "detection",
-  "Detection": "detection",
-  "Hand signals": "detection",
-  "AI event captions (opt-in)": "detection",
-  "Audio transcription": "detection",
-  "Audio detection": "detection",
-  "AI insights": "detection",
-  "Modes schedule (auto-arm / disarm)": "modes",
-  "Push notifications": "modes",
-  "Notifications": "modes",
-  "Email (SMTP)": "modes",
-  "Remote access": "security",
-  "Your account": "security",
-  "Two-factor authentication": "security",
-  "Users & roles": "security",
-  "API tokens": "security",
-  "Recent security activity": "security",
-  "Reverse-proxy SSO": "security",
-  "Recording & retention": "recording",
-  "Backup & restore": "recording",
-  "Offsite backup": "recording",
-};
 
-function SettingsTabs() {
-  const [active, setActive] = useState<GroupKey>("detection");
-  const activeRef = useRef(active);
-  activeRef.current = active;
+// Reveal only the active group's cards. An untagged card is left visible on
+// every tab so a new card can't silently disappear. Also called from the save
+// path, so validation can reveal an invalid card before focusing it.
+function applySettingsGroup(active: GroupKey) {
+  const cards = document.querySelectorAll<HTMLElement>(".settings-page > form > .card");
+  cards.forEach((c) => {
+    const g = c.dataset.settingsGroup;
+    c.hidden = !!g && g !== active;
+  });
+}
 
-  // Toggle each mapped top-level card's visibility for the active group. Unmapped
-  // or heading-less cards are left visible so nothing can silently disappear.
-  const apply = useCallback(() => {
-    const cards = document.querySelectorAll<HTMLElement>(".settings-page > form > .card");
-    cards.forEach((c) => {
-      const label = c.querySelector("h2")?.textContent?.trim();
-      const g = label ? SETTINGS_GROUP_OF[label] : undefined;
-      if (!g) return;
-      c.hidden = g !== activeRef.current;
-    });
-  }, []);
-
+function SettingsTabs({ active, onSelect }: { active: GroupKey; onSelect: (g: GroupKey) => void }) {
+  // Apply on every switch, and re-apply when a card mounts later (Users appears
+  // once admin loads, 2FA/Account/Audit after their fetches) so an async card
+  // doesn't land visible in the wrong tab.
   useEffect(() => {
-    apply();
-  }, [active, apply]);
-
-  // Re-apply when cards mount later (Users appears once admin loads, AI insights,
-  // the token-reveal row) so an async card doesn't render in the wrong tab.
-  useEffect(() => {
+    applySettingsGroup(active);
     const form = document.querySelector<HTMLElement>(".settings-page > form");
     if (!form) return;
-    const obs = new MutationObserver(() => apply());
+    const obs = new MutationObserver(() => applySettingsGroup(active));
     obs.observe(form, { childList: true });
-    apply();
     return () => obs.disconnect();
-  }, [apply]);
+  }, [active]);
 
   return (
-    <div className="arm-bar settings-tabs" role="tablist" aria-label="Settings sections">
+    <div className="arm-bar settings-tabs" aria-label="Settings sections">
       {SETTINGS_GROUPS.map((g) => (
         <button
           key={g.key}
           type="button"
-          role="tab"
-          aria-selected={active === g.key}
+          aria-pressed={active === g.key}
           className={`arm-opt ${active === g.key ? "active" : ""}`}
-          onClick={() => setActive(g.key)}
+          onClick={() => onSelect(g.key)}
         >
           {g.label}
         </button>
@@ -1162,7 +1128,7 @@ function ModelsCard() {
       .catch((e) => setErr(String(e)));
   }, []);
   return (
-    <div className="card">
+    <div className="card" data-settings-group="detection">
       <h2>Models &amp; capabilities</h2>
       <p className="muted" style={{ marginTop: -4 }}>
         Optional AI features only run when their model file is in the app directory.
@@ -1224,6 +1190,10 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [tab, setTab] = useState<GroupKey>("detection");
+  // Whether a remote-access password is set (null = still loading). Owned here
+  // (not in RemoteAccessCard) so the page-level banner sees it on every tab.
+  const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);
 
   const load = () => {
     setLoadError(null);
@@ -1231,6 +1201,10 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, []);
+
+  useEffect(() => {
+    api.authStatus().then((a) => setAuthEnabled(a.enabled)).catch(() => {});
+  }, []);
 
   // Warn before a refresh/close/navigation-away discards unsaved global edits.
   // (In-app page switches surface the "Unsaved changes" cue on the save bar.)
@@ -1272,8 +1246,25 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
     setDirty(true);
   };
 
-  const save = async (e: FormEvent) => {
+  const save = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    // The form is noValidate: with cards hidden on other tabs, native submit
+    // validation dies with "invalid form control is not focusable" and Save
+    // silently does nothing. Instead, validate here — jump to the tab holding
+    // the first invalid control, reveal its card, then let the native bubble
+    // render on the now-focusable field. Invalid values still never save.
+    const form = e.currentTarget;
+    if (!form.checkValidity()) {
+      const bad = form.querySelector<HTMLInputElement>(":invalid");
+      const card = bad?.closest<HTMLElement>("[data-settings-group]");
+      const g = card?.dataset.settingsGroup as GroupKey | undefined;
+      if (g) {
+        setTab(g);
+        applySettingsGroup(g); // reveal now — don't race the tab effect
+      }
+      requestAnimationFrame(() => (bad ?? form).reportValidity());
+      return;
+    }
     try {
       setS(await api.saveSettings(s));
       setSaved(true);
@@ -1292,10 +1283,20 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
   return (
     <div className="settings-page">
       <h1>Settings</h1>
-      <SettingsTabs />
-      <form onSubmit={save}>
+      {/* Action-required security state stays visible on every tab — the Remote
+          access card itself lives behind the Access & security tab. */}
+      {authEnabled === false && (
+        <Callout tone="warn">
+          <b>No password set</b> — anyone who can reach this server has full access.{" "}
+          <button type="button" className="btn btn-ghost" onClick={() => setTab("security")}>
+            Set a password
+          </button>
+        </Callout>
+      )}
+      <SettingsTabs active={tab} onSelect={setTab} />
+      <form onSubmit={save} noValidate>
         <ModelsCard />
-        <div className="card">
+        <div className="card" data-settings-group="detection">
           <h2>Detection</h2>
           <div className="row">
             <label className="field" style={{ flex: 1, minWidth: "min(380px, 100%)" }}>
@@ -1416,7 +1417,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
-        <div className="card">
+        <div className="card" data-settings-group="detection">
           <h2>Hand signals</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             The Signals page tracks hand landmarks live in the browser. A held, armed signal logs
@@ -1479,7 +1480,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
-        <div className="card">
+        <div className="card" data-settings-group="detection">
           <h2>AI event captions (opt-in)</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Generate a short natural-language description of each event for review and search.
@@ -1530,7 +1531,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
-        <div className="card">
+        <div className="card" data-settings-group="detection">
           <h2>Audio transcription</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Speech-to-text for audio events, using a <b>bundled, in-process</b> whisper.cpp engine —
@@ -1560,7 +1561,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
-        <div className="card">
+        <div className="card" data-settings-group="detection">
           <h2>Audio detection</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             The bundled YAMNet model listens for specific sounds — both <b>home-safety</b>{" "}
@@ -1609,7 +1610,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </small>
         </div>
 
-        <div className="card">
+        <div className="card" data-settings-group="modes">
           <h2>Modes schedule (auto-arm / disarm)</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Automatically switch the system mode on a schedule — e.g. <b>Away</b> at 08:00 on
@@ -1623,7 +1624,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               key={i}
               style={{ marginBottom: 6, flexWrap: "wrap", alignItems: "center", gap: 6 }}
             >
-              {DOW.map((d, di) => (
+              {/* 0 = Sunday, matching the auto-arm worker's day indexing. */}
+              {DAY_NAMES.map((d, di) => (
                 <TogglePill
                   key={di}
                   on={row.days.includes(di)}
@@ -1694,7 +1696,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </small>
         </div>
 
-        <div className="card">
+        <div className="card" data-settings-group="detection">
           <h2>AI insights</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Opt-in background analysis of your own event history — fully local, nothing leaves this
@@ -1734,7 +1736,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
-        <RemoteAccessCard onError={onError} />
+        <RemoteAccessCard enabled={authEnabled} onEnabled={setAuthEnabled} onError={onError} />
 
         <PushCard onError={onError} />
 
@@ -1750,7 +1752,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
 
         <BackupCard onError={onError} />
 
-        <div className="card">
+        <div className="card" data-settings-group="recording">
           <h2>Offsite backup</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Mirror recordings to S3-compatible object storage (AWS S3, Backblaze B2, Wasabi,
@@ -1830,7 +1832,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           <OffsiteStatusReadout />
         </div>
 
-        <div className="card">
+        <div className="card" data-settings-group="modes">
           <h2>Email (SMTP)</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Send alarm emails with the snapshot attached — add an <b>email</b> action to any Alarm
@@ -1892,7 +1894,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
-        <div className="card">
+        <div className="card" data-settings-group="security">
           <h2>Reverse-proxy SSO</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Sit Cammy behind an auth proxy (Authelia, oauth2-proxy, Cloudflare Access, Tailscale) and
@@ -1944,7 +1946,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
-        <div className="card">
+        <div className="card" data-settings-group="modes">
           <h2>Notifications</h2>
           <div className="row">
             <label className="field" style={{ flex: 1, minWidth: 320 }}>
@@ -2040,7 +2042,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
         </div>
 
-        <div className="card">
+        <div className="card" data-settings-group="recording">
           <h2>Recording &amp; retention</h2>
           <div className="row">
             <label className="field">

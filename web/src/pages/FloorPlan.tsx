@@ -104,9 +104,9 @@ export default function FloorPlanPage({
             <button className={`btn ${editing ? "btn-primary" : "btn-ghost"}`} onClick={() => setEditing((v) => !v)}>
               {editing ? "Done" : "Edit pins"}
             </button>
-            <label className="btn btn-ghost">
+            <label className="btn btn-ghost file-btn">
               <IconUpload size={15} /> Replace
-              <input type="file" accept="image/*" style={{ display: "none" }} onChange={onFile} />
+              <input type="file" accept="image/*" onChange={onFile} />
             </label>
           </>
         )}
@@ -122,9 +122,9 @@ export default function FloorPlanPage({
           title="Upload a floor plan"
           hint="A PNG or JPG of your home or property. Then drop camera markers onto it and click a marker to jump to that camera live."
           action={
-            <label className="btn btn-primary">
+            <label className="btn btn-primary file-btn">
               <IconUpload size={15} /> Choose image
-              <input type="file" accept="image/*" style={{ display: "none" }} onChange={onFile} />
+              <input type="file" accept="image/*" onChange={onFile} />
             </label>
           }
         />

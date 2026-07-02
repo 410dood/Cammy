@@ -92,6 +92,10 @@ export default function ZoneEditor({
   // touch from scrolling/zooming the modal instead of dropping a point.
   const addPoint = (e: React.PointerEvent) => {
     if (!draw) return;
+    // Only the primary pointer's main button places a point: right/middle
+    // clicks and secondary multi-touch fingers must not drop stray vertices.
+    // (A primary touch has isPrimary===true and button===0, so taps still work.)
+    if (!e.isPrimary || e.button !== 0) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     placePoint((e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
   };
@@ -205,6 +209,11 @@ export default function ZoneEditor({
                 <button
                   type="button"
                   className="btn btn-ghost ev-act"
+                  // The surface places points on POINTERDOWN, so the press must
+                  // be stopped there — a click-level stopPropagation alone runs
+                  // after addPoint has already fired. Keep the click guard too,
+                  // belt-and-braces against any future click-bound ancestor.
+                  onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
                     retry();

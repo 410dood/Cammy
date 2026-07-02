@@ -91,6 +91,7 @@ function modeStatus(mode: Mode, cams: Camera[]): "active" | "partial" | "off" {
   const any = (pick: (c: Camera) => boolean) => cams.some(pick);
   const pose = any((c) => !!c.detect_config.pose_detect);
   const audio = any((c) => !!c.detect_config.audio_detect);
+  const detect = any((c) => c.enabled && c.detect);
   const fall = any((c) => !!c.detect_config.fall_detect);
   const child = any((c) => c.detect_config.child_height_frac != null);
   const tri = (n: number, total: number) => (n >= total ? "active" : n > 0 ? "partial" : "off");
@@ -98,7 +99,10 @@ function modeStatus(mode: Mode, cams: Camera[]): "active" | "partial" | "off" {
     case "baby":
       return tri([pose, audio].filter(Boolean).length, 2);
     case "pet":
-      return audio ? "active" : "off"; // object detection is on by default
+      // Pet OBJECT detection (dog/cat events) works out of the box on any
+      // detecting camera — that alone is "partly set up"; the bark/meow audio
+      // toggle is the remaining gap, and turning it on completes the mode.
+      return audio ? "active" : detect ? "partial" : "off";
     case "pool":
       return child ? "active" : "off";
     case "aging":

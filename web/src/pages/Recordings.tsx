@@ -1,9 +1,9 @@
 ﻿import { useEffect, useState } from "react";
-import { api, CamEvent, Camera, fmtBytes, fmtTime, Segment, Stats } from "../api";
+import { api, CamEvent, Camera, capacityTone, fmtBytes, fmtDaysLeft, fmtTime, Segment, Stats } from "../api";
 import Timeline from "../Timeline";
 import CrossTimeline from "../CrossTimeline";
 import { IconPlay, IconFilm, IconAlert } from "../icons";
-import { EmptyState, ErrorState, Modal } from "../ui";
+import { Callout, EmptyState, ErrorState, Modal } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -71,15 +71,11 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       </p>
 
       {stats && (() => {
-        // Severity for the storage horizon: whichever limiter (disk filling up
-        // OR retention pruning) bites soonest. This is a data-loss warning, so
-        // <7 days gets a warn callout and <2 a danger one instead of muted text.
-        const horizons = [stats.days_until_full, stats.retention_horizon_days].filter(
-          (d): d is number => d != null,
-        );
-        const soonest = horizons.length ? Math.min(...horizons) : null;
-        const capTone: "warn" | "danger" | null =
-          soonest == null ? null : soonest < 2 ? "danger" : soonest < 7 ? "warn" : null;
+        // Severity keys ONLY on actual disk headroom (days_until_full): <7 days
+        // gets a warn callout and <2 a danger one instead of muted text. The
+        // retention horizon is routine pruning, not data loss — it stays
+        // neutral informational copy below, never a warning.
+        const capTone = capacityTone(stats.days_until_full);
         const rh = stats.retention_horizon_days;
         const capDetail = (
           <>
@@ -87,26 +83,24 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             {stats.days_until_full != null && (
               <>
                 {" "}
-                · ~{Math.round(stats.days_until_full)} days until full
+                · {fmtDaysLeft(stats.days_until_full)} until full
                 {stats.est_full_ts != null && (
                   <> ({new Date(stats.est_full_ts * 1000).toLocaleDateString()})</>
                 )}
               </>
             )}
-            {rh != null && (
-              <> · retention caps history at {rh < 1 ? "under a day" : `~${Math.round(rh)} days`}</>
-            )}
+            {rh != null && <> · retention caps history at {fmtDaysLeft(rh)}</>}
             <span style={{ opacity: 0.7 }}> · estimated</span>
           </>
         );
-        // Name the actual limiter so the fix is obvious (add disk vs. shorten retention).
-        const diskFirst =
-          stats.days_until_full != null && (rh == null || stats.days_until_full <= rh);
+        // Badge and callout are gated together (the write-rate estimate must
+        // exist) so a bare unexplained warning badge can never appear.
+        const showCap = capTone != null && stats.write_bytes_per_day > 0;
         return (
         <div className="card">
           <div className="card-head">
             <h2 style={{ margin: 0 }}>Storage</h2>
-            {capTone && (
+            {showCap && (
               <span className={`badge ${capTone}`} style={{ marginLeft: 8 }}>
                 <IconAlert size={11} /> {capTone === "danger" ? "Nearly full" : "Filling up"}
               </span>
@@ -120,26 +114,13 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             </span>
           </div>
           {stats.write_bytes_per_day > 0 &&
-            (capTone ? (
-              <div
-                className={`callout callout-${capTone}`}
-                role={capTone === "danger" ? "alert" : "status"}
-                style={{ marginBottom: 12 }}
-              >
-                <span className="callout-ico">
-                  <IconAlert size={16} />
-                </span>
-                <div>
-                  <b>
-                    {diskFirst ? "Disk is filling up" : "Retention is pruning old footage"}
-                  </b>{" "}
-                  — {diskFirst ? "add disk or shorten retention" : "raise retention or add disk"} to
-                  keep more history.
-                  <div className="muted" style={{ marginTop: 2 }}>
-                    {capDetail}
-                  </div>
+            (showCap ? (
+              <Callout tone={capTone!} style={{ marginBottom: 12 }}>
+                <b>Disk is filling up</b> — add disk or shorten retention to keep more history.
+                <div className="muted" style={{ marginTop: 2 }}>
+                  {capDetail}
                 </div>
-              </div>
+              </Callout>
             ) : (
               <div className="row" style={{ marginBottom: 12 }}>
                 <span className="muted">

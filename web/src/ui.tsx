@@ -181,6 +181,41 @@ export function ErrorState({
 }
 
 /* ======================================================================== */
+/* Callout — a toned notice box (info/warn/danger) with a leading icon        */
+/* ======================================================================== */
+
+/** One shared shape for the `.callout` recipe so pages stop hand-assembling
+ *  the icon + role + tone markup (which had already drifted on role/aria). */
+export function Callout({
+  tone = "info",
+  role,
+  icon,
+  className,
+  style,
+  children,
+}: {
+  tone?: "info" | "warn" | "danger";
+  /** Defaults to "alert" for danger, "status" otherwise. */
+  role?: string;
+  /** Defaults to IconInfo for info, IconAlert for warn/danger. */
+  icon?: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={`callout callout-${tone}${className ? ` ${className}` : ""}`}
+      role={role ?? (tone === "danger" ? "alert" : "status")}
+      style={style}
+    >
+      <span className="callout-ico">{icon ?? (tone === "info" ? <IconInfo size={16} /> : <IconAlert size={16} />)}</span>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+/* ======================================================================== */
 /* TogglePill — an accessible on/off pill (real <button>, keyboard + SR)      */
 /* ======================================================================== */
 

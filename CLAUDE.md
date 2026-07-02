@@ -87,7 +87,8 @@ preserved verbatim — and **live-validated in Chrome against the running backen
   so zone/mask drawing works on tablets/phones.
 
 `tsc` + `vite build` green. Files: `web/src/pages/Cameras.tsx`,
-`web/src/ZoneEditor.tsx`, `web/src/styles.css`. Not yet committed.
+`web/src/ZoneEditor.tsx`, `web/src/styles.css`. Committed as `f82ef6a` on
+`ux/detection-tuning-modal-redesign`.
 
 ### Earlier: stationary-object suppression + motion highlight, 2026-06-30
 

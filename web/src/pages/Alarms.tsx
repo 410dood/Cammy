@@ -1,5 +1,5 @@
-﻿import { FormEvent, useEffect, useState } from "react";
-import { api, AlarmRule, Action, ActionKind, ArmMode, Camera } from "../api";
+﻿import { FormEvent, useEffect, useRef, useState } from "react";
+import { api, AlarmRule, Action, ActionKind, ArmMode, Camera, DAY_NAMES } from "../api";
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
 
@@ -87,7 +87,6 @@ export default function Alarms({
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
 
-  const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const toggleDay = (d: number) =>
     setDays((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort()));
   const toggleMode = (m: ArmMode) =>
@@ -98,23 +97,34 @@ export default function Alarms({
   const removeAction = (i: number) =>
     setActions((p) => (p.length > 1 ? p.filter((_, j) => j !== i) : p));
 
+  // First-run gate for auto-opening the builder: only the FIRST successful
+  // load may open it (never a fetch error, never a later refetch — e.g. after
+  // deleting the last rule the list should lead, not the builder).
+  const firstLoad = useRef(true);
   const load = () => {
     api
       .alarms()
       .then((r) => {
         setRules(r);
         setLoadError(null);
+        if (firstLoad.current && r.length === 0) setCreating(true);
+        firstLoad.current = false;
       })
       .catch((e) => setLoadError(errMsg(e)))
       .finally(() => setLoaded(true));
   };
   useEffect(load, []);
-  // First-run: open the builder when there are no rules yet (gated on `loaded`
-  // so it doesn't flash open before the list resolves). Once rules exist the
-  // list leads and the builder stays collapsed behind the "New rule" button.
-  useEffect(() => {
-    if (loaded && rules.length === 0) setCreating(true);
-  }, [loaded, rules.length]);
+
+  // "New rule" can sit below a long rules list — when the builder opens via
+  // the button, bring it into view and focus its first input.
+  const builderRef = useRef<HTMLDivElement | null>(null);
+  const openBuilder = () => {
+    setCreating(true);
+    requestAnimationFrame(() => {
+      builderRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      builderRef.current?.querySelector("input")?.focus({ preventScroll: true });
+    });
+  };
 
   const removeRule = async (r: AlarmRule) => {
     if (!(await dialog.confirm({ title: `Delete rule “${r.name}”?`, confirmLabel: "Delete", danger: true }))) return;
@@ -294,8 +304,140 @@ export default function Alarms({
       <h1>Alarm manager</h1>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div className="card" style={{ margin: 0 }}>
+        <div className="card-head">
+          <h2 style={{ margin: 0 }}>
+            Rules{loaded && rules.length > 0 ? <span className="tune-count"> ({rules.length})</span> : null}
+          </h2>
+          <button
+            type="button"
+            className="btn btn-primary ev-act"
+            style={{ marginLeft: "auto" }}
+            onClick={() => (creating ? setCreating(false) : openBuilder())}
+          >
+            <IconPlus size={14} /> {creating ? "Close" : "New rule"}
+          </button>
+        </div>
+        {!loaded ? (
+          <div aria-busy="true">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <span key={i} className="skeleton" style={{ height: 38, marginBottom: 8 }} />
+            ))}
+          </div>
+        ) : rules.length === 0 ? (
+          loadError ? (
+            <ErrorState what="alarm rules" message={loadError} onRetry={load} />
+          ) : (
+            <EmptyState
+              icon={<IconSiren />}
+              title="No alarm rules yet"
+              hint="Rules fire actions the moment a matching event is detected. Create one with the New rule button above."
+            />
+          )
+        ) : (
+          <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Rule</th>
+                <th>When</th>
+                <th>Then</th>
+                <th>Active</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rules.map((r) => {
+                const parts = describeParts(r);
+                return (
+                <tr key={r.id}>
+                  <td>
+                    <b>{r.name}</b>
+                  </td>
+                  <td title={describe(r)}>
+                    <div className="ev-chips" style={{ marginBottom: 4 }}>
+                      {parts.trigger.map((t, i) => (
+                        <span key={i} className="badge accent" style={{ textTransform: "capitalize" }}>{t}</span>
+                      ))}
+                    </div>
+                    {parts.scope.length > 0 && (
+                      <div className="ev-chips">
+                        {parts.scope.map((s, i) => (
+                          <span key={i} className="badge">{s}</span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                  <td className="muted">
+                    {ruleActions(r).map((a, i) => (
+                      <div key={i}>{actionText(a)}</div>
+                    ))}
+                  </td>
+                  <td>
+                    <TogglePill
+                      on={r.enabled}
+                      ariaLabel={`Rule ${r.name} ${r.enabled ? "enabled" : "disabled"}`}
+                      onClick={async () => {
+                        await api
+                          .patchAlarm(r.id, { enabled: !r.enabled })
+                          .catch((e) => onError(String(e)));
+                        load();
+                      }}
+                    >
+                      {r.enabled ? "on" : "off"}
+                    </TogglePill>
+                    {snoozeText(r) && (
+                      <span className="pill" style={{ marginLeft: 6 }} title="snoozed">
+                        <IconMoon size={12} /> {snoozeText(r)}
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    {snoozeText(r) ? (
+                      <button
+                        className="btn btn-ghost ev-act"
+                        onClick={async () => {
+                          await api
+                            .patchAlarm(r.id, { snooze_secs: 0 })
+                            .catch((e) => onError(String(e)));
+                          load();
+                        }}
+                      >
+                        Wake
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-ghost ev-act"
+                        title="Suppress this rule for 1 hour"
+                        onClick={async () => {
+                          await api
+                            .patchAlarm(r.id, { snooze_secs: 3600 })
+                            .catch((e) => onError(String(e)));
+                          load();
+                        }}
+                      >
+                        Snooze 1h
+                      </button>
+                    )}
+                    <button
+                      className="btn btn-danger ev-act"
+                      style={{ marginLeft: 8 }}
+                      onClick={() => removeRule(r)}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+        )}
+      </div>
+
       {creating && (
-      <div className="card" style={{ order: 2, margin: 0 }}>
+      <div ref={builderRef} className="card" style={{ margin: 0 }}>
         <h2>New rule — when this happens…</h2>
         <form onSubmit={add}>
           <div className="row" style={{ marginBottom: 8 }}>
@@ -540,138 +682,6 @@ export default function Alarms({
         </form>
       </div>
       )}
-
-      <div className="card" style={{ order: 1, margin: 0 }}>
-        <div className="card-head">
-          <h2 style={{ margin: 0 }}>
-            Rules{loaded && rules.length > 0 ? <span className="tune-count"> ({rules.length})</span> : null}
-          </h2>
-          <button
-            type="button"
-            className="btn btn-primary ev-act"
-            style={{ marginLeft: "auto" }}
-            onClick={() => setCreating((v) => !v)}
-          >
-            <IconPlus size={14} /> {creating ? "Close" : "New rule"}
-          </button>
-        </div>
-        {!loaded ? (
-          <div aria-busy="true">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <span key={i} className="skeleton" style={{ height: 38, marginBottom: 8 }} />
-            ))}
-          </div>
-        ) : rules.length === 0 ? (
-          loadError ? (
-            <ErrorState what="alarm rules" message={loadError} onRetry={load} />
-          ) : (
-            <EmptyState
-              icon={<IconSiren />}
-              title="No alarm rules yet"
-              hint="Rules fire actions the moment a matching event is detected. Create one with the New rule button above."
-            />
-          )
-        ) : (
-          <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Rule</th>
-                <th>When</th>
-                <th>Then</th>
-                <th>Active</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rules.map((r) => {
-                const parts = describeParts(r);
-                return (
-                <tr key={r.id}>
-                  <td>
-                    <b>{r.name}</b>
-                  </td>
-                  <td title={describe(r)}>
-                    <div className="ev-chips" style={{ marginBottom: 4 }}>
-                      {parts.trigger.map((t, i) => (
-                        <span key={i} className="badge accent" style={{ textTransform: "capitalize" }}>{t}</span>
-                      ))}
-                    </div>
-                    {parts.scope.length > 0 && (
-                      <div className="ev-chips">
-                        {parts.scope.map((s, i) => (
-                          <span key={i} className="badge">{s}</span>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                  <td className="muted">
-                    {ruleActions(r).map((a, i) => (
-                      <div key={i}>{actionText(a)}</div>
-                    ))}
-                  </td>
-                  <td>
-                    <TogglePill
-                      on={r.enabled}
-                      ariaLabel={`Rule ${r.name} ${r.enabled ? "enabled" : "disabled"}`}
-                      onClick={async () => {
-                        await api
-                          .patchAlarm(r.id, { enabled: !r.enabled })
-                          .catch((e) => onError(String(e)));
-                        load();
-                      }}
-                    >
-                      {r.enabled ? "on" : "off"}
-                    </TogglePill>
-                    {snoozeText(r) && (
-                      <span className="pill" style={{ marginLeft: 6 }} title="snoozed">
-                        <IconMoon size={12} /> {snoozeText(r)}
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {snoozeText(r) ? (
-                      <button
-                        className="btn btn-ghost ev-act"
-                        onClick={async () => {
-                          await api
-                            .patchAlarm(r.id, { snooze_secs: 0 })
-                            .catch((e) => onError(String(e)));
-                          load();
-                        }}
-                      >
-                        Wake
-                      </button>
-                    ) : (
-                      <button
-                        className="btn btn-ghost ev-act"
-                        title="Suppress this rule for 1 hour"
-                        onClick={async () => {
-                          await api
-                            .patchAlarm(r.id, { snooze_secs: 3600 })
-                            .catch((e) => onError(String(e)));
-                          load();
-                        }}
-                      >
-                        Snooze 1h
-                      </button>
-                    )}
-                    <button
-                      className="btn btn-danger ev-act"
-                      style={{ marginLeft: 8 }}
-                      onClick={() => removeRule(r)}
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>
-        )}
-      </div>
       </div>
     </>
   );

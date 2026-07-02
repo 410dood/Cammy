@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, Camera, Settings } from "../api";
 import { loadPlayer } from "../LiveVideo";
-import { useToast } from "../ui";
+import { useToast, EmptyState } from "../ui";
 import { IconPlay, IconStop, IconSiren } from "../icons";
 
 // MediaPipe Tasks Vision is loaded at runtime from a CDN (configurable), so the
@@ -398,25 +398,11 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
           />
           {!running && (
             <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                textAlign: "center",
-                padding: 16,
-                color: "var(--text-muted)",
-                pointerEvents: "none",
-                // Un-mirror the placeholder inside the selfie-mirrored webcam box.
-                transform: isWebcam ? "scaleX(-1)" : "none",
-              }}
+              className="sig-idle"
+              // Un-mirror the placeholder inside the selfie-mirrored webcam box.
+              style={{ transform: isWebcam ? "scaleX(-1)" : "none" }}
             >
-              <IconSiren size={30} />
-              <div style={{ fontWeight: 600, color: "var(--text)" }}>Ready to read hand signals</div>
-              <div style={{ fontSize: "var(--text-sm)" }}>{status}</div>
+              <EmptyState icon={<IconSiren />} title="Ready to read hand signals" hint={status} />
             </div>
           )}
           {current && (

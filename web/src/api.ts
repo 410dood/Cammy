@@ -56,6 +56,9 @@ export interface Schedule {
   end_hhmm: string | null;
 }
 
+/** Day-of-week display names, index-aligned with Schedule.days (0=Sun..6=Sat). */
+export const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
 export interface DetectConfig {
   labels: string[] | null;
   min_score: number | null;
@@ -787,6 +790,15 @@ export function relTime(ts: number, nowMs: number = Date.now()): string {
     ...(sameYear ? {} : { year: "numeric" }),
   });
 }
+/** Severity for a projected days-until-disk-full. Key this on actual disk
+ *  headroom only — a deliberately short retention horizon is routine pruning,
+ *  not an emergency. Shared by Home and Recordings so they can't drift. */
+export const capacityTone = (days: number | null | undefined): "danger" | "warn" | null =>
+  days == null ? null : days < 2 ? "danger" : days < 7 ? "warn" : null;
+
+/** Human copy for a days-until-full estimate ("under a day", "~3 days"). */
+export const fmtDaysLeft = (days: number) => (days < 1 ? "under a day" : `~${Math.round(days)} days`);
+
 export const fmtBytes = (b: number) =>
   b > 1e12
     ? `${(b / 1e12).toFixed(2)} TB`

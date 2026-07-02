@@ -8,37 +8,9 @@ import {
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
   IconAlert, IconCheck, IconLayers, IconUpload,
 } from "../icons";
-
-// --- A3: smart-detection grouping --------------------------------------------
-// Collapse a run of same-camera, same-label detections that happen close in
-// time into one "activity" card (best frame + count + duration), the way
-// UniFi Protect groups motion into a single smart detection.
-export interface Cluster {
-  rep: CamEvent; // best (highest-score) frame in the run
-  count: number;
-  startTs: number; // oldest
-  endTs: number; // newest
-}
-const GROUP_GAP = 120; // seconds between detections that still count as one activity
-
-// Collapse a run of same-camera/same-label detections within GROUP_GAP into one
-// representative cluster (highest-score frame + a count). Shared with the camera
-// detail rail so a parked car doesn't flood it with identical thumbnails.
-export function groupEvents(list: CamEvent[]): Cluster[] {
-  const out: Cluster[] = [];
-  for (const e of list) {
-    // `list` is newest-first, so the cluster's first member is its newest (endTs).
-    const last = out[out.length - 1];
-    if (last && last.rep.camera_id === e.camera_id && last.rep.label === e.label && last.startTs - e.ts <= GROUP_GAP) {
-      last.count++;
-      last.startTs = e.ts;
-      if (e.score > last.rep.score) last.rep = e;
-    } else {
-      out.push({ rep: e, count: 1, startTs: e.ts, endTs: e.ts });
-    }
-  }
-  return out;
-}
+// A3 smart-detection grouping lives in a shared module (the camera detail rail
+// uses it too) — see eventGroups.ts.
+import { Cluster, groupEvents } from "../eventGroups";
 
 function durationLabel(secs: number): string {
   if (secs < 60) return `${secs}s`;
@@ -179,6 +151,18 @@ export default function Events({
   const [toTime, setToTime] = useState("");
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [grouped, setGrouped] = useState(false);
+  // "More filters" disclosure is state-driven (not derived from the filters), so
+  // clearing the last active filter can't collapse the panel around the control
+  // being used (React would drop focus mid-typing). A user toggle always wins;
+  // the effect below only ever OPENS it when a hidden filter becomes active.
+  const [moreFilters, setMoreFilters] = useState(false);
+  // Filters that live inside the disclosure (the time range counts as one).
+  const hiddenFilters =
+    [gestureFilter, zoneFilter, fromTime || toTime, plateFilter.trim()].filter(Boolean).length;
+  const anyHiddenFilter = hiddenFilters > 0;
+  useEffect(() => {
+    if (anyHiddenFilter) setMoreFilters(true);
+  }, [anyHiddenFilter]);
   const [interpreted, setInterpreted] = useState<string[]>([]);
   // Bulk triage: select multiple events, then bookmark/unbookmark them at once.
   const [selectMode, setSelectMode] = useState(false);
@@ -633,12 +617,21 @@ export default function Events({
       </div>
 
       {/* Power-user filters tucked behind a disclosure so the everyday triage row
-          stays scannable; force-open whenever one of them is active. */}
+          stays scannable; opens itself when one of them becomes active, but a
+          user toggle always wins (never force-closed — see moreFilters above). */}
       <details
         className="adv"
-        open={!!(gestureFilter || zoneFilter || fromTime || toTime || plateFilter)}
+        open={moreFilters}
+        onToggle={(e) => setMoreFilters(e.currentTarget.open)}
       >
-        <summary>More filters — hand signal, zone, time range, plate</summary>
+        <summary>
+          More filters — hand signal, zone, time range, plate
+          {anyHiddenFilter && (
+            <span className="badge accent" style={{ marginLeft: 8 }}>
+              {hiddenFilters} active
+            </span>
+          )}
+        </summary>
         <div className="row" style={{ marginTop: 8, marginBottom: 16 }}>
           {gestures.length > 0 && (
             <select value={gestureFilter} onChange={(e) => setGestureFilter(e.target.value)} aria-label="Filter by hand signal">
