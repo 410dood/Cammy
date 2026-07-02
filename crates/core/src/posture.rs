@@ -374,6 +374,9 @@ fn emit(
         webhook_template: &settings.webhook_template,
         smtp: crate::notify::smtp_cfg(settings),
         duress: false,
+        severity: crate::severity::severity_for(label, None, None),
+        min_push_severity: settings.notify_min_severity,
+        caption: None,
     };
     for rule in alarms.iter().filter(|r| {
         r.matches(cam.id, label, 1.0, None, None, None, None)
@@ -382,7 +385,8 @@ fn emit(
             && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
             && crate::notify::ready(r, throttle, now)
     }) {
-        crate::notify::fire(rule, &alarm_ev, mqtt_tx);
+        let suppressed = crate::notify::take_suppressed(throttle, rule.id);
+        crate::notify::fire(rule, &alarm_ev, mqtt_tx, suppressed);
     }
 }
 

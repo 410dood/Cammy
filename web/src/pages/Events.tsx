@@ -804,6 +804,13 @@ export default function Events({
                   <b className="ev-label">{ev.label}</b>
                   <span className="ev-score score">{(ev.score * 100).toFixed(0)}%</span>
                   <span className="muted">{ev.camera}</span>
+                  {(ev.severity ?? 2) >= 4 ? (
+                    <span className="badge danger" title="Critical severity — safety or security-integrity event">
+                      <IconAlert size={12} /> critical
+                    </span>
+                  ) : (ev.severity ?? 2) === 3 ? (
+                    <span className="badge warn" title="High severity — likely worth a look">high</span>
+                  ) : null}
                   {cluster && cluster.count > 1 && (
                     <span className="badge" title={`${cluster.count} detections in this activity`}>
                       <IconLayers size={11} /> ×{cluster.count} · {durationLabel(cluster.endTs - cluster.startTs)}

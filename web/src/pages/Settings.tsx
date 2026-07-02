@@ -1967,6 +1967,21 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(e) => set({ health_ntfy_url: e.target.value })}
               />
             </label>
+            <label className="field" style={{ minWidth: 260 }}>
+              only push events at or above severity
+              <select
+                value={s.notify_min_severity ?? 1}
+                onChange={(e) => set({ notify_min_severity: Number(e.target.value) })}
+              >
+                <option value={1}>everything (default)</option>
+                <option value={2}>normal and up — skip wildlife</option>
+                <option value={3}>high & critical only</option>
+                <option value={4}>critical only</option>
+              </select>
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Quiets push & email only — webhooks, MQTT and duress alerts always deliver.
+              </span>
+            </label>
             <label className="field" style={{ flex: 1, minWidth: 320 }}>
               public base URL (adds tap-through clip/snapshot links to pushes)
               <input

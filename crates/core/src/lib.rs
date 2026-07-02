@@ -33,6 +33,7 @@ mod push;
 mod record;
 mod residential;
 mod schedule;
+mod severity;
 mod sigv4;
 mod smart;
 mod status;

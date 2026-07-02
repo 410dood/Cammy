@@ -27,9 +27,11 @@ pub struct CaptionJob {
     pub camera: String,
 }
 
-/// A request to VLM-verify an alarm before firing it, off the detection thread.
-/// Carries owned event data; the settings-derived fields (base_url, webhook
-/// template, SMTP) are rebuilt from the DB at fire time so the job stays small.
+/// A rule fire deferred to this worker — either VLM-verified before firing
+/// (`vlm_prompt`) and/or captioned so the description rides IN the push
+/// (`describe`), both off the detection thread. Carries owned event data; the
+/// settings-derived fields (base_url, webhook template, SMTP) are rebuilt from
+/// the DB at fire time so the job stays small.
 #[derive(Clone, Debug)]
 pub struct VlmGateJob {
     pub rule: crate::db::AlarmRule,
@@ -42,6 +44,11 @@ pub struct VlmGateJob {
     pub snapshot_path: PathBuf,
     pub face: Option<String>,
     pub plate: Option<String>,
+    /// Event severity at dispatch (the emit site computed it).
+    pub severity: u8,
+    /// The rule's drained burst counter (`notify::take_suppressed`), carried so
+    /// the deferred push still reads "+N more during cooldown".
+    pub suppressed: u32,
 }
 
 /// Work for the single GenAI worker thread (captioning + VLM alarm verification
@@ -221,6 +228,24 @@ fn vlm_gate(db: &Db, j: &VlmGateJob, mqtt_tx: &std::sync::mpsc::Sender<crate::mq
         tracing::info!(rule = %j.rule.name, event = j.event_id, "vlm gate: suppressed (model said no)");
         return;
     }
+    // Describe-in-notification: reuse the caption the Caption job may have
+    // already written, else generate one now (fail open — a model error just
+    // fires a normal caption-less alert). Saved onto the event either way so
+    // the UI shows what the push said.
+    let caption = (j.rule.describe && s.genai_enabled && !s.genai_url.trim().is_empty())
+        .then(|| match db.event_caption(j.event_id) {
+            Ok(Some(c)) => Some(c),
+            _ => std::fs::read(&j.snapshot_path).ok().and_then(|bytes| {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let req = build_request(&s.genai_model, &prompt_for(&j.label, &j.camera), &b64);
+                let caption = call_vision(&s.genai_url, &s.genai_api_key, req)
+                    .ok()
+                    .flatten()?;
+                let _ = db.set_event_caption(j.event_id, &caption);
+                Some(caption)
+            }),
+        })
+        .flatten();
     let smtp = crate::notify::smtp_cfg(&s);
     let ev = crate::notify::AlarmEvent {
         event_id: j.event_id,
@@ -239,12 +264,15 @@ fn vlm_gate(db: &Db, j: &VlmGateJob, mqtt_tx: &std::sync::mpsc::Sender<crate::mq
         webhook_template: &s.webhook_template,
         smtp,
         duress: false,
+        severity: j.severity,
+        min_push_severity: s.notify_min_severity,
+        caption: caption.as_deref(),
     };
     tracing::info!(
         rule = %j.rule.name, event = j.event_id, confirmed = ?verdict,
-        "vlm gate: firing"
+        described = caption.is_some(), "deferred alarm: firing"
     );
-    crate::notify::fire(&j.rule, &ev, mqtt_tx);
+    crate::notify::fire(&j.rule, &ev, mqtt_tx, j.suppressed);
 }
 
 /// Decide the in-app notification (if any) for a caption outcome, given whether

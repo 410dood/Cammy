@@ -2163,7 +2163,7 @@ async fn record_gesture(
 
     // Fire webhook + matching alarm actions off-thread (blocking I/O), so a
     // slow listener never stalls the response.
-    let rules: Vec<crate::db::AlarmRule> = st
+    let rules: Vec<(crate::db::AlarmRule, u32)> = st
         .db
         .list_alarms()?
         .into_iter()
@@ -2174,6 +2174,11 @@ async fn record_gesture(
                 // Panic/duress gestures fire regardless of arm mode.
                 && (is_duress || crate::notify::armed_in_mode(&r.modes, &settings.arm_mode))
                 && crate::notify::ready(r, &st.alarm_throttle, now)
+        })
+        // Drain each rule's burst counter now (the fire happens off-task).
+        .map(|r| {
+            let suppressed = crate::notify::take_suppressed(&st.alarm_throttle, r.id);
+            (r, suppressed)
         })
         .collect();
     let mqtt_tx = st.mqtt_tx.clone();
@@ -2192,6 +2197,7 @@ async fn record_gesture(
         )
     });
     let health_ntfy = settings.health_ntfy_url.clone();
+    let notify_min_severity = settings.notify_min_severity;
     let camera = cam.name.clone();
     let gesture_owned = canonical.to_string();
     let snap_path = snapshot.as_ref().map(|_| snap_abs.clone());
@@ -2221,6 +2227,13 @@ async fn record_gesture(
                     to: t,
                 }),
             duress: is_duress,
+            severity: if is_duress {
+                4
+            } else {
+                crate::severity::severity_for("gesture", None, Some(&gesture_owned))
+            },
+            min_push_severity: notify_min_severity,
+            caption: None,
         };
         // Guaranteed panic path: a duress signal pushes straight to the health
         // ntfy topic at max urgency, even if no alarm rule is configured.
@@ -2256,8 +2269,8 @@ async fn record_gesture(
                 tracing::debug!("gesture webhook failed: {e}");
             }
         }
-        for rule in &rules {
-            crate::notify::fire(rule, &ev, &mqtt_tx);
+        for (rule, suppressed) in &rules {
+            crate::notify::fire(rule, &ev, &mqtt_tx, *suppressed);
         }
     });
 
@@ -4082,6 +4095,7 @@ mod tests {
             direction: Some("a_to_b".into()),
             speed: Some(32.4),
             gait: None,
+            severity: 2,
         };
         let csv = events_to_csv(std::slice::from_ref(&ev));
         let mut lines = csv.lines();

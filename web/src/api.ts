@@ -142,6 +142,8 @@ export interface CamEvent {
   note: string | null;
   /** Attributed gait identity (#64): an enrolled name or "?" (unknown walker). */
   gait?: string | null;
+  /** Severity tier 1 (low) .. 4 (critical) — drives push gating + badges. */
+  severity?: number;
 }
 
 export interface GaitProfile {
@@ -195,6 +197,9 @@ export interface Settings {
   plate_allowlist: string[];
   health_ntfy_url: string;
   public_base_url: string;
+  /** Minimum severity (1..4) for push/email alarm actions; 1 = everything.
+   *  Webhook/MQTT automations and duress are never gated. */
+  notify_min_severity: number;
   gesture_recognition: boolean;
   gesture_hold_secs: number;
   gesture_labels: string[];
@@ -335,6 +340,10 @@ export interface AlarmRule {
    *  ("Is a real person at the door?"). Runs off-thread; fails OPEN. Needs GenAI
    *  captions enabled. null/empty = no gate. Detection-event rules only. */
   vlm_prompt: string | null;
+  /** Describe-in-notification: caption the snapshot (GenAI) and put the
+   *  description IN the push/email. Fails open to a normal caption-less alert.
+   *  Needs GenAI captions enabled. Detection-event rules only. */
+  describe?: boolean;
   min_score: number;
   /** Legacy single action; kept in sync with actions[0]. Prefer `actions`. */
   action: string;

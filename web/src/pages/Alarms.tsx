@@ -79,6 +79,7 @@ export default function Alarms({
   const [confirmLabel, setConfirmLabel] = useState("");
   const [confirmWithin, setConfirmWithin] = useState(10);
   const [vlmPrompt, setVlmPrompt] = useState("");
+  const [describeAlert, setDescribeAlert] = useState(false);
   const [faceUnknown, setFaceUnknown] = useState(false);
   const [actions, setActions] = useState<Action[]>([{ kind: "webhook", target: "", priority: 0 }]);
   const [modes, setModes] = useState<ArmMode[]>([]);
@@ -173,6 +174,7 @@ export default function Alarms({
         confirm_label: confirmLabel.trim() || null,
         confirm_within_secs: confirmLabel.trim() ? confirmWithin : null,
         vlm_prompt: vlmPrompt.trim() || null,
+        describe: describeAlert,
         face_unknown: faceUnknown,
         min_score: 0,
         // Legacy single-action mirror (kept in sync with actions[0] server-side too).
@@ -200,6 +202,7 @@ export default function Alarms({
       setConfirmLabel("");
       setConfirmWithin(10);
       setVlmPrompt("");
+      setDescribeAlert(false);
       setFaceUnknown(false);
       setCooldown(0);
       setDays([]);
@@ -238,6 +241,7 @@ export default function Alarms({
       r.zone_like ? `in zone ~ "${r.zone_like}"` : null,
       r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
       r.vlm_prompt ? `AI-verified: "${r.vlm_prompt}"` : null,
+      r.describe ? "AI-described push" : null,
       sched ? `armed ${sched}` : null,
       (r.modes ?? []).length > 0 ? `modes ${(r.modes ?? []).join("/")}` : null,
       r.cooldown_secs > 0 ? `cooldown ${r.cooldown_secs}s` : null,
@@ -272,6 +276,7 @@ export default function Alarms({
       r.zone_like ? `zone ~ "${r.zone_like}"` : null,
       r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
       r.vlm_prompt ? `AI-verified: "${r.vlm_prompt}"` : null,
+      r.describe ? "AI-described push" : null,
       sched ? `armed ${sched}` : null,
       (r.modes ?? []).length > 0 ? `modes ${(r.modes ?? []).join("/")}` : null,
       r.cooldown_secs > 0 ? `cooldown ${r.cooldown_secs}s` : null,
@@ -570,6 +575,18 @@ export default function Alarms({
                   placeholder='e.g. "Is a real person actually at the door?"'
                 />
               </label>
+              <div
+                className="row"
+                style={{ flex: "1 1 100%", alignItems: "center", gap: 8 }}
+                title="The vision model writes a one-line description of the snapshot and it leads the push/email text (like Wyze/Nest descriptive alerts) — 'A courier is leaving a box on the porch' instead of 'person (91%)'. Needs AI captions + a vision model (Settings); if the model is unavailable the alert still fires without a description. Detection events only."
+              >
+                <TogglePill on={describeAlert} onClick={() => setDescribeAlert(!describeAlert)} ariaLabel="Describe in notification">
+                  AI description in the notification
+                </TogglePill>
+                <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                  the push leads with what the camera saw, in plain language
+                </span>
+              </div>
             </div>
           </details>
           <div className="row" style={{ marginBottom: 12 }}>
