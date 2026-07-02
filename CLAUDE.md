@@ -16,7 +16,31 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.3 — full competitor suite (#1–#70) integrated on main + cross-feature simplify, 2026-06-22
 
-### Latest: parity Phase 1 batch 1 (branch `feat/parity-phase1`), 2026-07-02
+### Latest: docs/08 Phase 1 COMPLETE — merged to main + live-tested, 2026-07-02
+
+The whole Phase 1 roadmap shipped across three slices on `feat/parity-phase1`
+(merged `6894fda`, 25 files / +1454): the batch-1 items below **plus** P1.8
+absence/inactivity watch (`absence.rs` worker + `DetectConfig.absence_hours`,
+edge-latched, assistive-framed), P1.9 alarm **Test button** (`POST
+/api/alarms/{id}/test`, no event/cooldown stamp, gate-bypassing) + "Last
+fired" column (`GET /api/alarms/stats` off the in-memory throttle), P1.13
+digest **key moments** w/ clip links (pure `key_moments`, severity≥3 or
+anomaly≥0.6), P1.14 **footage-access audit** rows on clip/CSV access, P1.15
+**event tags** (`events.tags` JSON, sanitized ≤8×24, case-insensitive `tag=`
+filter, #chips + edit UI), P1.16 **Wall tour** (4-cam pages, 10/30/60s) +
+**Recordings day picker** (`/api/recordings?before=` + `nowTs` anchor on both
+timelines), and the P1.10 residual: gesture/audio/soft-trigger snapshots now
+**burn privacy masks** (shared `apply_privacy_masks`, fail-closed) — detection
+snapshots were already masked (#29). Also fixed: soft-trigger route used axum
+0.7 `:id` (startup panic on 0.8) → `{id}`. 150 core tests, clippy/tsc/vite
+green. **Live-E2E'd on the running NVR (rebuilt release, :8080, 7 cameras):**
+severity on events (legacy re-derived), tags round-trip + filter, soft trigger
+→ flagged event w/ snapshot, alarm Test → real ntfy push, clip-access audit
+row, absence config round-trip, recordings `before`, health/UI 200. Not yet
+observed live (need real traffic): burst "+N" text, caption-in-push
+(needs Ollama), `last_detection_ts` (stamps on next detection).
+
+### Earlier: parity Phase 1 batch 1 (branch `feat/parity-phase1`), 2026-07-02
 
 First implementation slice of the docs/08 roadmap, stacked on main after the
 docs/08 study (below). Shipped, each `clippy -D warnings` + tests + web
