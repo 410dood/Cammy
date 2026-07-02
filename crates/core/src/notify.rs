@@ -529,6 +529,7 @@ mod tests {
             confirm_within_secs: None,
             vlm_prompt: None,
             describe: false,
+            prompt_like: None,
             min_score: 0.0,
             action: "ntfy".into(),
             target: "t".into(),
@@ -542,6 +543,26 @@ mod tests {
             modes: vec![],
             actions: vec![],
         }
+    }
+
+    #[test]
+    fn prompt_rules_fire_only_via_the_prompt_path() {
+        let mut r = rule(1, 0, 0);
+        r.prompt_like = Some("a red pickup truck".into());
+        // Plain `matches` (every normal dispatch site) must reject a prompt
+        // rule outright — it was never compared against the prompt.
+        assert!(!r.matches(1, "car", 0.9, None, None, None, None));
+        // The embedding pass, which verified the similarity itself, matches on
+        // the remaining conditions.
+        assert!(r.matches_prompt(1, "car", 0.9, None, None));
+        // …and those other conditions still gate: wrong camera scope → no fire.
+        r.camera_id = Some(2);
+        assert!(!r.matches_prompt(1, "car", 0.9, None, None));
+        // A whitespace-only prompt is no condition at all (normal rule).
+        let mut w = rule(2, 0, 0);
+        w.prompt_like = Some("   ".into());
+        assert!(w.matches(1, "car", 0.9, None, None, None, None));
+        assert!(!w.matches_prompt(1, "car", 0.9, None, None));
     }
 
     #[test]

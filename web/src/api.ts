@@ -349,6 +349,10 @@ export interface AlarmRule {
    *  description IN the push/email. Fails open to a normal caption-less alert.
    *  Needs GenAI captions enabled. Detection-event rules only. */
   describe?: boolean;
+  /** Prompt-based standing rule: free text ("someone climbing the fence")
+   *  CLIP-matched against each detection's crop. Needs the CLIP models;
+   *  best-effort semantic matching — scope with label/zone for precision. */
+  prompt_like?: string | null;
   min_score: number;
   /** Legacy single action; kept in sync with actions[0]. Prefer `actions`. */
   action: string;

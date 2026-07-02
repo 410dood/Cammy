@@ -80,6 +80,7 @@ export default function Alarms({
   const [confirmWithin, setConfirmWithin] = useState(10);
   const [vlmPrompt, setVlmPrompt] = useState("");
   const [describeAlert, setDescribeAlert] = useState(false);
+  const [promptLike, setPromptLike] = useState("");
   const [faceUnknown, setFaceUnknown] = useState(false);
   const [actions, setActions] = useState<Action[]>([{ kind: "webhook", target: "", priority: 0 }]);
   const [modes, setModes] = useState<ArmMode[]>([]);
@@ -177,6 +178,7 @@ export default function Alarms({
         confirm_within_secs: confirmLabel.trim() ? confirmWithin : null,
         vlm_prompt: vlmPrompt.trim() || null,
         describe: describeAlert,
+        prompt_like: promptLike.trim() || null,
         face_unknown: faceUnknown,
         min_score: 0,
         // Legacy single-action mirror (kept in sync with actions[0] server-side too).
@@ -205,6 +207,7 @@ export default function Alarms({
       setConfirmWithin(10);
       setVlmPrompt("");
       setDescribeAlert(false);
+      setPromptLike("");
       setFaceUnknown(false);
       setCooldown(0);
       setDays([]);
@@ -242,6 +245,7 @@ export default function Alarms({
       r.transcript_like ? `said "${r.transcript_like}"` : null,
       r.zone_like ? `in zone ~ "${r.zone_like}"` : null,
       r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
+      r.prompt_like ? `AI watch: "${r.prompt_like}"` : null,
       r.vlm_prompt ? `AI-verified: "${r.vlm_prompt}"` : null,
       r.describe ? "AI-described push" : null,
       sched ? `armed ${sched}` : null,
@@ -277,6 +281,7 @@ export default function Alarms({
       r.camera_id != null ? (cameras.find((c) => c.id === r.camera_id)?.name ?? `camera ${r.camera_id}`) : null,
       r.zone_like ? `zone ~ "${r.zone_like}"` : null,
       r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
+      r.prompt_like ? `AI watch: "${r.prompt_like}"` : null,
       r.vlm_prompt ? `AI-verified: "${r.vlm_prompt}"` : null,
       r.describe ? "AI-described push" : null,
       sched ? `armed ${sched}` : null,
@@ -596,6 +601,19 @@ export default function Alarms({
                   />
                 </label>
               )}
+              <label
+                className="field"
+                style={{ flex: "1 1 100%" }}
+                title="A standing description matched against every detection's image crop (CLIP similarity) — 'someone climbing the fence', 'a red pickup truck'. Fires when an object LOOKS like the prompt. Needs the smart-search (CLIP) models; best-effort semantic matching, so scope it with an object/camera/zone for precision."
+              >
+                AI watch — fire when an object looks like… (optional)
+                <input
+                  type="text"
+                  value={promptLike}
+                  onChange={(e) => setPromptLike(e.target.value)}
+                  placeholder='e.g. "someone climbing the fence", "a red pickup truck"'
+                />
+              </label>
               <label
                 className="field"
                 style={{ flex: "1 1 100%" }}

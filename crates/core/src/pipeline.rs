@@ -133,6 +133,9 @@ pub fn run(
     let mut face_engine: Option<facerec::FaceEngine> = None;
     let mut face_key = String::new();
     let mut clip: Option<crate::smart::ImageEmbedder> = None;
+    // P2.2 prompt-rule text embeddings, cached per rule (re-embedded only when
+    // the prompt text changes) so a standing rule costs one CLIP text run ever.
+    let mut prompt_embs: HashMap<i64, (String, Vec<f32>)> = HashMap::new();
     let mut lpr: Option<crate::lpr::PlateEngine> = None;
     // Autotrack state: PTZ capability cache + per-camera move cooldown.
     let mut ptz_capable: HashMap<i64, bool> = HashMap::new();
@@ -941,9 +944,10 @@ pub fn run(
             }
 
             let mut new_event_ids: Vec<i64> = Vec::new();
-            // (event id, pixel box) for each new event, to embed its object crop
-            // for cross-camera appearance search (Re-ID).
-            let mut crop_jobs: Vec<(i64, [f32; 4])> = Vec::new();
+            // Per new event: id + pixel box (to embed its object crop for
+            // cross-camera Re-ID) + the event context the prompt-rule pass
+            // (P2.2) needs to gate/fire on the same crop embedding.
+            let mut crop_jobs: Vec<CropJob> = Vec::new();
             for (i, d) in wanted.iter().enumerate() {
                 last_event.insert((cam.id, d.label), now);
                 // The (required) zone this detection sits in, computed once and
@@ -1087,7 +1091,15 @@ pub fn run(
                             }
                         }
                         new_event_ids.push(id);
-                        crop_jobs.push((id, [d.x1, d.y1, d.x2, d.y2]));
+                        crop_jobs.push(CropJob {
+                            event_id: id,
+                            bbox_px: [d.x1, d.y1, d.x2, d.y2],
+                            score: d.score,
+                            label: d.label.to_string(),
+                            face: face_names[i].clone(),
+                            plate: plates[i].clone(),
+                            zone: ev_zone.clone(),
+                        });
                     }
                     Err(e) => tracing::warn!("event insert failed: {e:#}"),
                 }
@@ -1212,14 +1224,40 @@ pub fn run(
                                     "capping Re-ID crop embeddings to {MAX_CROPS_PER_FRAME}"
                                 );
                             }
-                            for (i, (id, b)) in crop_jobs.iter().enumerate() {
+                            // Fire each prompt rule at most once per frame,
+                            // even when several crops match it.
+                            let mut fired_prompt_rules: std::collections::HashSet<i64> =
+                                std::collections::HashSet::new();
+                            for (i, job) in crop_jobs.iter().enumerate() {
                                 let crop_emb = if i < MAX_CROPS_PER_FRAME {
-                                    embed_crop(embedder, &frame, b)
+                                    embed_crop(embedder, &frame, &job.bbox_px)
                                 } else {
                                     None
                                 };
-                                let _ =
-                                    db.set_event_embeddings(*id, &frame_emb, crop_emb.as_deref());
+                                let _ = db.set_event_embeddings(
+                                    job.event_id,
+                                    &frame_emb,
+                                    crop_emb.as_deref(),
+                                );
+                                // P2.2 prompt-based standing rules: does this
+                                // object *look like* any rule's description?
+                                if let Some(emb) = &crop_emb {
+                                    fire_prompt_alarms(
+                                        &db,
+                                        &settings,
+                                        &alarms,
+                                        &throttle,
+                                        &mqtt_tx,
+                                        &mut prompt_embs,
+                                        &mut fired_prompt_rules,
+                                        cam,
+                                        job,
+                                        emb,
+                                        &snap_rel,
+                                        &snap_abs,
+                                        now,
+                                    );
+                                }
                             }
                         }
                         Err(e) => tracing::debug!("clip embed failed: {e:#}"),
@@ -1728,6 +1766,129 @@ fn zone_for(
             z.kind == crate::db::ZoneKind::Required && z.applies_to(d.label) && z.contains(cx, cy)
         })
         .map(|z| z.name.clone())
+}
+
+/// One new event's crop-embedding work order: the pixel box for the CLIP crop
+/// plus the event context the prompt-rule pass needs to gate and fire.
+struct CropJob {
+    event_id: i64,
+    bbox_px: [f32; 4],
+    score: f32,
+    label: String,
+    face: Option<String>,
+    plate: Option<String>,
+    zone: Option<String>,
+}
+
+/// Cosine similarity at/above which an object crop "looks like" a prompt.
+/// CLIP text↔image cosines for a true match typically land 0.28–0.35 while
+/// unrelated pairs sit ≤0.2, so 0.27 is deliberately conservative (alerts must
+/// not cry wolf). Near-misses are logged at debug for tuning.
+const PROMPT_FIRE_COSINE: f32 = 0.27;
+
+/// P2.2 — prompt-based standing NL rules (Reolink "Prompt-Based Alerts"): fire
+/// every prompt rule whose CLIP text embedding is cosine-similar to this
+/// detection's crop embedding. Runs on the detection thread right where the
+/// crop embedding is produced (no extra CLIP image run); each rule's text is
+/// embedded once and cached. All the normal gates (camera/label/zone scope,
+/// schedule, modes, cooldown, cross-modal confirm) still apply.
+#[allow(clippy::too_many_arguments)]
+fn fire_prompt_alarms(
+    db: &Db,
+    settings: &crate::db::Settings,
+    alarms: &[crate::db::AlarmRule],
+    throttle: &crate::notify::AlarmThrottle,
+    mqtt_tx: &std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    prompt_embs: &mut HashMap<i64, (String, Vec<f32>)>,
+    fired_this_frame: &mut std::collections::HashSet<i64>,
+    cam: &crate::db::Camera,
+    job: &CropJob,
+    crop_emb: &[f32],
+    snap_rel: &str,
+    snap_abs: &std::path::Path,
+    now: i64,
+) {
+    for rule in alarms.iter().filter(|r| r.is_prompt_rule()) {
+        if fired_this_frame.contains(&rule.id) {
+            continue;
+        }
+        // Cheap gates first — don't spend a CLIP text run on a rule that could
+        // never fire for this event anyway.
+        if !rule.matches_prompt(
+            cam.id,
+            &job.label,
+            job.score,
+            job.face.as_deref(),
+            job.plate.as_deref(),
+        ) || !rule.zone_ok(job.zone.as_deref())
+            || !crate::notify::armed_in_mode(&rule.modes, &settings.arm_mode)
+        {
+            continue;
+        }
+        let prompt = rule.prompt_like.as_deref().unwrap_or("").trim().to_string();
+        // (Re-)embed the prompt only when its text changed since the cache.
+        if prompt_embs
+            .get(&rule.id)
+            .map(|(p, _)| p != &prompt)
+            .unwrap_or(true)
+        {
+            match crate::smart::embed_text(&prompt) {
+                Ok(emb) => {
+                    prompt_embs.insert(rule.id, (prompt.clone(), emb));
+                }
+                Err(e) => {
+                    tracing::debug!(rule = %rule.name, "prompt embed failed: {e:#}");
+                    continue;
+                }
+            }
+        }
+        let Some((_, prompt_emb)) = prompt_embs.get(&rule.id) else {
+            continue;
+        };
+        let sim = crate::smart::cosine(prompt_emb, crop_emb);
+        if sim < PROMPT_FIRE_COSINE {
+            if sim > PROMPT_FIRE_COSINE - 0.05 {
+                tracing::debug!(
+                    rule = %rule.name, event = job.event_id, sim = format!("{sim:.3}"),
+                    "prompt rule near-miss (below {PROMPT_FIRE_COSINE})"
+                );
+            }
+            continue;
+        }
+        if !rule.confirm_ok(db, cam.id, now) || !crate::notify::ready(rule, throttle, now) {
+            continue;
+        }
+        fired_this_frame.insert(rule.id);
+        let suppressed = crate::notify::take_suppressed(throttle, rule.id);
+        let matched = format!("Matched \"{prompt}\" ({:.0}% similar)", sim * 100.0);
+        let ev = crate::notify::AlarmEvent {
+            event_id: job.event_id,
+            camera: &cam.name,
+            label: &job.label,
+            score: job.score,
+            ts: now,
+            snapshot_url: &format!("/api/snapshots/{snap_rel}"),
+            snapshot_path: Some(snap_abs),
+            face: job.face.as_deref(),
+            plate: job.plate.as_deref(),
+            gesture: None,
+            transcript: None,
+            speed: None,
+            base_url: &settings.public_base_url,
+            webhook_template: &settings.webhook_template,
+            smtp: crate::notify::smtp_cfg(settings),
+            duress: false,
+            severity: crate::severity::severity_for(&job.label, job.face.as_deref(), None)
+                .max(3),
+            min_push_severity: settings.notify_min_severity,
+            caption: Some(&matched),
+        };
+        tracing::info!(
+            rule = %rule.name, event = job.event_id, sim = format!("{sim:.3}"),
+            "prompt rule fired"
+        );
+        crate::notify::fire(rule, &ev, mqtt_tx, suppressed);
+    }
 }
 
 /// Black out the privacy-mask polygons (frame-fraction coordinates) in place.

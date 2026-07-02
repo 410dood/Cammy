@@ -564,6 +564,16 @@ pub struct AlarmRule {
     /// captions enabled. Detection-event rules only in v1; rides `schedule_json`.
     #[serde(default)]
     pub describe: bool,
+    /// Prompt-based standing rule (Reolink "Prompt-Based Alerts"): a free-text
+    /// description ("someone climbing the fence", "a red pickup truck") that is
+    /// CLIP-text-embedded once and cosine-compared against each detection's
+    /// crop embedding at detection time — the rule fires when an object *looks
+    /// like* the prompt. Needs the CLIP models installed; evaluated ONLY in the
+    /// pipeline's embedding pass (`prompt_ok` in [`Self::matches`]), so other
+    /// dispatch sites can never fire it. Best-effort semantic matching — pair
+    /// with a label/zone scope for precision. Rides `schedule_json`.
+    #[serde(default)]
+    pub prompt_like: Option<String>,
     #[serde(default)]
     pub min_score: f32,
     /// Legacy single action: "webhook" / "mqtt" / "ntfy". Superseded by
@@ -828,7 +838,46 @@ impl AlarmRule {
                 return false;
             }
         }
+        // A prompt rule (CLIP crop similarity) can only be satisfied by the
+        // pipeline's embedding pass, which verifies the similarity itself and
+        // then calls [`Self::matches_prompt`] — plain `matches` (every other
+        // dispatch site) rejects prompt rules outright so they can never fire
+        // on events that were never compared against the prompt.
+        if self.is_prompt_rule() {
+            return false;
+        }
         true
+    }
+
+    /// Whether this rule carries a non-empty CLIP prompt condition.
+    pub fn is_prompt_rule(&self) -> bool {
+        self.prompt_like
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|p| !p.is_empty())
+    }
+
+    /// The embedding pass's variant of [`Self::matches`]: the caller has
+    /// already verified the CLIP prompt similarity, so only the OTHER
+    /// conditions are checked. `false` for non-prompt rules (they fire on the
+    /// normal path).
+    #[allow(clippy::too_many_arguments)]
+    pub fn matches_prompt(
+        &self,
+        camera_id: i64,
+        label: &str,
+        score: f32,
+        face: Option<&str>,
+        plate: Option<&str>,
+    ) -> bool {
+        if !self.is_prompt_rule() {
+            return false;
+        }
+        // Reuse `matches` by masking the prompt condition: a cloned rule
+        // without the prompt evaluates every other gate identically.
+        let mut other = self.clone();
+        other.prompt_like = None;
+        other.matches(camera_id, label, score, face, plate, None, None)
     }
 }
 
@@ -1952,7 +2001,8 @@ impl Db {
             "confirm_label": r.confirm_label,
             "confirm_within": r.confirm_within_secs,
             "vlm_prompt": r.vlm_prompt,
-            "describe": r.describe
+            "describe": r.describe,
+            "prompt_like": r.prompt_like
         })
         .to_string();
         // Persist the full scene, and dual-write the legacy action/target/priority
@@ -2045,6 +2095,7 @@ impl Db {
                     confirm_within_secs: sched["confirm_within"].as_i64(),
                     vlm_prompt: sched["vlm_prompt"].as_str().map(str::to_string),
                     describe: sched["describe"].as_bool().unwrap_or(false),
+                    prompt_like: sched["prompt_like"].as_str().map(str::to_string),
                     min_score: r.get(7)?,
                     action,
                     target,
@@ -4069,6 +4120,7 @@ mod tests {
             confirm_within_secs: None,
             vlm_prompt: None,
             describe: false,
+            prompt_like: None,
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
@@ -4181,6 +4233,7 @@ mod tests {
                 confirm_within_secs: Some(10),
                 vlm_prompt: None,
                 describe: false,
+                prompt_like: None,
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
@@ -4363,6 +4416,7 @@ mod tests {
             confirm_within_secs: None,
             vlm_prompt: None,
             describe: false,
+            prompt_like: None,
             min_score: 0.0,
             action: "webhook".into(),
             target: "http://x".into(),
