@@ -15,10 +15,14 @@ most severe were reported via the review UI. This file is the durable handoff.
 - [x] Review pipeline complete, findings reported (15 ranked, level max)
 - [x] Shared groundwork landed by orchestrator: `Callout` primitive in
       `web/src/ui.tsx`; `DAY_NAMES`, `capacityTone`, `fmtDaysLeft` in `web/src/api.ts`
-- [ ] 7 parallel fix agents (file-disjoint) — IN FLIGHT, see dispatch map below
-- [ ] `cd web && npm run build` (tsc + vite) green
-- [ ] Commit + push on `ux/detection-tuning-modal-redesign`
-- [ ] Re-report findings with outcomes
+- [x] 7 parallel fix agents (file-disjoint) — ALL DONE, see dispatch map below
+- [x] `cd web && npm run build` (tsc + vite) green
+- [x] Live smoke-check vs :8080 (Settings tabs + hidden-invalid Save recovery,
+      Events filter panel, Cameras/Alarms DOM order, Recordings severity with
+      real retention_horizon=0.11d data, Map focusable picker, Family Pets
+      badge, Signals EmptyState — zero console errors)
+- [x] Committed `83555cc` + pushed on `ux/detection-tuning-modal-redesign`
+- [x] Re-reported findings with outcomes (all 15 fixed)
 
 ## Fix dispatch map (one agent per file group, no overlaps)
 
