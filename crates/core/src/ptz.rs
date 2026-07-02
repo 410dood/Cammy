@@ -108,7 +108,7 @@ fn profile_token(t: &CamTarget) -> Result<String> {
 }
 
 /// One SOAP 1.2 request with WS-UsernameToken digest auth.
-fn soap_call(url: &str, t: &CamTarget, body: &str) -> Result<String> {
+pub(crate) fn soap_call(url: &str, t: &CamTarget, body: &str) -> Result<String> {
     let envelope = envelope(&t.username, &t.password, body);
     let resp = ureq::post(url)
         .timeout(Duration::from_secs(8))
@@ -293,7 +293,7 @@ fn hex16(bytes: &[u8; 16]) -> String {
     )
 }
 
-fn extract_between<'a>(haystack: &'a str, start: &str, end: &str) -> Option<&'a str> {
+pub(crate) fn extract_between<'a>(haystack: &'a str, start: &str, end: &str) -> Option<&'a str> {
     let from = haystack.find(start)? + start.len();
     let len = haystack[from..].find(end)?;
     Some(&haystack[from..from + len])

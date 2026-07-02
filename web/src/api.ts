@@ -94,6 +94,10 @@ export interface DetectConfig {
   /** Inactivity watch: alert when no person/pet seen for this many hours
    *  (edge-triggered; assistive only). null = off. */
   absence_hours?: number | null;
+  /** Ingest the camera's own analytics (ONVIF events: motion/IVS/person/vehicle)
+   *  as camera_* events — zero server GPU cost. Needs ONVIF credentials in the
+   *  source URL. */
+  onvif_events?: boolean;
   /** Server-side 24/7 body-pose monitoring (fall posture, crib standing/rollover,
    *  covered-face). Runs a YOLOv8-pose model. Opt-in + ASSISTIVE only. */
   pose_detect?: boolean;

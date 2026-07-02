@@ -268,6 +268,14 @@ pub struct DetectConfig {
     /// absence of activity (camera angle, lighting, model misses). `None` = off.
     #[serde(default)]
     pub absence_hours: Option<f32>,
+    /// Ingest the camera's OWN analytics (ONVIF PullPoint events: motion, IVS
+    /// tripwire/intrusion, person/vehicle classifications) as first-class
+    /// `camera_*` events — zero server GPU cost, uses the camera's chip. The
+    /// camera source must carry ONVIF credentials (onvif:// or rtsp:// with
+    /// user:pass@host). Blue Iris "ONVIF triggers" / Axis-ACS-style. Off by
+    /// default.
+    #[serde(default)]
+    pub onvif_events: bool,
     /// Per-camera recording schedule (#67, Blue Iris "profiles/schedules"): when
     /// set, continuous recording runs ONLY during the window (day-of-week +
     /// time-of-day, overnight-aware). `None` = always record (the default).
@@ -4051,6 +4059,7 @@ mod tests {
             fall_detect: true,
             child_height_frac: Some(0.45),
             absence_hours: Some(12.0),
+            onvif_events: true,
             pose_detect: true,
             no_clip: false,
             record_schedule: Some(Schedule {

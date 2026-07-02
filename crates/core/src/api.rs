@@ -42,6 +42,9 @@ pub struct AppState {
     /// Shared per-rule cooldown clock, so API-fired alarms respect the same
     /// throttle as pipeline/audio-fired ones.
     pub alarm_throttle: crate::notify::AlarmThrottle,
+    /// P2.1 — recent raw camera-side (ONVIF) notifications per camera, for the
+    /// Blue Iris-style event inspector.
+    pub onvif_inspector: crate::onvif_events::InspectorBoard,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -85,6 +88,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/alarms/{id}/test", axum::routing::post(test_alarm_api))
         .route("/api/alarms/stats", get(alarm_stats_api))
+        .route("/api/onvif/inspect", get(onvif_inspect))
         .route("/api/tokens", get(list_tokens).post(create_token))
         .route("/api/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/audit", get(list_audit))
@@ -2824,6 +2828,36 @@ async fn test_alarm_api(
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(serde_json::json!({ "fired": true })))
+}
+
+/// P2.1 — the ONVIF event inspector (Blue Iris-style): the most recent raw
+/// camera-side notifications per camera, classified or not, so a user can see
+/// exactly what their camera emits before writing rules against it. RBAC:
+/// scoped users only see their cameras' streams.
+async fn onvif_inspect(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let allow = allowed_cameras(&st, &p)?;
+    let want: Option<i64> = q.get("camera_id").and_then(|s| s.parse().ok());
+    let board = st
+        .onvif_inspector
+        .lock()
+        .expect("onvif inspector poisoned");
+    let mut out = serde_json::Map::new();
+    for (cam_id, ring) in board.iter() {
+        if want.is_some_and(|w| w != *cam_id) || !camera_allowed(&allow, *cam_id) {
+            continue;
+        }
+        let rows: Vec<serde_json::Value> = ring
+            .iter()
+            .rev()
+            .map(|(ts, n)| serde_json::json!({ "ts": ts, "notify": n }))
+            .collect();
+        out.insert(cam_id.to_string(), serde_json::Value::Array(rows));
+    }
+    Ok(Json(serde_json::Value::Object(out)))
 }
 
 /// Per-rule live throttle stats: when each rule last fired (this run — the

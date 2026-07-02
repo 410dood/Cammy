@@ -25,6 +25,7 @@ pub mod lpr;
 mod mqtt;
 mod notify;
 mod offsite;
+mod onvif_events;
 mod parcel;
 mod pipeline;
 mod posture;
@@ -132,6 +133,7 @@ pub async fn run(
     let mqtt_tx2 = mqtt_tx.clone();
     let mqtt_tx_tr = mqtt_tx.clone();
     let mqtt_tx_pose = mqtt_tx.clone();
+    let mqtt_tx_onvif = mqtt_tx.clone();
     let mqtt_tx_api = mqtt_tx.clone();
     // The GenAI worker fires VLM-gated alarms after off-thread verification.
     let mqtt_tx_genai = mqtt_tx.clone();
@@ -244,6 +246,16 @@ pub async fn run(
             )
         }
     })?;
+    // P2.1 camera-side analytics ingestion (ONVIF PullPoint). Idles unless a
+    // camera opts in via detect_config.onvif_events; re-reads config each tick.
+    let onvif_inspector: onvif_events::InspectorBoard = Default::default();
+    let onvif_thread = std::thread::Builder::new().name("onvif-events".into()).spawn({
+        let (db, dir, stop) = (db.clone(), snapshots_dir.clone(), workers_stop.clone());
+        let api_base = go2rtc.api_base();
+        let inspector = onvif_inspector.clone();
+        let (tx, throttle) = (mqtt_tx_onvif, alarm_throttle.clone());
+        move || onvif_events::run(db, api_base, dir, inspector, throttle, tx, stop)
+    })?;
     // Server-side body-pose worker (residential safety tier: fall / crib standing
     // / covered-face). Idles unless a camera has pose_detect on AND the pose model
     // exists; re-reads config each tick.
@@ -293,6 +305,7 @@ pub async fn run(
         behind_proxy: cfg.behind_proxy,
         mqtt_tx: mqtt_tx_api,
         alarm_throttle,
+        onvif_inspector,
     };
     let ui =
         ServeDir::new(&cfg.ui_dir).not_found_service(ServeFile::new(cfg.ui_dir.join("index.html")));
@@ -361,6 +374,7 @@ pub async fn run(
         let _ = digest_thread.join();
         let _ = anomaly_thread.join();
         let _ = absence_thread.join();
+        let _ = onvif_thread.join();
         let _ = schedule_thread.join();
         let _ = pose_thread.join();
         let _ = push_thread.join();

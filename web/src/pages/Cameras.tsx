@@ -119,6 +119,7 @@ function TuneModal({
     fall_detect: camera.detect_config.fall_detect ?? false,
     child_height_frac: camera.detect_config.child_height_frac ?? null,
     absence_hours: camera.detect_config.absence_hours ?? null,
+    onvif_events: camera.detect_config.onvif_events ?? false,
     pose_detect: camera.detect_config.pose_detect ?? false,
     no_clip: camera.detect_config.no_clip ?? false,
     record_schedule: camera.detect_config.record_schedule ?? null,
@@ -169,6 +170,14 @@ function TuneModal({
       help: "Offer the live hand-signal panic overlay (Signals page).",
       on: dc.gesture_detect,
       toggle: () => setDc({ ...dc, gesture_detect: !dc.gesture_detect }),
+    },
+    {
+      label: "Camera-side detection (ONVIF)",
+      help: "Ingest the camera's own AI (motion, IVS tripwire/intrusion, person/vehicle) as camera_* events — no server GPU cost.",
+      title:
+        "Subscribe to this camera's ONVIF events and record what ITS chip detects as first-class camera_motion / camera_tripwire / camera_intrusion / camera_person / camera_vehicle events (alarm rules match those labels). The camera source must carry ONVIF credentials (user:pass@host). Vendor dialects vary — check what arrives with the ONVIF inspector API before writing rules.",
+      on: dc.onvif_events ?? false,
+      toggle: () => setDc({ ...dc, onvif_events: !dc.onvif_events }),
     },
     {
       label: "Tamper detection",

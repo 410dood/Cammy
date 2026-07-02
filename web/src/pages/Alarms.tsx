@@ -12,6 +12,8 @@ const LABELS = [
   "bird", "bear", "horse", "sheep", "cow",
   // Tracker-driven analytics events fire alarms via the same label match.
   "crossing", "wrong_way", "loiter", "occupancy",
+  // Camera-side (ONVIF-ingested) events — the camera's own chip detected these.
+  "camera_person", "camera_vehicle", "camera_motion", "camera_tripwire", "camera_intrusion",
   // Residential analytics events (see ZoneEditor + per-camera detect config).
   "child", "child_alone", "fall", "still_water",
   // Server-side pose events (enable "body pose monitoring" on the camera).
@@ -21,6 +23,11 @@ const LABELS = [
 // in the dropdowns. The raw token is kept in parentheses (and as the option
 // `value`) so it still matches what the Family page and docs refer to.
 const LABEL_PRETTY: Record<string, string> = {
+  camera_person: "Camera: person",
+  camera_vehicle: "Camera: vehicle",
+  camera_motion: "Camera: motion",
+  camera_tripwire: "Camera: tripwire",
+  camera_intrusion: "Camera: intrusion",
   crossing: "Line crossing",
   wrong_way: "Wrong way",
   loiter: "Loitering",
