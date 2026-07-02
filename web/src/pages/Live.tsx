@@ -162,11 +162,32 @@ export default function Live({
   };
 
   const activeView = viewName ? views.find((v) => v.name === viewName) : null;
-  const live = activeView
+  const filtered = activeView
     ? enabled.filter((c) => activeView.cameras.includes(c.name))
     : enabled.filter((c) =>
         group === "All" ? true : group === "Ungrouped" ? !c.group : c.group === group,
       );
+  // Activity sort (Eagle Eye "Smart Layouts"): cameras with a detection in the
+  // last few minutes float to the top, newest first; the rest keep their
+  // configured order. Opt-in and persisted — a spontaneously reordering wall
+  // isn't for everyone.
+  const [activitySort, setActivitySort] = useState(
+    () => localStorage.getItem("zoomy-live-activity-sort") === "1",
+  );
+  const toggleActivitySort = () => {
+    const next = !activitySort;
+    setActivitySort(next);
+    localStorage.setItem("zoomy-live-activity-sort", next ? "1" : "0");
+  };
+  const ACTIVITY_WINDOW_SECS = 300;
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const recentActivity = (c: Camera) => {
+    const t = status[String(c.id)]?.last_detection_ts;
+    return t && nowSecs - t <= ACTIVITY_WINDOW_SECS ? t : 0;
+  };
+  const live = activitySort
+    ? [...filtered].sort((a, b) => recentActivity(b) - recentActivity(a))
+    : filtered;
 
   const saveView = async () => {
     const name = (
@@ -292,6 +313,16 @@ export default function Live({
         >
           <IconPlus size={13} /> Save view
         </button>
+        <span style={{ marginLeft: "auto" }}>
+          <TogglePill
+            on={activitySort}
+            onClick={toggleActivitySort}
+            title="Cameras with a detection in the last 5 minutes float to the top of the grid"
+            ariaLabel="Sort cameras by recent activity"
+          >
+            Activity first
+          </TogglePill>
+        </span>
       </div>
       {groups.length > 0 && (
         <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 12 }}>

@@ -133,6 +133,46 @@ that URL is `http://` or a private/LAN host that won't resolve away from home.)
 
 ---
 
+## 3b. Remote access WITHOUT port-forwarding (recommended for phones)
+
+Opening a router port is the #1 way home NVRs end up on Shodan. Two free,
+zero-port-forward options work with Cammy out of the box — both keep the NVR
+entirely local and need **no Cammy flags at all** (the connection arrives as a
+normal LAN/localhost client):
+
+### Tailscale (simplest — private VPN)
+
+```bash
+# on the NVR box (once):
+tailscale up
+# on your phone: install Tailscale, sign in to the same tailnet
+```
+
+Open `http://<nvr-hostname>:8080` from anywhere. Live WebRTC video, pushes and
+clip links all work; the tailnet is already end-to-end encrypted, so no TLS
+setup is needed. Set **Settings → public base URL** to the Tailscale URL so
+push notifications carry tap-through clip links that resolve on your phone.
+(Tailscale Funnel can additionally publish it at a public HTTPS URL — treat
+that like Cloudflare Tunnel below and set a password + 2FA first.)
+
+### Cloudflare Tunnel (public HTTPS URL, no VPN app on the phone)
+
+```bash
+cloudflared tunnel create cammy
+cloudflared tunnel route dns cammy nvr.example.com
+cloudflared tunnel run --url http://localhost:8080 cammy
+```
+
+The URL is on the public internet, so **set a password + enable 2FA first**,
+run zoomy with `--trusted-proxy` (cloudflared connects from localhost, and the
+throttle/audit must see real client IPs), and set the public base URL to
+`https://nvr.example.com`. WebSockets (live video) are proxied by default.
+
+> Don't build or rent a relay: a VPN/tunnel you control is safer than any
+> vendor cloud relay, and it's the reason Cammy will never need a subscription.
+
+---
+
 ## 4. Docker
 
 > **Caveat:** Cammy's first-class distribution is the native binary and the Tauri

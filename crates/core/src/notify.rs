@@ -11,11 +11,14 @@ use std::time::Duration;
 use crate::db::{Action, AlarmRule};
 use crate::mqtt::EventMsg;
 
-/// Shared per-rule last-fired clock (rule id → unix seconds). Lives in memory
-/// and is consulted by every dispatch site (video pipeline, audio worker, the
-/// gesture endpoint) so a rule's cooldown holds across cameras, detections and
-/// ticks without a DB round-trip per event.
-pub type AlarmThrottle = Arc<Mutex<HashMap<i64, i64>>>;
+/// Shared per-rule throttle state (rule id → (last-fired unix seconds, events
+/// suppressed since then)). Lives in memory and is consulted by every dispatch
+/// site (video pipeline, audio worker, the gesture endpoint) so a rule's
+/// cooldown holds across cameras, detections and ticks without a DB round-trip
+/// per event. The suppressed counter feeds the burst-consolidated push ("+N
+/// more during cooldown") so throttled activity is summarized, not silently
+/// dropped — see [`take_suppressed`].
+pub type AlarmThrottle = Arc<Mutex<HashMap<i64, (i64, u32)>>>;
 
 /// SMTP config for the "email" alarm action, borrowed from Settings at the
 /// dispatch site. `to` is the default recipient(s) (comma-separated); an action
@@ -69,6 +72,17 @@ pub struct AlarmEvent<'a> {
     pub smtp: Option<SmtpConfig<'a>>,
     /// Duress/panic event: force max push urgency and a distinct alarm tag.
     pub duress: bool,
+    /// Severity tier 1..4 (see `crate::severity`); drives the default ntfy
+    /// priority and the `notify_min_severity` gate. Dispatch sites overlay
+    /// duress as 4.
+    pub severity: u8,
+    /// `Settings.notify_min_severity` at dispatch time: ntfy/email actions are
+    /// skipped when `severity` is below it (duress excepted). 0/1 = no gate.
+    pub min_push_severity: u8,
+    /// GenAI description of the snapshot, when a describe-in-notification rule
+    /// fired through the GenAI worker — leads the push text and fills
+    /// `{{caption}}`. `None` on the normal inline path.
+    pub caption: Option<&'a str>,
 }
 
 /// JSON-escape a value so substituting it into a JSON template stays valid.
@@ -91,7 +105,7 @@ fn json_escape(s: &str) -> String {
 /// Render a webhook body template, substituting `{{key}}` placeholders with the
 /// event's fields (JSON-escaped). Unknown placeholders are left untouched.
 pub fn render_template(tpl: &str, ev: &AlarmEvent) -> String {
-    let fields: [(&str, String); 11] = [
+    let fields: [(&str, String); 13] = [
         ("event_id", ev.event_id.to_string()),
         ("camera", json_escape(ev.camera)),
         ("label", json_escape(ev.label)),
@@ -106,6 +120,8 @@ pub fn render_template(tpl: &str, ev: &AlarmEvent) -> String {
             "speed",
             ev.speed.map(|s| format!("{s:.0}")).unwrap_or_default(),
         ),
+        ("caption", json_escape(ev.caption.unwrap_or(""))),
+        ("severity", ev.severity.to_string()),
     ];
     let mut out = tpl.to_string();
     for (k, v) in &fields {
@@ -116,21 +132,42 @@ pub fn render_template(tpl: &str, ev: &AlarmEvent) -> String {
 
 /// Is the rule clear to fire right now? False when snoozed or still inside its
 /// per-rule cooldown. On a `true` result the rule is stamped as fired `now`, so
-/// callers should fire exactly when this returns true (no double-firing).
+/// callers should fire exactly when this returns true (no double-firing). A
+/// suppressed match increments the rule's burst counter, which the next real
+/// fire drains via [`take_suppressed`] into a "+N more" summary.
 pub fn ready(rule: &AlarmRule, throttle: &AlarmThrottle, now: i64) -> bool {
+    let mut map = throttle.lock().expect("alarm throttle poisoned");
+    let suppressed = |map: &mut HashMap<i64, (i64, u32)>| {
+        map.entry(rule.id).or_insert((0, 0)).1 += 1;
+    };
     if rule.snooze_until > now {
+        suppressed(&mut map);
         return false;
     }
-    let mut map = throttle.lock().expect("alarm throttle poisoned");
     if rule.cooldown_secs > 0 {
-        if let Some(&last) = map.get(&rule.id) {
+        if let Some(&(last, _)) = map.get(&rule.id) {
             if now - last < rule.cooldown_secs {
+                suppressed(&mut map);
                 return false;
             }
         }
     }
-    map.insert(rule.id, now);
+    // Fire: stamp the clock, keep the accumulated burst count for take_suppressed.
+    let count = map.get(&rule.id).map(|&(_, n)| n).unwrap_or(0);
+    map.insert(rule.id, (now, count));
     true
+}
+
+/// Drain the rule's burst counter — how many matches its cooldown/snooze
+/// swallowed since it last fired. Call exactly once per real fire (right after
+/// `ready` returned true) and pass the count into [`fire`] so the push reads
+/// "person on Driveway (+3 more during cooldown)" instead of losing them.
+pub fn take_suppressed(throttle: &AlarmThrottle, rule_id: i64) -> u32 {
+    let mut map = throttle.lock().expect("alarm throttle poisoned");
+    match map.get_mut(&rule_id) {
+        Some(entry) => std::mem::take(&mut entry.1),
+        None => 0,
+    }
 }
 
 /// Whether a rule is armed in the current system security mode (UniFi-style
@@ -146,14 +183,28 @@ pub fn armed_in_mode(modes: &[String], arm_mode: &str) -> bool {
     }
 }
 
+/// Should a HUMAN-facing channel (ntfy/email) deliver this event, given the
+/// global `notify_min_severity` gate? Automations (webhook/MQTT) are never
+/// gated, and duress always delivers. Pure → unit-tested.
+fn push_allowed(severity: u8, min_push_severity: u8, duress: bool) -> bool {
+    duress || severity >= min_push_severity
+}
+
 /// Fire a matched rule's actions — a "scene" can be several at once (push AND
 /// webhook AND …). Failures are logged and swallowed; notification problems
 /// must never stall detection. `effective_actions` falls back to the legacy
-/// single action for pre-scenes rules.
-pub fn fire(rule: &AlarmRule, ev: &AlarmEvent, mqtt_tx: &std::sync::mpsc::Sender<EventMsg>) {
-    tracing::info!(rule = %rule.name, event = ev.event_id, "alarm triggered");
+/// single action for pre-scenes rules. `suppressed` is the rule's drained burst
+/// counter ([`take_suppressed`]) — matches its cooldown swallowed since the
+/// last fire, summarized into the push text.
+pub fn fire(
+    rule: &AlarmRule,
+    ev: &AlarmEvent,
+    mqtt_tx: &std::sync::mpsc::Sender<EventMsg>,
+    suppressed: u32,
+) {
+    tracing::info!(rule = %rule.name, event = ev.event_id, suppressed, "alarm triggered");
     for action in rule.effective_actions() {
-        fire_action(&action, &rule.name, ev, mqtt_tx);
+        fire_action(&action, &rule.name, ev, mqtt_tx, suppressed);
     }
 }
 
@@ -162,7 +213,20 @@ fn fire_action(
     rule_name: &str,
     ev: &AlarmEvent,
     mqtt_tx: &std::sync::mpsc::Sender<EventMsg>,
+    suppressed: u32,
 ) {
+    // One-knob fatigue gate: quiet the human channels below the configured
+    // severity; automations still see everything.
+    if matches!(action.kind.as_str(), "ntfy" | "email")
+        && !push_allowed(ev.severity, ev.min_push_severity, ev.duress)
+    {
+        tracing::info!(
+            rule = rule_name, event = ev.event_id, severity = ev.severity,
+            min = ev.min_push_severity, kind = %action.kind,
+            "push skipped: below notify_min_severity"
+        );
+        return;
+    }
     match action.kind.as_str() {
         "webhook" => webhook(&action.target, ev),
         "mqtt" => {
@@ -176,8 +240,8 @@ fn fire_action(
                 topic: Some(format!("alarms/{}", action.target)),
             });
         }
-        "ntfy" => ntfy(&action.target, rule_name, action.priority, ev),
-        "email" => email(&action.target, rule_name, ev),
+        "ntfy" => ntfy(&action.target, rule_name, action.priority, ev, suppressed),
+        "email" => email(&action.target, rule_name, ev, suppressed),
         other => tracing::warn!("unknown alarm action {other:?}"),
     }
 }
@@ -185,7 +249,7 @@ fn fire_action(
 /// Email (SMTP) action: send the alarm detail with the snapshot attached.
 /// Best-effort and log-and-swallow like every other channel. The recipient is
 /// the action's `target` if set, else the configured default `smtp.to`.
-fn email(target: &str, rule_name: &str, ev: &AlarmEvent) {
+fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) {
     use lettre::message::{header::ContentType, Attachment, MultiPart, SinglePart};
     use lettre::{Message, Transport};
 
@@ -215,6 +279,12 @@ fn email(target: &str, rule_name: &str, ev: &AlarmEvent) {
         format!("Alarm: {rule_name}")
     };
     let mut body = format!("{} ({:.0}%) on {}", ev.label, ev.score * 100.0, ev.camera);
+    if let Some(c) = ev.caption {
+        body = format!("{c}\n\n{body}");
+    }
+    if suppressed > 0 {
+        body.push_str(&format!("\n(+{suppressed} more while muted by cooldown)"));
+    }
     if let Some(f) = ev.face {
         body.push_str(&format!("\nFace: {f}"));
     }
@@ -333,6 +403,8 @@ fn webhook(url: &str, ev: &AlarmEvent) {
             "plate": ev.plate,
             "gesture": ev.gesture,
             "transcript": ev.transcript,
+            "caption": ev.caption,
+            "severity": ev.severity,
         });
         ureq::post(url)
             .timeout(Duration::from_secs(3))
@@ -353,8 +425,13 @@ fn webhook(url: &str, ev: &AlarmEvent) {
 /// otherwise. Title/extras travel as headers per the ntfy protocol. When a
 /// public base URL is known the push carries tap-through "View clip" /
 /// "Snapshot" actions, and `priority` (1..5) maps to ntfy's X-Priority.
-fn ntfy(url: &str, rule_name: &str, priority: u8, ev: &AlarmEvent) {
+fn ntfy(url: &str, rule_name: &str, priority: u8, ev: &AlarmEvent, suppressed: u32) {
     let mut detail = format!("{} ({:.0}%) on {}", ev.label, ev.score * 100.0, ev.camera);
+    // A GenAI description leads the push (Wyze/Nest "descriptive alert" style);
+    // the structured detail follows so nothing is lost if the caption is vague.
+    if let Some(c) = ev.caption {
+        detail = format!("{c} — {detail}");
+    }
     if let Some(f) = ev.face {
         detail.push_str(&format!(" — {f}"));
     }
@@ -366,6 +443,9 @@ fn ntfy(url: &str, rule_name: &str, priority: u8, ev: &AlarmEvent) {
     }
     if let Some(t) = ev.transcript {
         detail.push_str(&format!(" — 🎙️ \"{t}\""));
+    }
+    if suppressed > 0 {
+        detail.push_str(&format!(" (+{suppressed} more while muted by cooldown)"));
     }
 
     // Tap-through actions when we can build absolute links.
@@ -388,7 +468,20 @@ fn ntfy(url: &str, rule_name: &str, priority: u8, ev: &AlarmEvent) {
     let (tags, eff_priority) = if ev.duress {
         ("warning,rotating_light,sos", 5)
     } else {
-        ("rotating_light", priority)
+        // An explicit per-action priority wins; otherwise the event's severity
+        // picks a sensible default (critical rings, low stays quiet, normal
+        // leaves ntfy's default 3 by sending no header).
+        let p = if (1..=5).contains(&priority) {
+            priority
+        } else {
+            match ev.severity {
+                4 => 5,
+                3 => 4,
+                1 => 2,
+                _ => 0,
+            }
+        };
+        ("rotating_light", p)
     };
 
     let apply = |req: ureq::Request| {
@@ -435,6 +528,7 @@ mod tests {
             confirm_label: None,
             confirm_within_secs: None,
             vlm_prompt: None,
+            describe: false,
             min_score: 0.0,
             action: "ntfy".into(),
             target: "t".into(),
@@ -521,9 +615,12 @@ mod tests {
             webhook_template: "",
             smtp: None,
             duress: false,
+            severity: 2,
+            min_push_severity: 1,
+            caption: Some(r#"A man in a "red" hat"#),
         };
         let out = render_template(
-            r#"{"cam":"{{camera}}","obj":"{{label}}","who":"{{face}}","p":{{score}},"said":"{{transcript}}","miss":"{{nope}}"}"#,
+            r#"{"cam":"{{camera}}","obj":"{{label}}","who":"{{face}}","p":{{score}},"said":"{{transcript}}","desc":"{{caption}}","sev":{{severity}},"miss":"{{nope}}"}"#,
             &ev,
         );
         // Valid JSON after substitution (quotes + control chars are escaped).
@@ -533,7 +630,40 @@ mod tests {
         assert_eq!(v["who"], "Bob \"the\" Builder");
         assert_eq!(v["p"], 0.912);
         assert_eq!(v["said"], "help\u{000b}me");
+        assert_eq!(v["desc"], "A man in a \"red\" hat");
+        assert_eq!(v["sev"], 2);
         // Unknown placeholder is left as-is.
         assert_eq!(v["miss"], "{{nope}}");
+    }
+
+    #[test]
+    fn cooldown_counts_suppressed_matches_for_the_burst_summary() {
+        let throttle: AlarmThrottle = Default::default();
+        let r = rule(9, 60, 0);
+        assert!(ready(&r, &throttle, 1000)); // fires
+        assert_eq!(take_suppressed(&throttle, 9), 0); // nothing swallowed yet
+        assert!(!ready(&r, &throttle, 1010)); // swallowed x3
+        assert!(!ready(&r, &throttle, 1020));
+        assert!(!ready(&r, &throttle, 1030));
+        assert!(ready(&r, &throttle, 1061)); // fires again
+        assert_eq!(take_suppressed(&throttle, 9), 3); // burst reported once…
+        assert_eq!(take_suppressed(&throttle, 9), 0); // …then drained
+        // Snoozed matches count toward the summary too.
+        let s = rule(10, 0, 2000);
+        assert!(!ready(&s, &throttle, 1500));
+        assert!(ready(&s, &throttle, 2001));
+        assert_eq!(take_suppressed(&throttle, 10), 1);
+    }
+
+    #[test]
+    fn severity_gate_quiets_human_channels_only() {
+        // Gate off (min 1) → everything delivers.
+        assert!(push_allowed(1, 1, false));
+        // Below the bar → quiet; at/above → delivers.
+        assert!(!push_allowed(2, 3, false));
+        assert!(push_allowed(3, 3, false));
+        assert!(push_allowed(4, 3, false));
+        // Duress always delivers, whatever the knob says.
+        assert!(push_allowed(1, 4, true));
     }
 }

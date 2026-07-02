@@ -254,6 +254,9 @@ fn fire_transcript_alarms(
         webhook_template: &s.webhook_template,
         smtp: crate::notify::smtp_cfg(&s),
         duress: false,
+        severity: ev.severity,
+        min_push_severity: s.notify_min_severity,
+        caption: None,
     };
     for rule in db.list_alarms().unwrap_or_default().iter().filter(|r| {
         // Only transcript rules fire here; an empty phrase is not a transcript
@@ -275,7 +278,8 @@ fn fire_transcript_alarms(
             && crate::notify::armed_in_mode(&r.modes, &s.arm_mode)
             && crate::notify::ready(r, throttle, now)
     }) {
-        crate::notify::fire(rule, &alarm_ev, mqtt_tx);
+        let suppressed = crate::notify::take_suppressed(throttle, rule.id);
+        crate::notify::fire(rule, &alarm_ev, mqtt_tx, suppressed);
     }
 }
 

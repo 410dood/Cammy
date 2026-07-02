@@ -68,7 +68,12 @@ pub fn router(state: AppState) -> Router {
             "/api/events/{id}/bookmark",
             axum::routing::post(bookmark_event),
         )
+        .route("/api/events/{id}/tags", axum::routing::post(set_event_tags))
         .route("/api/gesture", axum::routing::post(record_gesture))
+        .route(
+            "/api/cameras/{id}/trigger",
+            axum::routing::post(soft_trigger),
+        )
         .route("/api/events/{id}/clip", get(event_clip))
         .route("/api/events/{id}/similar", get(event_similar))
         .route("/api/search", get(smart_search))
@@ -78,6 +83,8 @@ pub fn router(state: AppState) -> Router {
             "/api/alarms/{id}",
             axum::routing::patch(patch_alarm_api).delete(delete_alarm_api),
         )
+        .route("/api/alarms/{id}/test", axum::routing::post(test_alarm_api))
+        .route("/api/alarms/stats", get(alarm_stats_api))
         .route("/api/tokens", get(list_tokens).post(create_token))
         .route("/api/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/audit", get(list_audit))
@@ -1874,6 +1881,8 @@ struct EventQuery {
     /// When true, return only bookmarked (flagged) events.
     #[serde(default)]
     flagged: bool,
+    /// Only events carrying this user tag (exact, case-insensitive).
+    tag: Option<String>,
     #[serde(default = "default_limit")]
     limit: u32,
 }
@@ -1906,7 +1915,46 @@ async fn list_events(
     if let Some(set) = &allow {
         events.retain(|e| set.contains(&e.camera_id));
     }
+    // Tag filter is post-query (tags live in a JSON column); like the RBAC
+    // retain above, a page may under-fill — acceptable.
+    if let Some(tag) = q.tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        events.retain(|e| e.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)));
+    }
     Ok(Json(events))
+}
+
+#[derive(Deserialize)]
+struct TagsReq {
+    tags: Vec<String>,
+}
+
+/// Replace an event's user tags (ZoneMinder 1.38-style multi-tag taxonomy).
+/// Sanitized: trimmed, deduped case-insensitively, ≤8 tags × ≤24 chars, no
+/// control characters. Empty array clears.
+async fn set_event_tags(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<TagsReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    let mut tags: Vec<String> = Vec::new();
+    for t in &req.tags {
+        let t = t.trim();
+        if t.is_empty() || t.chars().any(|c| c.is_control()) {
+            continue;
+        }
+        let t: String = t.chars().take(24).collect();
+        if !tags.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
+            tags.push(t);
+        }
+        if tags.len() >= 8 {
+            break;
+        }
+    }
+    st.db.set_event_tags(id, &tags)?;
+    Ok(Json(serde_json::json!({ "tags": tags })))
 }
 
 /// Quote a CSV field per RFC 4180, and neutralize spreadsheet formula injection
@@ -1975,6 +2023,8 @@ fn events_to_csv(events: &[crate::db::Event]) -> String {
 /// generous cap). Useful for record-keeping / insurance / sharing.
 async fn export_events_csv(
     State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Query(q): Query<EventQuery>,
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<impl IntoResponse> {
@@ -1982,6 +2032,15 @@ async fn export_events_csv(
     if let Some(cid) = q.camera_id {
         require_camera(&allow, cid)?;
     }
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "events_exported",
+        Some("CSV export"),
+    );
     let mut events = st.db.list_events(
         q.camera_id,
         q.label.as_deref(),
@@ -2124,8 +2183,9 @@ async fn record_gesture(
     let snapshot = {
         let api_base = st.go2rtc.api_base();
         let key = cam.name.clone();
+        let masks = cam.detect_config.privacy_masks.clone();
         let abs = snap_abs.clone();
-        tokio::task::spawn_blocking(move || save_gesture_snapshot(&api_base, &key, &abs))
+        tokio::task::spawn_blocking(move || save_gesture_snapshot(&api_base, &key, &masks, &abs))
             .await
             .ok()
             .and_then(|r| r.ok())
@@ -2163,7 +2223,7 @@ async fn record_gesture(
 
     // Fire webhook + matching alarm actions off-thread (blocking I/O), so a
     // slow listener never stalls the response.
-    let rules: Vec<crate::db::AlarmRule> = st
+    let rules: Vec<(crate::db::AlarmRule, u32)> = st
         .db
         .list_alarms()?
         .into_iter()
@@ -2174,6 +2234,11 @@ async fn record_gesture(
                 // Panic/duress gestures fire regardless of arm mode.
                 && (is_duress || crate::notify::armed_in_mode(&r.modes, &settings.arm_mode))
                 && crate::notify::ready(r, &st.alarm_throttle, now)
+        })
+        // Drain each rule's burst counter now (the fire happens off-task).
+        .map(|r| {
+            let suppressed = crate::notify::take_suppressed(&st.alarm_throttle, r.id);
+            (r, suppressed)
         })
         .collect();
     let mqtt_tx = st.mqtt_tx.clone();
@@ -2192,6 +2257,7 @@ async fn record_gesture(
         )
     });
     let health_ntfy = settings.health_ntfy_url.clone();
+    let notify_min_severity = settings.notify_min_severity;
     let camera = cam.name.clone();
     let gesture_owned = canonical.to_string();
     let snap_path = snapshot.as_ref().map(|_| snap_abs.clone());
@@ -2221,6 +2287,13 @@ async fn record_gesture(
                     to: t,
                 }),
             duress: is_duress,
+            severity: if is_duress {
+                4
+            } else {
+                crate::severity::severity_for("gesture", None, Some(&gesture_owned))
+            },
+            min_push_severity: notify_min_severity,
+            caption: None,
         };
         // Guaranteed panic path: a duress signal pushes straight to the health
         // ntfy topic at max urgency, even if no alarm rule is configured.
@@ -2256,8 +2329,8 @@ async fn record_gesture(
                 tracing::debug!("gesture webhook failed: {e}");
             }
         }
-        for rule in &rules {
-            crate::notify::fire(rule, &ev, &mqtt_tx);
+        for (rule, suppressed) in &rules {
+            crate::notify::fire(rule, &ev, &mqtt_tx, *suppressed);
         }
     });
 
@@ -2270,10 +2343,170 @@ async fn record_gesture(
     })))
 }
 
-/// Fetch the camera's current frame from go2rtc and write it to `path`.
+#[derive(serde::Deserialize)]
+struct SoftTriggerReq {
+    #[serde(default)]
+    label: Option<String>,
+}
+
+/// Soft trigger (Nx Witness style): a user-pressed button on a camera creates a
+/// first-class **bookmarked** event ("Delivery arrived", "Let the dog out")
+/// with a context snapshot, riding the normal MQTT/webhook/alarm machinery —
+/// an alarm rule matching the label fires. Bookmarked so it survives event
+/// retention like any manually-saved moment.
+async fn soft_trigger(
+    State(st): State<AppState>,
+    Path(cam_id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<SoftTriggerReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let label = req.label.as_deref().unwrap_or("manual").trim().to_string();
+    if label.is_empty() || label.chars().count() > 48 || label.chars().any(|c| c.is_control()) {
+        return Err(bad_request("label must be 1–48 printable characters"));
+    }
+    let cam = st
+        .db
+        .list_cameras()?
+        .into_iter()
+        .find(|c| c.id == cam_id)
+        .ok_or_else(not_found)?;
+    // A scoped user can't create events / fire alarms on a camera they can't see.
+    require_camera(&allowed_cameras(&st, &p)?, cam.id)?;
+    let settings = st.db.settings();
+    let now = chrono::Local::now().timestamp();
+
+    // Best-effort context snapshot of what the camera sees right now.
+    let snap_rel = format!("{}-trigger-{}.jpg", cam.name, now);
+    let snap_abs = st.snapshots_dir.join(&snap_rel);
+    let snapshot = {
+        let api_base = st.go2rtc.api_base();
+        let key = cam.name.clone();
+        let masks = cam.detect_config.privacy_masks.clone();
+        let abs = snap_abs.clone();
+        tokio::task::spawn_blocking(move || save_gesture_snapshot(&api_base, &key, &masks, &abs))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .map(|_| snap_rel.clone())
+    };
+
+    let id = st.db.add_event(
+        cam.id,
+        now,
+        &label,
+        1.0,
+        [0.0; 4],
+        snapshot.as_deref(),
+        None,
+        None,
+        None,
+        None,
+    )?;
+    // Bookmark it: a deliberate button press is a moment the user chose to keep.
+    let _ = st.db.set_event_bookmark(id, true, None);
+    tracing::info!(camera = %cam.name, label = %label, event = id, "soft trigger recorded");
+
+    let snap_url = snapshot
+        .as_ref()
+        .map(|s| format!("/api/snapshots/{s}"))
+        .unwrap_or_default();
+    let _ = st.mqtt_tx.send(crate::mqtt::EventMsg {
+        event_id: id,
+        camera: cam.name.clone(),
+        label: label.clone(),
+        score: 1.0,
+        ts: now,
+        snapshot: snap_url.clone(),
+        topic: None,
+    });
+
+    // Fire matching alarm rules off-thread (blocking I/O must not stall the
+    // response), mirroring the gesture endpoint.
+    let rules: Vec<(crate::db::AlarmRule, u32)> = st
+        .db
+        .list_alarms()?
+        .into_iter()
+        .filter(|r| {
+            r.matches(cam.id, &label, 1.0, None, None, None, None)
+                && r.zone_ok(None)
+                && r.confirm_ok(&st.db, cam.id, now)
+                && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
+                && crate::notify::ready(r, &st.alarm_throttle, now)
+        })
+        .map(|r| {
+            let suppressed = crate::notify::take_suppressed(&st.alarm_throttle, r.id);
+            (r, suppressed)
+        })
+        .collect();
+    if !rules.is_empty() {
+        let mqtt_tx = st.mqtt_tx.clone();
+        let base_url = settings.public_base_url.clone();
+        let webhook_template = settings.webhook_template.clone();
+        let notify_min_severity = settings.notify_min_severity;
+        let smtp_owned = (!settings.smtp_url.trim().is_empty()).then(|| {
+            (
+                settings.smtp_url.clone(),
+                settings.smtp_user.clone(),
+                settings.smtp_pass.clone(),
+                settings.smtp_from.clone(),
+                settings.smtp_to.clone(),
+            )
+        });
+        let camera = cam.name.clone();
+        let label_owned = label.clone();
+        let snap_path = snapshot.as_ref().map(|_| snap_abs.clone());
+        tokio::task::spawn_blocking(move || {
+            let ev = crate::notify::AlarmEvent {
+                event_id: id,
+                camera: &camera,
+                label: &label_owned,
+                score: 1.0,
+                ts: now,
+                snapshot_url: &snap_url,
+                snapshot_path: snap_path.as_deref(),
+                face: None,
+                plate: None,
+                gesture: None,
+                transcript: None,
+                speed: None,
+                base_url: &base_url,
+                webhook_template: &webhook_template,
+                smtp: smtp_owned
+                    .as_ref()
+                    .map(|(u, us, pw, f, t)| crate::notify::SmtpConfig {
+                        url: u,
+                        user: us,
+                        pass: pw,
+                        from: f,
+                        to: t,
+                    }),
+                duress: false,
+                severity: crate::severity::severity_for(&label_owned, None, None),
+                min_push_severity: notify_min_severity,
+                caption: None,
+            };
+            for (rule, suppressed) in &rules {
+                crate::notify::fire(rule, &ev, &mqtt_tx, *suppressed);
+            }
+        });
+    }
+
+    Ok(Json(serde_json::json!({
+        "recorded": true,
+        "event_id": id,
+        "label": label,
+        "camera": cam.name,
+    })))
+}
+
+/// Fetch the camera's current frame from go2rtc and write it to `path`, with
+/// the camera's privacy masks burned in — this is a raw frame grab (unlike the
+/// detection pipeline, which masks before analysis), so without this the
+/// gesture/soft-trigger snapshots would leak masked regions into pushes.
 fn save_gesture_snapshot(
     api_base: &str,
     camera: &str,
+    masks: &[Vec<[f32; 2]>],
     path: &std::path::Path,
 ) -> anyhow::Result<()> {
     use std::io::Read as _;
@@ -2288,6 +2521,13 @@ fn save_gesture_snapshot(
     resp.into_reader()
         .take(32 * 1024 * 1024)
         .read_to_end(&mut bytes)?;
+    if !masks.is_empty() {
+        // Fail CLOSED on a decode error: better no snapshot than an unmasked one.
+        let mut img = image::load_from_memory(&bytes)?;
+        crate::pipeline::apply_privacy_masks(&mut img, masks);
+        img.save(path)?;
+        return Ok(());
+    }
     std::fs::write(path, &bytes)?;
     Ok(())
 }
@@ -2304,6 +2544,8 @@ struct ClipQuery {
 /// segment (no re-encode) and cached under data/clips. Frigate-style clips.
 async fn event_clip(
     State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
     Query(q): Query<ClipQuery>,
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
@@ -2311,6 +2553,17 @@ async fn event_clip(
 ) -> ApiResult<Response> {
     let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
     require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    // Footage-access accountability (UniFi 6.0-style): clip retrievals are
+    // security-relevant in a shared household — record who pulled what.
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "clip_accessed",
+        Some(&format!("event {id} ({} on {})", ev.label, ev.camera)),
+    );
     let seg = st
         .db
         .find_segment_at(ev.camera_id, ev.ts)?
@@ -2524,6 +2777,70 @@ async fn delete_alarm_api(
 ) -> ApiResult<StatusCode> {
     st.db.delete_alarm(id)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Fire a rule's actions once with a synthetic TEST event (UniFi Alarm Manager
+/// "test" button) — verifies the webhook URL / ntfy topic / SMTP end-to-end
+/// without waiting for a real detection. Bypasses schedule/mode/cooldown gates
+/// and the severity knob (a test the user just clicked must always deliver);
+/// does NOT create an event or stamp the cooldown clock.
+async fn test_alarm_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let rule = st
+        .db
+        .list_alarms()?
+        .into_iter()
+        .find(|r| r.id == id)
+        .ok_or_else(not_found)?;
+    let s = st.db.settings();
+    let now = chrono::Local::now().timestamp();
+    let mqtt_tx = st.mqtt_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let ev = crate::notify::AlarmEvent {
+            event_id: 0,
+            camera: "TEST",
+            label: "test alarm",
+            score: 1.0,
+            ts: now,
+            snapshot_url: "",
+            snapshot_path: None,
+            face: None,
+            plate: None,
+            gesture: None,
+            transcript: None,
+            speed: None,
+            base_url: &s.public_base_url,
+            webhook_template: &s.webhook_template,
+            smtp: crate::notify::smtp_cfg(&s),
+            duress: false,
+            severity: 2,
+            min_push_severity: 1, // a clicked test always delivers
+            caption: Some("This is a test of this alarm rule — no event occurred."),
+        };
+        crate::notify::fire(&rule, &ev, &mqtt_tx, 0);
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "fired": true })))
+}
+
+/// Per-rule live throttle stats: when each rule last fired (this run — the
+/// throttle is in-memory) and how many matches its cooldown has swallowed
+/// since. Complements the rules list for a UniFi-style "last triggered" column.
+async fn alarm_stats_api(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let map = st.alarm_throttle.lock().expect("alarm throttle poisoned");
+    let stats: serde_json::Map<String, serde_json::Value> = map
+        .iter()
+        .map(|(rule_id, (last, suppressed))| {
+            (
+                rule_id.to_string(),
+                serde_json::json!({ "last_fired_ts": last, "suppressed_since": suppressed }),
+            )
+        })
+        .collect();
+    Json(serde_json::Value::Object(stats))
 }
 
 // --- smart search ------------------------------------------------------------
@@ -2969,6 +3286,8 @@ async fn delete_plate_api(
 #[derive(Deserialize)]
 struct RecordingQuery {
     camera_id: Option<i64>,
+    /// Only segments starting before this unix ts (exclusive) — day-picker paging.
+    before: Option<i64>,
     #[serde(default = "default_limit")]
     limit: u32,
 }
@@ -2982,7 +3301,7 @@ async fn list_recordings(
     if let Some(cid) = q.camera_id {
         require_camera(&allow, cid)?;
     }
-    let mut segs = st.db.list_segments(q.camera_id, q.limit.min(1000))?;
+    let mut segs = st.db.list_segments(q.camera_id, q.before, q.limit.min(1000))?;
     if let Some(set) = &allow {
         segs.retain(|s| set.contains(&s.camera_id));
     }
@@ -4082,6 +4401,8 @@ mod tests {
             direction: Some("a_to_b".into()),
             speed: Some(32.4),
             gait: None,
+            severity: 2,
+            tags: vec![],
         };
         let csv = events_to_csv(std::slice::from_ref(&ev));
         let mut lines = csv.lines();

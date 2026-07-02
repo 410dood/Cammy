@@ -261,6 +261,13 @@ pub struct DetectConfig {
     /// with privacy masks for live view. Off by default.
     #[serde(default)]
     pub no_clip: bool,
+    /// Absence / inactivity watch (Verkada-style, aging-in-place & pets): alert
+    /// when this camera has seen NO person/pet event for this many hours. Edge-
+    /// triggered (one notification per quiet spell, cleared by the next
+    /// sighting). ASSISTIVE only — absence of detections is not proof of
+    /// absence of activity (camera angle, lighting, model misses). `None` = off.
+    #[serde(default)]
+    pub absence_hours: Option<f32>,
     /// Per-camera recording schedule (#67, Blue Iris "profiles/schedules"): when
     /// set, continuous recording runs ONLY during the window (day-of-week +
     /// time-of-day, overnight-aware). `None` = always record (the default).
@@ -341,6 +348,14 @@ pub struct Event {
     /// unknown walker, when gait identification ran on a person event.
     #[serde(default)]
     pub gait: Option<String>,
+    /// Severity tier 1 (low) .. 4 (critical) — see [`crate::severity`]. Stored
+    /// at emit time; rows from before the column existed are re-derived on read.
+    #[serde(default)]
+    pub severity: u8,
+    /// User-applied tags ("insurance", "wildlife", …) — free multi-tag taxonomy
+    /// beyond flag+note. Stored as a JSON array.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// One enrolled gait identity (its averaged signature stays server-side).
@@ -542,6 +557,13 @@ pub struct AlarmRule {
     /// rules only in v1. Rides `schedule_json` (no migration).
     #[serde(default)]
     pub vlm_prompt: Option<String>,
+    /// Describe-in-notification (Wyze/Ring/Nest "descriptive alerts"): route the
+    /// fire through the GenAI worker, caption the snapshot first, and put the
+    /// description IN the push/email/webhook (`{{caption}}`). Fails open — any
+    /// model error/timeout fires a normal (caption-less) alert. Needs GenAI
+    /// captions enabled. Detection-event rules only in v1; rides `schedule_json`.
+    #[serde(default)]
+    pub describe: bool,
     #[serde(default)]
     pub min_score: f32,
     /// Legacy single action: "webhook" / "mqtt" / "ntfy". Superseded by
@@ -983,6 +1005,12 @@ pub struct Settings {
     /// When set, push notifications include tap-through links to the event clip
     /// and snapshot. Empty = no links (the LAN default).
     pub public_base_url: String,
+    /// Minimum event severity (1..4, see `crate::severity`) for the HUMAN-facing
+    /// alarm channels (ntfy push + email). 1 = notify on everything (default);
+    /// 3 = only high/critical. Webhook/MQTT automations are never gated, and a
+    /// duress event always pushes. The one-knob Wyze-NBD-style fatigue filter.
+    #[serde(default = "default_notify_min_severity")]
+    pub notify_min_severity: u8,
     /// Master switch for the live hand-signal recognizer (the Signals page).
     pub gesture_recognition: bool,
     /// How long (seconds) a hand signal must be held before it fires an event —
@@ -1105,6 +1133,10 @@ fn default_arm_mode() -> String {
     "away".into()
 }
 
+fn default_notify_min_severity() -> u8 {
+    1
+}
+
 fn default_pose_model() -> String {
     "yolov8n-pose.onnx".into()
 }
@@ -1182,6 +1214,7 @@ impl Default for Settings {
             plate_allowlist: Vec::new(),
             health_ntfy_url: String::new(),
             public_base_url: String::new(),
+            notify_min_severity: 1,
             gesture_recognition: true,
             gesture_hold_secs: 1.5,
             gesture_labels: ["open_palm", "victory", "thumb_up"]
@@ -1288,6 +1321,10 @@ impl Db {
         let _ = conn.execute("ALTER TABLE events ADD COLUMN direction TEXT", []);
         // Estimated ground speed (km/h) on a crossing, when the camera is calibrated.
         let _ = conn.execute("ALTER TABLE events ADD COLUMN speed REAL", []);
+        // Severity tier 1..4 (see crate::severity); NULL rows are re-derived on read.
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN severity INTEGER", []);
+        // User-applied tags (ZoneMinder 1.38-style): a JSON array of strings.
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN tags TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
@@ -1593,13 +1630,14 @@ impl Db {
         direction: Option<&str>,
         speed: Option<f32>,
     ) -> Result<i64> {
+        let severity = crate::severity::severity_for(label, face, gesture) as i64;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face, plate, gesture, zone, direction, speed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face, plate, gesture, zone, direction, speed, severity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 camera_id, ts, label, score, bbox[0], bbox[1], bbox[2], bbox[3], snapshot, face,
-                plate, gesture, zone, direction, speed
+                plate, gesture, zone, direction, speed, severity
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -1621,7 +1659,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -1656,7 +1694,7 @@ impl Db {
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                         e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait
+                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
@@ -1700,7 +1738,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE e.gait = ?1 AND e.gait_sig IS NOT NULL
              ORDER BY e.ts DESC, e.id DESC LIMIT ?2",
@@ -1913,7 +1951,8 @@ impl Db {
             "zone_like": r.zone_like,
             "confirm_label": r.confirm_label,
             "confirm_within": r.confirm_within_secs,
-            "vlm_prompt": r.vlm_prompt
+            "vlm_prompt": r.vlm_prompt,
+            "describe": r.describe
         })
         .to_string();
         // Persist the full scene, and dual-write the legacy action/target/priority
@@ -2005,6 +2044,7 @@ impl Db {
                     confirm_label: sched["confirm_label"].as_str().map(str::to_string),
                     confirm_within_secs: sched["confirm_within"].as_i64(),
                     vlm_prompt: sched["vlm_prompt"].as_str().map(str::to_string),
+                    describe: sched["describe"].as_bool().unwrap_or(false),
                     min_score: r.get(7)?,
                     action,
                     target,
@@ -2752,6 +2792,45 @@ impl Db {
         Ok(())
     }
 
+    /// Replace an event's user tags (already sanitized by the API layer).
+    /// Returns whether the event existed. Empty = clear (NULL, not "[]").
+    pub fn set_event_tags(&self, id: i64, tags: &[String]) -> Result<bool> {
+        let json = if tags.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(tags)?)
+        };
+        let n = self.conn().execute(
+            "UPDATE events SET tags = ?1 WHERE id = ?2",
+            params![json, id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Most recent person/pet event timestamp on a camera (the absence watch's
+    /// presence signal).
+    pub fn last_presence_ts(&self, camera_id: i64) -> Result<Option<i64>> {
+        Ok(self.conn().query_row(
+            "SELECT MAX(ts) FROM events WHERE camera_id = ?1 AND label IN ('person','cat','dog')",
+            [camera_id],
+            |r| r.get::<_, Option<i64>>(0),
+        )?)
+    }
+
+    /// The stored caption for an event, if the captioner already wrote one —
+    /// lets a describe-in-notification fire reuse it instead of a second call.
+    pub fn event_caption(&self, event_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT caption FROM events WHERE id = ?1",
+                [event_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     /// Store a speech-to-text transcript for an event (best-effort enrichment).
     pub fn set_event_transcript(&self, event_id: i64, transcript: &str) -> Result<()> {
         self.conn().execute(
@@ -3027,16 +3106,24 @@ impl Db {
         Ok(())
     }
 
-    pub fn list_segments(&self, camera_id: Option<i64>, limit: u32) -> Result<Vec<SegmentRow>> {
+    /// Newest-first segments, optionally only those starting before `before`
+    /// (exclusive) — lets the Recordings day picker page into history.
+    pub fn list_segments(
+        &self,
+        camera_id: Option<i64>,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<SegmentRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path
              FROM segments s JOIN cameras c ON c.id = s.camera_id
              WHERE (?1 IS NULL OR s.camera_id = ?1)
-             ORDER BY s.start_ts DESC LIMIT ?2",
+               AND (?2 IS NULL OR s.start_ts < ?2)
+             ORDER BY s.start_ts DESC LIMIT ?3",
         )?;
         let rows = stmt
-            .query_map(params![camera_id, limit], |r| {
+            .query_map(params![camera_id, before, limit], |r| {
                 Ok(SegmentRow {
                     id: r.get(0)?,
                     camera_id: r.get(1)?,
@@ -3052,7 +3139,7 @@ impl Db {
 
     pub fn get_segment(&self, id: i64) -> Result<Option<SegmentRow>> {
         Ok(self
-            .list_segments(None, u32::MAX)?
+            .list_segments(None, None, u32::MAX)?
             .into_iter()
             .find(|s| s.id == id))
     }
@@ -3403,18 +3490,27 @@ impl Db {
 }
 
 fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
+    let label: String = r.get(4)?;
+    let face: Option<String> = r.get(11)?;
+    let gesture: Option<String> = r.get(13)?;
+    // Rows written before the severity column existed are re-derived on read,
+    // so old events badge/filter consistently with new ones.
+    let severity = match r.get::<_, Option<i64>>(23)? {
+        Some(v) => v.clamp(1, 4) as u8,
+        None => crate::severity::severity_for(&label, face.as_deref(), gesture.as_deref()),
+    };
     Ok(Event {
         id: r.get(0)?,
         camera_id: r.get(1)?,
         camera: r.get(2)?,
         ts: r.get(3)?,
-        label: r.get(4)?,
+        label,
         score: r.get(5)?,
         bbox: [r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?],
         snapshot: r.get(10)?,
-        face: r.get(11)?,
+        face,
         plate: r.get(12)?,
-        gesture: r.get(13)?,
+        gesture,
         zone: r.get(14)?,
         caption: r.get(15)?,
         transcript: r.get(16)?,
@@ -3424,6 +3520,11 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         direction: r.get(20)?,
         speed: r.get(21)?,
         gait: r.get(22)?,
+        severity,
+        tags: r
+            .get::<_, Option<String>>(24)?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -3898,6 +3999,7 @@ mod tests {
             retention_days: Some(14),
             fall_detect: true,
             child_height_frac: Some(0.45),
+            absence_hours: Some(12.0),
             pose_detect: true,
             no_clip: false,
             record_schedule: Some(Schedule {
@@ -3966,6 +4068,7 @@ mod tests {
             confirm_label: None,
             confirm_within_secs: None,
             vlm_prompt: None,
+            describe: false,
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
@@ -4077,6 +4180,7 @@ mod tests {
                 confirm_label: Some("person".into()),
                 confirm_within_secs: Some(10),
                 vlm_prompt: None,
+                describe: false,
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
@@ -4258,6 +4362,7 @@ mod tests {
             confirm_label: None,
             confirm_within_secs: None,
             vlm_prompt: None,
+            describe: false,
             min_score: 0.0,
             action: "webhook".into(),
             target: "http://x".into(),

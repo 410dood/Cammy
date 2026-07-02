@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { api, CamEvent, Camera, Segment, getStreamMode } from "./api";
-import { RelTime, Modal, useToast, useFocusTrap } from "./ui";
+import { RelTime, Modal, useToast, useDialog, useFocusTrap } from "./ui";
 import Timeline from "./Timeline";
 import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
@@ -31,6 +31,27 @@ export default function CameraDetail({
   const [online, setOnline] = useState<boolean | undefined>(undefined);
   const twoWay = !!camera.detect_config.two_way_audio;
   const toast = useToast();
+  const dialog = useDialog();
+
+  // Soft trigger (Nx-style): press a button, get a bookmarked event with a
+  // snapshot of what the camera sees right now — "Delivery arrived".
+  const logEvent = async () => {
+    const label = (
+      await dialog.prompt({
+        title: "Log an event",
+        label: "What happened? (becomes the event label; an alarm rule matching it fires)",
+        placeholder: "e.g. Delivery arrived",
+        maxLength: 48,
+      })
+    )?.trim();
+    if (!label) return;
+    try {
+      await api.softTrigger(camera.id, label);
+      toast.success(`Logged “${label}” — saved with a snapshot`);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
   // Full-screen overlay acts as a modal dialog: trap Tab focus inside it and
   // move focus into it on open (Esc-to-close is wired in the effect below).
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -129,6 +150,13 @@ export default function CameraDetail({
             </button>
           ))}
         </div>
+        <button
+          className="btn btn-secondary"
+          onClick={logEvent}
+          title="Create a bookmarked event with a snapshot of this moment (soft trigger)"
+        >
+          <IconPlus size={14} /> Log event
+        </button>
         <button className="btn btn-ghost" onClick={onClose}>
           <IconX size={15} /> Close
         </button>

@@ -79,6 +79,7 @@ export default function Alarms({
   const [confirmLabel, setConfirmLabel] = useState("");
   const [confirmWithin, setConfirmWithin] = useState(10);
   const [vlmPrompt, setVlmPrompt] = useState("");
+  const [describeAlert, setDescribeAlert] = useState(false);
   const [faceUnknown, setFaceUnknown] = useState(false);
   const [actions, setActions] = useState<Action[]>([{ kind: "webhook", target: "", priority: 0 }]);
   const [modes, setModes] = useState<ArmMode[]>([]);
@@ -101,6 +102,7 @@ export default function Alarms({
   // load may open it (never a fetch error, never a later refetch — e.g. after
   // deleting the last rule the list should lead, not the builder).
   const firstLoad = useRef(true);
+  const [stats, setStats] = useState<Record<string, { last_fired_ts: number; suppressed_since: number }>>({});
   const load = () => {
     api
       .alarms()
@@ -112,6 +114,7 @@ export default function Alarms({
       })
       .catch((e) => setLoadError(errMsg(e)))
       .finally(() => setLoaded(true));
+    api.alarmStats().then(setStats).catch(() => {});
   };
   useEffect(load, []);
 
@@ -173,6 +176,7 @@ export default function Alarms({
         confirm_label: confirmLabel.trim() || null,
         confirm_within_secs: confirmLabel.trim() ? confirmWithin : null,
         vlm_prompt: vlmPrompt.trim() || null,
+        describe: describeAlert,
         face_unknown: faceUnknown,
         min_score: 0,
         // Legacy single-action mirror (kept in sync with actions[0] server-side too).
@@ -200,6 +204,7 @@ export default function Alarms({
       setConfirmLabel("");
       setConfirmWithin(10);
       setVlmPrompt("");
+      setDescribeAlert(false);
       setFaceUnknown(false);
       setCooldown(0);
       setDays([]);
@@ -238,6 +243,7 @@ export default function Alarms({
       r.zone_like ? `in zone ~ "${r.zone_like}"` : null,
       r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
       r.vlm_prompt ? `AI-verified: "${r.vlm_prompt}"` : null,
+      r.describe ? "AI-described push" : null,
       sched ? `armed ${sched}` : null,
       (r.modes ?? []).length > 0 ? `modes ${(r.modes ?? []).join("/")}` : null,
       r.cooldown_secs > 0 ? `cooldown ${r.cooldown_secs}s` : null,
@@ -272,6 +278,7 @@ export default function Alarms({
       r.zone_like ? `zone ~ "${r.zone_like}"` : null,
       r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
       r.vlm_prompt ? `AI-verified: "${r.vlm_prompt}"` : null,
+      r.describe ? "AI-described push" : null,
       sched ? `armed ${sched}` : null,
       (r.modes ?? []).length > 0 ? `modes ${(r.modes ?? []).join("/")}` : null,
       r.cooldown_secs > 0 ? `cooldown ${r.cooldown_secs}s` : null,
@@ -342,6 +349,7 @@ export default function Alarms({
                 <th>Rule</th>
                 <th>When</th>
                 <th>Then</th>
+                <th>Last fired</th>
                 <th>Active</th>
                 <th></th>
               </tr>
@@ -372,6 +380,22 @@ export default function Alarms({
                     {ruleActions(r).map((a, i) => (
                       <div key={i}>{actionText(a)}</div>
                     ))}
+                  </td>
+                  <td className="muted" title="Since the server last started (live stat, not history)">
+                    {stats[String(r.id)]?.last_fired_ts ? (
+                      <>
+                        {new Date(stats[String(r.id)].last_fired_ts * 1000).toLocaleString([], {
+                          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                        })}
+                        {stats[String(r.id)].suppressed_since > 0 && (
+                          <div style={{ fontSize: "var(--text-sm)" }}>
+                            +{stats[String(r.id)].suppressed_since} muted since
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td>
                     <TogglePill
@@ -419,6 +443,21 @@ export default function Alarms({
                         Snooze 1h
                       </button>
                     )}
+                    <button
+                      className="btn btn-ghost ev-act"
+                      style={{ marginLeft: 8 }}
+                      title="Fire this rule's actions once with a synthetic test event — verifies the webhook/push/email wiring without waiting for a detection"
+                      onClick={async () => {
+                        try {
+                          await api.testAlarm(r.id);
+                          toast.success(`Test fired — check the rule's ${ruleActions(r).map((a) => a.kind).join(" + ")} target`);
+                        } catch (e) {
+                          onError(String(e));
+                        }
+                      }}
+                    >
+                      Test
+                    </button>
                     <button
                       className="btn btn-danger ev-act"
                       style={{ marginLeft: 8 }}
@@ -570,6 +609,18 @@ export default function Alarms({
                   placeholder='e.g. "Is a real person actually at the door?"'
                 />
               </label>
+              <div
+                className="row"
+                style={{ flex: "1 1 100%", alignItems: "center", gap: 8 }}
+                title="The vision model writes a one-line description of the snapshot and it leads the push/email text (like Wyze/Nest descriptive alerts) — 'A courier is leaving a box on the porch' instead of 'person (91%)'. Needs AI captions + a vision model (Settings); if the model is unavailable the alert still fires without a description. Detection events only."
+              >
+                <TogglePill on={describeAlert} onClick={() => setDescribeAlert(!describeAlert)} ariaLabel="Describe in notification">
+                  AI description in the notification
+                </TogglePill>
+                <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                  the push leads with what the camera saw, in plain language
+                </span>
+              </div>
             </div>
           </details>
           <div className="row" style={{ marginBottom: 12 }}>

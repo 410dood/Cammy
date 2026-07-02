@@ -16,7 +16,33 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.3 — full competitor suite (#1–#70) integrated on main + cross-feature simplify, 2026-06-22
 
-### Latest: 2026-07 competitor parity study → docs/08, 2026-07-02
+### Latest: parity Phase 1 batch 1 (branch `feat/parity-phase1`), 2026-07-02
+
+First implementation slice of the docs/08 roadmap, stacked on main after the
+docs/08 study (below). Shipped, each `clippy -D warnings` + tests + web
+`tsc`/`vite` green (148 core tests, 11 new): **P1.1 severity tiers** (pure
+`severity.rs` 1–4 mapping; `events.severity` column, legacy rows re-derived on
+read; Events high/critical badges; severity→ntfy-priority default; one-knob
+`Settings.notify_min_severity` gate on ntfy/email only — webhooks/MQTT/duress
+never gated); **P1.2 burst consolidation** (AlarmThrottle counts cooldown-
+swallowed matches → "(+N more while muted by cooldown)" in the next push);
+**P1.3 caption-in-push** (per-rule `describe` flag rides schedule_json → fire
+deferred through the GenAI worker which captions first; `{{caption}}`/
+`{{severity}}` template vars; fails open); **P1.6 activity-first Live sort**
+(StatusBoard `last_detection_ts` + opt-in persisted toggle); **P1.7 soft
+triggers** (`POST /api/cameras/{id}/trigger` → bookmarked labeled event w/
+live snapshot + alarm dispatch; "Log event" button on camera detail); **P1.12**
+Tailscale/cloudflared zero-port-forward section in DEPLOYMENT.md.
+**Discovered already shipped by a prior session** (docs/08 marks them): photo-
+upload search (`/api/search/by-image` + Events UI), the VLM alert gate
+(`vlm_prompt`), GenAI failure notifications, DEPLOYMENT.md/Dockerfile/compose,
+model-presence Settings card. **Next up (docs/08 P1):** P1.8 absence detection,
+P1.9 alarm-rule Test button + last-fired/24h stats, P1.10 privacy masks burned
+into outbound notification snapshots, P1.13 digest-with-clips push, P1.14
+footage-access audit, P1.15 event tags, P1.16 showreel/calendar. NOT yet
+live-E2E'd against the running NVR — build/unit validated only.
+
+### Earlier: 2026-07 competitor parity study → docs/08, 2026-07-02
 
 A 4-agent research pass over a 30-product field (UniFi Protect deep-dive as the
 "balance" benchmark; enterprise Nx Witness/Eagle Eye/Qognify/Axis ACS/Hanwha

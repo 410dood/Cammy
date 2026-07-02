@@ -995,6 +995,11 @@ pub fn run(
                             topic: None,
                         });
                         // Alarm Manager: fire every matching rule's action.
+                        let severity = crate::severity::severity_for(
+                            d.label,
+                            face_names[i].as_deref(),
+                            None,
+                        );
                         let alarm_ev = crate::notify::AlarmEvent {
                             event_id: id,
                             camera: &cam.name,
@@ -1012,6 +1017,9 @@ pub fn run(
                             webhook_template: &settings.webhook_template,
                             smtp: crate::notify::smtp_cfg(&settings),
                             duress: false,
+                            severity,
+                            min_push_severity: settings.notify_min_severity,
+                            caption: None,
                         };
                         for rule in alarms.iter().filter(|r| {
                             r.matches(
@@ -1027,18 +1035,21 @@ pub fn run(
                                 && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
                                 && crate::notify::ready(r, &throttle, now)
                         }) {
-                            // VLM alert-verification gate: a rule with a vlm_prompt
-                            // is verified by the vision model OFF this detection
-                            // thread (the call is multi-second). Hand it to the
-                            // GenAI worker, which fires it iff the model confirms
-                            // (fails OPEN). All the cheap gates (incl. cooldown via
-                            // `ready` above) already passed; only the VLM verdict
-                            // remains. Non-VLM rules fire inline as before.
-                            if rule
+                            // Deferred fires: a rule with a vlm_prompt is verified
+                            // by the vision model OFF this detection thread (the
+                            // call is multi-second), and a `describe` rule is
+                            // captioned there first so the description rides in
+                            // the push. The GenAI worker fires either iff/when
+                            // ready (VLM fails OPEN). All the cheap gates (incl.
+                            // cooldown via `ready` above) already passed. Plain
+                            // rules fire inline as before.
+                            let suppressed = crate::notify::take_suppressed(&throttle, rule.id);
+                            let deferred = rule
                                 .vlm_prompt
                                 .as_deref()
                                 .is_some_and(|p| !p.trim().is_empty())
-                            {
+                                || (rule.describe && settings.genai_enabled);
+                            if deferred {
                                 let _ = genai_tx.send(crate::genai::Job::VlmGate(Box::new(
                                     crate::genai::VlmGateJob {
                                         rule: rule.clone(),
@@ -1051,10 +1062,12 @@ pub fn run(
                                         snapshot_path: snap_abs.clone(),
                                         face: face_names[i].clone(),
                                         plate: plates[i].clone(),
+                                        severity,
+                                        suppressed,
                                     },
                                 )));
                             } else {
-                                crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
+                                crate::notify::fire(rule, &alarm_ev, &mqtt_tx, suppressed);
                             }
                         }
                         // Gait (#64): attribute an identity to this person event
@@ -1078,6 +1091,12 @@ pub fn run(
                     }
                     Err(e) => tracing::warn!("event insert failed: {e:#}"),
                 }
+            }
+
+            // Activity signal for the Live grid's sort — stamped once per
+            // event-bearing frame.
+            if !new_event_ids.is_empty() {
+                status.detection(cam.id, now);
             }
 
             // GenAI captioning (opt-in): one job per event-frame, captioned
@@ -1454,6 +1473,9 @@ fn emit_analytics_event(
         webhook_template: &settings.webhook_template,
         smtp: crate::notify::smtp_cfg(settings),
         duress: false,
+        severity: crate::severity::severity_for(label, None, None),
+        min_push_severity: settings.notify_min_severity,
+        caption: None,
     };
     for rule in alarms.iter().filter(|r| {
         r.matches(cam.id, label, 1.0, None, None, None, None)
@@ -1462,7 +1484,8 @@ fn emit_analytics_event(
             && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
             && crate::notify::ready(r, throttle, now)
     }) {
-        crate::notify::fire(rule, &alarm_ev, mqtt_tx);
+        let suppressed = crate::notify::take_suppressed(throttle, rule.id);
+        crate::notify::fire(rule, &alarm_ev, mqtt_tx, suppressed);
     }
     Some(id)
 }
@@ -1574,6 +1597,9 @@ fn post_webhook(
             webhook_template: template,
             smtp: None,
             duress: false,
+            severity: crate::severity::severity_for(d.label, None, None),
+            min_push_severity: 1,
+            caption: None,
         };
         ureq::post(url)
             .timeout(Duration::from_secs(3))
@@ -1705,7 +1731,10 @@ fn zone_for(
 }
 
 /// Black out the privacy-mask polygons (frame-fraction coordinates) in place.
-fn apply_privacy_masks(frame: &mut DynamicImage, masks: &[Vec<[f32; 2]>]) {
+/// Shared with the side-channel snapshot paths (gesture / soft-trigger / audio
+/// frame grabs), which fetch raw frames from go2rtc and would otherwise leak
+/// masked regions into pushes/webhooks.
+pub(crate) fn apply_privacy_masks(frame: &mut DynamicImage, masks: &[Vec<[f32; 2]>]) {
     let mut img = frame.to_rgb8();
     let (w, h) = (img.width(), img.height());
     for mask in masks {

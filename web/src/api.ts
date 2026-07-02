@@ -91,6 +91,9 @@ export interface DetectConfig {
    *  is ≤ this fraction is treated as a "child". null disables child features
    *  (the default). FRAGILE without per-camera setup. */
   child_height_frac?: number | null;
+  /** Inactivity watch: alert when no person/pet seen for this many hours
+   *  (edge-triggered; assistive only). null = off. */
+  absence_hours?: number | null;
   /** Server-side 24/7 body-pose monitoring (fall posture, crib standing/rollover,
    *  covered-face). Runs a YOLOv8-pose model. Opt-in + ASSISTIVE only. */
   pose_detect?: boolean;
@@ -142,6 +145,10 @@ export interface CamEvent {
   note: string | null;
   /** Attributed gait identity (#64): an enrolled name or "?" (unknown walker). */
   gait?: string | null;
+  /** Severity tier 1 (low) .. 4 (critical) — drives push gating + badges. */
+  severity?: number;
+  /** User-applied tags (multi-tag taxonomy beyond flag+note). */
+  tags?: string[];
 }
 
 export interface GaitProfile {
@@ -195,6 +202,9 @@ export interface Settings {
   plate_allowlist: string[];
   health_ntfy_url: string;
   public_base_url: string;
+  /** Minimum severity (1..4) for push/email alarm actions; 1 = everything.
+   *  Webhook/MQTT automations and duress are never gated. */
+  notify_min_severity: number;
   gesture_recognition: boolean;
   gesture_hold_secs: number;
   gesture_labels: string[];
@@ -335,6 +345,10 @@ export interface AlarmRule {
    *  ("Is a real person at the door?"). Runs off-thread; fails OPEN. Needs GenAI
    *  captions enabled. null/empty = no gate. Detection-event rules only. */
   vlm_prompt: string | null;
+  /** Describe-in-notification: caption the snapshot (GenAI) and put the
+   *  description IN the push/email. Fails open to a normal caption-less alert.
+   *  Needs GenAI captions enabled. Detection-event rules only. */
+  describe?: boolean;
   min_score: number;
   /** Legacy single action; kept in sync with actions[0]. Prefer `actions`. */
   action: string;
@@ -378,6 +392,8 @@ export interface CamStatus {
   model: string | null;
   /** Active tamper kind (blackout/defocus/scene_change) if compromised (#63). */
   tamper?: string | null;
+  /** Last detection event on this camera (unix secs) — drives the Live activity sort. */
+  last_detection_ts?: number | null;
 }
 
 export type StatusMap = Record<string, CamStatus>;
@@ -533,6 +549,26 @@ export const api = {
   patchCamera: (id: number, patch: Partial<Camera>) =>
     req<Camera>(`/api/cameras/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteCamera: (id: number) => req<void>(`/api/cameras/${id}`, { method: "DELETE" }),
+  /** Replace an event's user tags (≤8, sanitized server-side). */
+  setEventTags: (id: number, tags: string[]) =>
+    req<{ tags: string[] }>(`/api/events/${id}/tags`, {
+      method: "POST",
+      body: JSON.stringify({ tags }),
+    }),
+  /** Fire a rule's actions once with a synthetic TEST event (no event created,
+   *  cooldown untouched) — verifies the webhook/ntfy/email wiring. */
+  testAlarm: (id: number) =>
+    req<{ fired: boolean }>(`/api/alarms/${id}/test`, { method: "POST" }),
+  /** Per-rule throttle stats (this run): last-fired ts + cooldown-suppressed count. */
+  alarmStats: () =>
+    req<Record<string, { last_fired_ts: number; suppressed_since: number }>>("/api/alarms/stats"),
+  /** Soft trigger: create a bookmarked event ("Delivery arrived") with a live
+   *  snapshot on a camera; alarm rules matching the label fire. */
+  softTrigger: (id: number, label?: string) =>
+    req<{ recorded: boolean; event_id: number; label: string }>(
+      `/api/cameras/${id}/trigger`,
+      { method: "POST", body: JSON.stringify({ label: label ?? null }) },
+    ),
   restore: (backup: unknown) =>
     req<{
       settings_applied: boolean;
@@ -549,6 +585,7 @@ export const api = {
       after?: number;
       before?: number;
       flagged?: boolean;
+      tag?: string;
       limit?: number;
     } = {}
   ) => {
@@ -560,6 +597,7 @@ export const api = {
     if (q.after != null) p.set("after", String(q.after));
     if (q.before != null) p.set("before", String(q.before));
     if (q.flagged) p.set("flagged", "true");
+    if (q.tag) p.set("tag", q.tag);
     if (q.limit) p.set("limit", String(q.limit));
     return req<CamEvent[]>(`/api/events?${p}`);
   },
@@ -573,9 +611,10 @@ export const api = {
       "/api/gesture",
       { method: "POST", body: JSON.stringify(body) }
     ),
-  recordings: (q: { camera_id?: number; limit?: number } = {}) => {
+  recordings: (q: { camera_id?: number; before?: number; limit?: number } = {}) => {
     const p = new URLSearchParams();
     if (q.camera_id != null) p.set("camera_id", String(q.camera_id));
+    if (q.before != null) p.set("before", String(q.before));
     if (q.limit) p.set("limit", String(q.limit));
     return req<Segment[]>(`/api/recordings?${p}`);
   },

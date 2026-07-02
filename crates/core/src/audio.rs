@@ -216,12 +216,23 @@ pub fn run(
                 }
                 last_fire.insert(key, now);
 
-                // Grab a frame for visual context where possible.
+                // Grab a frame for visual context where possible. This is a raw
+                // frame grab (not the masked detection pipeline), so burn the
+                // camera's privacy masks in before it can reach a push/webhook;
+                // fail CLOSED (no snapshot) if the masked re-encode fails.
                 let snap_rel = format!("{}-{}-audio.jpg", cam.name, now);
+                let masks = &cam.detect_config.privacy_masks;
                 let snapshot = fetch_snapshot(&go2rtc.api_base(), &cam.name)
                     .and_then(|bytes| {
                         std::fs::create_dir_all(&snapshots_dir).ok();
-                        std::fs::write(snapshots_dir.join(&snap_rel), bytes).ok()
+                        let path = snapshots_dir.join(&snap_rel);
+                        if masks.is_empty() {
+                            std::fs::write(path, bytes).ok()
+                        } else {
+                            let mut img = image::load_from_memory(&bytes).ok()?;
+                            crate::pipeline::apply_privacy_masks(&mut img, masks);
+                            img.save(path).ok()
+                        }
                     })
                     .map(|_| snap_rel.clone());
 
@@ -280,6 +291,9 @@ pub fn run(
                             webhook_template: &settings.webhook_template,
                             smtp: crate::notify::smtp_cfg(&settings),
                             duress: false,
+                            severity: crate::severity::severity_for(&label, None, None),
+                            min_push_severity: settings.notify_min_severity,
+                            caption: None,
                         };
                         for rule in alarms.iter().filter(|r| {
                             r.matches(cam.id, &label, score, None, None, None, None)
@@ -288,7 +302,9 @@ pub fn run(
                                 && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
                                 && crate::notify::ready(r, &throttle, now)
                         }) {
-                            crate::notify::fire(rule, &alarm_ev, &mqtt_tx);
+                            let suppressed =
+                                crate::notify::take_suppressed(&throttle, rule.id);
+                            crate::notify::fire(rule, &alarm_ev, &mqtt_tx, suppressed);
                         }
                     }
                     Err(e) => tracing::warn!("audio event insert failed: {e:#}"),

@@ -32,11 +32,21 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
                     .unwrap_or_default();
                 let text = summarize(&events);
                 if db.add_digest(now.timestamp(), &text).is_ok() {
+                    // Home-Brief-style: the push carries the day's key moments
+                    // with tap-through clip links (when a public base URL is
+                    // set), not just the stats.
+                    let base = db.settings().public_base_url;
+                    let moments = key_moments(&events, &base, 3);
+                    let body = if moments.is_empty() {
+                        text.clone()
+                    } else {
+                        format!("{text}\n\nKey moments:\n{}", moments.join("\n"))
+                    };
                     let _ = db.add_notification(
                         now.timestamp(),
                         "digest",
                         "Daily digest ready",
-                        Some(&text),
+                        Some(&body),
                         None,
                     );
                     last_day = Some(day_num);
@@ -52,6 +62,43 @@ fn last_digest_day(db: &Db) -> Option<i64> {
     let ts = db.list_digests(1).ok()?.first()?.ts;
     let dt = Local.timestamp_opt(ts, 0).single()?;
     Some(dt.date_naive().num_days_from_ce() as i64)
+}
+
+/// Up to `n` "key moments" for the digest push — the window's high-severity /
+/// unusual events, one bulleted line each, with a tap-through clip link when a
+/// public base URL is configured. Only genuinely notable events qualify
+/// (severity ≥ 3 or anomaly ≥ 0.6); a boring day gets no bullet spam. Pure.
+fn key_moments(events: &[Event], base_url: &str, n: usize) -> Vec<String> {
+    let mut ranked: Vec<&Event> = events
+        .iter()
+        .filter(|e| e.severity >= 3 || e.anomaly_score.unwrap_or(0.0) >= 0.6)
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.severity.cmp(&a.severity).then(
+            b.anomaly_score
+                .unwrap_or(0.0)
+                .partial_cmp(&a.anomaly_score.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+    let base = base_url.trim_end_matches('/');
+    ranked
+        .iter()
+        .take(n)
+        .map(|e| {
+            let when = Local
+                .timestamp_opt(e.ts, 0)
+                .single()
+                .map(|d| d.format("%H:%M").to_string())
+                .unwrap_or_default();
+            let link = if base.is_empty() {
+                String::new()
+            } else {
+                format!(" → {base}/api/events/{}/clip", e.id)
+            };
+            format!("• {when} {} on {}{link}", e.label, e.camera)
+        })
+        .collect()
 }
 
 /// Build a deterministic, plain-language recap of a window's events. Public so
@@ -125,4 +172,59 @@ pub fn summarize(events: &[Event]) -> String {
         }
     }
     parts.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(id: i64, label: &str, severity: u8, anomaly: Option<f32>) -> Event {
+        Event {
+            id,
+            camera_id: 1,
+            camera: "porch".into(),
+            ts: 1_000_000,
+            label: label.into(),
+            score: 0.9,
+            bbox: [0.0; 4],
+            snapshot: Some("x.jpg".into()),
+            face: None,
+            plate: None,
+            gesture: None,
+            zone: None,
+            caption: None,
+            transcript: None,
+            flagged: false,
+            note: None,
+            anomaly_score: anomaly,
+            direction: None,
+            speed: None,
+            gait: None,
+            severity,
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn key_moments_picks_notable_events_and_links() {
+        let events = vec![
+            ev(1, "person", 2, None),            // routine — excluded
+            ev(2, "fall", 4, None),              // critical — first
+            ev(3, "loiter", 3, Some(0.9)),       // high — second
+            ev(4, "car", 2, Some(0.7)),          // anomalous routine — included
+            ev(5, "cat", 1, None),               // ambient — excluded
+        ];
+        let m = key_moments(&events, "https://nvr.example.com/", 3);
+        assert_eq!(m.len(), 3);
+        assert!(m[0].contains("fall") && m[0].contains("/api/events/2/clip"));
+        assert!(m[1].contains("loiter"));
+        assert!(m[2].contains("car"));
+        // Trailing slash on the base is normalized (no double slash).
+        assert!(!m[0].contains(".com//api"));
+        // No base URL → no links, still listed.
+        let m = key_moments(&events, "", 2);
+        assert!(!m[0].contains("http"));
+        // A boring day yields nothing (no bullet spam).
+        assert!(key_moments(&[ev(9, "person", 2, None)], "", 3).is_empty());
+    }
 }
