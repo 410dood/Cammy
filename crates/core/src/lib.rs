@@ -21,6 +21,7 @@ mod gait;
 mod genai;
 mod go2rtc;
 mod health;
+mod licensing;
 pub mod lpr;
 mod mqtt;
 mod notify;
@@ -102,6 +103,11 @@ pub async fn run(
     let db = db::Db::open(&cfg.data_dir.join("zoomy.db")).context("opening database")?;
     let settings = db.settings();
     db.save_settings(&settings)?; // persist defaults on first run
+
+    // Stamp the trial clock on first run (no-op once licensed or already begun).
+    if let Err(e) = licensing::ensure_trial_started(&db) {
+        tracing::warn!("licensing: could not start trial clock: {e:#}");
+    }
 
     let go2rtc = Arc::new(go2rtc::Go2Rtc::new(
         cfg.go2rtc_bin.as_deref(),

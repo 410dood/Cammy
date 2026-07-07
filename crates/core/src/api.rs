@@ -128,6 +128,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/recordings/at", get(recording_at))
         .route("/api/recordings/{id}/video", get(segment_video))
         .route("/api/settings", get(get_settings).put(put_settings))
+        .route(
+            "/api/license",
+            get(license_status)
+                .post(activate_license)
+                .delete(deactivate_license),
+        )
         .route("/api/stats", get(stats))
         .route("/api/overview", get(overview))
         .route("/api/analytics/counts", get(analytics_counts))
@@ -198,6 +204,49 @@ async fn health() -> Json<serde_json::Value> {
 /// Tells the UI where go2rtc's WebRTC endpoints live.
 async fn config(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "go2rtc_base": st.go2rtc.api_base() }))
+}
+
+/// GET /api/license — current entitlement (trial / licensed / expired) plus the
+/// trial length and purchase URL, for the upgrade banner and the license pane.
+/// Readable by any authenticated user; the countdown is not a secret.
+async fn license_status(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "entitlement": crate::licensing::status(&st.db),
+        "trial_days": crate::licensing::TRIAL_DAYS,
+        "buy_url": BUY_URL,
+    }))
+}
+
+/// The storefront the "Upgrade" / "Buy" buttons open. A single constant so the
+/// merchant link lives in exactly one place; point it at your Lemon Squeezy
+/// product page.
+const BUY_URL: &str = "https://cammy.app/buy";
+
+#[derive(Deserialize)]
+struct ActivateLicenseReq {
+    key: String,
+}
+
+/// POST /api/license — install a license key. Admin-only (see
+/// `auth::required_role`). Returns the resulting entitlement, or 400 with a
+/// human-readable reason if the key does not verify.
+async fn activate_license(
+    State(st): State<AppState>,
+    Json(req): Json<ActivateLicenseReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ent = crate::licensing::activate(&st.db, &req.key)
+        .map_err(|e| bad_request(format!("license key rejected: {e}")))?;
+    Ok(Json(serde_json::json!({ "entitlement": ent })))
+}
+
+/// DELETE /api/license — remove the installed license (e.g. to move it to
+/// another machine). Admin-only. Falls back to trial/expired state.
+async fn deactivate_license(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    crate::licensing::deactivate(&st.db)
+        .map_err(|_| bad_request("could not remove the installed license"))?;
+    Ok(Json(
+        serde_json::json!({ "entitlement": crate::licensing::status(&st.db) }),
+    ))
 }
 
 /// Per-feature optional-model presence, so the UI can show a "model not

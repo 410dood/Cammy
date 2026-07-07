@@ -158,6 +158,9 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
         || path == "/api/backup"
         || path == "/api/restore"
         || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
+        // Installing/removing a license is a system-config action; a valid GET
+        // (the trial countdown) stays Viewer-readable via the default below.
+        || (path == "/api/license" && matches!(*method, Method::POST | Method::DELETE))
     {
         return Role::Admin;
     }

@@ -1441,6 +1441,21 @@ label.file-btn:focus-within {
 .callout-info { border-color: var(--accent-border); background: var(--accent-soft); color: var(--text); }
 .callout-info .callout-ico { color: var(--accent-text); }
 
+/* Trial/upgrade shell banner: one restrained line, actions trailing right. */
+.license-banner { margin-bottom: var(--sp-3); }
+.license-banner-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.license-banner-actions {
+  display: inline-flex;
+  gap: var(--sp-2);
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
 /* --- skeleton / section header / eyebrow ----------------------------------- */
 .skeleton {
   display: block;

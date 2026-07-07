@@ -14,6 +14,7 @@ import Recordings from "./pages/Recordings";
 import FloorPlanPage from "./pages/FloorPlan";
 import Family from "./pages/Family";
 import Settings from "./pages/Settings";
+import { LicenseBanner } from "./License";
 import {
   IconLive,
   IconBell,
@@ -546,6 +547,7 @@ export default function App() {
             {error} (click to dismiss)
           </div>
         )}
+        <LicenseBanner />
         {page === "Home" && (
           <Home
             cameras={cameras}

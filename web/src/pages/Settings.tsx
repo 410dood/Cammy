@@ -1,6 +1,7 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, DAY_NAMES, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout } from "../ui";
+import { LicensePane } from "../License";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
   IconDownload, IconUpload, IconCheck, IconUser, IconShield, IconAlert,
@@ -1039,12 +1040,13 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
 // save bar are untouched. Not ARIA tabs on purpose: the "panels" are scattered
 // cards inside one form, so these are plain pressed/unpressed filter buttons
 // (the TogglePill / arm-bar convention) rather than a half-implemented tablist.
-type GroupKey = "detection" | "modes" | "security" | "recording";
+type GroupKey = "detection" | "modes" | "security" | "recording" | "license";
 const SETTINGS_GROUPS: { key: GroupKey; label: string }[] = [
   { key: "detection", label: "Detection & AI" },
   { key: "modes", label: "Modes & alerts" },
   { key: "security", label: "Access & security" },
   { key: "recording", label: "Recording & backup" },
+  { key: "license", label: "License" },
 ];
 
 // Reveal only the active group's cards. An untagged card is left visible on
@@ -1751,6 +1753,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <AuditCard />
 
         <BackupCard onError={onError} />
+
+        <LicensePane />
 
         <div className="card" data-settings-group="recording">
           <h2>Offsite backup</h2>

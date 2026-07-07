@@ -519,6 +519,20 @@ export interface Me {
   role: Role;
 }
 
+/** Entitlement state mirrored from crates/core/src/licensing.rs (serde tag = "state"). */
+export type Entitlement =
+  | { state: "licensed"; plan: string; email: string; seats: number; expires: number | null }
+  | { state: "trial"; days_left: number; ends: number }
+  | { state: "expired"; reason: string };
+
+export interface LicenseInfo {
+  entitlement: Entitlement;
+  /** Trial length in days (for copy like "30-day trial"). */
+  trial_days: number;
+  /** Storefront URL the Buy/Upgrade buttons open. */
+  buy_url: string;
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, {
     headers: { "Content-Type": "application/json" },
@@ -544,6 +558,16 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 export const api = {
   config: () => req<AppConfig>("/api/config"),
   capabilities: () => req<{ features: Capability[] }>("/api/capabilities"),
+  /** Current entitlement (trial countdown / licensed / expired). */
+  license: () => req<LicenseInfo>("/api/license"),
+  /** Install a license key (Admin). Returns the resulting entitlement. */
+  activateLicense: (key: string) =>
+    req<{ entitlement: Entitlement }>("/api/license", {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
+  /** Remove the installed license (Admin), reverting to trial/expired. */
+  removeLicense: () => req<{ entitlement: Entitlement }>("/api/license", { method: "DELETE" }),
   status: () => req<StatusMap>("/api/status"),
   cameras: () => req<Camera[]>("/api/cameras"),
   addCamera: (c: {
