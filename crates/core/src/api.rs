@@ -213,14 +213,21 @@ async fn license_status(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "entitlement": crate::licensing::status(&st.db),
         "trial_days": crate::licensing::TRIAL_DAYS,
-        "buy_url": BUY_URL,
+        "buy_url": buy_url(),
     }))
 }
 
-/// The storefront the "Upgrade" / "Buy" buttons open. A single constant so the
-/// merchant link lives in exactly one place; point it at your Lemon Squeezy
-/// product page.
-const BUY_URL: &str = "https://cammy.app/buy";
+/// The storefront the "Upgrade" / "Buy" buttons open. Defaults to the marketing
+/// page, but is overridable at runtime via the `CAMMY_BUY_URL` env var so the
+/// merchant link can be pointed at the real Lemon Squeezy product page (or a
+/// discounted campaign URL) without a rebuild. The link lives in exactly one
+/// place either way.
+fn buy_url() -> String {
+    std::env::var("CAMMY_BUY_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://cammy.app/buy".to_string())
+}
 
 #[derive(Deserialize)]
 struct ActivateLicenseReq {

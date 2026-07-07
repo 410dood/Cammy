@@ -28,11 +28,15 @@ a server was unreachable. So:
   no paywall badges), the shell banner is hidden while licensed and for the
   first ~23 days of trial; it appears only in the last week and after expiry.
 
-Enforcement policy (what, if anything, to restrict after trial) is intentionally
-*not* wired into request handling. `Entitlement::allows_config()` in
-`crates/core/src/licensing.rs` is the single seam to change if you later decide
-to, e.g., make config read-only post-trial. It ships mirroring `is_active()`
-(no restriction) — a deliberate business decision left to you.
+**Enforcement decision (2026-07-07): nudge only, never restrict.** After the
+trial lapses the app keeps full functionality — recording, viewing, *and*
+configuration all continue; the only change is the upgrade banner appears. This
+is the deliberate policy, chosen to match the product's "never brick a camera
+system" rule and its no-nag positioning: an honest trial + a frictionless paid
+path converts better for a self-hosted tool than a crippled post-trial mode, and
+it can't ever leave someone's home unmonitored over a billing lapse.
+`Entitlement::allows_config()` remains the single seam if that call is ever
+revisited (it mirrors `is_active()` today), but it is intentionally left unwired.
 
 ## Key format
 
@@ -78,9 +82,16 @@ python3 scripts/license_sign.py --gen-key
   every license; if it leaks, rotate the embedded public key (which invalidates
   all keys signed by the old seed) and re-issue.
 
-> The value currently embedded is a **development** key. The unit tests in
-> `licensing.rs` and the sample keys pinned there are signed by the matching dev
-> seed (reproducible via the script). Regenerate both when you rotate.
+> A **production** keypair is already embedded (rotated in 2026-07-07). Its seed
+> was written to `SECRET-license-seed.txt` (gitignored) at generation time — move
+> that offline, set it as `CAMMY_LICENSE_SEED` in the fulfilment server, then
+> delete the file. The unit tests are **hermetic**: they sign with a throwaway
+> keypair generated in-process, so rotating `LICENSE_PUBKEY_B64URL` no longer
+> requires regenerating any pinned test vectors — it is a one-line change.
+
+The storefront link the in-app "Upgrade"/"Buy" buttons open defaults to
+`https://cammy.app/buy`; override it at runtime with the `CAMMY_BUY_URL` env var
+(point it at the real Lemon Squeezy product page) with no rebuild.
 
 ### 2. Issue a license
 

@@ -41,12 +41,14 @@ use crate::db::Db;
 pub const TRIAL_DAYS: i64 = 30;
 
 /// Ed25519 public key (raw 32 bytes, base64url) that license keys are verified
-/// against. This is the **development** key — replace it with your production
-/// public key before selling (`scripts/license_sign.py --gen-key`), and keep the
-/// matching private seed offline. Swapping this constant invalidates every key
-/// signed by the old private half, which is exactly the intended kill-switch if
-/// a signing seed ever leaks.
-const LICENSE_PUBKEY_B64URL: &str = "DCebDE6isgqym-8aEA-Tq1BzdJ5_QGi1luVFHJWFSPg";
+/// against. This is the **production** key; the matching private seed signs every
+/// license and must live only in the offline signer / fulfilment-server env
+/// (`scripts/license_sign.py`, `scripts/fulfilment_server.py`), never in the repo.
+/// Swapping this constant invalidates every key signed by the old private half —
+/// the intended kill-switch if a signing seed ever leaks. Rotating it is a
+/// one-line change: the unit tests are hermetic (they sign with a throwaway key),
+/// so they do not need regenerating when this rotates.
+const LICENSE_PUBKEY_B64URL: &str = "e-dNpE35txpDh2aBywYGcpJtl7Nr6wec9yIo_Y7YZ6Y";
 
 /// Human-facing prefix so a pasted key is recognisably ours. Stripped before
 /// decoding; its presence is not required (we tolerate a bare token too).
@@ -145,6 +147,15 @@ fn now() -> i64 {
 /// signed [`License`] on success. Pure — no DB, no clock — so it is trivially
 /// unit-testable and safe to call from the activation endpoint.
 pub fn verify_key(key: &str) -> Result<License> {
+    verify_key_with(LICENSE_PUBKEY_B64URL, key)
+}
+
+/// Verify against an explicit base64url public key. [`verify_key`] calls this
+/// with the embedded production key; the test suite calls it with a throwaway
+/// key it generates and signs in-process. That keeps the tests hermetic — they
+/// never need regenerating when the embedded production key is rotated, which
+/// removes the one fiddly launch chore around key rotation.
+fn verify_key_with(pubkey_b64: &str, key: &str) -> Result<License> {
     let token = key.trim().strip_prefix(KEY_PREFIX).unwrap_or(key.trim());
     let (payload_b64, sig_b64) = token
         .split_once('.')
@@ -158,8 +169,8 @@ pub fn verify_key(key: &str) -> Result<License> {
         .context("license signature is not valid base64url")?;
 
     let pubkey = URL_SAFE_NO_PAD
-        .decode(LICENSE_PUBKEY_B64URL)
-        .expect("embedded license public key is valid base64url");
+        .decode(pubkey_b64)
+        .context("license public key is not valid base64url")?;
     let verifier = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &pubkey);
     verifier
         .verify(&payload, &sig)
@@ -178,8 +189,12 @@ pub fn verify_key(key: &str) -> Result<License> {
 /// signed by a rotated-out seed) is ignored and logged, falling back to the
 /// trial path rather than hard-failing the app.
 pub fn status(db: &Db) -> Entitlement {
+    status_with(db, LICENSE_PUBKEY_B64URL)
+}
+
+fn status_with(db: &Db, pubkey_b64: &str) -> Entitlement {
     if let Some(key) = db.get_kv(KV_LICENSE_KEY) {
-        match verify_key(&key) {
+        match verify_key_with(pubkey_b64, &key) {
             Ok(lic) => {
                 // Perpetual, or a subscription still inside its window: licensed.
                 // A lapsed subscription is treated as *still licensed* for use —
@@ -236,10 +251,14 @@ pub fn ensure_trial_started(db: &Db) -> Result<()> {
 /// Install a license key: verify, then persist. Returns the resulting
 /// entitlement so the caller can echo the new state straight back to the UI.
 pub fn activate(db: &Db, key: &str) -> Result<Entitlement> {
-    let lic = verify_key(key)?;
+    activate_with(db, LICENSE_PUBKEY_B64URL, key)
+}
+
+fn activate_with(db: &Db, pubkey_b64: &str, key: &str) -> Result<Entitlement> {
+    let lic = verify_key_with(pubkey_b64, key)?;
     db.set_kv(KV_LICENSE_KEY, key.trim())?;
     tracing::info!(email = %lic.email, plan = %lic.plan, "license activated");
-    Ok(status(db))
+    Ok(status_with(db, pubkey_b64))
 }
 
 /// Remove the installed license (e.g. moving the license to another machine).
@@ -280,6 +299,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ring::signature::{Ed25519KeyPair, KeyPair};
 
     // Temp-file Db, mirroring db.rs's own test helper (no in-memory ctor exists).
     fn test_db() -> Db {
@@ -288,14 +308,49 @@ mod tests {
         Db::open(&dir.join(format!("lic-{:?}.db", std::time::Instant::now()))).unwrap()
     }
 
-    // Signed by the dev seed in scripts/license_sign.py against
-    // LICENSE_PUBKEY_B64URL. If you rotate the embedded key, regenerate these.
-    const LIFETIME_KEY: &str = "CAMMY-eyJlbWFpbCI6ImJpbGxAZXhhbXBsZS5jb20iLCJleHBpcmVzIjpudWxsLCJpc3N1ZWQiOjE3NDk2ODY0MDAsIm9yZGVyIjoiTFMtMDAwMSIsInBsYW4iOiJsaWZldGltZSIsInNlYXRzIjoyLCJ2IjoxfQ.72pO8CieUQ52EqlaUIX6Hqp04uuWq6VevVAIB-zylOS098AOqx_GEBCm3fk_YvaKZbJP8rV6P90arZ2PdG0sBQ";
-    const SUBSCRIPTION_KEY: &str = "CAMMY-eyJlbWFpbCI6InN1YkBleGFtcGxlLmNvbSIsImV4cGlyZXMiOjE3ODEyMjI0MDAsImlzc3VlZCI6MTc0OTY4NjQwMCwib3JkZXIiOiJMUy0wMDAyIiwicGxhbiI6InN1YnNjcmlwdGlvbiIsInNlYXRzIjoyLCJ2IjoxfQ.ZeHsKnOAnBrikmboIWACwVmoEC8Au3-_J2hHjJCdOpMjxUQH1yy48UjDCx61MYQQcCtJoPmpW7gbeMm88PaaCw";
+    // A throwaway signing keypair, generated from a fixed seed so tests stay
+    // deterministic. This mirrors what scripts/license_sign.py does in Python —
+    // Ed25519 over the exact payload bytes — but keeps the whole round-trip inside
+    // the test, so rotating the embedded *production* key (LICENSE_PUBKEY_B64URL)
+    // never invalidates these vectors. The `_with` verification variants let the
+    // tests inject this test pubkey instead of the embedded one.
+    struct TestSigner {
+        pubkey_b64: String,
+        kp: Ed25519KeyPair,
+    }
+
+    impl TestSigner {
+        fn new() -> Self {
+            let seed = [7u8; 32];
+            let kp = Ed25519KeyPair::from_seed_unchecked(&seed).expect("valid ed25519 seed");
+            let pubkey_b64 = URL_SAFE_NO_PAD.encode(kp.public_key().as_ref());
+            Self { pubkey_b64, kp }
+        }
+
+        /// Build a signed CAMMY-… key over the given payload, exactly as the app
+        /// verifies it (signature over the raw payload bytes).
+        fn sign(&self, payload: &serde_json::Value) -> String {
+            let pb = serde_json::to_vec(payload).unwrap();
+            let sig = self.kp.sign(&pb);
+            format!(
+                "{KEY_PREFIX}{}.{}",
+                URL_SAFE_NO_PAD.encode(&pb),
+                URL_SAFE_NO_PAD.encode(sig.as_ref())
+            )
+        }
+
+        fn lifetime_key(&self) -> String {
+            self.sign(&serde_json::json!({
+                "v": 1, "email": "bill@example.com", "plan": "lifetime",
+                "seats": 2, "order": "LS-0001", "issued": 1749686400, "expires": null,
+            }))
+        }
+    }
 
     #[test]
     fn verifies_a_genuine_lifetime_key() {
-        let lic = verify_key(LIFETIME_KEY).expect("should verify");
+        let s = TestSigner::new();
+        let lic = verify_key_with(&s.pubkey_b64, &s.lifetime_key()).expect("should verify");
         assert_eq!(lic.email, "bill@example.com");
         assert_eq!(lic.plan, "lifetime");
         assert_eq!(lic.seats, 2);
@@ -304,17 +359,28 @@ mod tests {
 
     #[test]
     fn verifies_without_the_prefix() {
-        let bare = LIFETIME_KEY.strip_prefix(KEY_PREFIX).unwrap();
-        assert!(verify_key(bare).is_ok());
+        let s = TestSigner::new();
+        let key = s.lifetime_key();
+        let bare = key.strip_prefix(KEY_PREFIX).unwrap();
+        assert!(verify_key_with(&s.pubkey_b64, bare).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_key_signed_by_a_different_seed() {
+        // A key that verifies under its own signer must NOT verify under the
+        // embedded production key — this is exactly the protection that stops a
+        // self-signed key from licensing the app.
+        let s = TestSigner::new();
+        assert!(verify_key(&s.lifetime_key()).is_err());
     }
 
     #[test]
     fn rejects_a_tampered_payload() {
         // Flip one byte of the signed payload segment; the Ed25519 signature must
-        // no longer verify. NB: mutating the human string "bill" does NOT work —
-        // it is not a literal substring of the base64url-encoded payload, so the
-        // edit would be a no-op and the key would still verify.
-        let (payload, sig) = LIFETIME_KEY
+        // no longer verify.
+        let s = TestSigner::new();
+        let key = s.lifetime_key();
+        let (payload, sig) = key
             .strip_prefix(KEY_PREFIX)
             .unwrap()
             .split_once('.')
@@ -325,7 +391,7 @@ mod tests {
         let first = p.remove(0);
         p.insert(0, if first == 'A' { 'B' } else { 'A' });
         let bad = format!("{KEY_PREFIX}{p}.{sig}");
-        assert!(verify_key(&bad).is_err());
+        assert!(verify_key_with(&s.pubkey_b64, &bad).is_err());
     }
 
     #[test]
@@ -337,7 +403,12 @@ mod tests {
 
     #[test]
     fn subscription_key_carries_expiry() {
-        let lic = verify_key(SUBSCRIPTION_KEY).expect("should verify");
+        let s = TestSigner::new();
+        let key = s.sign(&serde_json::json!({
+            "v": 1, "email": "sub@example.com", "plan": "subscription",
+            "seats": 2, "order": "LS-0002", "issued": 1749686400, "expires": 1781222400,
+        }));
+        let lic = verify_key_with(&s.pubkey_b64, &key).expect("should verify");
         assert_eq!(lic.plan, "subscription");
         assert_eq!(lic.expires, Some(1781222400));
     }
@@ -356,13 +427,14 @@ mod tests {
 
     #[test]
     fn activating_a_key_licenses_the_install() {
+        let s = TestSigner::new();
         let db = test_db();
         ensure_trial_started(&db).unwrap();
-        let ent = activate(&db, LIFETIME_KEY).unwrap();
+        let ent = activate_with(&db, &s.pubkey_b64, &s.lifetime_key()).unwrap();
         assert!(matches!(ent, Entitlement::Licensed { .. }));
-        assert!(matches!(status(&db), Entitlement::Licensed { .. }));
+        assert!(matches!(status_with(&db, &s.pubkey_b64), Entitlement::Licensed { .. }));
         deactivate(&db).unwrap();
-        assert!(matches!(status(&db), Entitlement::Trial { .. }));
+        assert!(matches!(status_with(&db, &s.pubkey_b64), Entitlement::Trial { .. }));
     }
 
     #[test]

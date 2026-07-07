@@ -65,3 +65,6 @@ web/tsconfig.tsbuildinfo
 /fulfilment-ledger.json.tmp
 __pycache__/
 *.pyc
+
+# License signing seed — THE root of trust. Never commit. Move offline.
+/SECRET-license-seed.txt
