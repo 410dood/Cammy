@@ -91,9 +91,42 @@ CAMMY_LICENSE_SEED=<hex> python3 scripts/license_sign.py \
   --email buyer@example.com --plan lifetime --seats 2 --order LS-12345
 ```
 
-Automated (Lemon Squeezy `order_created` webhook): run the same signing logic in
-your fulfilment handler, keyed off the order's email/id, and email the key back.
-The seed lives only in that server's environment.
+Automated (Lemon Squeezy `order_created` webhook): run `scripts/fulfilment_server.py`.
+It verifies the webhook HMAC, signs a key with the same `build_key` logic
+`license_sign.py` uses (one source of truth for the format), and emails it to the
+buyer. The seed lives only in that server's environment.
+
+```
+export CAMMY_LICENSE_SEED=<hex>
+export LEMON_SQUEEZY_WEBHOOK_SECRET=<the webhook signing secret>
+export SMTP_HOST=... SMTP_PORT=587 SMTP_USER=... SMTP_PASS=... \
+       SMTP_FROM='Cammy <licenses@cammy.app>'
+python3 scripts/fulfilment_server.py --port 8787   # put behind TLS
+```
+
+Then in Lemon Squeezy → Settings → Webhooks, add a callback URL pointing at this
+server for the **`order_created`** event, using the same signing secret.
+
+Operational guarantees, so a paid order is never lost:
+
+- **Idempotent.** A JSON ledger (`fulfilment-ledger.json`) keys issuance by order
+  id; Lemon Squeezy retries webhooks, and a retry reuses the same key rather than
+  minting a second one.
+- **Spool fallback.** If SMTP is unconfigured or a send fails, the key is written
+  to `fulfilment-spool/order-<id>.txt` and logged loudly — deliver it by hand and
+  nothing is dropped.
+- **Signed-only.** Requests without a valid `X-Signature` HMAC are rejected 401
+  before any work happens; refunded/failed orders are ignored.
+- **Variant mapping.** Every order issues a lifetime 2-seat key by default. To
+  sell the update plan as a separate variant, set `CAMMY_FULFILMENT_CONFIG` to a
+  JSON file mapping Lemon Squeezy variant ids to `{"plan": "subscription",
+  "expires_in_days": 365}` (see the server's module docstring).
+
+Validate the whole pipeline offline before going live:
+
+```
+python3 scripts/fulfilment_server.py --selftest
+```
 
 ### 3. Customer activates
 

@@ -58,3 +58,10 @@ web/tsconfig.tsbuildinfo
 # Whisper STT model (downloaded, not committed) + test sample
 /ggml-*.bin
 /jfk.wav
+
+# License fulfilment runtime artifacts (contain keys + buyer emails — never commit)
+/fulfilment-spool/
+/fulfilment-ledger.json
+/fulfilment-ledger.json.tmp
+__pycache__/
+*.pyc

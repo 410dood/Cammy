@@ -77,6 +77,36 @@ def load_seed(arg_seed: str | None) -> Ed25519PrivateKey:
     return Ed25519PrivateKey.from_private_bytes(raw)
 
 
+def build_key(
+    priv: Ed25519PrivateKey,
+    *,
+    email: str,
+    plan: str = "lifetime",
+    seats: int = 2,
+    order: str = "",
+    expires: int | None = None,
+    issued: int | None = None,
+) -> str:
+    """Build a signed CAMMY-… license key. The one place the key format lives —
+    both the CLI and the fulfilment server call through here so issuance can
+    never drift from what the app verifies."""
+    if plan == "subscription" and expires is None:
+        raise ValueError("a 'subscription' plan needs an expiry")
+    payload = {
+        "v": 1,
+        "email": email,
+        "plan": plan,
+        "seats": seats,
+        "order": order,
+        "issued": issued if issued is not None else int(time.time()),
+        "expires": expires,
+    }
+    # Compact, sorted — must match what the verifier signs over byte-for-byte.
+    pb = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    sig = priv.sign(pb)
+    return "CAMMY-" + b64u(pb) + "." + b64u(sig)
+
+
 def sign(args: argparse.Namespace) -> None:
     priv = load_seed(args.seed)
 
@@ -89,23 +119,20 @@ def sign(args: argparse.Namespace) -> None:
     if args.plan == "subscription" and expires is None:
         sys.exit("a 'subscription' plan needs --expires-in-days or --expires")
 
-    payload = {
-        "v": 1,
-        "email": args.email,
-        "plan": args.plan,
-        "seats": args.seats,
-        "order": args.order,
-        "issued": int(time.time()),
-        "expires": expires,
-    }
-    # Compact, sorted — must match what the verifier signs over byte-for-byte.
-    pb = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-    sig = priv.sign(pb)
-    key = "CAMMY-" + b64u(pb) + "." + b64u(sig)
+    key = build_key(
+        priv,
+        email=args.email,
+        plan=args.plan,
+        seats=args.seats,
+        order=args.order,
+        expires=expires,
+    )
     if args.quiet:
         print(key)
     else:
-        print("payload:", pb.decode())
+        payload_b64 = key[len("CAMMY-"):].split(".", 1)[0]
+        pad = "=" * (-len(payload_b64) % 4)
+        print("payload:", base64.urlsafe_b64decode(payload_b64 + pad).decode())
         print("key:")
         print(key)
 
