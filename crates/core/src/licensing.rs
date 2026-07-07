@@ -310,8 +310,21 @@ mod tests {
 
     #[test]
     fn rejects_a_tampered_payload() {
-        // Flip one payload char: signature must no longer verify.
-        let bad = LIFETIME_KEY.replacen("bill", "evil", 1);
+        // Flip one byte of the signed payload segment; the Ed25519 signature must
+        // no longer verify. NB: mutating the human string "bill" does NOT work —
+        // it is not a literal substring of the base64url-encoded payload, so the
+        // edit would be a no-op and the key would still verify.
+        let (payload, sig) = LIFETIME_KEY
+            .strip_prefix(KEY_PREFIX)
+            .unwrap()
+            .split_once('.')
+            .unwrap();
+        let mut p = payload.to_string();
+        // Swap the first payload char for a different valid base64url char, which
+        // is guaranteed to change the decoded (signed) bytes.
+        let first = p.remove(0);
+        p.insert(0, if first == 'A' { 'B' } else { 'A' });
+        let bad = format!("{KEY_PREFIX}{p}.{sig}");
         assert!(verify_key(&bad).is_err());
     }
 
