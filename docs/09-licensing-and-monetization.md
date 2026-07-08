@@ -139,6 +139,30 @@ Validate the whole pipeline offline before going live:
 python3 scripts/fulfilment_server.py --selftest
 ```
 
+### Lemon Squeezy store setup
+
+The LS API is **read-only for products** (`POST /v1/products` → 405), so the
+product itself is a one-time dashboard task; everything downstream is scripted by
+`scripts/ls_setup.py` (API key from `$LEMON_SQUEEZY_API_KEY` or
+`~/.config/cammy/ls_api_key`, chmod 600, never printed).
+
+1. **Dashboard (once):** Store → Products → New Product → "Cammy", single payment
+   **$79**, Publish. (Optional second product/variant for the **$29/yr** update
+   plan.)
+2. **Confirm it landed and grab the buy URL / variant id:**
+   ```
+   python3 scripts/ls_setup.py --check
+   ```
+3. **Deploy `fulfilment_server.py` behind a public HTTPS URL** (a small VPS, or a
+   tunnel like `cloudflared`/`ngrok` from an always-on box — LS must be able to
+   reach it).
+4. **Create the webhook + get the signing secret in one command:**
+   ```
+   python3 scripts/ls_setup.py --webhook --url https://YOUR-HOST/ls-webhook
+   ```
+   It prints `LEMON_SQUEEZY_WEBHOOK_SECRET` (set the same value on the fulfilment
+   server) and reminds you to set `CAMMY_BUY_URL` to the product's buy URL.
+
 ### 3. Customer activates
 
 Settings → **License** → paste the `CAMMY-…` key → Activate. Verification is
