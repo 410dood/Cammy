@@ -284,6 +284,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   // hovers or focuses the stack (WCAG 2.2.1 Timing Adjustable, Level A — the
   // close button must not be the only way to beat a 4–6s timeout).
   const timers = useRef<Map<number, { handle: number; remaining: number; startedAt: number }>>(new Map());
+  // Pause derives from two independent triggers (pointer hover, keyboard focus):
+  // releasing one while the other is still active must NOT resume, and pause/resume
+  // act only on the false<->true transition — so a hover+focus combo can't
+  // double-subtract time or orphan a timer.
+  const paused = useRef(false);
+  const hovered = useRef(false);
+  const focused = useRef(false);
 
   const remove = useCallback((id: number) => {
     const t = timers.current.get(id);
@@ -296,7 +303,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const arm = useCallback(
     (id: number, ms: number) => {
-      timers.current.set(id, { handle: window.setTimeout(() => remove(id), ms), remaining: ms, startedAt: Date.now() });
+      // A toast that arrives while the stack is paused waits for resume.
+      const handle = paused.current ? 0 : window.setTimeout(() => remove(id), ms);
+      timers.current.set(id, { handle, remaining: ms, startedAt: Date.now() });
     },
     [remove],
   );
@@ -311,20 +320,38 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     [arm],
   );
 
-  const pauseAll = useCallback(() => {
-    const now = Date.now();
-    for (const t of timers.current.values()) {
-      window.clearTimeout(t.handle);
-      t.remaining = Math.max(1200, t.remaining - (now - t.startedAt));
-    }
-  }, []);
-  const resumeAll = useCallback(() => {
-    const now = Date.now();
-    for (const [id, t] of timers.current) {
-      t.startedAt = now;
-      t.handle = window.setTimeout(() => remove(id), t.remaining);
-    }
-  }, [remove]);
+  const applyPause = useCallback(
+    (shouldPause: boolean) => {
+      if (shouldPause === paused.current) return; // idempotent: only on transition
+      paused.current = shouldPause;
+      const now = Date.now();
+      for (const [id, t] of timers.current) {
+        window.clearTimeout(t.handle); // never leave an orphaned handle
+        if (shouldPause) {
+          t.remaining = Math.max(1200, t.remaining - (now - t.startedAt));
+          t.handle = 0;
+        } else {
+          t.startedAt = now;
+          t.handle = window.setTimeout(() => remove(id), t.remaining);
+        }
+      }
+    },
+    [remove],
+  );
+  const setHover = useCallback(
+    (v: boolean) => {
+      hovered.current = v;
+      applyPause(hovered.current || focused.current);
+    },
+    [applyPause],
+  );
+  const setFocus = useCallback(
+    (v: boolean) => {
+      focused.current = v;
+      applyPause(hovered.current || focused.current);
+    },
+    [applyPause],
+  );
 
   const api: ToastApi = {
     push,
@@ -357,10 +384,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         className="toast-host"
         role="region"
         aria-label="Notifications"
-        onMouseEnter={pauseAll}
-        onMouseLeave={resumeAll}
-        onFocus={pauseAll}
-        onBlur={resumeAll}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        onFocus={() => setFocus(true)}
+        onBlur={() => setFocus(false)}
       >
         {toasts.map(renderToast)}
       </div>
