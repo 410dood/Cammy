@@ -190,9 +190,13 @@ docker compose logs -f
 ```
 
 The compose file mounts `./models` as the working directory, `./data` for the
-database + recordings, and runs with `--trusted-proxy` so you can front it with the
-same Caddy/nginx config above. ffmpeg is installed in the image; go2rtc is mounted
-from `./bin` (or download it in your own build step).
+database + recordings, and runs with `--trusted-proxy`. It publishes the port on
+**loopback only** (`127.0.0.1:8080:8080`) so that `--trusted-proxy` default is
+safe — only a same-host reverse proxy (the Caddy/nginx config above) can reach it.
+Do **not** publish the port to the network while `--trusted-proxy` is on: the
+brute-force throttle and loopback exemption would then key off an attacker-spoofable
+`X-Forwarded-For`. ffmpeg is installed in the image; go2rtc is mounted from `./bin`
+(or download it in your own build step).
 
 ---
 
