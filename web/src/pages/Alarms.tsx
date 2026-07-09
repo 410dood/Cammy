@@ -1,6 +1,6 @@
 ﻿import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, AlarmRule, Action, ActionKind, ArmMode, Camera, DAY_NAMES } from "../api";
-import { IconStranger, IconMoon, IconPlus, IconX, IconSiren } from "../icons";
+import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -73,6 +73,8 @@ export default function Alarms({
   const [rules, setRules] = useState<AlarmRule[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editEnabled, setEditEnabled] = useState(true); // preserve on-edit enabled state
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
@@ -148,6 +150,63 @@ export default function Alarms({
     }
   };
 
+  const resetBuilder = () => {
+    setEditingId(null);
+    setEditEnabled(true);
+    setName("");
+    setCameraId("");
+    setLabel("");
+    setActions([{ kind: "webhook", target: "", priority: 0 }]);
+    setModes([]);
+    setFaceLike("");
+    setPlateLike("");
+    setGestureLike("");
+    setTranscriptLike("");
+    setZoneLike("");
+    setConfirmLabel("");
+    setConfirmWithin(10);
+    setVlmPrompt("");
+    setDescribeAlert(false);
+    setPromptLike("");
+    setFaceUnknown(false);
+    setCooldown(0);
+    setDays([]);
+    setStartTime("");
+    setEndTime("");
+  };
+
+  // Load an existing rule into the builder to EDIT it in place (rather than the
+  // former delete-and-recreate-from-scratch), then open the builder.
+  const editRule = (r: AlarmRule) => {
+    setEditingId(r.id);
+    setEditEnabled(r.enabled);
+    setName(r.name);
+    setCameraId(r.camera_id ?? "");
+    setLabel(r.label ?? "");
+    setFaceLike(r.face_like ?? "");
+    setPlateLike(r.plate_like ?? "");
+    setGestureLike(r.gesture_like ?? "");
+    setTranscriptLike(r.transcript_like ?? "");
+    setZoneLike(r.zone_like ?? "");
+    setConfirmLabel(r.confirm_label ?? "");
+    setConfirmWithin(r.confirm_within_secs ?? 10);
+    setVlmPrompt(r.vlm_prompt ?? "");
+    setDescribeAlert(!!r.describe);
+    setPromptLike(r.prompt_like ?? "");
+    setFaceUnknown(!!r.face_unknown);
+    setCooldown(r.cooldown_secs ?? 0);
+    setDays(r.days ?? []);
+    setStartTime(r.start_hhmm ?? "");
+    setEndTime(r.end_hhmm ?? "");
+    setActions(
+      r.actions && r.actions.length
+        ? r.actions.map((a) => ({ ...a }))
+        : [{ kind: "webhook", target: r.target ?? "", priority: r.priority ?? 0 }],
+    );
+    setModes(r.modes ?? []);
+    setCreating(true);
+  };
+
   const add = async (e: FormEvent) => {
     e.preventDefault();
     const acts = actions.map((a) => ({ ...a, target: a.target.trim() }));
@@ -169,9 +228,9 @@ export default function Alarms({
     }
     setBusy(true);
     try {
-      await api.addAlarm({
+      const body = {
         name: name.trim(),
-        enabled: true,
+        enabled: editingId != null ? editEnabled : true,
         camera_id: cameraId === "" ? null : cameraId,
         label: label || null,
         // face_unknown and face_like are mutually exclusive (both set = a rule
@@ -199,27 +258,16 @@ export default function Alarms({
         snooze_until: 0,
         modes,
         actions: acts,
-      });
-      toast.success(`Rule “${name.trim()}” created`);
+      };
+      if (editingId != null) {
+        await api.updateAlarm(editingId, body);
+        toast.success(`Rule “${name.trim()}” updated`);
+      } else {
+        await api.addAlarm(body);
+        toast.success(`Rule “${name.trim()}” created`);
+      }
       setCreating(false);
-      setName("");
-      setActions([{ kind: "webhook", target: "", priority: 0 }]);
-      setModes([]);
-      setFaceLike("");
-      setPlateLike("");
-      setGestureLike("");
-      setTranscriptLike("");
-      setZoneLike("");
-      setConfirmLabel("");
-      setConfirmWithin(10);
-      setVlmPrompt("");
-      setDescribeAlert(false);
-      setPromptLike("");
-      setFaceUnknown(false);
-      setCooldown(0);
-      setDays([]);
-      setStartTime("");
-      setEndTime("");
+      resetBuilder();
       load();
     } catch (err) {
       onError(String(err));
@@ -342,7 +390,17 @@ export default function Alarms({
             type="button"
             className="btn btn-primary ev-act"
             style={{ marginLeft: "auto" }}
-            onClick={() => (creating ? setCreating(false) : openBuilder())}
+            onClick={() => {
+              // Closing (or opening a fresh New rule) always clears any in-progress
+              // edit so the builder doesn't inherit the last-edited rule's state.
+              if (creating) {
+                setCreating(false);
+                resetBuilder();
+              } else {
+                resetBuilder();
+                openBuilder();
+              }
+            }}
           >
             <IconPlus size={14} /> {creating ? "Close" : "New rule"}
           </button>
@@ -483,6 +541,13 @@ export default function Alarms({
                       Test
                     </button>
                     <button
+                      className="btn btn-ghost ev-act"
+                      title="Edit this rule"
+                      onClick={() => editRule(r)}
+                    >
+                      <IconPencil size={13} /> Edit
+                    </button>
+                    <button
                       className="btn btn-danger ev-act"
                       style={{ marginLeft: 8 }}
                       onClick={() => removeRule(r)}
@@ -501,7 +566,7 @@ export default function Alarms({
 
       {creating && (
       <div ref={builderRef} className="card" style={{ margin: 0 }}>
-        <h2>New rule — when this happens…</h2>
+        <h2>{editingId != null ? "Edit rule" : "New rule"} — when this happens…</h2>
         <form onSubmit={add}>
           <div className="row" style={{ marginBottom: 8 }}>
             <label className="field">
@@ -797,7 +862,13 @@ export default function Alarms({
             style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)", justifyContent: "flex-end" }}
           >
             <button className="btn btn-primary" disabled={busy || !name.trim()}>
-              {busy ? "Creating…" : "Create rule"}
+              {busy
+                ? editingId != null
+                  ? "Saving…"
+                  : "Creating…"
+                : editingId != null
+                  ? "Save changes"
+                  : "Create rule"}
             </button>
           </div>
         </form>

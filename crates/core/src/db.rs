@@ -2184,6 +2184,51 @@ impl Db {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Replace an existing rule's definition in place (name/conditions/actions/
+    /// schedule). Preserves the rule's id, created_ts and runtime snooze state —
+    /// this edits the rule, not its live snooze. Returns false if no such id.
+    pub fn update_alarm(&self, id: i64, r: &AlarmRule) -> Result<bool> {
+        let schedule = serde_json::json!({
+            "days": r.days, "start": r.start_hhmm, "end": r.end_hhmm, "modes": r.modes,
+            "zone_like": r.zone_like,
+            "confirm_label": r.confirm_label,
+            "confirm_within": r.confirm_within_secs,
+            "vlm_prompt": r.vlm_prompt,
+            "describe": r.describe,
+            "prompt_like": r.prompt_like
+        })
+        .to_string();
+        let actions = r.effective_actions();
+        let actions_json = serde_json::to_string(&actions).unwrap_or_else(|_| "[]".into());
+        let primary = &actions[0];
+        let n = self.conn().execute(
+            "UPDATE alarms SET name=?2, enabled=?3, camera_id=?4, label=?5, face_like=?6,
+             plate_like=?7, gesture_like=?8, min_score=?9, action=?10, target=?11,
+             schedule_json=?12, cooldown_secs=?13, priority=?14, transcript_like=?15,
+             face_unknown=?16, actions_json=?17 WHERE id=?1",
+            params![
+                id,
+                r.name,
+                r.enabled,
+                r.camera_id,
+                r.label,
+                r.face_like,
+                r.plate_like,
+                r.gesture_like,
+                r.min_score,
+                primary.kind,
+                primary.target,
+                schedule,
+                r.cooldown_secs,
+                primary.priority,
+                r.transcript_like,
+                r.face_unknown as i64,
+                actions_json
+            ],
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn list_alarms(&self) -> Result<Vec<AlarmRule>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(

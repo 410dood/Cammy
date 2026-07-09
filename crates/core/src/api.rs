@@ -85,7 +85,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/alarms", get(list_alarms_api).post(add_alarm_api))
         .route(
             "/api/alarms/{id}",
-            axum::routing::patch(patch_alarm_api).delete(delete_alarm_api),
+            axum::routing::patch(patch_alarm_api)
+                .put(put_alarm_api)
+                .delete(delete_alarm_api),
         )
         .route("/api/alarms/{id}/test", axum::routing::post(test_alarm_api))
         .route("/api/alarms/stats", get(alarm_stats_api))
@@ -3013,10 +3015,8 @@ async fn list_alarms_api(
     Ok(Json(alarms))
 }
 
-async fn add_alarm_api(
-    State(st): State<AppState>,
-    Json(rule): Json<crate::db::AlarmRule>,
-) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+/// Shared validation for creating or replacing an alarm rule.
+fn validate_alarm_rule(rule: &crate::db::AlarmRule) -> ApiResult<()> {
     if rule.name.trim().is_empty() {
         return Err(bad_request("rule name required"));
     }
@@ -3059,8 +3059,31 @@ async fn add_alarm_api(
             return Err(bad_request("schedule times must be HH:MM (24h)"));
         }
     }
+    Ok(())
+}
+
+async fn add_alarm_api(
+    State(st): State<AppState>,
+    Json(rule): Json<crate::db::AlarmRule>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    validate_alarm_rule(&rule)?;
     let id = st.db.add_alarm(&rule)?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
+}
+
+/// Replace an existing rule's full definition (Edit on the Alarms page) — the
+/// same validation as create, then an in-place update that keeps id/snooze.
+async fn put_alarm_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Json(rule): Json<crate::db::AlarmRule>,
+) -> ApiResult<StatusCode> {
+    validate_alarm_rule(&rule)?;
+    if st.db.update_alarm(id, &rule)? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(not_found())
+    }
 }
 
 #[derive(Deserialize)]

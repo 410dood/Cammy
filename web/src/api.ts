@@ -686,6 +686,8 @@ export const api = {
   alarms: () => req<AlarmRule[]>("/api/alarms"),
   addAlarm: (r: Omit<AlarmRule, "id" | "created_ts">) =>
     req<{ id: number }>("/api/alarms", { method: "POST", body: JSON.stringify(r) }),
+  updateAlarm: (id: number, r: Omit<AlarmRule, "id" | "created_ts">) =>
+    req<void>(`/api/alarms/${id}`, { method: "PUT", body: JSON.stringify(r) }),
   patchAlarm: (id: number, patch: { enabled?: boolean; snooze_secs?: number }) =>
     req<void>(`/api/alarms/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteAlarm: (id: number) => req<void>(`/api/alarms/${id}`, { method: "DELETE" }),

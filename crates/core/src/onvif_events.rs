@@ -25,6 +25,11 @@ use crate::ptz::{extract_between, parse_source, soap_call, CamTarget};
 
 /// Recent raw notifications kept per camera for the inspector endpoint.
 const INSPECT_KEEP: usize = 50;
+/// Per-camera subscribe backoff bounds: a dead camera's subscribe() makes two
+/// 8s-timeout SOAP calls, so without backoff a single offline camera burns
+/// ~8-16s per pass and head-of-line-blocks event delivery for every healthy one.
+const SUB_BASE_BACKOFF_SECS: i64 = 15;
+const SUB_MAX_BACKOFF_SECS: i64 = 600;
 /// PullMessages server-side wait; short so one camera can't stall the loop.
 const PULL_TIMEOUT: &str = "PT2S";
 /// Subscription lease; renewed opportunistically, recreated on any failure.
@@ -193,6 +198,8 @@ pub fn run(
     shutdown: Arc<AtomicBool>,
 ) {
     let mut subs: HashMap<i64, Sub> = HashMap::new();
+    // Per-camera subscribe backoff: (last_fail_ts, consecutive_attempts).
+    let mut sub_backoff: HashMap<i64, (i64, u32)> = HashMap::new();
     // Per-(camera, label) event cooldown, mirroring the detection pipeline's.
     let mut last_event: HashMap<(i64, String), i64> = HashMap::new();
     let mut last_renew = std::time::Instant::now();
@@ -207,6 +214,7 @@ pub fn run(
         // Prune the per-(camera,label) cooldown map too — otherwise deleting and
         // re-adding cameras (fresh ids) grows it unbounded for the process life.
         last_event.retain(|(id, _), _| wanted.iter().any(|c| c.id == *id));
+        sub_backoff.retain(|id, _| wanted.iter().any(|c| c.id == *id));
         {
             let mut board = inspector.lock().unwrap_or_else(|e| e.into_inner());
             board.retain(|id, _| wanted.iter().any(|c| c.id == *id));
@@ -228,19 +236,39 @@ pub fn run(
             };
             let sub = match subs.entry(cam.id) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(slot) => match subscribe(&target) {
-                    Ok(pull_url) => {
-                        tracing::info!(camera = %cam.name, "onvif events: subscribed");
-                        slot.insert(Sub {
-                            pull_url,
-                            last_state: HashMap::new(),
-                        })
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    // Skip a repeatedly-failing camera until its (capped exponential)
+                    // backoff window elapses, so its slow subscribe() doesn't stall
+                    // the healthy cameras behind it in this single-threaded pass.
+                    let now_ts = chrono::Local::now().timestamp();
+                    if let Some((last, attempts)) = sub_backoff.get(&cam.id) {
+                        if *attempts > 0 {
+                            let exp = (*attempts - 1).clamp(0, 7);
+                            let wait =
+                                (SUB_BASE_BACKOFF_SECS * (1i64 << exp)).min(SUB_MAX_BACKOFF_SECS);
+                            if now_ts < last + wait {
+                                continue;
+                            }
+                        }
                     }
-                    Err(e) => {
-                        tracing::debug!(camera = %cam.name, "onvif subscribe failed: {e:#}");
-                        continue;
+                    match subscribe(&target) {
+                        Ok(pull_url) => {
+                            tracing::info!(camera = %cam.name, "onvif events: subscribed");
+                            sub_backoff.remove(&cam.id);
+                            slot.insert(Sub {
+                                pull_url,
+                                last_state: HashMap::new(),
+                            })
+                        }
+                        Err(e) => {
+                            tracing::debug!(camera = %cam.name, "onvif subscribe failed: {e:#}");
+                            let entry = sub_backoff.entry(cam.id).or_insert((now_ts, 0));
+                            entry.0 = now_ts;
+                            entry.1 = entry.1.saturating_add(1);
+                            continue;
+                        }
                     }
-                },
+                }
             };
             if do_renew {
                 renew(&target, &sub.pull_url);
