@@ -471,6 +471,16 @@ export interface Heatmap {
   max: number;
 }
 
+/** Event trends for the Insights dashboard — all aggregated server-side. */
+export interface Timeseries {
+  days: { day: string; ts: number; count: number }[];
+  by_label: [string, number][];
+  by_hour: number[];
+  total: number;
+  from: number;
+  range_days: number;
+}
+
 /** One cross-camera appearance match (CLIP crop cosine similarity ∈ [0,1]). */
 export interface SimilarMatch {
   similarity: number;
@@ -790,6 +800,7 @@ export const api = {
     return req<AnalyticsCounts>(`/api/analytics/counts${qs ? `?${qs}` : ""}`);
   },
   analyticsOccupancy: () => req<OccupancyReport>("/api/analytics/occupancy"),
+  analyticsTimeseries: (days: number) => req<Timeseries>(`/api/analytics/timeseries?days=${days}`),
   eventSimilar: (id: number, limit?: number) => {
     const p = new URLSearchParams();
     if (limit != null) p.set("limit", String(limit));

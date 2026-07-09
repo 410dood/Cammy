@@ -137,6 +137,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stats", get(stats))
         .route("/api/overview", get(overview))
         .route("/api/analytics/counts", get(analytics_counts))
+        .route("/api/analytics/timeseries", get(analytics_timeseries))
         .route("/api/analytics/occupancy", get(analytics_occupancy))
         .route("/api/analytics/heatmap", get(analytics_heatmap))
         .route("/api/arm", get(get_arm_mode).put(set_arm_mode))
@@ -3583,6 +3584,18 @@ async fn analytics_counts(
     let to = q.get("to").and_then(|s| s.parse::<i64>().ok());
     let allow = allowed_cameras(&st, &p)?;
     Ok(Json(st.db.analytics_counts(from, to, allow.as_ref())?))
+}
+
+/// Event trends (per-day / by-label / by-hour) over the last N local days for
+/// the Insights dashboard. Aggregated in SQL — no raw events reach the client.
+async fn analytics_timeseries(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let days = q.get("days").and_then(|s| s.parse::<i64>().ok()).unwrap_or(7);
+    let allow = allowed_cameras(&st, &p)?;
+    Ok(Json(st.db.events_timeseries(days, allow.as_ref())?))
 }
 
 /// Live per-camera, per-zone occupancy from the status board — the current count

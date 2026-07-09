@@ -13,6 +13,7 @@ import Faces from "./pages/Faces";
 import Recordings from "./pages/Recordings";
 import FloorPlanPage from "./pages/FloorPlan";
 import Family from "./pages/Family";
+import Insights from "./pages/Insights";
 import Settings from "./pages/Settings";
 import { LicenseBanner } from "./License";
 import {
@@ -36,11 +37,12 @@ import {
   IconGrid,
   IconRadar,
   IconSparkles,
+  IconChart,
 } from "./icons";
 import CommandPalette, { Command } from "./CommandPalette";
 import { getTheme, toggleTheme, Theme } from "./theme";
 
-const PAGES = ["Home", "Live", "Events", "Family", "Signals", "Recordings", "People", "Alarms", "Cameras", "Map", "Settings"] as const;
+const PAGES = ["Home", "Live", "Events", "Family", "Signals", "Recordings", "People", "Insights", "Alarms", "Cameras", "Map", "Settings"] as const;
 type Page = (typeof PAGES)[number];
 
 // Display labels: the route key stays terse (and drives the Page union), but the
@@ -54,6 +56,7 @@ const LABELS: Record<Page, string> = {
   Signals: "Hand signals",
   Recordings: "Recordings",
   People: "People",
+  Insights: "Insights",
   Alarms: "Alarms",
   Cameras: "Cameras",
   Map: "Map",
@@ -70,7 +73,7 @@ const MOBILE_PRIMARY: readonly Page[] = ["Home", "Live", "Events", "Recordings"]
 // dividers are hidden) the bottom tab bar is unchanged.
 const NAV_GROUPS: { label: string; pages: readonly Page[] }[] = [
   { label: "Monitor", pages: ["Home", "Live", "Events", "Recordings"] },
-  { label: "Detections", pages: ["Family", "Signals", "People"] },
+  { label: "Detections", pages: ["Family", "Signals", "People", "Insights"] },
   { label: "Configure", pages: ["Alarms", "Cameras", "Map", "Settings"] },
 ];
 
@@ -82,6 +85,7 @@ const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
   Signals: IconHand,
   Recordings: IconFilm,
   People: IconUser,
+  Insights: IconChart,
   Alarms: IconSiren,
   Cameras: IconVideo,
   Map: IconMap,
@@ -582,6 +586,7 @@ export default function App() {
         {page === "Signals" && <Signals cameras={cameras} />}
         {page === "Recordings" && <Recordings cameras={cameras} />}
         {page === "People" && <Faces onError={setError} />}
+        {page === "Insights" && <Insights onError={setError} />}
         {page === "Map" && <FloorPlanPage cameras={cameras} onOpenCamera={openCamera} />}
         {page === "Alarms" && <Alarms cameras={cameras} onError={setError} />}
         {page === "Cameras" && (

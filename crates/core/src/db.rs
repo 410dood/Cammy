@@ -1947,6 +1947,109 @@ impl Db {
         Ok(serde_json::json!({ "crossings": crossings, "loiters": loiters }))
     }
 
+    /// Event trends over the last `days` local calendar days: per-day totals
+    /// (zero-filled), top labels, and hour-of-day distribution — all computed in
+    /// SQL (GROUP BY over the ts index) so the Insights page never pulls raw
+    /// events to the browser. RBAC-scoped by the caller's allowed cameras.
+    pub fn events_timeseries(
+        &self,
+        days: i64,
+        allowed: Option<&std::collections::HashSet<i64>>,
+    ) -> Result<serde_json::Value> {
+        use chrono::{Duration as CDur, Local, TimeZone};
+        let days = days.clamp(1, 90);
+        let conn = self.conn();
+        // Per-camera RBAC (ids are our own i64s -> inline IN-list is injection-safe).
+        let cam = match allowed {
+            Some(ids) if !ids.is_empty() => format!(
+                " AND camera_id IN ({})",
+                ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+            ),
+            _ => String::new(),
+        };
+        // Local calendar boundaries so buckets line up with the user's days.
+        let today = Local::now().date_naive();
+        let start_date = today - CDur::days(days - 1);
+        let local_midnight = |d: chrono::NaiveDate| -> i64 {
+            d.and_hms_opt(0, 0, 0)
+                .and_then(|ndt| Local.from_local_datetime(&ndt).single())
+                .map(|dt| dt.timestamp())
+                .unwrap_or(0)
+        };
+        let from_ts = local_midnight(start_date);
+
+        // Per local day (only non-empty days come back; we zero-fill below).
+        let mut per_day: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT date(ts,'unixepoch','localtime') d, COUNT(*) FROM events
+                 WHERE ts >= ?1{cam} GROUP BY d"
+            ))?;
+            let rows = stmt.query_map([from_ts], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (d, c) = row?;
+                per_day.insert(d, c);
+            }
+        }
+        let mut day_series = Vec::with_capacity(days as usize);
+        let mut total = 0i64;
+        for i in 0..days {
+            let d = start_date + CDur::days(i);
+            let count = per_day.get(&d.format("%Y-%m-%d").to_string()).copied().unwrap_or(0);
+            total += count;
+            day_series.push(serde_json::json!({
+                "day": d.format("%m/%d").to_string(),
+                "ts": local_midnight(d),
+                "count": count,
+            }));
+        }
+
+        // Top labels over the range.
+        let mut by_label = Vec::new();
+        {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT label, COUNT(*) c FROM events WHERE ts >= ?1{cam}
+                 GROUP BY label ORDER BY c DESC LIMIT 16"
+            ))?;
+            let rows = stmt.query_map([from_ts], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (l, c) = row?;
+                by_label.push(serde_json::json!([l, c]));
+            }
+        }
+
+        // Hour-of-day distribution (local), 0..23.
+        let mut by_hour = vec![0i64; 24];
+        {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT CAST(strftime('%H', ts,'unixepoch','localtime') AS INTEGER) h, COUNT(*)
+                 FROM events WHERE ts >= ?1{cam} GROUP BY h"
+            ))?;
+            let rows = stmt.query_map([from_ts], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (h, c) = row?;
+                if (0..24).contains(&h) {
+                    by_hour[h as usize] = c;
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "days": day_series,
+            "by_label": by_label,
+            "by_hour": by_hour,
+            "total": total,
+            "from": from_ts,
+            "range_days": days,
+        }))
+    }
+
     /// Accumulate object-detection footprints into a `grid`×`grid` activity
     /// density map for a camera over an optional time range (row-major, length
     /// `grid*grid`). Each qualifying event contributes its ground-anchor
