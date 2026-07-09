@@ -3067,24 +3067,25 @@ impl Db {
         Ok(rows)
     }
 
-    /// Every event with its searchable text + (when `with_embeddings`) its CLIP
-    /// snapshot embedding, newest first, for hybrid smart search (visual
-    /// similarity + speech/caption text). No row cap — the corpus is the full
-    /// (retention-bounded) event history, so search recall isn't truncated.
-    /// The embedding column (and JOIN) is skipped entirely in text-only mode.
-    pub fn search_corpus(&self, with_embeddings: bool) -> Result<Vec<SearchRow>> {
+    /// The most-recent `limit` events with their searchable text + (when
+    /// `with_embeddings`) their CLIP snapshot embedding, newest first, for hybrid
+    /// smart search (visual similarity + speech/caption text). Bounded to `limit`
+    /// so a busy long-retention deployment doesn't scan + BLOB-decode the entire
+    /// events table (holding the DB mutex) on every query; ORDER BY ts DESC keeps
+    /// recent recall. The embedding column (and JOIN) is skipped in text-only mode.
+    pub fn search_corpus(&self, with_embeddings: bool, limit: usize) -> Result<Vec<SearchRow>> {
         let conn = self.conn();
         let sql = if with_embeddings {
             "SELECT e.id, e.transcript, e.caption, em.embedding
              FROM events e LEFT JOIN event_embeddings em ON em.event_id = e.id
-             ORDER BY e.ts DESC, e.id DESC"
+             ORDER BY e.ts DESC, e.id DESC LIMIT ?1"
         } else {
             "SELECT e.id, e.transcript, e.caption, NULL
-             FROM events e ORDER BY e.ts DESC, e.id DESC"
+             FROM events e ORDER BY e.ts DESC, e.id DESC LIMIT ?1"
         };
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt
-            .query_map([], |r| {
+            .query_map([limit as i64], |r| {
                 let emb: Option<Vec<u8>> = r.get(3)?;
                 Ok(SearchRow {
                     id: r.get(0)?,

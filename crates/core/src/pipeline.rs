@@ -225,6 +225,20 @@ pub fn run(
         };
         let gait_prof_sigs: Vec<crate::gait::GaitSignature> =
             gait_profiles.iter().map(|(_, s)| *s).collect();
+        // Faces (#14): load enrolled embeddings once per tick (not once per frame
+        // that has a visible face, which re-queried + BLOB-decoded them every
+        // time under this single-threaded loop) — mirrors gait_profiles above.
+        let enrolled_faces: Vec<crate::db::FaceRow> = if cameras.iter().any(|c| {
+            c.enabled
+                && c.detect
+                && c.detect_config
+                    .face_recognize
+                    .unwrap_or(settings.face_recognition)
+        }) {
+            db.list_faces().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         for cam in cameras.iter().filter(|c| c.enabled && c.detect) {
             if shutdown.load(Ordering::Relaxed) {
                 break;
@@ -833,7 +847,7 @@ pub fn run(
                 if let Some(engine) = face_engine.as_mut() {
                     match run_faces(
                         engine,
-                        &db,
+                        &enrolled_faces,
                         &frame,
                         &wanted,
                         &mut face_names,
@@ -1284,7 +1298,7 @@ pub fn run(
 #[allow(clippy::too_many_arguments)]
 fn run_faces(
     engine: &mut facerec::FaceEngine,
-    db: &Db,
+    enrolled: &[crate::db::FaceRow],
     frame: &DynamicImage,
     wanted: &[&detector::Detection],
     face_names: &mut [Option<String>],
@@ -1298,7 +1312,6 @@ fn run_faces(
     if faces.is_empty() {
         return Ok(());
     }
-    let enrolled = db.list_faces()?;
 
     for face in &faces {
         let emb = engine.embed(frame, face)?;

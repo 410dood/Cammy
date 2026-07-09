@@ -3074,33 +3074,43 @@ async fn smart_search(
         None
     };
 
-    let mut scored: Vec<(f32, bool, i64)> = st
-        .db
-        .search_corpus(clip)?
-        .into_iter()
-        .map(|row| {
-            // cosine of L2-normalized vectors ∈ [-1,1]; clamp to ≥0 (also keeps
-            // the sort NaN-free).
-            let visual = match (&qe, &row.embedding) {
-                (Some(qe), Some(emb)) => crate::smart::cosine(qe, emb).max(0.0),
-                _ => 0.0,
-            };
-            let blob = format!(
-                "{} {}",
-                row.transcript.as_deref().unwrap_or(""),
-                row.caption.as_deref().unwrap_or("")
-            );
-            let text = crate::smart::text_match_score(&query, &blob);
-            // A text hit always ranks above a pure-visual match; visual orders
-            // within each band.
-            let combined = if text > 0.0 {
-                1.0 + text + visual * 0.1
-            } else {
-                visual
-            };
-            (combined, text > 0.0, row.id)
+    // Load the (bounded) corpus and score it off the async runtime — the scan +
+    // BLOB-decode + cosine loop is CPU/DB-bound and would otherwise block a tokio
+    // worker (and contend with the detection pipeline) for the whole corpus.
+    const SEARCH_CORPUS_CAP: usize = 20_000;
+    let db = st.db.clone();
+    let query_score = query.clone();
+    let mut scored: Vec<(f32, bool, i64)> =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(f32, bool, i64)>> {
+            let corpus = db.search_corpus(clip, SEARCH_CORPUS_CAP)?;
+            Ok(corpus
+                .into_iter()
+                .map(|row| {
+                    // cosine of L2-normalized vectors ∈ [-1,1]; clamp to ≥0 (also
+                    // keeps the sort NaN-free).
+                    let visual = match (&qe, &row.embedding) {
+                        (Some(qe), Some(emb)) => crate::smart::cosine(qe, emb).max(0.0),
+                        _ => 0.0,
+                    };
+                    let blob = format!(
+                        "{} {}",
+                        row.transcript.as_deref().unwrap_or(""),
+                        row.caption.as_deref().unwrap_or("")
+                    );
+                    let text = crate::smart::text_match_score(&query_score, &blob);
+                    // A text hit always ranks above a pure-visual match; visual
+                    // orders within each band.
+                    let combined = if text > 0.0 {
+                        1.0 + text + visual * 0.1
+                    } else {
+                        visual
+                    };
+                    (combined, text > 0.0, row.id)
+                })
+                .collect())
         })
-        .collect();
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     // Only return events with an actual signal — a text hit or non-zero visual
     // similarity — so events that match neither (e.g. audio events with no
     // snapshot embedding) aren't padded in as bogus "visual" results.

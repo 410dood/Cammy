@@ -204,8 +204,11 @@ pub fn run(
             .filter(|c| c.enabled && c.detect_config.onvif_events)
             .collect();
         subs.retain(|id, _| wanted.iter().any(|c| c.id == *id));
+        // Prune the per-(camera,label) cooldown map too — otherwise deleting and
+        // re-adding cameras (fresh ids) grows it unbounded for the process life.
+        last_event.retain(|(id, _), _| wanted.iter().any(|c| c.id == *id));
         {
-            let mut board = inspector.lock().expect("onvif inspector poisoned");
+            let mut board = inspector.lock().unwrap_or_else(|e| e.into_inner());
             board.retain(|id, _| wanted.iter().any(|c| c.id == *id));
         }
         if wanted.is_empty() {
@@ -256,7 +259,7 @@ pub fn run(
                 // Inspector ring first — the user sees EVERYTHING the camera
                 // says, classified or not.
                 {
-                    let mut board = inspector.lock().expect("onvif inspector poisoned");
+                    let mut board = inspector.lock().unwrap_or_else(|e| e.into_inner());
                     let ring = board.entry(cam.id).or_default();
                     ring.push_back((now, n.clone()));
                     while ring.len() > INSPECT_KEEP {
