@@ -13,7 +13,7 @@ function captionContradicts(ev: { label: string; caption: string | null }): bool
   return c.includes(`no ${l}`) || c.includes(`not a ${l}`);
 }
 import {
-  IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil,
+  IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil, IconLink,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
   IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX, IconVideo,
 } from "../icons";
@@ -295,6 +295,25 @@ export default function Events({
       URL.revokeObjectURL(url);
     } catch {
       toast.error("No recording covers this event — nothing to clip.");
+    }
+  };
+
+  // Mint a no-login, auto-expiring link to this event's clip and copy it.
+  const shareClip = async (ev: CamEvent) => {
+    try {
+      const r = await api.shareEvent(ev.id, 24);
+      const url = `${location.origin}${r.path}`;
+      const copied = await navigator.clipboard
+        ?.writeText(url)
+        .then(() => true)
+        .catch(() => false);
+      toast.success(
+        copied
+          ? "Share link copied — anyone with it can view this clip for 24h."
+          : `Share link (valid 24h): ${url}`,
+      );
+    } catch {
+      toast.error("Couldn't create a share link.");
     }
   };
 
@@ -1060,6 +1079,16 @@ export default function Events({
                     title="Download a short clip"
                   >
                     <IconDownload size={14} /> Clip
+                  </button>
+                  <button
+                    className="btn btn-ghost ev-act"
+                    title="Copy a no-login link to this clip (expires in 24h)"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      shareClip(ev);
+                    }}
+                  >
+                    <IconLink size={14} /> Share
                   </button>
                   {ev.snapshot && (
                     <button

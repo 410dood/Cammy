@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, DAY_NAMES, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout } from "../ui";
 import { LicensePane } from "../License";
 import {
@@ -384,6 +384,72 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
             ))}
           </tbody>
         </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Shareable clip links (P2.7) — list active no-login links + revoke them early.
+function SharesCard({ onError }: { onError: (e: string) => void }) {
+  const toast = useToast();
+  const dialog = useDialog();
+  const [shares, setShares] = useState<ClipShare[]>([]);
+  const load = () => api.shares().then(setShares).catch((e) => onError(String(e)));
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const now = Date.now() / 1000;
+  // Only active links are actionable; expired ones auto-prune server-side.
+  const active = shares.filter((s) => !s.revoked && s.expires_ts > now);
+  const revoke = async (s: ClipShare) => {
+    const ok = await dialog.confirm({
+      title: "Revoke this share link?",
+      body: "Anyone holding the link will immediately lose access to the clip.",
+      confirmLabel: "Revoke",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.revokeShare(s.id);
+      toast.success("Link revoked");
+      load();
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+  return (
+    <div className="card" data-settings-group="security">
+      <h2>Shared clip links</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        No-login links to a single event's clip, created with the <b>Share</b> button on the Events
+        page. They expire on their own; revoke one here to cut access early.
+      </p>
+      {active.length === 0 ? (
+        <p className="muted">No active share links.</p>
+      ) : (
+        <div className="table-scroll">
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <tbody>
+              {active.map((s) => (
+                <tr key={s.id}>
+                  <td>
+                    <b style={{ textTransform: "capitalize" }}>{s.label ?? "event"}</b>{" "}
+                    <span className="muted">· {s.camera ?? ""} · event {s.event_id}</span>
+                  </td>
+                  <td className="muted">
+                    <RelTime ts={s.expires_ts} prefix="expires " />
+                  </td>
+                  <td style={{ textAlign: "right" }}>
+                    <button type="button" className="danger" onClick={() => revoke(s)}>
+                      Revoke
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
@@ -1825,6 +1891,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <UsersCard onError={onError} />
 
         <TokensCard onError={onError} />
+
+        <SharesCard onError={onError} />
 
         <AuditCard />
 

@@ -397,6 +397,25 @@ pub struct ApiToken {
     pub last_used_ts: Option<i64>,
 }
 
+/// A shareable clip link's metadata for the manage UI (never the token/hash).
+#[derive(Clone, Debug, Serialize)]
+pub struct ClipShare {
+    pub id: i64,
+    pub event_id: i64,
+    pub label: Option<String>,
+    pub camera: Option<String>,
+    pub expires_ts: i64,
+    pub revoked: bool,
+    pub created_ts: i64,
+}
+
+/// The clip an active share token resolves to (public /share route).
+pub struct ShareTarget {
+    pub event_id: i64,
+    pub pre: i64,
+    pub post: i64,
+}
+
 /// One security-audit entry: a notable security event (login, password change,
 /// token create/revoke) with when, the client IP, and a short detail.
 #[derive(Clone, Debug, Serialize)]
@@ -1426,6 +1445,19 @@ impl Db {
                  created_ts   INTEGER NOT NULL,
                  last_used_ts INTEGER
              );
+             CREATE TABLE IF NOT EXISTS clip_shares (
+                 id         INTEGER PRIMARY KEY,
+                 token_hash TEXT NOT NULL UNIQUE,
+                 event_id   INTEGER NOT NULL,
+                 pre        INTEGER NOT NULL,
+                 post       INTEGER NOT NULL,
+                 expires_ts INTEGER NOT NULL,
+                 revoked    INTEGER NOT NULL DEFAULT 0,
+                 created_ts INTEGER NOT NULL,
+                 label      TEXT,
+                 camera     TEXT
+             );
+             CREATE INDEX IF NOT EXISTS clip_shares_hash ON clip_shares(token_hash);
              CREATE TABLE IF NOT EXISTS audit_log (
                  id     INTEGER PRIMARY KEY,
                  ts     INTEGER NOT NULL,
@@ -2342,6 +2374,85 @@ impl Db {
         let n = self
             .conn()
             .execute("DELETE FROM api_tokens WHERE id=?1", [id])?;
+        Ok(n > 0)
+    }
+
+    // --- shareable clip links (P2.7) ---------------------------------------
+
+    /// Store a new clip share (only its token hash) and prune long-expired rows
+    /// so the table stays bounded. Returns the new row id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_clip_share(
+        &self,
+        token_hash: &str,
+        event_id: i64,
+        pre: i64,
+        post: i64,
+        expires_ts: i64,
+        label: Option<&str>,
+        camera: Option<&str>,
+        now: i64,
+    ) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO clip_shares (token_hash, event_id, pre, post, expires_ts, created_ts, label, camera)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![token_hash, event_id, pre, post, expires_ts, now, label, camera],
+        )?;
+        let id = conn.last_insert_rowid();
+        // Bound the table: drop shares that expired over a day ago.
+        let _ = conn.execute("DELETE FROM clip_shares WHERE expires_ts < ?1", [now - 86400]);
+        Ok(id)
+    }
+
+    /// Resolve an ACTIVE share (not revoked, not expired) from its token hash,
+    /// for the public /share route. `None` = no such active share.
+    pub fn get_active_clip_share(&self, token_hash: &str, now: i64) -> Result<Option<ShareTarget>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT event_id, pre, post FROM clip_shares
+                 WHERE token_hash = ?1 AND revoked = 0 AND expires_ts > ?2",
+                params![token_hash, now],
+                |r| {
+                    Ok(ShareTarget {
+                        event_id: r.get(0)?,
+                        pre: r.get(1)?,
+                        post: r.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// List shares (metadata only — never the token or its hash) for the manage UI.
+    pub fn list_clip_shares(&self) -> Result<Vec<ClipShare>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, event_id, label, camera, expires_ts, revoked, created_ts
+             FROM clip_shares ORDER BY id DESC LIMIT 500",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(ClipShare {
+                    id: r.get(0)?,
+                    event_id: r.get(1)?,
+                    label: r.get(2)?,
+                    camera: r.get(3)?,
+                    expires_ts: r.get(4)?,
+                    revoked: r.get::<_, i64>(5)? != 0,
+                    created_ts: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Revoke a share (invalidates the public link immediately).
+    pub fn revoke_clip_share(&self, id: i64) -> Result<bool> {
+        let n = self
+            .conn()
+            .execute("UPDATE clip_shares SET revoked = 1 WHERE id = ?1", [id])?;
         Ok(n > 0)
     }
 

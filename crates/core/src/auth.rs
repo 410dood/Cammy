@@ -150,6 +150,11 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
     if path.starts_with("/api/push") {
         return Role::Viewer;
     }
+    // Managing shareable clip links (list + revoke) is an operator action —
+    // minting a share is already POST (Operator by the default below).
+    if path.starts_with("/api/shares") {
+        return Role::Operator;
+    }
     // Account/security management AND config snapshots (which embed camera
     // rtsp://user:pass credentials) require Admin — note /api/backup is a GET, so
     // it must be listed explicitly or the GET default would expose secrets.

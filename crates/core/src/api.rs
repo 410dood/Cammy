@@ -78,6 +78,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(soft_trigger),
         )
         .route("/api/events/{id}/clip", get(event_clip))
+        .route("/api/events/{id}/share", axum::routing::post(create_clip_share))
         .route("/api/events/{id}/similar", get(event_similar))
         .route("/api/search", get(smart_search))
         .route("/api/search/by-image", axum::routing::post(search_by_image))
@@ -91,6 +92,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/onvif/inspect", get(onvif_inspect))
         .route("/api/tokens", get(list_tokens).post(create_token))
         .route("/api/tokens/{id}", axum::routing::delete(delete_token))
+        .route("/api/shares", get(list_clip_shares_api))
+        .route("/api/shares/{id}", axum::routing::delete(delete_clip_share))
+        // PUBLIC (auth-exempt: not under /api) — an expiring, revocable clip link.
+        .route("/share/{token}", get(serve_share))
         .route("/api/audit", get(list_audit))
         .route("/api/me", get(me))
         .route("/api/me/password", axum::routing::post(change_my_password))
@@ -2678,6 +2683,74 @@ struct ClipQuery {
 
 /// Export a short MP4 around an event, packet-copied out of the containing
 /// segment (no re-encode) and cached under data/clips. Frigate-style clips.
+/// Extract (or reuse a cached) event clip — a `pre`+`post` second window around
+/// the event, packet-copied from the containing segment. Shared by the
+/// authenticated /api/events/{id}/clip route and the public /share route. The
+/// token/identity never reaches here: the clip path is derived purely from the
+/// server-controlled event_id + clamped pre/post, so there is no path traversal.
+async fn extract_event_clip(
+    clips_dir: &std::path::Path,
+    ffmpeg_bin: Option<&std::path::Path>,
+    event_id: i64,
+    seg: &crate::db::SegmentRow,
+    ev_ts: i64,
+    pre: i64,
+    post: i64,
+) -> ApiResult<std::path::PathBuf> {
+    let pre = pre.clamp(0, 30);
+    let post = post.clamp(0, 60);
+    // Clamp to the containing segment (v1: clips do not span segments).
+    let offset = (ev_ts - seg.start_ts - pre).max(0);
+    let duration = pre + post;
+    let clip_name = format!("event-{event_id}-{pre}-{post}.mp4");
+    let clip_path = clips_dir.join(&clip_name);
+    if !clip_path.exists() {
+        std::fs::create_dir_all(clips_dir).ok();
+        let ffmpeg = recorder::locate_ffmpeg(ffmpeg_bin)?;
+        let seg_path = seg.path.clone();
+        // Extract to a UNIQUE temp path, then atomically rename to the final clip
+        // only on success — so a failed/partial ffmpeg run (e.g. disk full on a
+        // near-full, retention-pruned NVR) can't leave a corrupt file that the
+        // next `clip_path.exists()` short-circuit then serves forever. Same-dir
+        // rename is atomic (MoveFileEx REPLACE_EXISTING on Windows, rename(2) on
+        // Unix), so concurrent first-time requests are safe — last rename wins.
+        static CLIP_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let uniq = CLIP_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_path = clips_dir.join(format!("{clip_name}.partial-{}-{uniq}", std::process::id()));
+        let out = tmp_path.clone();
+        let status = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(ffmpeg)
+                .args(["-loglevel", "error", "-ss", &offset.to_string(), "-i"])
+                .arg(&seg_path)
+                .args(["-t", &duration.to_string(), "-c", "copy"])
+                .args(["-movflags", "+faststart", "-y"])
+                .arg(&out)
+                .no_console()
+                .status()
+        })
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if !status.success() {
+            std::fs::remove_file(&tmp_path).ok();
+            return Err(ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clip extraction failed".into(),
+            ));
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &clip_path) {
+            std::fs::remove_file(&tmp_path).ok();
+            if !clip_path.exists() {
+                return Err(ApiError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("clip publish failed: {e}"),
+                ));
+            }
+        }
+    }
+    Ok(clip_path)
+}
+
 async fn event_clip(
     State(st): State<AppState>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -2705,63 +2778,11 @@ async fn event_clip(
         .find_segment_at(ev.camera_id, ev.ts)?
         .ok_or_else(not_found)?;
 
-    let pre = q.pre.unwrap_or(5).min(30);
-    let post = q.post.unwrap_or(10).min(60);
-    // Clamp to the containing segment (v1: clips do not span segments).
-    let offset = (ev.ts - seg.start_ts - i64::from(pre)).max(0);
-    let duration = pre + post;
-
-    let clip_name = format!("event-{id}-{pre}-{post}.mp4");
-    let clip_path = st.clips_dir.join(&clip_name);
-    if !clip_path.exists() {
-        std::fs::create_dir_all(&st.clips_dir).ok();
-        let ffmpeg = recorder::locate_ffmpeg(st.ffmpeg_bin.as_deref())?;
-        let seg_path = seg.path.clone();
-        // Extract to a UNIQUE temp path, then atomically rename to the final clip
-        // only on success — so a failed/partial ffmpeg run (e.g. disk full on a
-        // near-full, retention-pruned NVR) can't leave a corrupt file that the
-        // next `clip_path.exists()` short-circuit then serves forever (this is the
-        // "View clip" action embedded in every push notification). Same-dir rename
-        // is atomic (MoveFileEx REPLACE_EXISTING on Windows, rename(2) on Unix), so
-        // concurrent first-time requests are safe — the last successful rename wins.
-        static CLIP_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let uniq = CLIP_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp_path = st
-            .clips_dir
-            .join(format!("{clip_name}.partial-{}-{uniq}", std::process::id()));
-        let out = tmp_path.clone();
-        let status = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(ffmpeg)
-                .args(["-loglevel", "error", "-ss", &offset.to_string(), "-i"])
-                .arg(&seg_path)
-                .args(["-t", &duration.to_string(), "-c", "copy"])
-                .args(["-movflags", "+faststart", "-y"])
-                .arg(&out)
-                .no_console()
-                .status()
-        })
-        .await
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        if !status.success() {
-            std::fs::remove_file(&tmp_path).ok();
-            return Err(ApiError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "clip extraction failed".into(),
-            ));
-        }
-        if let Err(e) = std::fs::rename(&tmp_path, &clip_path) {
-            std::fs::remove_file(&tmp_path).ok();
-            // A concurrent request may have already published clip_path — only
-            // fail if the final clip is genuinely still missing.
-            if !clip_path.exists() {
-                return Err(ApiError(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("clip publish failed: {e}"),
-                ));
-            }
-        }
-    }
+    let pre = i64::from(q.pre.unwrap_or(5).min(30));
+    let post = i64::from(q.post.unwrap_or(10).min(60));
+    let clip_path =
+        extract_event_clip(&st.clips_dir, st.ffmpeg_bin.as_deref(), id, &seg, ev.ts, pre, post)
+            .await?;
 
     let mut resp = ServeFile::new(clip_path).oneshot(req).await.into_response();
     resp.headers_mut().insert(
@@ -2774,6 +2795,143 @@ async fn event_clip(
         .expect("valid header"),
     );
     Ok(resp)
+}
+
+#[derive(Deserialize)]
+struct ShareReq {
+    /// Hours until the link expires (clamped 1..=720 = 30 days). Default 24.
+    ttl_hours: Option<i64>,
+}
+
+/// Mint a shareable, auto-expiring, no-login link to an event's clip (P2.7).
+/// Operator+ and RBAC-scoped to the event's camera. The raw token is returned
+/// ONCE — only its SHA-256 hash is stored.
+async fn create_clip_share(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(body): Json<ShareReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    let ttl = body.ttl_hours.unwrap_or(24).clamp(1, 720);
+    let now = chrono::Local::now().timestamp();
+    let expires_ts = now + ttl * 3600;
+    // 256-bit token; store only its hash. The prefix distinguishes it from an
+    // api token so a leaked share link can never be used as a Bearer credential.
+    let raw = format!("zoomy_share_{}", crate::auth::new_token());
+    let hash = crate::auth::token_hash(&raw);
+    let share_id = st.db.add_clip_share(
+        &hash,
+        id,
+        5,
+        10,
+        expires_ts,
+        Some(&ev.label),
+        Some(&ev.camera),
+        now,
+    )?;
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        now,
+        Some(&ip),
+        "clip_shared",
+        Some(&format!("event {id} ({} on {}) · ttl {ttl}h", ev.label, ev.camera)),
+    );
+    Ok(Json(serde_json::json!({
+        "id": share_id,
+        "token": raw,
+        "path": format!("/share/{raw}"),
+        "expires_ts": expires_ts,
+    })))
+}
+
+/// PUBLIC (auth-exempt: not under /api) — serve the clip for a valid, unexpired,
+/// unrevoked share token. The token is 256-bit (guessing is infeasible), is
+/// hashed before any lookup and never touches the filesystem, and the clip path
+/// derives purely from the server-side event id — so there's no IDOR or
+/// traversal. Rate-limited per IP as defense in depth.
+async fn serve_share(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Path(token): Path<String>,
+    req: Request,
+) -> ApiResult<Response> {
+    let (cip, _) = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy);
+    if let Some(remaining) = st.login_throttle.locked_for(cip) {
+        let secs = remaining.as_secs().max(1);
+        let mut resp = (StatusCode::TOO_MANY_REQUESTS, "too many attempts").into_response();
+        resp.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            secs.to_string().parse().expect("numeric retry-after"),
+        );
+        return Ok(resp);
+    }
+    // Cheap shape check first — don't spend a DB hit or a throttle strike on junk.
+    if !token.starts_with("zoomy_share_") || token.len() > 128 {
+        return Err(not_found());
+    }
+    let now = chrono::Local::now().timestamp();
+    let hash = crate::auth::token_hash(&token);
+    let Some(target) = st.db.get_active_clip_share(&hash, now)? else {
+        // Unknown / expired / revoked token — count toward the brute-force throttle.
+        st.login_throttle.record_failure(cip);
+        return Err(not_found());
+    };
+    let ev = st.db.get_event(target.event_id)?.ok_or_else(not_found)?;
+    let seg = st
+        .db
+        .find_segment_at(ev.camera_id, ev.ts)?
+        .ok_or_else(not_found)?;
+    let clip_path = extract_event_clip(
+        &st.clips_dir,
+        st.ffmpeg_bin.as_deref(),
+        ev.id,
+        &seg,
+        ev.ts,
+        target.pre,
+        target.post,
+    )
+    .await?;
+    st.db.add_audit(
+        now,
+        Some(&cip.to_string()),
+        "share_accessed",
+        Some(&format!("event {} ({} on {})", ev.id, ev.label, ev.camera)),
+    );
+    let mut resp = ServeFile::new(clip_path).oneshot(req).await.into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{}-{}-{}.mp4\"", ev.camera, ev.label, ev.ts)
+            .parse()
+            .expect("valid header"),
+    );
+    Ok(resp)
+}
+
+async fn list_clip_shares_api(
+    State(st): State<AppState>,
+) -> ApiResult<Json<Vec<crate::db::ClipShare>>> {
+    Ok(Json(st.db.list_clip_shares()?))
+}
+
+async fn delete_clip_share(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    let now = chrono::Local::now().timestamp();
+    if st.db.revoke_clip_share(id)? {
+        st.db
+            .add_audit(now, None, "share_revoked", Some(&format!("share {id}")));
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(not_found())
+    }
 }
 
 #[derive(Deserialize)]

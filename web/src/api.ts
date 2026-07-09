@@ -387,6 +387,17 @@ export interface ApiToken {
   last_used_ts: number | null;
 }
 
+/** A shareable, expiring clip link (metadata only — never the token). */
+export interface ClipShare {
+  id: number;
+  event_id: number;
+  label: string | null;
+  camera: string | null;
+  expires_ts: number;
+  revoked: boolean;
+  created_ts: number;
+}
+
 export interface AuditEntry {
   id: number;
   ts: number;
@@ -730,6 +741,13 @@ export const api = {
       body: JSON.stringify({ name, role }),
     }),
   deleteToken: (id: number) => req<void>(`/api/tokens/${id}`, { method: "DELETE" }),
+  shareEvent: (id: number, ttlHours: number) =>
+    req<{ id: number; token: string; path: string; expires_ts: number }>(
+      `/api/events/${id}/share`,
+      { method: "POST", body: JSON.stringify({ ttl_hours: ttlHours }) },
+    ),
+  shares: () => req<ClipShare[]>("/api/shares"),
+  revokeShare: (id: number) => req<void>(`/api/shares/${id}`, { method: "DELETE" }),
   audit: (limit = 100) => req<AuditEntry[]>(`/api/audit?limit=${limit}`),
   authStatus: () => req<{ enabled: boolean; users: number }>("/api/auth"),
   login: (password: string, username?: string, otp?: string) =>
