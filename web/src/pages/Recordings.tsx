@@ -3,7 +3,7 @@ import { api, CamEvent, Camera, capacityTone, fmtBytes, fmtDaysLeft, fmtTime, Se
 import Timeline from "../Timeline";
 import CrossTimeline from "../CrossTimeline";
 import { IconPlay, IconFilm, IconAlert, IconChevronDown, IconChevronRight } from "../icons";
-import { Callout, EmptyState, ErrorState, Modal } from "../ui";
+import { Callout, EmptyState, ErrorState, Modal, useToast } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -32,6 +32,36 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
 
   // Day picker: "" = live (anchored at now); a date scrubs that day's history.
   const [day, setDay] = useState("");
+  const [tlBusy, setTlBusy] = useState(false);
+  const toast = useToast();
+
+  // Build (or fetch a cached) time-lapse of the selected camera's whole day. The
+  // server builds it in the background, so poll until it's ready, then open it.
+  const makeTimelapse = async () => {
+    if (cameraId === "" || !day || tlBusy) return;
+    setTlBusy(true);
+    try {
+      let r = await api.timelapse(cameraId, day);
+      if (r.status === "building") {
+        toast.info("Building the time-lapse — a full day can take a minute…");
+        const started = Date.now();
+        while (r.status === "building" && Date.now() - started < 5 * 60 * 1000) {
+          await new Promise((res) => setTimeout(res, 4000));
+          r = await api.timelapse(cameraId, day);
+        }
+      }
+      if (r.status === "ready") {
+        window.open(r.url, "_blank");
+        toast.success("Time-lapse ready — opening it now");
+      } else {
+        toast.error("Time-lapse is taking longer than expected — check back shortly.");
+      }
+    } catch (e) {
+      toast.error(`Couldn't build the time-lapse: ${errMsg(e)}`);
+    } finally {
+      setTlBusy(false);
+    }
+  };
   const dayAnchor = () => {
     const nowSecs = Math.floor(Date.now() / 1000);
     if (!day) return nowSecs;
@@ -245,6 +275,16 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
         {day && (
           <button className="btn btn-primary" onClick={() => setDay("")} title="Back to the live, auto-refreshing view">
             Live
+          </button>
+        )}
+        {cameraId !== "" && day && (
+          <button
+            className="btn btn-ghost"
+            disabled={tlBusy}
+            onClick={makeTimelapse}
+            title="Condense this camera's whole day into a short time-lapse video"
+          >
+            <IconFilm size={14} /> {tlBusy ? "Building…" : "Time-lapse"}
           </button>
         )}
         <span className="muted">

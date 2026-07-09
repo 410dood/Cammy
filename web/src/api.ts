@@ -680,6 +680,12 @@ export const api = {
     req<{ segment: Segment; offset_secs: number }>(
       `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
     ),
+  // Kick off (or poll) a day time-lapse; returns {status: ready|building, url}.
+  timelapse: (camera_id: number, date: string) =>
+    req<{ status: "ready" | "building"; url: string }>(
+      `/api/cameras/${camera_id}/timelapse?date=${encodeURIComponent(date)}`,
+      { method: "POST" }
+    ),
   armMode: () => req<{ arm_mode: ArmMode }>("/api/arm"),
   arm: (mode: ArmMode) =>
     req<{ arm_mode: ArmMode }>("/api/arm", { method: "PUT", body: JSON.stringify({ mode }) }),

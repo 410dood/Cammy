@@ -65,6 +65,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/cameras/{id}/ptz", get(ptz_caps).post(ptz_command))
         .route("/api/cameras/{id}/frame.jpg", get(camera_frame))
+        .route("/api/cameras/{id}/timelapse", axum::routing::post(create_timelapse))
+        .route("/api/cameras/{id}/timelapse.mp4", get(serve_timelapse))
         .route("/api/events", get(list_events))
         .route("/api/events/export.csv", get(export_events_csv))
         .route(
@@ -2934,6 +2936,181 @@ async fn delete_clip_share(
     } else {
         Err(not_found())
     }
+}
+
+#[derive(Deserialize)]
+struct TimelapseQuery {
+    /// Local calendar day, "YYYY-MM-DD".
+    date: Option<String>,
+    /// Target output length in seconds — the day is condensed to ~this. 15..=300.
+    target_secs: Option<i64>,
+}
+
+/// Local midnight bounds (start_ts, end_ts) for a "YYYY-MM-DD" day. Also serves
+/// as strict validation: a non-date string can't reach the output filename.
+fn local_day_bounds(date: &str) -> Option<(i64, i64)> {
+    use chrono::{Local, NaiveDate, TimeZone};
+    let d = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    let start = Local
+        .from_local_datetime(&d.and_hms_opt(0, 0, 0)?)
+        .single()?
+        .timestamp();
+    Some((start, start + 86_400))
+}
+
+fn timelapse_path(clips_dir: &std::path::Path, camera: &str, date: &str) -> std::path::PathBuf {
+    clips_dir.join(format!("timelapse-{camera}-{date}.mp4"))
+}
+
+/// Kick off (or report the status of) a day time-lapse for a camera (P2.12).
+/// Cached under clips_dir; the build runs in the BACKGROUND since a full day is a
+/// slow re-encode. Returns {status: ready|building, url}. Operator+, RBAC-scoped.
+async fn create_timelapse(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<TimelapseQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
+    let cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    let date = q.date.as_deref().unwrap_or("").trim().to_string();
+    let (day_start, day_end) =
+        local_day_bounds(&date).ok_or_else(|| bad_request("date must be YYYY-MM-DD"))?;
+    let target = q.target_secs.unwrap_or(60).clamp(15, 300);
+
+    let out = timelapse_path(&st.clips_dir, &cam.name, &date);
+    let url = format!("/api/cameras/{id}/timelapse.mp4?date={date}");
+    if out.exists() {
+        return Ok(Json(serde_json::json!({ "status": "ready", "url": url })));
+    }
+    // A fresh .building marker means a build is in flight; a stale one (>30 min,
+    // e.g. after a crash) is ignored so a retry can proceed.
+    let marker = out.with_extension("building");
+    let building_fresh = std::fs::metadata(&marker)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|e| e < std::time::Duration::from_secs(1800));
+    if building_fresh {
+        return Ok(Json(serde_json::json!({ "status": "building", "url": url })));
+    }
+
+    // Gather the day's segments (ascending) so the spawned task owns them.
+    let mut segs: Vec<crate::db::SegmentRow> = st
+        .db
+        .list_segments(Some(id), Some(day_end), 200_000)?
+        .into_iter()
+        .filter(|s| s.start_ts >= day_start && s.start_ts < day_end)
+        .collect();
+    segs.sort_by_key(|s| s.start_ts);
+    if segs.is_empty() {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "no recordings for that camera on that day".into(),
+        ));
+    }
+
+    std::fs::create_dir_all(&st.clips_dir).ok();
+    std::fs::write(&marker, b"building").ok();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        None,
+        "timelapse_started",
+        Some(&format!("{} {date}", cam.name)),
+    );
+
+    let clips_dir = st.clips_dir.clone();
+    let ffmpeg_bin = st.ffmpeg_bin.clone();
+    let out_c = out.clone();
+    let marker_c = marker.clone();
+    tokio::spawn(async move {
+        let res = build_timelapse(&clips_dir, ffmpeg_bin.as_deref(), &segs, target, &out_c).await;
+        std::fs::remove_file(&marker_c).ok();
+        if let Err(e) = res {
+            tracing::warn!("timelapse build failed: {e:#}");
+        }
+    });
+    Ok(Json(serde_json::json!({ "status": "building", "url": url })))
+}
+
+/// Concat the day's segments and re-time to ~`target_secs` (uniform speed-up).
+async fn build_timelapse(
+    clips_dir: &std::path::Path,
+    ffmpeg_bin: Option<&std::path::Path>,
+    segs: &[crate::db::SegmentRow],
+    target_secs: i64,
+    out: &std::path::Path,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    let ffmpeg = recorder::locate_ffmpeg(ffmpeg_bin)?;
+    let span = (segs.last().unwrap().start_ts - segs.first().unwrap().start_ts + 60).max(1);
+    let speed = ((span as f64) / (target_secs as f64)).clamp(2.0, 3600.0);
+
+    // ffmpeg concat-demuxer list of absolute paths (single-quoted; escape any
+    // embedded quote — paths are server-generated, so this is defensive).
+    let list_path = out.with_extension("txt");
+    {
+        let mut f = std::fs::File::create(&list_path)?;
+        for s in segs {
+            let p = s.path.replace('\'', "'\\''");
+            writeln!(f, "file '{p}'")?;
+        }
+    }
+    let tmp = clips_dir.join(format!(
+        "timelapse.partial-{}-{}.mp4",
+        std::process::id(),
+        segs.first().map(|s| s.start_ts).unwrap_or(0)
+    ));
+    let list_c = list_path.clone();
+    let tmp_c = tmp.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"])
+            .arg(&list_c)
+            .args(["-vf", &format!("setpts=PTS/{speed}"), "-an", "-r", "24"])
+            .args(["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
+            .args(["-movflags", "+faststart", "-y"])
+            .arg(&tmp_c)
+            .no_console()
+            .status()
+    })
+    .await??;
+    std::fs::remove_file(&list_path).ok();
+    if !status.success() {
+        std::fs::remove_file(&tmp).ok();
+        anyhow::bail!("ffmpeg timelapse encode failed");
+    }
+    if std::fs::rename(&tmp, out).is_err() && !out.exists() {
+        std::fs::remove_file(&tmp).ok();
+        anyhow::bail!("could not publish timelapse");
+    }
+    Ok(())
+}
+
+/// Serve a built time-lapse MP4 (404 until ready). Same RBAC scoping as clips.
+async fn serve_timelapse(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<TimelapseQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    req: Request,
+) -> ApiResult<Response> {
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
+    let cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    let date = q.date.as_deref().unwrap_or("").trim();
+    local_day_bounds(date).ok_or_else(|| bad_request("date must be YYYY-MM-DD"))?;
+    let out = timelapse_path(&st.clips_dir, &cam.name, date);
+    if !out.exists() {
+        return Err(not_found());
+    }
+    let mut resp = ServeFile::new(out).oneshot(req).await.into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"timelapse-{}-{date}.mp4\"", cam.name)
+            .parse()
+            .expect("valid header"),
+    );
+    Ok(resp)
 }
 
 #[derive(Deserialize)]
