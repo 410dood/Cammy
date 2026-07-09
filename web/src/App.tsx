@@ -1,20 +1,24 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import { api, AppConfig, Camera, Notification } from "./api";
 import { useFocusTrap, useToast } from "./ui";
 import NotificationsPanel from "./Notifications";
 import Onboarding, { shouldOnboard } from "./Onboarding";
 import Home from "./pages/Home";
 import Live from "./pages/Live";
-import Cameras from "./pages/Cameras";
-import Alarms from "./pages/Alarms";
 import Events from "./pages/Events";
-import Signals from "./pages/Signals";
-import Faces from "./pages/Faces";
-import Recordings from "./pages/Recordings";
-import FloorPlanPage from "./pages/FloorPlan";
-import Family from "./pages/Family";
-import Insights from "./pages/Insights";
-import Settings from "./pages/Settings";
+// Heavier / rarely-first pages are code-split so the entry bundle (Home/Live/
+// Events) stays small — a remote or mobile visitor over a home-upload link isn't
+// forced to download the ZoneEditor canvas, Settings' ~20 cards, or the Insights
+// charts before the first paint.
+const Cameras = lazy(() => import("./pages/Cameras"));
+const Alarms = lazy(() => import("./pages/Alarms"));
+const Signals = lazy(() => import("./pages/Signals"));
+const Faces = lazy(() => import("./pages/Faces"));
+const Recordings = lazy(() => import("./pages/Recordings"));
+const FloorPlanPage = lazy(() => import("./pages/FloorPlan"));
+const Family = lazy(() => import("./pages/Family"));
+const Insights = lazy(() => import("./pages/Insights"));
+const Settings = lazy(() => import("./pages/Settings"));
 import { LicenseBanner } from "./License";
 import {
   IconLive,
@@ -565,35 +569,37 @@ export default function App() {
           </div>
         )}
         <LicenseBanner />
-        {page === "Home" && (
-          <Home
-            cameras={cameras}
-            onOpenEvents={() => go("Events")}
-            onOpenCamera={openCamera}
-            onOpenEvent={openEvent}
-          />
-        )}
-        {page === "Live" && (
-          <Live cameras={cameras} config={config} focusCameraId={focusCameraId} />
-        )}
-        {page === "Events" && (
-          <Events
-            cameras={cameras}
-            focusEventId={focusEvent}
-            onFocusHandled={() => setFocusEvent(null)}
-          />
-        )}
-        {page === "Family" && <Family cameras={cameras} onGo={go} />}
-        {page === "Signals" && <Signals cameras={cameras} />}
-        {page === "Recordings" && <Recordings cameras={cameras} />}
-        {page === "People" && <Faces onError={setError} />}
-        {page === "Insights" && <Insights onError={setError} />}
-        {page === "Map" && <FloorPlanPage cameras={cameras} onOpenCamera={openCamera} />}
-        {page === "Alarms" && <Alarms cameras={cameras} onError={setError} />}
-        {page === "Cameras" && (
-          <Cameras cameras={cameras} onChange={refresh} onError={setError} />
-        )}
-        {page === "Settings" && <Settings onError={setError} />}
+        <Suspense fallback={<div className="skeleton" style={{ height: 260, borderRadius: 12, marginTop: 8 }} aria-busy="true" aria-label="Loading page" />}>
+          {page === "Home" && (
+            <Home
+              cameras={cameras}
+              onOpenEvents={() => go("Events")}
+              onOpenCamera={openCamera}
+              onOpenEvent={openEvent}
+            />
+          )}
+          {page === "Live" && (
+            <Live cameras={cameras} config={config} focusCameraId={focusCameraId} />
+          )}
+          {page === "Events" && (
+            <Events
+              cameras={cameras}
+              focusEventId={focusEvent}
+              onFocusHandled={() => setFocusEvent(null)}
+            />
+          )}
+          {page === "Family" && <Family cameras={cameras} onGo={go} />}
+          {page === "Signals" && <Signals cameras={cameras} />}
+          {page === "Recordings" && <Recordings cameras={cameras} />}
+          {page === "People" && <Faces onError={setError} />}
+          {page === "Insights" && <Insights onError={setError} />}
+          {page === "Map" && <FloorPlanPage cameras={cameras} onOpenCamera={openCamera} />}
+          {page === "Alarms" && <Alarms cameras={cameras} onError={setError} />}
+          {page === "Cameras" && (
+            <Cameras cameras={cameras} onChange={refresh} onError={setError} />
+          )}
+          {page === "Settings" && <Settings onError={setError} />}
+        </Suspense>
       </main>
       {camerasLoaded && cameras.length === 0 && !dismissedOnboard && shouldOnboard() && (
         <Onboarding
