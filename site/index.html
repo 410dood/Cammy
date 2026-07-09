@@ -65,6 +65,20 @@
     .req { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 26px; max-width: 720px; margin: 0 auto; color: var(--muted); font-size: 0.92rem; }
     .req b { color: var(--text); }
 
+    .trust-band { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 14px; max-width: 880px; margin: 0 auto; }
+    .trust-band span { background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 8px 16px; font-size: 0.9rem; color: var(--muted); }
+    .trust-band b { color: var(--text); font-weight: 600; }
+
+    .faq { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+    .faq details { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 2px 22px; }
+    .faq details[open] { border-color: #34394480; }
+    .faq summary { cursor: pointer; padding: 18px 0; font-weight: 600; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+    .faq summary::-webkit-details-marker { display: none; }
+    .faq summary::after { content: "+"; color: var(--accent); font-size: 1.4rem; font-weight: 400; line-height: 1; }
+    .faq details[open] summary::after { content: "\2013"; }
+    .faq details p { color: var(--muted); font-size: 0.94rem; padding: 0 0 18px; margin: 0; max-width: 66ch; }
+    .faq details p a { text-decoration: underline; }
+
     footer { border-top: 1px solid var(--border); padding: 34px 0 60px; color: var(--muted); font-size: 0.88rem; text-align: center; }
     footer a { margin: 0 10px; }
     @media (max-width: 640px) { .hero { padding-top: 54px; } section { padding: 48px 0; } }
@@ -78,6 +92,7 @@
       <nav>
         <a href="#features">Features</a>
         <a href="#pricing">Pricing</a>
+        <a href="#faq">FAQ</a>
         <a href="#download">Download</a>
         <a href="https://github.com/410dood/Cammy">GitHub</a>
       </nav>
@@ -92,11 +107,11 @@
       every frame processed locally on your machine.
     </p>
     <div class="cta-row">
-      <a class="btn dl" href="#download">⬇ Start free 30-day trial</a>
-      <button class="btn buy" id="buy-btn">Buy lifetime license — $79</button>
+      <a class="btn buy" href="#download">⬇ Start free 30-day trial</a>
+      <button class="btn dl" id="buy-btn">Buy lifetime — $79</button>
     </div>
     <div class="pay-hint">
-      Fully-featured trial, no credit card. Checkout by Lemon Squeezy
+      Every feature unlocked for 30 days — no credit card, no account.
       <span class="pay-badge">💳 Cards</span>
       <span class="pay-badge">PayPal</span>
       <span class="pay-badge">VAT handled</span>
@@ -137,9 +152,10 @@
             <li>All AI models bundled — works offline</li>
             <li>Perpetual license for 2 machines</li>
             <li>Activation is offline — works air-gapped</li>
+            <li>Never expires &amp; keeps every feature forever — the optional $29/yr only unlocks <i>new</i> versions</li>
           </ul>
           <button class="btn buy" id="buy-btn-2" style="width: 100%;">Buy lifetime license — $79</button>
-          <p class="fine">Checkout by Lemon Squeezy — cards &amp; PayPal, VAT/sales tax handled worldwide. Optional $29/yr update plan for continued access to new versions.</p>
+          <p class="fine">Checkout by Lemon Squeezy — cards &amp; PayPal, VAT/sales tax handled worldwide.</p>
         </div>
       </div>
       <div class="promise">
@@ -165,6 +181,46 @@
     </div>
   </section>
 
+  <section id="faq">
+    <div class="wrap">
+      <h2>Questions, answered</h2>
+      <p class="lead">The things self-hosters actually want to know before paying an indie $79.</p>
+      <div class="faq">
+        <details open>
+          <summary>Is $79 really one-time?</summary>
+          <p>Yes — one payment, no subscription. Your license covers unlimited cameras on up to 2 machines and never expires. The only optional recurring cost is a $29/yr update plan, and even that only unlocks <i>new</i> versions — the version you own keeps every feature forever.</p>
+        </details>
+        <details>
+          <summary>What happens when the trial ends?</summary>
+          <p>Nothing stops. Cammy keeps recording, detecting, alerting and playing back — you just see an upgrade note. A security system must never stop protecting your home over a billing hiccup. We call it the never-brick promise.</p>
+        </details>
+        <details>
+          <summary>Is my data private?</summary>
+          <p>100% local. Video, AI models, and face data are processed and stored on your machine — no cloud, no telemetry, no account. Even license activation is offline, so it works on an air-gapped network.</p>
+        </details>
+        <details>
+          <summary>Can I run it on macOS or Linux?</summary>
+          <p>Yes — the same engine runs on all three. Windows has a one-click installer today; macOS and Linux build from source with a documented one-liner until native installers ship.</p>
+        </details>
+        <details>
+          <summary>What's the $29/yr update plan, exactly?</summary>
+          <p>Optional. It unlocks major new versions as they ship. Skip it and your bought version runs forever, with every feature it came with — nothing is taken away.</p>
+        </details>
+        <details>
+          <summary>What if you disappear?</summary>
+          <p>Cammy's source is <a href="https://github.com/410dood/Cammy">dual-licensed MIT / Apache-2.0</a>. Because activation is offline and there's no license server to shut off, you can build and run Cammy from source yourself, forever. You're never locked out of your own security system.</p>
+        </details>
+      </div>
+      <div class="trust-band" style="margin-top: 46px;">
+        <span>🔓 <b>Source-available</b> — MIT / Apache-2.0</span>
+        <span>🚫 <b>No telemetry</b>, ever</span>
+        <span>👤 <b>No account</b>, no cloud</span>
+        <span>✈️ <b>Offline activation</b> — works air-gapped</span>
+        <span>💾 Your data <b>never leaves your machine</b></span>
+      </div>
+    </div>
+  </section>
+
   <footer>
     <div class="wrap">
       <div style="margin-bottom: 8px;">
@@ -180,16 +236,24 @@
   <script>
     // Buy buttons -> Lemon Squeezy checkout (merchant of record: cards +
     // PayPal, VAT handled). Until the checkout URL is configured in
-    // config.js, fall back to the free-trial download.
+    // config.js, we do NOT fake a purchase: the hero "Buy" routes to the
+    // pricing section (price + trial + never-brick promise) and the pricing
+    // button routes to the trial download. When a real checkout URL is set,
+    // the hero Buy button self-promotes to a primary, working CTA.
     const link = window.CAMMY_CHECKOUT_URL;
+    const live = !!link && !link.includes("REPLACE");
+    const heroBuy = document.getElementById("buy-btn");
+    if (live && heroBuy) {
+      heroBuy.classList.remove("dl");
+      heroBuy.classList.add("buy");
+      heroBuy.textContent = "Buy lifetime license — $79";
+    }
+    const fallback = { "buy-btn": "#pricing", "buy-btn-2": "#download" };
     for (const id of ["buy-btn", "buy-btn-2"]) {
       const el = document.getElementById(id);
+      if (!el) continue;
       el.addEventListener("click", () => {
-        if (link && !link.includes("REPLACE")) {
-          window.location.href = link;
-        } else {
-          window.location.href = "#download";
-        }
+        window.location.href = live ? link : fallback[id];
       });
     }
   </script>

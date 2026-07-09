@@ -5,12 +5,12 @@ Linux.** Blue Iris-class NVR features with Frigate-class AI object detection, bu
 not chained to any one OS and with no cloud and no monthly fees. Every frame is
 processed locally on your machine.
 
-> **Status: v0.3 — feature-complete, launching.** 24/7 recording, a live WebRTC
-> grid, motion-gated AI detection, face recognition, license-plate reading,
-> natural-language search, family-safety modes, and an Alarm Manager all work end
-> to end. Sold as a **$79 one-time license** (unlimited cameras, 2 machines)
-> after a **30-day full-featured free trial** — no card required, and it never
-> stops recording when the trial ends.
+> **Status: v0.4 — launched.** 24/7 recording, a live WebRTC grid, motion-gated
+> AI detection, face recognition, license-plate reading, natural-language search,
+> family-safety modes, and an Alarm Manager all work end to end. Sold as a
+> **$79 one-time license** (unlimited cameras, 2 machines) after a **30-day
+> full-featured free trial** — no card required, and it never stops recording
+> when the trial ends.
 
 ## Install (Windows)
 
