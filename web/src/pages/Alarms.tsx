@@ -529,6 +529,12 @@ export default function Alarms({
                   </option>
                 ))}
               </select>
+              {label && LABEL_PRETTY[label]?.includes("*") && (
+                <small className="muted">
+                  * Assistive best-effort detection — not a safety or medical device. Confirm in
+                  person.
+                </small>
+              )}
             </label>
             <label className="field">
               face contains (optional)

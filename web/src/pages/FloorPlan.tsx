@@ -98,7 +98,7 @@ export default function FloorPlanPage({
   return (
     <>
       <div className="row" style={{ alignItems: "center" }}>
-        <h1 style={{ marginRight: "auto" }}>Floor plan</h1>
+        <h1 style={{ marginRight: "auto" }}>Map</h1>
         {plan.image && (
           <>
             <button className={`btn ${editing ? "btn-primary" : "btn-ghost"}`} onClick={() => setEditing((v) => !v)}>
