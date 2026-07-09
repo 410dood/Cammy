@@ -3011,13 +3011,75 @@ async fn create_timelapse(
         ));
     }
 
+    // Event-aware speed (P2.12): map the day's events to windows in the CONCAT
+    // stream's timeline (segments are ~SEG_LEN back-to-back) and slow the
+    // time-lapse near them while zipping through quiet stretches.
+    const SEG_LEN: i64 = 60;
+    const PRE: f64 = 3.0;
+    const POST: f64 = 3.0;
+    const OUT_FPS: f64 = 24.0;
+    const SLOW_STRIDE: f64 = 0.15; // source-seconds between kept frames near events
+    let events = st
+        .db
+        .list_events(Some(id), None, None, None, Some(day_start), Some(day_end), false, 5000)
+        .unwrap_or_default();
+    let mut windows: Vec<(f64, f64)> = Vec::new();
+    for ev in &events {
+        if let Some(i) = segs
+            .iter()
+            .position(|s| s.start_ts <= ev.ts && ev.ts < s.start_ts + SEG_LEN)
+        {
+            let within = (ev.ts - segs[i].start_ts).clamp(0, SEG_LEN) as f64;
+            let pos = i as f64 * SEG_LEN as f64 + within;
+            windows.push(((pos - PRE).max(0.0), pos + POST));
+        }
+    }
+    windows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for w in windows {
+        match merged.last_mut() {
+            Some(last) if w.0 <= last.1 + 1.0 => last.1 = last.1.max(w.1),
+            _ => merged.push(w),
+        }
+    }
+    merged.truncate(80); // keep the filter expression bounded
+
+    let total_span = (segs.len() as i64 * SEG_LEN).max(1) as f64;
+    let vf = if merged.is_empty() {
+        // No events → a plain uniform speed-up.
+        let speed = (total_span / target as f64).clamp(2.0, 3600.0);
+        format!("setpts=PTS/{speed}")
+    } else {
+        // Keep ~1 frame per `stride` source-seconds — dense (SLOW_STRIDE) inside
+        // event windows, sparse (fast_stride) elsewhere — then setpts re-times to a
+        // constant OUT_FPS. fast_stride is solved so the whole thing lands near the
+        // target length while leaving ≥20% of the frame budget for the quiet parts.
+        let event_secs: f64 = merged.iter().map(|(a, b)| b - a).sum();
+        let quiet_secs = (total_span - event_secs).max(1.0);
+        let target_frames = (target as f64 * OUT_FPS).max(1.0);
+        let event_frames = event_secs / SLOW_STRIDE;
+        let quiet_frames = (target_frames - event_frames).max(target_frames * 0.2);
+        let fast_stride = (quiet_secs / quiet_frames).clamp(SLOW_STRIDE * 2.0, 120.0);
+        // Commas inside the select expression are filtergraph-escaped (\,); the
+        // comma before setpts is the real filter separator.
+        let mask = merged
+            .iter()
+            .map(|(a, b)| format!("between(t\\,{a:.1}\\,{b:.1})"))
+            .collect::<Vec<_>>()
+            .join("+");
+        format!(
+            "select=eq(n\\,0)+gte(t-prev_selected_t\\, if(gt({mask}\\,0)\\, {SLOW_STRIDE}\\, {fast_stride:.3})),setpts=N/{}/TB",
+            OUT_FPS as i64
+        )
+    };
+
     std::fs::create_dir_all(&st.clips_dir).ok();
     std::fs::write(&marker, b"building").ok();
     st.db.add_audit(
         chrono::Local::now().timestamp(),
         None,
         "timelapse_started",
-        Some(&format!("{} {date}", cam.name)),
+        Some(&format!("{} {date} ({} event windows)", cam.name, merged.len())),
     );
 
     let clips_dir = st.clips_dir.clone();
@@ -3025,7 +3087,7 @@ async fn create_timelapse(
     let out_c = out.clone();
     let marker_c = marker.clone();
     tokio::spawn(async move {
-        let res = build_timelapse(&clips_dir, ffmpeg_bin.as_deref(), &segs, target, &out_c).await;
+        let res = build_timelapse(&clips_dir, ffmpeg_bin.as_deref(), &segs, vf, &out_c).await;
         std::fs::remove_file(&marker_c).ok();
         if let Err(e) = res {
             tracing::warn!("timelapse build failed: {e:#}");
@@ -3034,18 +3096,17 @@ async fn create_timelapse(
     Ok(Json(serde_json::json!({ "status": "building", "url": url })))
 }
 
-/// Concat the day's segments and re-time to ~`target_secs` (uniform speed-up).
+/// Concat the day's segments and apply the caller-built video filter `vf`
+/// (either a uniform `setpts` speed-up or the event-aware variable-speed `select`).
 async fn build_timelapse(
     clips_dir: &std::path::Path,
     ffmpeg_bin: Option<&std::path::Path>,
     segs: &[crate::db::SegmentRow],
-    target_secs: i64,
+    vf: String,
     out: &std::path::Path,
 ) -> anyhow::Result<()> {
     use std::io::Write;
     let ffmpeg = recorder::locate_ffmpeg(ffmpeg_bin)?;
-    let span = (segs.last().unwrap().start_ts - segs.first().unwrap().start_ts + 60).max(1);
-    let speed = ((span as f64) / (target_secs as f64)).clamp(2.0, 3600.0);
 
     // ffmpeg concat-demuxer list of absolute paths (single-quoted; escape any
     // embedded quote — paths are server-generated, so this is defensive).
@@ -3068,7 +3129,7 @@ async fn build_timelapse(
         std::process::Command::new(ffmpeg)
             .args(["-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"])
             .arg(&list_c)
-            .args(["-vf", &format!("setpts=PTS/{speed}"), "-an", "-r", "24"])
+            .args(["-vf", &vf, "-an", "-r", "24"])
             .args(["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
             .args(["-movflags", "+faststart", "-y"])
             .arg(&tmp_c)
