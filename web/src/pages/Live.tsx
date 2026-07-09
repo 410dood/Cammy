@@ -340,7 +340,15 @@ export default function Live({
         </div>
       )}
       {live.length === 0 ? (
-        <div className="empty">No cameras in “{group}”.</div>
+        <EmptyState
+          title={`No cameras in “${group}”`}
+          hint="This camera group is empty."
+          action={
+            <button className="btn btn-ghost" onClick={() => pickGroup("All")}>
+              Show all cameras
+            </button>
+          }
+        />
       ) : (
       <div className="live-grid">
         {(() => {

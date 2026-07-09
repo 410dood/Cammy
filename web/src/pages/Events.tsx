@@ -616,12 +616,17 @@ export default function Events({
         </div>
       )}
       <div className="row" style={{ marginBottom: 16 }}>
-        <button className={review === "all" ? "primary" : "ghost"} onClick={() => setReview("all")}>
+        <button
+          className={`btn ${review === "all" ? "btn-primary" : "btn-ghost"}`}
+          onClick={() => setReview("all")}
+          aria-pressed={review === "all"}
+        >
           All
         </button>
         <button
           className={`btn ${review === "alerts" ? "btn-primary" : "btn-ghost"}`}
           onClick={() => setReview("alerts")}
+          aria-pressed={review === "alerts"}
           title={`alert labels: ${alertLabels.join(", ")}`}
         >
           <IconBell size={15} /> Alerts
@@ -629,6 +634,7 @@ export default function Events({
         <button
           className={`btn ${flaggedOnly ? "btn-primary" : "btn-ghost"}`}
           onClick={() => setFlaggedOnly((v) => !v)}
+          aria-pressed={flaggedOnly}
           title="Show only bookmarked events (kept past retention)"
         >
           <IconStar size={15} filled={flaggedOnly} /> Saved
@@ -654,6 +660,7 @@ export default function Events({
         <button
           className={`btn ${grouped ? "btn-primary" : "btn-ghost"}`}
           onClick={() => setGrouped((v) => !v)}
+          aria-pressed={grouped}
           title="Group a run of detections into one activity (best frame + count + duration)"
         >
           <IconLayers size={15} /> Group
@@ -666,7 +673,11 @@ export default function Events({
         >
           <IconCheck size={15} /> {selectMode ? "Done" : "Select"}
         </button>
-        <select value={cameraId} onChange={(e) => setCameraId(e.target.value === "" ? "" : Number(e.target.value))}>
+        <select
+          value={cameraId}
+          onChange={(e) => setCameraId(e.target.value === "" ? "" : Number(e.target.value))}
+          aria-label="Filter by camera"
+        >
           <option value="">all cameras</option>
           {cameras.map((c) => (
             <option key={c.id} value={c.id}>
@@ -674,7 +685,7 @@ export default function Events({
             </option>
           ))}
         </select>
-        <select value={label} onChange={(e) => setLabel(e.target.value)}>
+        <select value={label} onChange={(e) => setLabel(e.target.value)} aria-label="Filter by object">
           <option value="">all objects</option>
           {labels.map((l) => (
             <option key={l} value={l}>
@@ -690,7 +701,7 @@ export default function Events({
             </option>
           ))}
         </select>
-        <span className="muted count">{shown.length} events · auto-refreshing</span>
+        <span className="muted count" style={{ marginLeft: "auto" }}>{shown.length} events · auto-refreshing</span>
         <a
           className="btn btn-ghost"
           href={exportUrl()}

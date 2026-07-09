@@ -515,7 +515,9 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
-input::placeholder, textarea::placeholder { color: var(--text-faint); }
+/* One tier up from --text-faint so placeholder text clears WCAG AA contrast
+   (the faintest ramp rung failed ~2.5:1 on input surfaces). */
+input::placeholder, textarea::placeholder { color: var(--text-subtle); }
 /* Custom chevron so <select> stops rendering as a light OS widget. */
 select {
   appearance: none;
@@ -697,14 +699,6 @@ button.pill:disabled { opacity: 0.5; cursor: default; }
   max-width: 92vw; max-height: 88vh;
   border-radius: var(--radius);
   box-shadow: var(--shadow-3);
-}
-
-.empty {
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  padding: 48px 20px;
-  text-align: center;
-  color: var(--muted);
 }
 
 .empty-state {
@@ -2093,4 +2087,9 @@ img.identity-thumb { background: var(--n-0); }
     border-top: 1px solid var(--border);
     padding: 12px 0;
   }
+
+  /* Comfortable touch targets on phones (were ~18px / 34px — below the 44px guide). */
+  .toast-close { padding: 8px; }
+  .modal-head .icon-btn,
+  .notif-head .icon-btn { width: 40px; height: 40px; }
 }
