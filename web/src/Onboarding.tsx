@@ -86,6 +86,10 @@ export default function Onboarding({
               Your self-hosted, private NVR with on-device AI. Nothing leaves this machine. Let's
               get your first camera streaming in a minute.
             </p>
+            <p className="muted" style={{ marginTop: 8 }}>
+              <b>Every feature is unlocked free for 30 days</b> — no card, no account. And it never
+              stops recording when the trial ends.
+            </p>
             <div className="onb-actions">
               <button className="btn btn-ghost" onClick={finish}>Skip setup</button>
               <button className="btn btn-primary" onClick={() => setStep(1)}>Get started</button>
@@ -129,6 +133,10 @@ export default function Onboarding({
             <p className="muted">
               Scan your network for cameras, or add one by typing its IP address. You'll finish
               adding it on the Cameras page, where you can enter credentials and pick what to record.
+            </p>
+            <p className="muted" style={{ fontSize: "var(--text-sm)" }}>
+              Once a camera connects, <b>recording starts right away</b> (see Recordings). AI events
+              appear under Events when a camera sees a person or vehicle move.
             </p>
             <button className="btn btn-secondary" disabled={scanning} onClick={scan}>
               <IconRadar size={15} /> {scanning ? "Scanning…" : "Scan network"}

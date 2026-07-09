@@ -1113,6 +1113,14 @@ function AboutCard() {
         </a>
         <a
           className="btn btn-ghost"
+          href="https://github.com/410dood/Cammy/blob/main/docs/TROUBLESHOOTING.md"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Troubleshooting
+        </a>
+        <a
+          className="btn btn-ghost"
           href="https://github.com/410dood/Cammy/issues"
           target="_blank"
           rel="noreferrer"

@@ -24,6 +24,9 @@ processed locally on your machine.
 That's it — AI detection works out of the box. macOS and Linux run the same
 engine; build from source (below) until native installers ship.
 
+Stuck? A black camera tile, no events, or an ONVIF scan that finds nothing are
+almost always a quick fix — see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+
 ## What you get
 
 - **Live** — a WebRTC grid of every camera at sub-second latency, camera groups,
