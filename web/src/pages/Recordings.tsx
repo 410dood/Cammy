@@ -24,6 +24,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
   // The raw segment list is minute-granularity — hundreds of near-identical
   // rows. Fold it into one row per camera-hour, expandable to the segments.
@@ -50,7 +51,8 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
         setSegments(s);
         setLoadError(null);
       })
-      .catch((e) => setLoadError(errMsg(e)));
+      .catch((e) => setLoadError(errMsg(e)))
+      .finally(() => setLoaded(true));
     api.stats().then(setStats).catch(() => {});
     // Fetch events for the timeline: all cameras (cross-camera lanes) or just one.
     api
@@ -274,7 +276,13 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       )}
 
       {segments.length === 0 ? (
-        loadError ? (
+        !loaded ? (
+          <div className="card" aria-busy="true" aria-label="Loading recordings">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <div key={i} className="skeleton" style={{ height: 18, margin: "10px 0" }} />
+            ))}
+          </div>
+        ) : loadError ? (
           <ErrorState what="recordings" message={loadError} onRetry={load} />
         ) : (
           <EmptyState

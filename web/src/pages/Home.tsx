@@ -202,7 +202,7 @@ export default function Home({
 
   return (
     <>
-      <h1>Overview</h1>
+      <h1>Home</h1>
 
       <div className="arm-bar" role="group" aria-label="Security mode" aria-busy={!loaded}>
         {ARM_MODES.map((m) => (

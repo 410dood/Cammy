@@ -330,7 +330,7 @@ export default function Alarms({
 
   return (
     <>
-      <h1>Alarm manager</h1>
+      <h1>Alarms</h1>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div className="card" style={{ margin: 0 }}>

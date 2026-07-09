@@ -345,7 +345,21 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
           <span style={{ color: "var(--ok)" }}>
             New <b>{fresh.role}</b> token “{fresh.name}” — copy it now, it won’t be shown again:
           </span>
-          <code style={{ userSelect: "all", wordBreak: "break-all" }}>{fresh.token}</code>
+          <div className="row" style={{ gap: 8, alignItems: "center", width: "100%" }}>
+            <code style={{ userSelect: "all", wordBreak: "break-all", flex: 1 }}>{fresh.token}</code>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() =>
+                navigator.clipboard?.writeText(fresh.token).then(
+                  () => toast.success("Token copied"),
+                  () => {},
+                )
+              }
+            >
+              Copy
+            </button>
+          </div>
         </div>
       )}
       {tokens.length > 0 && (
@@ -605,7 +619,21 @@ function TwoFactorCard({ onError }: { onError: (e: string) => void }) {
             <summary className="muted" style={{ cursor: "pointer" }}>
               Show otpauth link
             </summary>
-            <code style={{ wordBreak: "break-all", fontSize: "var(--text-sm)" }}>{setup.otpauth_uri}</code>
+            <div className="row" style={{ gap: 8, alignItems: "center", marginTop: 6 }}>
+              <code style={{ wordBreak: "break-all", fontSize: "var(--text-sm)", flex: 1 }}>{setup.otpauth_uri}</code>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() =>
+                  navigator.clipboard?.writeText(setup.otpauth_uri).then(
+                    () => toast.success("Link copied"),
+                    () => {},
+                  )
+                }
+              >
+                Copy
+              </button>
+            </div>
           </details>
           <p className="muted" style={{ marginBottom: 4 }}>
             2. Enter the 6-digit code it shows to confirm:

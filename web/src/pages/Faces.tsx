@@ -276,7 +276,8 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
 
   return (
     <>
-      <h1>People &amp; vehicles</h1>
+      <h1>People</h1>
+      <p className="muted" style={{ marginTop: 0 }}>Faces and vehicles seen across your cameras.</p>
 
       <div className="card">
         <h2>People</h2>

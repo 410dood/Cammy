@@ -836,7 +836,13 @@ export default function Events({
           <EmptyState
             icon={<IconBell />}
             title="No events yet"
-            hint="Events appear here when a detect-enabled camera sees motion and the AI recognizes an object — a person, vehicle, package, and more."
+            hint="Events appear here when a detect-enabled camera sees motion and the AI recognizes an object — a person, vehicle, package, and more. Detections only fire on movement, so try walking in front of a camera."
+            action={
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
+                <a className="btn btn-ghost" href="#/cameras">Is a camera online with “detect” on? → Cameras</a>
+                <a className="btn btn-ghost" href="#/settings">Is the detector model installed? → Settings › Models</a>
+              </div>
+            }
           />
         )
       ) : (

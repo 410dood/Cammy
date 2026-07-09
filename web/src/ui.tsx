@@ -280,20 +280,51 @@ let toastSeq = 1;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // Per-toast auto-dismiss timers, tracked so we can PAUSE them while the user
+  // hovers or focuses the stack (WCAG 2.2.1 Timing Adjustable, Level A — the
+  // close button must not be the only way to beat a 4–6s timeout).
+  const timers = useRef<Map<number, { handle: number; remaining: number; startedAt: number }>>(new Map());
 
   const remove = useCallback((id: number) => {
-    setToasts((t) => t.filter((x) => x.id !== id));
+    const t = timers.current.get(id);
+    if (t) {
+      window.clearTimeout(t.handle);
+      timers.current.delete(id);
+    }
+    setToasts((ts) => ts.filter((x) => x.id !== id));
   }, []);
+
+  const arm = useCallback(
+    (id: number, ms: number) => {
+      timers.current.set(id, { handle: window.setTimeout(() => remove(id), ms), remaining: ms, startedAt: Date.now() });
+    },
+    [remove],
+  );
 
   const push = useCallback(
     (message: string, kind: ToastKind = "info") => {
       const id = toastSeq++;
       setToasts((t) => [...t, { id, kind, message }]);
-      // Errors linger a little longer; everything auto-dismisses.
-      window.setTimeout(() => remove(id), kind === "error" ? 6000 : 4000);
+      // Errors linger a little longer; everything auto-dismisses (paused on hover/focus).
+      arm(id, kind === "error" ? 6000 : 4000);
     },
-    [remove],
+    [arm],
   );
+
+  const pauseAll = useCallback(() => {
+    const now = Date.now();
+    for (const t of timers.current.values()) {
+      window.clearTimeout(t.handle);
+      t.remaining = Math.max(1200, t.remaining - (now - t.startedAt));
+    }
+  }, []);
+  const resumeAll = useCallback(() => {
+    const now = Date.now();
+    for (const [id, t] of timers.current) {
+      t.startedAt = now;
+      t.handle = window.setTimeout(() => remove(id), t.remaining);
+    }
+  }, [remove]);
 
   const api: ToastApi = {
     push,
@@ -302,22 +333,39 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     info: (m) => push(m, "info"),
   };
 
+  const renderToast = (t: Toast) => (
+    <div key={t.id} className={`toast toast-${t.kind}`}>
+      <span className="toast-ico">
+        {t.kind === "success" ? <IconCheck size={16} /> : t.kind === "error" ? <IconAlert size={16} /> : <IconInfo size={16} />}
+      </span>
+      <span className="toast-msg">{t.message}</span>
+      <button className="toast-close" aria-label="Dismiss" onClick={() => remove(t.id)}>
+        <IconX size={14} />
+      </button>
+    </div>
+  );
+
+  // Latest message per urgency, mirrored into always-mounted screen-reader live
+  // regions so errors announce assertively instead of queueing behind info/success.
+  const lastError = toasts.filter((t) => t.kind === "error").slice(-1)[0]?.message ?? "";
+  const lastPolite = toasts.filter((t) => t.kind !== "error").slice(-1)[0]?.message ?? "";
+
   return (
     <ToastCtx.Provider value={api}>
       {children}
-      <div className="toast-host" role="region" aria-live="polite" aria-label="Notifications">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast toast-${t.kind}`}>
-            <span className="toast-ico">
-              {t.kind === "success" ? <IconCheck size={16} /> : t.kind === "error" ? <IconAlert size={16} /> : <IconInfo size={16} />}
-            </span>
-            <span className="toast-msg">{t.message}</span>
-            <button className="toast-close" aria-label="Dismiss" onClick={() => remove(t.id)}>
-              <IconX size={14} />
-            </button>
-          </div>
-        ))}
+      <div
+        className="toast-host"
+        role="region"
+        aria-label="Notifications"
+        onMouseEnter={pauseAll}
+        onMouseLeave={resumeAll}
+        onFocus={pauseAll}
+        onBlur={resumeAll}
+      >
+        {toasts.map(renderToast)}
       </div>
+      <div className="sr-only" role="alert" aria-live="assertive">{lastError}</div>
+      <div className="sr-only" role="status" aria-live="polite">{lastPolite}</div>
     </ToastCtx.Provider>
   );
 }

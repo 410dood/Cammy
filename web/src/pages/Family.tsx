@@ -225,7 +225,7 @@ export default function Family({ cameras, onGo }: { cameras: Camera[]; onGo?: (p
 
   return (
     <div>
-      <h1>Family safety</h1>
+      <h1>Family</h1>
       <p className="muted" style={{ marginTop: 0 }}>
         Guided “modes” for the home — baby, pets, pool and aging-in-place. Each one is a recipe over
         the camera, zone, sound and alarm settings you already have; follow the steps to set it up.

@@ -1271,6 +1271,17 @@ label.file-btn:focus-within {
 .icon-btn:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border); }
 
 /* --- toasts ---------------------------------------------------------------- */
+/* Visually hidden but available to assistive tech (used by the toast live regions). */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .toast-host {
   position: fixed;
   right: 18px;
@@ -2072,4 +2083,14 @@ img.identity-thumb { background: var(--n-0); }
   /* Event-card action row: comfortable, wrapping tap targets. */
   .ev-actions { gap: 8px; }
   .ev-act { padding: 10px 14px; font-size: var(--text-sm); min-height: 40px; }
+
+  /* Lift the sticky Save bar above the fixed bottom tab bar (~86px) so its
+     primary Save button + "Unsaved changes" cue aren't hidden mid-edit. Solid
+     background + top border so scrolled content doesn't leak through. */
+  .save-bar {
+    bottom: calc(86px + env(safe-area-inset-bottom));
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    padding: 12px 0;
+  }
 }
