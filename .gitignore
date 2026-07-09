@@ -9,6 +9,8 @@ Cargo.lock
 /bin/go2rtc.exe
 /bin/ffmpeg
 /bin/ffmpeg.exe
+/bin/cloudflared
+/bin/cloudflared.exe
 
 # Model weights (downloaded, not committed)
 *.onnx
