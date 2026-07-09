@@ -258,6 +258,14 @@ pub fn hash_password(password: &str) -> String {
         .to_string()
 }
 
+/// A fixed valid argon2id hash (computed once, same params as a real password
+/// hash) used to equalize login latency on the unknown-username path so an
+/// attacker can't enumerate valid usernames from response timing.
+pub fn dummy_hash() -> &'static str {
+    static H: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    H.get_or_init(|| hash_password("cammy-timing-equalizer"))
+}
+
 /// Verify against either an argon2id PHC string or a legacy `v1$salt$hash`
 /// SHA-256 record (so passwords set by older builds keep working).
 pub fn verify_password(stored: &str, password: &str) -> bool {

@@ -486,7 +486,14 @@ async fn login(
                     role: crate::auth::Role::parse(&role),
                 })
             }
-            _ => None,
+            // Known user, wrong password: verify_password already ran in the guard.
+            Some(_) => None,
+            // Unknown user: run a dummy verify so login latency doesn't reveal
+            // whether the username exists (enumeration side channel).
+            None => {
+                let _ = crate::auth::verify_password(crate::auth::dummy_hash(), &req.password);
+                None
+            }
         }
     } else if let Some(stored) = &kv_password {
         if crate::auth::verify_password(stored, &req.password) {
@@ -1277,6 +1284,13 @@ async fn list_cameras(
     if let Some(set) = &allowed_cameras(&st, &p)? {
         cams.retain(|c| set.contains(&c.id));
     }
+    // Camera source URLs carry rtsp://user:pass@ credentials; only Admin reads
+    // them in the clear (mirrors /api/backup being force-bumped to Admin).
+    if p.role < crate::auth::Role::Admin {
+        for c in &mut cams {
+            redact_camera_creds(c);
+        }
+    }
     Ok(Json(cams))
 }
 
@@ -1285,8 +1299,11 @@ async fn get_camera(
     Path(id): Path<i64>,
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<Camera>> {
-    let cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    let mut cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
     require_camera(&allowed_cameras(&st, &p)?, id)?;
+    if p.role < crate::auth::Role::Admin {
+        redact_camera_creds(&mut cam);
+    }
     Ok(Json(cam))
 }
 
@@ -1335,6 +1352,38 @@ fn no_control(s: &str) -> bool {
 fn valid_source(s: &str) -> bool {
     let s = s.trim();
     !s.is_empty() && no_control(s)
+}
+
+/// Strip `user:pass@` userinfo from a URL-ish source so a non-Admin never sees
+/// camera/router credentials in the clear (they're frequently reused). Handles
+/// the common single-URL case and an rtsp URL embedded in an `exec:`/`ffmpeg:`
+/// command; a source with no `scheme://userinfo@` is returned unchanged.
+fn redact_url_creds(s: &str) -> String {
+    if let Some(scheme) = s.find("://") {
+        let after = scheme + 3;
+        let rest = &s[after..];
+        // The authority runs up to the first '/', '?', or whitespace (for exec:).
+        let auth_end = rest
+            .find(|c: char| c == '/' || c == '?' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let authority = &rest[..auth_end];
+        if let Some(at) = authority.rfind('@') {
+            let mut out = String::with_capacity(s.len());
+            out.push_str(&s[..after]);
+            out.push_str(&authority[at + 1..]);
+            out.push_str(&rest[auth_end..]);
+            return out;
+        }
+    }
+    s.to_string()
+}
+
+/// Blank the credential portion of a camera's source URLs in place.
+fn redact_camera_creds(c: &mut Camera) {
+    c.source = redact_url_creds(&c.source);
+    if let Some(ds) = c.detect_source.take() {
+        c.detect_source = Some(redact_url_creds(&ds));
+    }
 }
 
 async fn add_camera(
@@ -1433,21 +1482,33 @@ async fn patch_camera(
         cam.name = name;
     }
     if let Some(source) = patch.source {
-        if !valid_source(&source) {
-            return Err(bad_request(
-                "source must be non-empty and free of control characters",
-            ));
+        // A non-Admin sees a credential-redacted source; if they submit that exact
+        // redacted value back (having edited some other field) treat it as
+        // "unchanged" so they can't wipe the stored credentials (write-only, like
+        // smtp_pass). A genuinely new source still applies.
+        let masked_noop =
+            p.role < crate::auth::Role::Admin && redact_url_creds(&old_source) == source.trim();
+        if !masked_noop {
+            if !valid_source(&source) {
+                return Err(bad_request(
+                    "source must be non-empty and free of control characters",
+                ));
+            }
+            cam.source = source.trim().to_string();
         }
-        cam.source = source.trim().to_string();
     }
     if let Some(ds) = patch.detect_source {
         let ds = ds.trim();
-        if !no_control(ds) {
-            return Err(bad_request(
-                "sub-stream source must be free of control characters",
-            ));
+        let masked_noop = p.role < crate::auth::Role::Admin
+            && old_detect_source.as_deref().map(redact_url_creds).as_deref() == Some(ds);
+        if !masked_noop {
+            if !no_control(ds) {
+                return Err(bad_request(
+                    "sub-stream source must be free of control characters",
+                ));
+            }
+            cam.detect_source = (!ds.is_empty()).then(|| ds.to_string());
         }
-        cam.detect_source = (!ds.is_empty()).then(|| ds.to_string());
     }
     cam.enabled = patch.enabled.unwrap_or(cam.enabled);
     cam.detect = patch.detect.unwrap_or(cam.detect);
@@ -4438,8 +4499,37 @@ async fn get_settings(State(st): State<AppState>) -> Json<Settings> {
 
 async fn put_settings(
     State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Json(s): Json<Settings>,
 ) -> ApiResult<Json<Settings>> {
+    // Operators may tune detection/alerts, but security-critical config is
+    // Admin-only: the forward-auth SSO default role (a delta to admin escalates
+    // every unmatched proxied user) and the offsite-backup destination/credentials
+    // (repointing them exfiltrates all recordings). Consistent with /api/backup
+    // being Admin-gated. Reject a non-Admin PATCH that changes any of them.
+    if p.role < crate::auth::Role::Admin {
+        let cur = st.db.settings();
+        // offsite_secret_key is write-only (blanked on read); only a non-blank
+        // incoming value that differs counts as a change.
+        let secret_changed =
+            !s.offsite_secret_key.is_empty() && s.offsite_secret_key != cur.offsite_secret_key;
+        if s.auth_proxy_header != cur.auth_proxy_header
+            || s.auth_proxy_role_header != cur.auth_proxy_role_header
+            || s.auth_proxy_default_role != cur.auth_proxy_default_role
+            || s.offsite_backup_enabled != cur.offsite_backup_enabled
+            || s.offsite_endpoint != cur.offsite_endpoint
+            || s.offsite_region != cur.offsite_region
+            || s.offsite_bucket != cur.offsite_bucket
+            || s.offsite_prefix != cur.offsite_prefix
+            || s.offsite_access_key != cur.offsite_access_key
+            || secret_changed
+        {
+            return Err(ApiError(
+                StatusCode::FORBIDDEN,
+                "changing SSO forward-auth or offsite-backup settings requires an admin".into(),
+            ));
+        }
+    }
     if !(0.0..=1.0).contains(&s.confidence)
         || !(0.0..=1.0).contains(&s.nms_iou)
         || !(0.0..=1.0).contains(&s.motion_threshold)
@@ -4501,9 +4591,35 @@ async fn put_settings(
 #[cfg(test)]
 mod tests {
     use super::{
-        csv_field, events_to_csv, no_control, render_metrics, valid_group, valid_source,
-        BackupMetric, BookmarkReq, CamMetric,
+        csv_field, events_to_csv, no_control, redact_url_creds, render_metrics, valid_group,
+        valid_source, BackupMetric, BookmarkReq, CamMetric,
     };
+
+    #[test]
+    fn redact_url_creds_strips_userinfo() {
+        // rtsp/http URLs lose user:pass@ but keep host/port/path/query.
+        assert_eq!(
+            redact_url_creds("rtsp://admin:s3cret@192.168.1.50:554/stream1"),
+            "rtsp://192.168.1.50:554/stream1"
+        );
+        assert_eq!(
+            redact_url_creds("http://u:p@cam.local/onvif?x=1"),
+            "http://cam.local/onvif?x=1"
+        );
+        // No credentials -> unchanged.
+        assert_eq!(
+            redact_url_creds("rtsp://192.168.1.50:554/stream1"),
+            "rtsp://192.168.1.50:554/stream1"
+        );
+        // An rtsp URL embedded in an exec: command is redacted too, and the
+        // command tail (after whitespace) is preserved.
+        assert_eq!(
+            redact_url_creds("exec:ffmpeg -i rtsp://user:pw@host:554/s -f rtsp {output}"),
+            "exec:ffmpeg -i rtsp://host:554/s -f rtsp {output}"
+        );
+        // No scheme at all -> unchanged.
+        assert_eq!(redact_url_creds("not-a-url"), "not-a-url");
+    }
 
     #[test]
     fn csv_field_quotes_and_guards_against_formula_injection() {
