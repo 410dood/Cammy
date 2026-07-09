@@ -14,7 +14,67 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.3 — full competitor suite (#1–#70) integrated on main + cross-feature simplify, 2026-06-22
+## Current status: v0.4 — launch-hardening pass (licensing + UX + docs + rebuilt exes), 2026-07-08
+
+### Latest: commercial launch readiness sweep on main, 2026-07-08
+
+A "tighten up everything for a paid launch" pass driven by three parallel
+audit agents (licensing security/correctness, web-UX first-impression, docs/
+onboarding). Version bumped **0.3.2 → 0.4.0** (core + desktop + tauri). All
+`cargo clippy -D warnings` + **206 tests** + web `tsc`/`vite` green; every fix
+**live-E2E'd in Chrome against the rebuilt release NVR** (:8080, 7 real cameras).
+Commits `b77633f` (hardening), `abf54f0` (README), `40685c7` (nits+shots) on
+`main`.
+
+- **Licensing HIGH — trial-tamper fail-OPEN fixed** (`licensing.rs`): a
+  hand-edited trial stamp made `read_trial_start` return `None`, which
+  `trial_status` mapped to `now()` → a *perpetual* 30-days-left trial (the exact
+  opposite of the documented fail-safe, and cheaper than the acknowledged
+  delete-the-DB reset). Now `TrialStamp::{Valid,Absent,Tampered}`; only `Absent`
+  starts a fresh clock, `Tampered` → `Expired`. Test asserts `Expired` through
+  `status()` (rewound-ts **and** trashed-tag). Also dropped the deprecated
+  `ring::constant_time::verify_slices_are_equal` for `ring::hmac::verify`.
+- **Fulfilment server hardening** (`scripts/fulfilment_server.py`): lock the
+  ledger read-modify-write (ThreadingHTTPServer races could clobber/double-issue
+  a paid order), fail loud on a corrupt existing ledger instead of overwriting
+  history, anchor state paths to the script dir (not cwd), cap the pre-auth
+  webhook body (1 MB), and fulfil **`order_updated`** so delayed-payment orders
+  (created `pending` → later `paid`) aren't dropped. `ls_setup.py` subscribes
+  both events. utf-8 writes + ASCII logs (ran clean on a cp1252 console;
+  `--selftest` green).
+- **Web UX**: Events **Clip** button now fetches the blob and toasts "No
+  recording covers this event" on a 404 instead of navigating the tab to raw
+  JSON (confirmed live: the 404 is `application/json`); **License pane** renders
+  a skeleton/`ErrorState` (never blank — it's the tab you go to to *pay*);
+  trial-dismiss persists per-day; **People** page warns when the face model is
+  absent; friendly "Can't reach the Cammy server" banner copy; new **About &
+  help** card (version from `/api/config` + site/docs/support links); CSV export
+  honors the tag filter; **Map** page title matches the nav; assistive-asterisk
+  footnote on the Alarms object dropdown. Killed user-visible `zoomy` remnants
+  (backup filename, webhook/recordings placeholders, MQTT hint) and internal
+  refs (`#63`, `docs/03`, "Faces page"→"People page").
+- **Marketing site** (`site/`): **$79** one-time + **30-day free trial** +
+  **Lemon Squeezy** checkout + the **never-brick promise**; refreshed 9-tile
+  feature grid; recaptured hero/events screenshots from the Cammy-branded build
+  (the old ones showed the pre-rebrand "Zoomy" title bar); buy button falls back
+  to `#download` until `CAMMY_CHECKOUT_URL` is set.
+- **Docs/infra**: `buy_url()` default → live `https://410dood.github.io/Cammy/`
+  (`cammy.app` is unregistered — was a dead "give us money" button); added
+  **LICENSE-MIT + LICENSE-APACHE** (README/Cargo claimed a dual license with no
+  files); `docker-compose.yml` publishes **loopback-only** (was a spoofable-XFF
+  hole with the `--trusted-proxy` default); **README rewritten customer-first**
+  (download-installer lead, real ~15-surface feature set, `#optional-ai-models`
+  table linked from the in-app Models card, `:18080` desktop note). `gitignore
+  /bin/`. Rebuilt **`target/release/zoomy.exe`** at 0.4.0; desktop NSIS installer
+  rebuilt.
+- **Deliberately NOT changed**: the internal `zoomy_`/`mqtt_prefix`/Prometheus
+  identifiers (HA discovery unique-ids are hardcoded `zoomy_` independent of the
+  prefix; renaming only the default adds inconsistency and would orphan an
+  existing HA setup — a coordinated rename is a separate, later effort). The
+  post-trial `allows_config()` enforcement seam stays unwired by design (docs/09
+  "never brick a camera system").
+
+### Earlier: v0.3 — full competitor suite (#1–#70) integrated on main + cross-feature simplify, 2026-06-22
 
 ### Latest: docs/08 Phase 1 COMPLETE — merged to main + live-tested, 2026-07-02
 

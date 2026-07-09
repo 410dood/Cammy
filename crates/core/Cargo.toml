@@ -1,6 +1,6 @@
 [package]
 name = "zoomy"
-version = "0.3.2"
+version = "0.4.0"
 description = "Cammy core: API + storage + supervisors for go2rtc, recording, and AI detection"
 edition.workspace = true
 license.workspace = true
