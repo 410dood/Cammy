@@ -13,7 +13,7 @@ function captionContradicts(ev: { label: string; caption: string | null }): bool
   return c.includes(`no ${l}`) || c.includes(`not a ${l}`);
 }
 import {
-  IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil, IconLink,
+  IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil, IconLink, IconShield,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
   IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX, IconVideo,
 } from "../icons";
@@ -295,6 +295,31 @@ export default function Events({
       URL.revokeObjectURL(url);
     } catch {
       toast.error("No recording covers this event — nothing to clip.");
+    }
+  };
+
+  // Export an evidence-grade copy: a watermarked clip whose SHA-256 is logged in
+  // the audit trail, so the file can be proven unaltered later.
+  const exportEvidence = async (ev: CamEvent) => {
+    try {
+      toast.info("Building evidence export (watermark + hash)…");
+      const r = await fetch(`/api/events/${ev.id}/evidence.mp4`);
+      if (!r.ok) throw new Error();
+      const sha = r.headers.get("x-cammy-sha256") ?? "";
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `evidence-${ev.id}.mp4`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(
+        sha
+          ? `Evidence exported · SHA-256 ${sha.slice(0, 16)}… (recorded in the audit log)`
+          : "Evidence exported",
+      );
+    } catch {
+      toast.error("Couldn't build the evidence export — no recording covers this event?");
     }
   };
 
@@ -1089,6 +1114,16 @@ export default function Events({
                     }}
                   >
                     <IconLink size={14} /> Share
+                  </button>
+                  <button
+                    className="btn btn-ghost ev-act"
+                    title="Export a watermarked evidence copy whose SHA-256 is logged for verification"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      exportEvidence(ev);
+                    }}
+                  >
+                    <IconShield size={14} /> Evidence
                   </button>
                   {ev.snapshot && (
                     <button

@@ -80,6 +80,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(soft_trigger),
         )
         .route("/api/events/{id}/clip", get(event_clip))
+        .route("/api/events/{id}/evidence.mp4", get(event_evidence))
         .route("/api/events/{id}/share", axum::routing::post(create_clip_share))
         .route("/api/events/{id}/similar", get(event_similar))
         .route("/api/search", get(smart_search))
@@ -3110,6 +3111,121 @@ async fn serve_timelapse(
             .parse()
             .expect("valid header"),
     );
+    Ok(resp)
+}
+
+/// Evidence-grade export (P2.13): the event's clip re-encoded with a burnt-in
+/// provenance watermark (Cammy · camera · local time · event id), plus a SHA-256
+/// recorded in the append-only audit log (and returned in an X-Cammy-SHA256
+/// header) so the exported file can be proven unaltered after the fact — the
+/// "give this to police / my insurer" use case. Operator+, RBAC-scoped.
+async fn event_evidence(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    req: Request,
+) -> ApiResult<Response> {
+    use chrono::TimeZone;
+    use sha2::Digest;
+    let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    let seg = st
+        .db
+        .find_segment_at(ev.camera_id, ev.ts)?
+        .ok_or_else(not_found)?;
+    let clip =
+        extract_event_clip(&st.clips_dir, st.ffmpeg_bin.as_deref(), ev.id, &seg, ev.ts, 5, 10)
+            .await?;
+
+    let out = st.clips_dir.join(format!("evidence-{id}.mp4"));
+    if !out.exists() {
+        // Watermark text → a temp file so we sidestep drawtext's inline escaping.
+        let local = chrono::Local
+            .timestamp_opt(ev.ts, 0)
+            .single()
+            .map(|t| t.format("%Y-%m-%d %H:%M:%S %Z").to_string())
+            .unwrap_or_default();
+        let text = format!("Cammy   {}   {}   event {}", ev.camera, local, id);
+        let txt_path = st.clips_dir.join(format!("evidence-{id}.txt"));
+        std::fs::write(&txt_path, &text).ok();
+        // Cross-platform font: first that exists. Escape paths for the filtergraph
+        // ('\'->'/' , ':'->'\:').
+        let esc = |s: &str| s.replace('\\', "/").replace(':', "\\:");
+        let font = [
+            "C:/Windows/Fonts/arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        ]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists());
+        let fontclause = font
+            .map(|f| format!("fontfile='{}':", esc(f)))
+            .unwrap_or_default();
+        let filter = format!(
+            "drawtext={fontclause}textfile='{}':x=12:y=12:fontsize=20:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8",
+            esc(txt_path.to_string_lossy().as_ref())
+        );
+        let ffmpeg = recorder::locate_ffmpeg(st.ffmpeg_bin.as_deref())?;
+        let tmp = st
+            .clips_dir
+            .join(format!("evidence-{id}.partial-{}.mp4", std::process::id()));
+        let (inp, tmp_c) = (clip.clone(), tmp.clone());
+        let status = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(ffmpeg)
+                .args(["-hide_banner", "-loglevel", "error", "-i"])
+                .arg(&inp)
+                .args(["-vf", &filter, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
+                .args(["-movflags", "+faststart", "-y"])
+                .arg(&tmp_c)
+                .no_console()
+                .status()
+        })
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        std::fs::remove_file(&txt_path).ok();
+        if !status.success() {
+            std::fs::remove_file(&tmp).ok();
+            return Err(ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "evidence encode failed".into(),
+            ));
+        }
+        if std::fs::rename(&tmp, &out).is_err() && !out.exists() {
+            std::fs::remove_file(&tmp).ok();
+            return Err(ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not publish evidence".into(),
+            ));
+        }
+    }
+
+    // SHA-256 of the exported file, anchored in the append-only audit log.
+    let bytes = std::fs::read(&out)
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let sha = crate::util::hex(&sha2::Sha256::digest(&bytes));
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "evidence_exported",
+        Some(&format!("event {id} ({} on {}) sha256={sha}", ev.label, ev.camera)),
+    );
+
+    let mut resp = ServeFile::new(&out).oneshot(req).await.into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"evidence-{}-{}-{}.mp4\"", ev.camera, ev.label, ev.ts)
+            .parse()
+            .expect("valid header"),
+    );
+    resp.headers_mut()
+        .insert("x-cammy-sha256", sha.parse().expect("hex header"));
     Ok(resp)
 }
 
