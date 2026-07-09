@@ -73,6 +73,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [camera, setCamera] = useState<string>("");
   const [running, setRunning] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [status, setStatus] = useState("Idle — start the camera to read hand signals.");
   const [current, setCurrent] = useState<{ gesture: string; score: number } | null>(null);
   const [touchless, setTouchless] = useState(false);
@@ -146,10 +147,15 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
   };
 
   const start = async () => {
+    // The startup chain (CDN model import, WASM download, getUserMedia) takes
+    // seconds; guard re-entry so an impatient second click doesn't spin up a
+    // second recognizer + webcam stream and orphan the first (privacy + GPU).
+    if (running || starting) return;
     if (settings && !settings.gesture_recognition) {
       setStatus("Hand-signal recognition is disabled in Settings.");
       return;
     }
+    setStarting(true);
     setStatus("Loading hand-landmark model…");
     try {
       // @vite-ignore — the module URL is dynamic (CDN / self-hosted).
@@ -203,6 +209,8 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
         `Could not start: ${e}. The model loads from a CDN — check your connection, or set a self-hosted model URL in Settings.`
       );
       stop();
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -319,8 +327,8 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
       <div className="card">
         <div className="row" style={{ marginBottom: 12 }}>
           {!running ? (
-            <button className="btn btn-primary" onClick={start}>
-              <IconPlay size={14} /> Start camera
+            <button className="btn btn-primary" onClick={start} disabled={starting}>
+              <IconPlay size={14} /> {starting ? "Starting…" : "Start camera"}
             </button>
           ) : (
             <button className="btn btn-danger-solid" onClick={stop}>

@@ -119,7 +119,9 @@ export default function CameraDetail({
       const r = await api.recordingAt(camera.id, ts);
       setPlaying({ segment: r.segment, offset: r.offset_secs });
     } catch {
-      /* gap */
+      // No segment covers this instant (retention-pruned or a recording gap) —
+      // tell the user instead of a silent dead-click.
+      toast.error("No recording covers this moment");
     }
   };
 

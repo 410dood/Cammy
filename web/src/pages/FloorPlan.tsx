@@ -4,7 +4,7 @@
 
 import { ChangeEvent, MouseEvent, useEffect, useRef, useState } from "react";
 import { api, Camera, FloorPlan, Settings, StatusMap } from "../api";
-import { useToast, TogglePill, ErrorState, EmptyState } from "../ui";
+import { useToast, TogglePill, ErrorState, EmptyState, usePolling } from "../ui";
 import { IconUpload, IconVideo, IconCheck, IconMap } from "../icons";
 
 async function resizeToDataUrl(file: File, maxDim: number): Promise<string> {
@@ -56,8 +56,14 @@ export default function FloorPlanPage({
 
   useEffect(() => {
     loadPlan();
-    api.status().then(setStatus).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // The Map's whole value is live online/offline dots — poll status (paused when
+  // the tab is hidden) so a camera dropping while the Map is open doesn't show a
+  // stale green dot indefinitely.
+  usePolling(() => {
+    api.status().then(setStatus).catch(() => {});
+  }, 10000);
 
   const save = async (next: FloorPlan) => {
     setPlan(next);

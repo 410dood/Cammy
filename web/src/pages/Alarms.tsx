@@ -776,6 +776,22 @@ export default function Alarms({
               />
             </label>
           </div>
+          {!label &&
+            cameraId === "" &&
+            !zoneLike.trim() &&
+            !faceLike.trim() &&
+            !plateLike.trim() &&
+            !gestureLike.trim() &&
+            !transcriptLike.trim() &&
+            !promptLike.trim() &&
+            !vlmPrompt.trim() &&
+            !confirmLabel.trim() &&
+            !faceUnknown && (
+              <div className="callout callout-warn" role="status" style={{ marginTop: 14 }}>
+                Heads up — this rule has no conditions, so it matches <b>every detection on every camera</b>. Add
+                an object, camera, zone, face, or plate to scope it (or expect a lot of alerts).
+              </div>
+            )}
           <div
             className="row"
             style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)", justifyContent: "flex-end" }}

@@ -136,9 +136,12 @@ function TuneModal({
     suppress_stationary: camera.detect_config.suppress_stationary ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
+  const [saving, setSaving] = useState(false);
 
   const toast = useToast();
   const save = async () => {
+    if (saving) return; // patch restarts go2rtc on detect_source change — don't double-submit
+    setSaving(true);
     try {
       await api.patchCamera(camera.id, {
         detect_config: dc,
@@ -149,6 +152,8 @@ function TuneModal({
       onClose();
     } catch (e) {
       onError(String(e));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -653,11 +658,11 @@ function TuneModal({
       </div>
 
       <div className="dialog-actions tune-foot">
-        <button className="btn btn-ghost" onClick={onClose}>
+        <button className="btn btn-ghost" onClick={onClose} disabled={saving}>
           Cancel
         </button>
-        <button className="btn btn-primary" onClick={save}>
-          Save
+        <button className="btn btn-primary" onClick={save} disabled={saving}>
+          {saving ? "Saving…" : "Save"}
         </button>
       </div>
     </Modal>
