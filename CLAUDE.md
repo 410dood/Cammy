@@ -14,9 +14,84 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — launch-hardening pass (licensing + UX + docs + rebuilt exes), 2026-07-08
+## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
-### Latest: commercial launch readiness sweep on main, 2026-07-08
+### Latest: two-round improvement sweep on main — 23 commits, 2026-07-09
+
+A long autonomous session driven by two adversarially-verified audit workflows
+(each fanning out read-only lens auditors → per-finding verify → ranked backlog),
+then shipping the backlog one validated commit at a time. **23 commits on `main`**,
+every one `cargo clippy -D warnings` clean + **163 core tests** + web `tsc`/`vite`
+green, and **live-validated in headless Chrome / curl against the running release
+NVR** (:8080, 7 real cameras) — Rust changes clippy+tested to `target/debug` first
+(no server stop), then a release rebuild + restart to go live. A self-review
+workflow over the session diff caught + fixed one real toast-timer bug.
+
+**Round 1 (docs-audit backlog + verification):**
+- Commercialization (`site/`, README): honest trial-first buy flow (the loud "Buy
+  $79" CTA silently fell back to #download when `CAMMY_CHECKOUT_URL` is empty — now
+  trial is the primary CTA, Buy routes to pricing until checkout is configured),
+  a fears-answering FAQ + source-available trust band, an honest **competitor
+  comparison table**, `$29/yr`-clarity, README v0.4.
+- Correctness (`api.rs`/`db.rs`/`pipeline.rs`): **clip-cache poisoning** (ffmpeg
+  wrote the final path with `-y`, so a failed run served a corrupt file forever →
+  extract-to-temp + atomic rename), CSV export honoring its `tag` filter,
+  self-password-change session invalidation, notifications hard-cap, pipeline
+  settings reuse, `events(camera_id,label,ts)` index.
+- UX: empty-state honesty (Recordings false "no recordings" flash, Events first-run
+  self-check), **toast a11y** (assertive errors + pause-on-hover), title/nav
+  consistency, copy-token buttons, a11y+touch sweep, mobile save-bar.
+- Perf: visibility-aware polling, cameras-fetch-once.
+- Features: **Spotlights** (Home feed ranked by importance×recency), **Insights**
+  analytics dashboard over a NEW efficient `/api/analytics/timeseries` (SQL GROUP
+  BY, no raw-event transfer).
+
+**Round 2 (deeper audit — under-covered surfaces + security):**
+- **Security / RBAC least-privilege (live-validated via a role-scoped token over
+  the LAN IP, since loopback=admin):** camera RTSP/ONVIF credentials were readable
+  by any Viewer via `GET /api/cameras` → `redact_url_creds` strips `user:pass@` for
+  sub-Admins (+ a write-back guard so a re-submitted masked source can't wipe
+  creds); Operators could raise `auth_proxy_default_role` to admin or repoint the
+  offsite-backup destination → `put_settings` now 403s a sub-Admin delta to any
+  `auth_proxy_*`/`offsite_*` field; login username-enumeration timing side channel
+  closed with a dummy argon2 verify.
+- Perf/correctness: bundle **code-split** (React.lazy + vendor chunk: 430 KB
+  monolith → 122 KB entry + cached 142 KB react), faces loaded once/tick (not
+  once/frame), bounded + `spawn_blocking`-offloaded smart-search, ONVIF worker
+  hardening (lock-poison tolerance, map pruning, per-camera subscribe backoff),
+  visibility-paused polls, Map live-status polling, Family mode honesty (gate "On"
+  on pose-model presence; broaden activity-feed labels), Signals double-start
+  guard, alarm no-condition warning, tuning-modal discard guard + busy state,
+  ZoneEditor hides residential toggles on `ignore` zones.
+- **Marquee features (each with adversarial or manual security review):**
+  - **P2.7 shareable expiring clip links** — `clip_shares` table, `POST
+    /api/events/{id}/share` mints a 256-bit `zoomy_share_<hex>` (hash-only stored,
+    returned once), PUBLIC auth-exempt `GET /share/{token}` validates hash+expiry+
+    !revoked then serves the clip via the shared `extract_event_clip` helper,
+    rate-limited + audited, Events "Share" + Settings revoke UI. Manually
+    security-reviewed (no bypass/traversal/IDOR; expiry+revoke enforced).
+  - **Alarm rule Edit** — `db.update_alarm` + `PUT /api/alarms/{id}` +
+    pre-fill-the-builder UI (was delete-and-recreate only).
+  - **P2.12 day time-lapse** — background-job `POST …/timelapse?date=` (concat +
+    setpts), cached under `clips_dir`, `GET …/timelapse.mp4`, Recordings button +
+    poll (built a 315-segment day in ~7s → 12.9 MB mp4).
+  - **P2.13 evidence export** — `GET /api/events/{id}/evidence.mp4` re-encodes with
+    a drawtext provenance watermark (Cammy · camera · local time · event id;
+    cross-platform fontfile with filtergraph path-escaping) + SHA-256 anchored in
+    the append-only audit log + `X-Cammy-SHA256`. Watermark render confirmed on an
+    extracted frame.
+
+**Documented follow-ups (deliberately deferred):** event-aware variable-speed
+time-lapse (v1 is uniform); a full evidence zip+manifest + Ed25519 signature +
+`zoomy verify` CLI (v1 anchors the hash in the audit log); the ZoneEditor's full
+visual card-restructure (only the semantic ignore-zone fix shipped); Home
+`/api/overview` rewiring (superseded — Spotlights needs the events list);
+prettyGesture in config dropdowns. **GOTCHA:** the test env's events and retained
+segments are temporally misaligned (retention keeps ~3 days; events go back
+further), so clip/share/evidence happy-paths often 404 on old events — this is
+correct behavior, and the extract path is code-identical to the shipped `/clip`.
+
+### Earlier: commercial launch readiness sweep on main, 2026-07-08
 
 A "tighten up everything for a paid launch" pass driven by three parallel
 audit agents (licensing security/correctness, web-UX first-impression, docs/
