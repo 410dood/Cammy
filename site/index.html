@@ -81,6 +81,17 @@
 
     footer { border-top: 1px solid var(--border); padding: 34px 0 60px; color: var(--muted); font-size: 0.88rem; text-align: center; }
     footer a { margin: 0 10px; }
+    .compare-wrap { overflow-x: auto; max-width: 960px; margin: 0 auto; border: 1px solid var(--border); border-radius: 14px; }
+    .compare { width: 100%; border-collapse: collapse; font-size: 0.93rem; min-width: 680px; }
+    .compare th, .compare td { padding: 13px 16px; text-align: center; border-bottom: 1px solid var(--border); }
+    .compare tbody tr:last-child td { border-bottom: none; }
+    .compare thead th { color: var(--muted); font-weight: 600; font-size: 0.86rem; }
+    .compare thead th.cammy { color: var(--accent); }
+    .compare th:first-child, .compare td:first-child { text-align: left; color: var(--text); font-weight: 500; }
+    .compare td.cammy, .compare th.cammy { background: rgba(0,111,255,0.07); }
+    .compare td.y { color: var(--ok); font-weight: 700; }
+    .compare td.n { color: var(--muted); }
+    .compare-note { text-align: center; color: var(--muted); font-size: 0.8rem; margin-top: 14px; }
     @media (max-width: 640px) { .hero { padding-top: 54px; } section { padding: 48px 0; } }
   </style>
 </head>
@@ -91,6 +102,7 @@
       <div class="brand">Cam<span>my</span></div>
       <nav>
         <a href="#features">Features</a>
+        <a href="#compare">Compare</a>
         <a href="#pricing">Pricing</a>
         <a href="#faq">FAQ</a>
         <a href="#download">Download</a>
@@ -135,6 +147,85 @@
         <div class="feature"><div class="ico">🔒</div><h3>Private by design</h3><p>Everything — video, AI models, face data — stays on your machine. Multi-user roles, two-factor auth, privacy masks, audit log. Zero cloud, zero telemetry, zero monthly fees.</p></div>
       </div>
       <div style="margin-top: 40px;" class="shot"><img src="assets/events.jpeg" alt="Event review with smart search and face tags" /></div>
+    </div>
+  </section>
+
+  <section id="compare">
+    <div class="wrap">
+      <h2>How Cammy compares</h2>
+      <p class="lead">The same class of features as the big names — without being locked to one OS, one camera brand, or a subscription.</p>
+      <div class="compare-wrap">
+        <table class="compare">
+          <thead>
+            <tr>
+              <th>Feature</th>
+              <th class="cammy">Cammy</th>
+              <th>Blue Iris</th>
+              <th>Frigate</th>
+              <th>UniFi Protect</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Windows, macOS &amp; Linux</td>
+              <td class="cammy y">All three</td>
+              <td class="n">Windows only</td>
+              <td class="n">Linux / Docker</td>
+              <td class="n">UniFi NVR only</td>
+            </tr>
+            <tr>
+              <td>Works with any RTSP / ONVIF camera</td>
+              <td class="cammy y">✓</td>
+              <td class="y">✓</td>
+              <td class="y">✓</td>
+              <td class="n">Best with UniFi</td>
+            </tr>
+            <tr>
+              <td>Built-in AI person / vehicle detection</td>
+              <td class="cammy y">✓</td>
+              <td class="y">✓</td>
+              <td class="n">✓ (Coral / GPU)</td>
+              <td class="y">✓</td>
+            </tr>
+            <tr>
+              <td>Face recognition + license plates</td>
+              <td class="cammy y">Built in</td>
+              <td class="n">Add-ons</td>
+              <td class="n">Add-ons</td>
+              <td class="n">AI cameras</td>
+            </tr>
+            <tr>
+              <td>Natural-language, photo &amp; spoken-word search</td>
+              <td class="cammy y">✓</td>
+              <td class="n">—</td>
+              <td class="n">Partial</td>
+              <td class="n">Limited</td>
+            </tr>
+            <tr>
+              <td>Family &amp; safety modes (pool, baby, elderly)</td>
+              <td class="cammy y">✓</td>
+              <td class="n">—</td>
+              <td class="n">—</td>
+              <td class="n">—</td>
+            </tr>
+            <tr>
+              <td>Source-available</td>
+              <td class="cammy y">MIT / Apache</td>
+              <td class="n">—</td>
+              <td class="y">✓</td>
+              <td class="n">—</td>
+            </tr>
+            <tr>
+              <td>Price</td>
+              <td class="cammy y">$79 once</td>
+              <td class="n">~$70 + updates</td>
+              <td class="n">Free</td>
+              <td class="n">Hardware + cameras</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="compare-note">A fair summary as of 2026; every product evolves — check their sites for the latest. Cammy's wedge is portability, an integrated AI suite out of the box, and no lock-in.</p>
     </div>
   </section>
 
