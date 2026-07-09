@@ -56,7 +56,7 @@ const targetHint = (kind: ActionKind) =>
   kind === "webhook"
     ? "https://… (receives the event JSON)"
     : kind === "mqtt"
-      ? "topic suffix → zoomy/alarms/<suffix>"
+      ? "topic suffix — published under <MQTT prefix>/alarms/<suffix>"
       : kind === "email"
         ? "recipient@example.com (blank = default from Settings)"
         : "https://ntfy.sh/your-private-topic — free phone push, snapshot attached";
@@ -550,7 +550,7 @@ export default function Alarms({
             <div className="row" style={{ marginTop: 8, marginBottom: 12 }}>
               <label
                 className="field"
-                title="Fire when a person's face is detected but matches nobody you've enrolled — a stranger / unfamiliar-face alert. Needs face recognition on the camera, and at least one enrolled identity (enroll known faces on the Faces page) so only true unknowns alert."
+                title="Fire when a person's face is detected but matches nobody you've enrolled — a stranger / unfamiliar-face alert. Needs face recognition on the camera, and at least one enrolled identity (enroll known faces on the People page) so only true unknowns alert."
               >
                 <span>
                   <input
@@ -562,7 +562,7 @@ export default function Alarms({
                 </span>
                 {faceUnknown && (
                   <small className="muted">
-                    Enroll known faces (Faces page) first — strangers are detected only
+                    Enroll known faces (People page) first — strangers are detected only
                     relative to enrolled identities.
                   </small>
                 )}

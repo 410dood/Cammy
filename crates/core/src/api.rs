@@ -203,7 +203,10 @@ async fn health() -> Json<serde_json::Value> {
 
 /// Tells the UI where go2rtc's WebRTC endpoints live.
 async fn config(State(st): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "go2rtc_base": st.go2rtc.api_base() }))
+    Json(serde_json::json!({
+        "go2rtc_base": st.go2rtc.api_base(),
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 /// GET /api/license — current entitlement (trial / licensed / expired) plus the
@@ -217,16 +220,16 @@ async fn license_status(State(st): State<AppState>) -> Json<serde_json::Value> {
     }))
 }
 
-/// The storefront the "Upgrade" / "Buy" buttons open. Defaults to the marketing
-/// page, but is overridable at runtime via the `CAMMY_BUY_URL` env var so the
-/// merchant link can be pointed at the real Lemon Squeezy product page (or a
-/// discounted campaign URL) without a rebuild. The link lives in exactly one
-/// place either way.
+/// The storefront the "Upgrade" / "Buy" buttons open. Defaults to the live
+/// marketing/download page (which carries the purchase link), and is overridable
+/// at runtime via the `CAMMY_BUY_URL` env var so the merchant link can be pointed
+/// straight at the Lemon Squeezy product page (or a campaign URL) without a
+/// rebuild. The link lives in exactly one place either way.
 fn buy_url() -> String {
     std::env::var("CAMMY_BUY_URL")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "https://cammy.app/buy".to_string())
+        .unwrap_or_else(|| "https://410dood.github.io/Cammy/".to_string())
 }
 
 #[derive(Deserialize)]

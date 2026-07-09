@@ -699,7 +699,7 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
         <div>The backup file contains your camera credentials in clear text — store it somewhere private.</div>
       </div>
       <div className="row" style={{ alignItems: "center" }}>
-        <a className="btn btn-ghost" href="/api/backup" download="zoomy-backup.json">
+        <a className="btn btn-ghost" href="/api/backup" download="cammy-backup.json">
           <IconDownload size={15} /> Download backup
         </a>
         <label className="btn btn-ghost" style={{ cursor: busy ? "wait" : "pointer" }}>
@@ -1060,6 +1060,42 @@ function applySettingsGroup(active: GroupKey) {
   });
 }
 
+// About / help / support surface: version + the links a stuck customer needs.
+// Lives under the License tab (the "meta" section). Read-only.
+function AboutCard() {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .config()
+      .then((c) => setVersion(c.version ?? null))
+      .catch(() => {});
+  }, []);
+  return (
+    <div className="card" data-settings-group="license">
+      <h2>About &amp; help</h2>
+      <p className="muted" style={{ marginTop: -4 }}>
+        Cammy{version ? ` v${version}` : ""} · local-first NVR · your cameras, your data.
+      </p>
+      <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+        <a className="btn btn-ghost" href="https://410dood.github.io/Cammy/" target="_blank" rel="noreferrer">
+          Website
+        </a>
+        <a className="btn btn-ghost" href="https://github.com/410dood/Cammy" target="_blank" rel="noreferrer">
+          Documentation
+        </a>
+        <a
+          className="btn btn-ghost"
+          href="https://github.com/410dood/Cammy/issues"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Get support
+        </a>
+      </div>
+    </div>
+  );
+}
+
 function SettingsTabs({ active, onSelect }: { active: GroupKey; onSelect: (g: GroupKey) => void }) {
   // Apply on every switch, and re-apply when a card mounts later (Users appears
   // once admin loads, 2FA/Account/Audit after their fetches) so an async card
@@ -1133,9 +1169,13 @@ function ModelsCard() {
     <div className="card" data-settings-group="detection">
       <h2>Models &amp; capabilities</h2>
       <p className="muted" style={{ marginTop: -4 }}>
-        Optional AI features only run when their model file is in the app directory.
-        A missing model means the feature does nothing — download it (see the README)
-        and restart.
+        Optional AI features only run when their model file is in the app directory. The
+        Windows installer bundles the core models; a feature marked "not downloaded" needs
+        its model added — see the{" "}
+        <a href="https://github.com/410dood/Cammy#optional-ai-models" target="_blank" rel="noreferrer">
+          model download guide
+        </a>
+        . Models are picked up within a minute of being added.
       </p>
       {err ? (
         <p className="muted">Couldn't load capabilities: {err}</p>
@@ -1458,7 +1498,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 }
               />
             </label>
-            <label className="field" title="A silent panic signal: when recognized it always fires at max push urgency (and pushes to the health ntfy topic), even if not in the armed list.">
+            <label className="field" title="A silent panic signal: when recognized it always fires at max urgency to your phone-push topic (set under Modes & alerts), even if not in the armed list.">
               duress / help signal
               <select value={s.gesture_duress ?? ""} onChange={(e) => set({ gesture_duress: e.target.value })}>
                 <option value="">none</option>
@@ -1756,6 +1796,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
 
         <LicensePane />
 
+        <AboutCard />
+
         <div className="card" data-settings-group="recording">
           <h2>Offsite backup</h2>
           <p className="muted" style={{ marginTop: 0 }}>
@@ -1972,7 +2014,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               webhook URL (POST per event; empty = off)
               <input
                 type="text"
-                placeholder="http://homeassistant.local:8123/api/webhook/zoomy"
+                placeholder="http://homeassistant.local:8123/api/webhook/cammy"
                 value={s.webhook_url}
                 onChange={(e) => set({ webhook_url: e.target.value })}
               />
@@ -2056,7 +2098,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 style={{ width: "100%", fontFamily: "monospace" }}
               />
               <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                Placeholders: {"{{camera}} {{label}} {{score}} {{snapshot}} {{face}} {{plate}} {{transcript}} {{caption}} {{severity}}"} — see docs/03.
+                Placeholders: {"{{camera}} {{label}} {{score}} {{snapshot}} {{face}} {{plate}} {{transcript}} {{caption}} {{severity}}"} — each is replaced with the event's value when the webhook fires.
               </span>
             </label>
           </div>
@@ -2122,7 +2164,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               recordings folder (empty = data/recordings; another drive or NAS share works)
               <input
                 type="text"
-                placeholder="D:\zoomy-recordings or \\nas\cams"
+                placeholder="D:\cammy-recordings or \\nas\cams"
                 value={s.recordings_dir ?? ""}
                 onChange={(e) => set({ recordings_dir: e.target.value })}
               />

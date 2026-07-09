@@ -279,6 +279,25 @@ export default function Events({
     }
   };
 
+  // Download the event clip via fetch so a missing recording (normal for a
+  // detect-only camera or pruned footage) shows a friendly message instead of
+  // navigating the whole tab to a raw JSON error page.
+  const downloadClip = async (ev: CamEvent) => {
+    try {
+      const r = await fetch(`/api/events/${ev.id}/clip`);
+      if (!r.ok) throw new Error();
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `event-${ev.id}.mp4`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("No recording covers this event — nothing to clip.");
+    }
+  };
+
   // Appearance search: find the same person/vehicle on other cameras/times.
   // A token guards against out-of-order responses (and a late response
   // re-opening a modal the user already closed — the close handler bumps it too).
@@ -472,6 +491,7 @@ export default function Events({
     if (after != null) p.set("after", String(after));
     if (before != null) p.set("before", String(before));
     if (flaggedOnly) p.set("flagged", "true");
+    if (tagFilter) p.set("tag", tagFilter);
     return `/api/events/export.csv?${p}`;
   };
 
@@ -662,7 +682,11 @@ export default function Events({
           ))}
         </select>
         <span className="muted count">{shown.length} events · auto-refreshing</span>
-        <a className="btn btn-ghost" href={exportUrl()} title="Download the current filter as a CSV">
+        <a
+          className="btn btn-ghost"
+          href={exportUrl()}
+          title="Download events as CSV (camera, object, time, saved and tag filters apply)"
+        >
           <IconDownload size={15} /> Export CSV
         </a>
       </div>
@@ -1001,14 +1025,16 @@ export default function Events({
                   >
                     <IconPlay size={13} /> {noClip === ev.id ? "no clip" : "Recording"}
                   </button>
-                  <a
+                  <button
                     className="btn btn-ghost ev-act"
-                    href={`/api/events/${ev.id}/clip`}
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      downloadClip(ev);
+                    }}
                     title="Download a short clip"
                   >
                     <IconDownload size={14} /> Clip
-                  </a>
+                  </button>
                   {ev.snapshot && (
                     <button
                       className="btn btn-ghost ev-act"

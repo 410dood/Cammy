@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, CamEvent, GaitProfile, PlateEntry, PlateCategory } from "../api";
-import { useToast, useDialog, Modal, RelTime, ErrorState, EmptyState } from "../ui";
+import { useToast, useDialog, Modal, RelTime, ErrorState, EmptyState, Callout } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 import { IconUser, IconStranger, IconCar, IconAlert, IconCheck, IconTrash, IconPlus } from "../icons";
@@ -55,6 +55,9 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   const [gaitNames, setGaitNames] = useState<Record<number, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // If the face model isn't installed, face recognition silently does nothing —
+  // surface that instead of an eternally-empty People wall with no explanation.
+  const [faceMissing, setFaceMissing] = useState(false);
   // Reveal the unknown-face wall in pages, not all-at-once — "Show all 1900"
   // would render 1900 cards in one go.
   const [unknownCap, setUnknownCap] = useState(12);
@@ -74,6 +77,10 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
       setGaitProfiles(r.profiles);
       setGaitCands(r.candidates);
     }).catch(() => {});
+    api
+      .capabilities()
+      .then((r) => setFaceMissing(r.features.some((c) => c.key === "face" && !c.present)))
+      .catch(() => {});
   };
 
   const enrollGait = async (ev: CamEvent) => {
@@ -273,6 +280,12 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
 
       <div className="card">
         <h2>People</h2>
+        {faceMissing && (
+          <Callout tone="warn" icon={<IconAlert size={16} />}>
+            Face recognition model isn't installed, so faces won't be detected or named. Add
+            the model, then see Settings → Detection &amp; AI → Models &amp; capabilities.
+          </Callout>
+        )}
         {identities.length === 0 ? (
           loadError ? (
             <ErrorState what="people" message={loadError} onRetry={load} />
@@ -428,8 +441,9 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
         <h2>Plate library</h2>
         <p className="muted" style={{ marginTop: 0 }}>
           Name known vehicles and flag vehicles of interest — the car analog of the People library.
-          A <b>watch</b> plate fires a vehicle-of-interest alert (to the camera-health push topic)
-          the moment it's read on any camera; <b>known</b> plates just get labelled.
+          A <b>watch</b> plate sends a vehicle-of-interest push to your phone (uses the push topic
+          set in Settings → Modes &amp; alerts) the moment it's read on any camera; <b>known</b>{" "}
+          plates just get labelled.
         </p>
         <div className="row" style={{ marginBottom: 12 }}>
           <input

@@ -10,10 +10,28 @@ import { useEffect, useState } from "react";
 
 import { api, type Entitlement, type LicenseInfo } from "./api";
 import { IconInfo, IconAlert, IconCheck } from "./icons";
-import { Callout, useToast } from "./ui";
+import { Callout, ErrorState, useToast } from "./ui";
 
 /** Days-left threshold below which the shell banner appears. */
 const NUDGE_WINDOW_DAYS = 7;
+
+/** Dismissal is persisted per-day: during the last-week nudge window the banner
+ *  comes back at most once a day, not on every page load. */
+const DISMISS_KEY = "cammy-license-dismissed";
+function dismissedToday(): boolean {
+  try {
+    return localStorage.getItem(DISMISS_KEY) === new Date().toDateString();
+  } catch {
+    return false;
+  }
+}
+function rememberDismissal() {
+  try {
+    localStorage.setItem(DISMISS_KEY, new Date().toDateString());
+  } catch {
+    // private mode etc — fall back to session-only dismissal
+  }
+}
 
 function fmtDate(unixSecs: number): string {
   return new Date(unixSecs * 1000).toLocaleDateString(undefined, {
@@ -26,7 +44,7 @@ function fmtDate(unixSecs: number): string {
 /** Slim shell banner. Renders nothing unless the trial is ending soon or over. */
 export function LicenseBanner() {
   const [info, setInfo] = useState<LicenseInfo | null>(null);
-  const [dismissed, setDismissed] = useState(false);
+  const [dismissed, setDismissed] = useState(dismissedToday);
 
   useEffect(() => {
     api.license().then(setInfo).catch(() => {});
@@ -71,7 +89,14 @@ export function LicenseBanner() {
             Buy a license
           </a>
           {!expired && (
-            <button type="button" className="btn btn-ghost" onClick={() => setDismissed(true)}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => {
+                rememberDismissal();
+                setDismissed(true);
+              }}
+            >
               Dismiss
             </button>
           )}
@@ -88,7 +113,7 @@ function StatusLine({ ent, trialDays }: { ent: Entitlement; trialDays: number })
         <span className="role-pill role-admin" style={{ marginRight: 6 }}>
           Licensed
         </span>
-        {ent.plan === "lifetime" ? "Perpetual license" : "Update plan"} · {ent.email} ·{" "}
+        {ent.plan === "lifetime" ? "Perpetual license" : "Updates plan"} · {ent.email} ·{" "}
         {ent.seats} seat{ent.seats === 1 ? "" : "s"}
         {ent.expires != null && <> · updates until {fmtDate(ent.expires)}</>}
       </p>
@@ -113,15 +138,35 @@ function StatusLine({ ent, trialDays }: { ent: Entitlement; trialDays: number })
 export function LicensePane() {
   const toast = useToast();
   const [info, setInfo] = useState<LicenseInfo | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const load = () => api.license().then(setInfo).catch(() => {});
+  const load = () =>
+    api
+      .license()
+      .then((i) => {
+        setInfo(i);
+        setLoadErr(null);
+      })
+      .catch((e) => setLoadErr(String(e instanceof Error ? e.message : e)));
   useEffect(() => {
     load();
   }, []);
 
-  if (!info) return null;
+  // This card is the whole License tab — it must never render to nothing.
+  if (!info) {
+    return (
+      <div className="card" data-settings-group="license">
+        <h2>License</h2>
+        {loadErr ? (
+          <ErrorState what="license status" message={loadErr} onRetry={load} />
+        ) : (
+          <p className="muted">Loading license status…</p>
+        )}
+      </div>
+    );
+  }
   const licensed = info.entitlement.state === "licensed";
 
   const activate = async () => {

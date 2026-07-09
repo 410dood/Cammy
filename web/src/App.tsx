@@ -284,6 +284,17 @@ function MoreSheet({
   );
 }
 
+/** Turn a raw fetch/JS error into something a non-technical user can act on.
+ *  A bare "TypeError: Failed to fetch" reads like a crash; it usually just means
+ *  the server isn't reachable. */
+function friendlyError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  if (/failed to fetch|networkerror|load failed/i.test(raw)) {
+    return "Can't reach the Cammy server — check that it's running, then click to retry.";
+  }
+  return raw;
+}
+
 export default function App() {
   const [page, setPage] = useState<Page>(() => parseHash().page);
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -319,7 +330,7 @@ export default function App() {
         setCameras(c);
         setCamerasLoaded(true);
       })
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(friendlyError(e)));
   };
 
   // Navigate by writing the hash; the single hashchange listener applies it to
@@ -352,7 +363,7 @@ export default function App() {
     applyHash();
     window.addEventListener("hashchange", applyHash);
 
-    api.config().then(setConfig).catch((e) => setError(String(e)));
+    api.config().then(setConfig).catch((e) => setError(friendlyError(e)));
     loadNotifs();
     const notifTimer = setInterval(loadNotifs, 20000);
     // Cmd/Ctrl-K toggles the command palette.
@@ -543,8 +554,8 @@ export default function App() {
       </header>
       <main className="main">
         {error && (
-          <div className="error-banner" role="alert" onClick={() => setError(null)}>
-            {error} (click to dismiss)
+          <div className="error-banner" role="alert" onClick={() => setError(null)} title="Click to dismiss">
+            {error}
           </div>
         )}
         <LicenseBanner />

@@ -60,7 +60,7 @@ def api(key: str, method: str, path: str, body: dict | None = None) -> dict:
             detail = json.dumps(json.loads(detail).get("errors", detail), indent=2)
         except Exception:
             pass
-        sys.exit(f"LS API {method} {url} → HTTP {e.code}\n{detail}")
+        sys.exit(f"LS API {method} {url} -> HTTP {e.code}\n{detail}")
 
 
 def first_store(key: str) -> dict:
@@ -97,7 +97,7 @@ def cmd_check(key: str) -> None:
 
     if not prods:
         print("\nNEXT: create the product in the dashboard (API can't):")
-        print("  Store → Products → New Product → 'Cammy', single payment $79,")
+        print("  Store -> Products -> New Product → 'Cammy', single payment $79,")
         print("  then Publish. Re-run --check to see its variant id + buy URL.")
     else:
         print("\nProduct exists. Wire fulfilment with:")
@@ -115,7 +115,10 @@ def cmd_webhook(key: str, url: str, secret: str | None) -> None:
     store = first_store(key)
     sid = store["id"]
     secret = secret or secrets.token_hex(20)  # LS signing secret (<=40 chars)
-    events = ["order_created"]
+    # order_updated matters too: a delayed-payment order arrives as
+    # order_created status=pending and only flips to paid in order_updated —
+    # without it that buyer would never be fulfilled.
+    events = ["order_created", "order_updated"]
 
     existing = find_order_webhook(key, sid, url)
     payload = {
@@ -130,10 +133,10 @@ def cmd_webhook(key: str, url: str, secret: str | None) -> None:
     if existing:
         payload["data"]["id"] = existing["id"]
         api(key, "PATCH", f"/webhooks/{existing['id']}", payload)
-        print(f"updated webhook {existing['id']} → {url}")
+        print(f"updated webhook {existing['id']} -> {url}")
     else:
         created = api(key, "POST", "/webhooks", payload)
-        print(f"created webhook {created['data']['id']} → {url}")
+        print(f"created webhook {created['data']['id']} -> {url}")
 
     print("\nSet these — the SAME secret must be on both sides:")
     print(f"  # on the fulfilment server:")

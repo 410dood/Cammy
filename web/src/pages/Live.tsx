@@ -365,7 +365,7 @@ export default function Live({
                 )}
               </div>
               {alert && (
-                <div className="tile-alert" title={tamper ? "Possible camera tampering (#63)" : "Stream frozen — camera online but no fresh frames"}>
+                <div className="tile-alert" title={tamper ? "Possible camera tampering — the view changed abruptly (covered, moved, or defocused)" : "Stream frozen — camera online but no fresh frames"}>
                   <IconAlert size={13} /> {alert}
                 </div>
               )}

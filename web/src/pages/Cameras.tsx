@@ -1114,8 +1114,9 @@ export default function Cameras({
           </button>
         </form>
         <p className="muted" style={{ marginBottom: 0 }}>
-          Names: lowercase letters, digits, "-", "_". The source is passed to go2rtc verbatim, so{" "}
-          <code>rtsp://</code>, <code>ffmpeg:</code>, <code>exec:</code>… all work.
+          Names: lowercase letters, digits, "-", "_". Most cameras use an <code>rtsp://</code>{" "}
+          address; advanced sources (<code>ffmpeg:</code>, <code>exec:</code>…) are passed to the
+          stream engine verbatim.
         </p>
         </details>
       </div>

@@ -313,6 +313,8 @@ export interface DiscoveredCam {
 
 export interface AppConfig {
   go2rtc_base: string;
+  /** Server build version (Cargo package version), e.g. "0.4.0". */
+  version?: string;
 }
 
 export type ArmMode = "home" | "away" | "disarmed";

@@ -26,7 +26,8 @@ Depends only on the stdlib + `cryptography` (already required to sign). No Flask
     python3 scripts/fulfilment_server.py --port 8787
 
 Point a Lemon Squeezy webhook at  https://your-host/…  for the `order_created`
-event, using the same signing secret. Put this behind TLS (a reverse proxy).
+AND `order_updated` events (a delayed-payment order only flips to paid in the
+update), using the same signing secret. Put this behind TLS (a reverse proxy).
 
 ── Variant mapping ──────────────────────────────────────────────────────────
 By default every order issues a `lifetime`, 2-seat key. To sell an update plan
@@ -58,6 +59,7 @@ import json
 import os
 import smtplib
 import sys
+import threading
 import time
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -67,8 +69,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from license_sign import build_key, load_seed  # noqa: E402
 
 
-SPOOL_DIR = Path(os.environ.get("CAMMY_FULFILMENT_SPOOL", "fulfilment-spool"))
-LEDGER = Path(os.environ.get("CAMMY_FULFILMENT_LEDGER", "fulfilment-ledger.json"))
+# Default state paths are anchored to this script's directory, NOT the cwd —
+# restarting the server from a different directory must not silently start a
+# blank ledger (which would let Lemon Squeezy retries double-issue keys).
+_HERE = Path(__file__).resolve().parent
+SPOOL_DIR = Path(os.environ.get("CAMMY_FULFILMENT_SPOOL", _HERE / "fulfilment-spool"))
+LEDGER = Path(os.environ.get("CAMMY_FULFILMENT_LEDGER", _HERE / "fulfilment-ledger.json"))
+
+# ThreadingHTTPServer handles requests concurrently; the ledger read-modify-write
+# in fulfil() must be atomic or a concurrent order (or an LS retry racing the
+# original) can clobber another order's entry and later double-issue.
+_LEDGER_LOCK = threading.Lock()
+
+# Cap the pre-auth body read: the webhook endpoint is internet-facing and reads
+# the body before signature verification, so an unauthenticated request must not
+# be able to allocate unbounded memory. Real LS payloads are a few KB.
+MAX_BODY_BYTES = 1_000_000
 
 
 # ── issuance ────────────────────────────────────────────────────────────────
@@ -107,18 +123,29 @@ def plan_for_order(cfg: dict, variant_id: str, variant_name: str) -> dict:
 
 
 def parse_order(body: dict) -> dict | None:
-    """Pull the fields we need out of a Lemon Squeezy order_created payload.
-    Returns None if this isn't an order we should fulfil."""
+    """Pull the fields we need out of a Lemon Squeezy order webhook payload.
+    Returns None if this isn't an order we should fulfil.
+
+    Both `order_created` and `order_updated` are accepted: an order paid with a
+    delayed payment method arrives as `order_created` with status `pending` and
+    only flips to `paid` in a later `order_updated` — fulfilling on the update
+    (idempotent via the ledger) is what keeps that buyer from being dropped."""
     meta = body.get("meta") or {}
-    if meta.get("event_name") != "order_created":
+    if meta.get("event_name") not in ("order_created", "order_updated"):
         return None
     data = body.get("data") or {}
     attrs = data.get("attributes") or {}
     email = attrs.get("user_email")
     if not email:
         return None
-    # A refunded/failed order should not mint a key.
+    # A refunded/failed order should not mint a key; a pending one is fulfilled
+    # by the order_updated that marks it paid — log it loudly so a stuck pending
+    # order is visible even if that update never comes.
     status = (attrs.get("status") or "paid").lower()
+    if status == "pending":
+        oid = data.get("id") or attrs.get("order_number")
+        print(f"[PENDING] order {oid} ({email}) not yet paid — awaiting order_updated", flush=True)
+        return None
     if status not in ("paid", "active"):
         return None
     item = attrs.get("first_order_item") or {}
@@ -166,7 +193,10 @@ def spool(order_id: str, email: str, key: str, reason: str) -> None:
     SPOOL_DIR.mkdir(parents=True, exist_ok=True)
     safe = "".join(c if c.isalnum() else "_" for c in order_id) or "unknown"
     path = SPOOL_DIR / f"order-{safe}.txt"
-    path.write_text(f"order: {order_id}\nemail: {email}\nreason: {reason}\nkey:\n{key}\n")
+    path.write_text(
+        f"order: {order_id}\nemail: {email}\nreason: {reason}\nkey:\n{key}\n",
+        encoding="utf-8",
+    )
     print(f"[SPOOL] order {order_id}: key written to {path} ({reason}) — deliver manually", flush=True)
 
 
@@ -201,15 +231,24 @@ def deliver_email(to_email: str, body: str) -> bool:
 # ── ledger (idempotency) ────────────────────────────────────────────────────
 
 def ledger_read() -> dict:
+    if not LEDGER.exists():
+        return {}
+    # An EXISTING ledger that cannot be read or parsed must be a hard error, not
+    # an empty dict — returning {} here would let the next write atomically
+    # replace the whole issuance history with a single order. The caller's
+    # crash-spool path preserves the in-flight order; a human fixes the file.
     try:
         return json.loads(LEDGER.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
+    except (OSError, json.JSONDecodeError) as e:
+        raise RuntimeError(
+            f"ledger {LEDGER} exists but is unreadable/corrupt ({e}) — "
+            "refusing to continue, fix or move it"
+        ) from e
 
 
 def ledger_write(led: dict) -> None:
     tmp = LEDGER.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(led, indent=2, sort_keys=True))
+    tmp.write_text(json.dumps(led, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(LEDGER)
 
 
@@ -217,40 +256,45 @@ def ledger_write(led: dict) -> None:
 
 def fulfil(priv, cfg: dict, order: dict) -> dict:
     """Issue + deliver for one parsed order. Idempotent via the ledger.
-    Returns a small status dict. Never raises for a normal failure — it spools."""
-    led = ledger_read()
-    prior = led.get(order["order_id"])
-    if prior and prior.get("delivered"):
-        return {"status": "duplicate", "order": order["order_id"]}
+    Returns a small status dict. Never raises for a normal failure — it spools.
 
-    spec = plan_for_order(cfg, order["variant_id"], order["variant_name"])
-    key = prior.get("key") if prior else None
-    if not key:
-        key = build_key(
-            priv,
-            email=order["email"],
-            plan=spec["plan"],
-            seats=spec["seats"],
-            order=str(order["order_id"]),
-            expires=spec["expires"],
-        )
+    The whole read-modify-write runs under one lock: ThreadingHTTPServer handles
+    requests concurrently, and two racing orders (or an order racing its own LS
+    retry) would otherwise clobber each other's ledger entries."""
+    with _LEDGER_LOCK:
+        led = ledger_read()
+        prior = led.get(order["order_id"])
+        if prior and prior.get("delivered"):
+            return {"status": "duplicate", "order": order["order_id"]}
 
-    body = render_email(key, spec["seats"], spec["plan"], spec["expires"])
-    delivered = deliver_email(order["email"], body)
-    if not delivered:
-        spool(order["order_id"], order["email"], key, reason="smtp-unconfigured-or-failed")
+        spec = plan_for_order(cfg, order["variant_id"], order["variant_name"])
+        key = prior.get("key") if prior else None
+        if not key:
+            key = build_key(
+                priv,
+                email=order["email"],
+                plan=spec["plan"],
+                seats=spec["seats"],
+                order=str(order["order_id"]),
+                expires=spec["expires"],
+            )
 
-    led[order["order_id"]] = {
-        "email": order["email"],
-        "plan": spec["plan"],
-        "key": key,
-        "delivered": delivered,
-        "issued_at": int(time.time()),
-    }
-    ledger_write(led)
-    print(f"[ISSUE] order {order['order_id']} → {order['email']} "
-          f"({spec['plan']}, {spec['seats']} seats), delivered={delivered}", flush=True)
-    return {"status": "delivered" if delivered else "spooled", "order": order["order_id"]}
+        body = render_email(key, spec["seats"], spec["plan"], spec["expires"])
+        delivered = deliver_email(order["email"], body)
+        if not delivered:
+            spool(order["order_id"], order["email"], key, reason="smtp-unconfigured-or-failed")
+
+        led[order["order_id"]] = {
+            "email": order["email"],
+            "plan": spec["plan"],
+            "key": key,
+            "delivered": delivered,
+            "issued_at": int(time.time()),
+        }
+        ledger_write(led)
+        print(f"[ISSUE] order {order['order_id']} -> {order['email']} "
+              f"({spec['plan']}, {spec['seats']} seats), delivered={delivered}", flush=True)
+        return {"status": "delivered" if delivered else "spooled", "order": order["order_id"]}
 
 
 def verify_signature(secret: str, raw: bytes, header_sig: str | None) -> bool:
@@ -281,6 +325,9 @@ def make_handler(priv, cfg: dict, secret: str):
 
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
+            if length > MAX_BODY_BYTES:
+                self._send(413, {"error": "payload too large"})
+                return
             raw = self.rfile.read(length) if length else b""
             sig = self.headers.get("X-Signature")
             if not verify_signature(secret, raw, sig):
@@ -402,6 +449,20 @@ def selftest() -> None:
     refund = json.loads(raw)
     refund["data"]["attributes"]["status"] = "refunded"
     assert parse_order(refund) is None, "refunded order was not ignored"
+
+    # 6. a pending order is deferred; the order_updated that marks it paid fulfils
+    pending = json.loads(raw)
+    pending["data"]["id"] = "99003"
+    pending["data"]["attributes"]["status"] = "pending"
+    assert parse_order(pending) is None, "pending order was fulfilled early"
+    updated = json.loads(raw)
+    updated["data"]["id"] = "99003"
+    updated["meta"]["event_name"] = "order_updated"
+    updated["data"]["attributes"]["status"] = "paid"
+    upd_order = parse_order(updated)
+    assert upd_order and upd_order["order_id"] == "99003", "paid order_updated not fulfillable"
+    fulfil(priv, cfg, upd_order)
+    assert "99003" in ledger_read(), "order_updated order not issued"
 
     print("selftest OK — signature check, issuance, idempotency, subscription mapping, refund guard all pass")
     print(f"  sample key: {key[:48]}…")

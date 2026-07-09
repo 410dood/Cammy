@@ -124,6 +124,7 @@ impl Entitlement {
     /// UI to decide whether to show the upgrade nudge, and the single hook a
     /// future feature-gate would consult. Recording/viewing must NOT be gated on
     /// this — an expired trial still protects the home.
+    #[allow(dead_code)] // deliberate policy seam, unwired by design (docs/09)
     pub fn is_active(&self) -> bool {
         !matches!(self, Entitlement::Expired { .. })
     }
@@ -133,7 +134,8 @@ impl Entitlement {
     /// trial/license, read-only nudge-to-buy once expired — but it is the one
     /// place to adjust the post-trial policy without touching call sites. It is
     /// intentionally NOT wired into request handling yet; enabling enforcement
-    /// is a deliberate business decision (see docs/licensing.md).
+    /// is a deliberate business decision (see docs/09-licensing-and-monetization.md).
+    #[allow(dead_code)] // deliberate policy seam, unwired by design (docs/09)
     pub fn allows_config(&self) -> bool {
         self.is_active()
     }
@@ -146,6 +148,7 @@ fn now() -> i64 {
 /// Verify a pasted/stored key: Ed25519 signature check, then parse. Returns the
 /// signed [`License`] on success. Pure — no DB, no clock — so it is trivially
 /// unit-testable and safe to call from the activation endpoint.
+#[cfg_attr(not(test), allow(dead_code))] // production-key entry point; exercised by tests
 pub fn verify_key(key: &str) -> Result<License> {
     verify_key_with(LICENSE_PUBKEY_B64URL, key)
 }
@@ -216,10 +219,18 @@ fn status_with(db: &Db, pubkey_b64: &str) -> Entitlement {
 
 fn trial_status(db: &Db) -> Entitlement {
     let start = match read_trial_start(db) {
-        Some(ts) => ts,
+        TrialStamp::Valid(ts) => ts,
         // No stamp yet (should be set at startup); treat "now" as the start so we
         // never accidentally report expired before the trial has even begun.
-        None => now(),
+        TrialStamp::Absent => now(),
+        // A stamp that exists but fails its integrity check was hand-edited.
+        // Fail SAFE to expired — treating it as absent would restart the trial,
+        // rewarding exactly the edit the tag exists to deter.
+        TrialStamp::Tampered => {
+            return Entitlement::Expired {
+                reason: format!("{TRIAL_DAYS}-day trial ended"),
+            };
+        }
     };
     let ends = start + TRIAL_DAYS * 86_400;
     let secs_left = ends - now();
@@ -269,17 +280,39 @@ pub fn deactivate(db: &Db) -> Result<()> {
     Ok(())
 }
 
-/// Read the trial start, returning `None` if absent OR if its integrity tag does
-/// not match (a detected edit fails safe to "no valid trial").
-fn read_trial_start(db: &Db) -> Option<i64> {
-    let raw = db.get_kv(KV_TRIAL_START)?;
-    let ts: i64 = raw.trim().parse().ok()?;
-    let tag = db.get_kv(KV_TRIAL_TAG)?;
-    if constant_time_eq(tag.as_bytes(), trial_tag(ts).as_bytes()) {
-        Some(ts)
+/// Outcome of reading the trial-start stamp. `Tampered` is kept distinct from
+/// `Absent` because the two must fail differently: absent (never stamped) starts
+/// the clock, tampered (stamp fails its integrity tag) fails safe to expired.
+enum TrialStamp {
+    Valid(i64),
+    Absent,
+    Tampered,
+}
+
+/// Read the trial start, verifying its integrity tag. Any inconsistency in a
+/// *present* stamp — unparseable timestamp, missing/undecodable tag, or an HMAC
+/// mismatch — counts as tampering.
+fn read_trial_start(db: &Db) -> TrialStamp {
+    let Some(raw) = db.get_kv(KV_TRIAL_START) else {
+        return TrialStamp::Absent;
+    };
+    let Ok(ts) = raw.trim().parse::<i64>() else {
+        tracing::warn!("trial timestamp is not a number — treating trial as elapsed");
+        return TrialStamp::Tampered;
+    };
+    let tag_ok = db
+        .get_kv(KV_TRIAL_TAG)
+        .and_then(|t| URL_SAFE_NO_PAD.decode(t).ok())
+        .is_some_and(|tag| {
+            let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, TRIAL_TAG_SECRET);
+            // ring::hmac::verify recomputes and compares in constant time.
+            ring::hmac::verify(&key, format!("trial_start:{ts}").as_bytes(), &tag).is_ok()
+        });
+    if tag_ok {
+        TrialStamp::Valid(ts)
     } else {
         tracing::warn!("trial timestamp integrity tag mismatch — treating trial as elapsed");
-        None
+        TrialStamp::Tampered
     }
 }
 
@@ -289,11 +322,6 @@ fn trial_tag(ts: i64) -> String {
     let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, TRIAL_TAG_SECRET);
     let tag = ring::hmac::sign(&key, format!("trial_start:{ts}").as_bytes());
     URL_SAFE_NO_PAD.encode(tag.as_ref())
-}
-
-/// Length-independent byte comparison for the (short, non-secret) trial tag.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    ring::constant_time::verify_slices_are_equal(a, b).is_ok()
 }
 
 #[cfg(test)]
@@ -442,8 +470,15 @@ mod tests {
         let db = test_db();
         ensure_trial_started(&db).unwrap();
         // Rewind the clock by editing the row but NOT the tag: integrity fails,
-        // so we must not honour the forged start.
+        // and the ENTITLEMENT must be Expired — not a fresh trial (which would
+        // reward the edit with a perpetual 30-days-left state).
         db.set_kv(KV_TRIAL_START, "100").unwrap();
-        assert!(read_trial_start(&db).is_none());
+        assert!(matches!(read_trial_start(&db), TrialStamp::Tampered));
+        assert!(matches!(status(&db), Entitlement::Expired { .. }));
+        // A trashed tag (not just a rewound timestamp) must fail the same way.
+        let db2 = test_db();
+        ensure_trial_started(&db2).unwrap();
+        db2.set_kv(KV_TRIAL_TAG, "garbage").unwrap();
+        assert!(matches!(status(&db2), Entitlement::Expired { .. }));
     }
 }

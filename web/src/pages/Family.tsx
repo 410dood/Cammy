@@ -30,7 +30,7 @@ const MODES: Mode[] = [
     setup: [
       "On the nursery camera (Cameras page) turn on “body pose monitoring” and “audio detection”.",
       "In that camera’s zone editor, draw a zone over the crib and name it (e.g. “Crib”).",
-      "Download the pose model (yolov8n-pose.onnx) and set its path under Settings → Detection.",
+      "Download the pose model (yolov8n-pose.onnx) and set its path in Settings → Recording & backup → “pose model path”.",
       "On the Alarms page add rules: object “standing” in zone “Crib”, object “covered_face” in zone “Crib”, and a “Baby cry” sound alarm — pick how you want to be notified.",
     ],
     safety:

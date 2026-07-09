@@ -6,8 +6,11 @@
 #   3. docker compose up -d --build
 #
 # Front it with the Caddy/nginx config in DEPLOYMENT.md §3 (the default command
-# includes --trusted-proxy). If you expose 8080 directly, override `command` to
-# drop --trusted-proxy.
+# includes --trusted-proxy). The port is published on loopback only, so the
+# --trusted-proxy default is safe: only a same-host reverse proxy can reach it.
+# To serve without a proxy, change the published address to "8080:8080" AND
+# uncomment the `command` below (which drops --trusted-proxy) — never expose the
+# port to the network while --trusted-proxy is on (X-Forwarded-For is spoofable).
 
 services:
   cammy:
@@ -16,7 +19,7 @@ services:
     container_name: cammy
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./models:/models        # working dir: *.onnx / *.bin / *.csv model files
       - ./data:/data            # SQLite db, recordings, snapshots, go2rtc.yaml
