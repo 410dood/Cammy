@@ -323,6 +323,32 @@ export default function Events({
     }
   };
 
+  // Export a self-verifying evidence *bundle*: a ZIP with the watermarked clip, a
+  // signed manifest pinning its SHA-256, and instructions to re-check it offline
+  // (`zoomy --verify bundle.zip`). The recipient needs no login and no Cammy.
+  const exportBundle = async (ev: CamEvent) => {
+    try {
+      toast.info("Building signed evidence bundle (clip + manifest + signature)…");
+      const r = await fetch(`/api/events/${ev.id}/evidence.zip`);
+      if (!r.ok) throw new Error();
+      const sha = r.headers.get("x-cammy-sha256") ?? "";
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `evidence-${ev.id}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(
+        sha
+          ? `Signed bundle exported · verify with "zoomy --verify" (SHA-256 ${sha.slice(0, 16)}…)`
+          : "Signed evidence bundle exported",
+      );
+    } catch {
+      toast.error("Couldn't build the evidence bundle — no recording covers this event?");
+    }
+  };
+
   // Mint a no-login, auto-expiring link to this event's clip and copy it.
   const shareClip = async (ev: CamEvent) => {
     try {
@@ -1124,6 +1150,16 @@ export default function Events({
                     }}
                   >
                     <IconShield size={14} /> Evidence
+                  </button>
+                  <button
+                    className="btn btn-ghost ev-act"
+                    title="Export a self-verifying evidence bundle (ZIP: watermarked clip + Ed25519-signed manifest). Anyone can re-check it offline with: zoomy --verify"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      exportBundle(ev);
+                    }}
+                  >
+                    <IconShield size={14} /> Bundle
                   </button>
                   {ev.snapshot && (
                     <button

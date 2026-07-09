@@ -17,6 +17,7 @@ mod audio;
 mod auth;
 mod db;
 mod digest;
+pub mod evidence;
 mod gait;
 mod genai;
 mod go2rtc;
@@ -300,6 +301,7 @@ pub async fn run(
         db: db.clone(),
         go2rtc: go2rtc.clone(),
         snapshots_dir,
+        data_dir: cfg.data_dir.clone(),
         clips_dir: cfg.data_dir.join("clips"),
         faces_dir: cfg.data_dir.join("faces"),
         recordings_dir_default: recordings_dir.clone(),

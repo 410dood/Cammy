@@ -22,6 +22,8 @@ pub struct AppState {
     pub db: Db,
     pub go2rtc: Arc<Go2Rtc>,
     pub snapshots_dir: PathBuf,
+    /// Root data directory (holds `keys/` for the evidence signing key, etc.).
+    pub data_dir: PathBuf,
     pub clips_dir: PathBuf,
     pub faces_dir: PathBuf,
     pub recordings_dir_default: PathBuf,
@@ -81,6 +83,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/events/{id}/clip", get(event_clip))
         .route("/api/events/{id}/evidence.mp4", get(event_evidence))
+        .route("/api/events/{id}/evidence.zip", get(event_evidence_zip))
         .route("/api/events/{id}/share", axum::routing::post(create_clip_share))
         .route("/api/events/{id}/similar", get(event_similar))
         .route("/api/search", get(smart_search))
@@ -2721,7 +2724,12 @@ async fn extract_event_clip(
         // Unix), so concurrent first-time requests are safe — last rename wins.
         static CLIP_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let uniq = CLIP_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tmp_path = clips_dir.join(format!("{clip_name}.partial-{}-{uniq}", std::process::id()));
+        // Keep the `.mp4` extension LAST so ffmpeg can infer the output muxer from
+        // it — a temp name ending in `.partial-N` leaves ffmpeg with no format.
+        let tmp_path = clips_dir.join(format!(
+            "event-{event_id}-{pre}-{post}.partial-{}-{uniq}.mp4",
+            std::process::id()
+        ));
         let out = tmp_path.clone();
         let status = tokio::task::spawn_blocking(move || {
             std::process::Command::new(ffmpeg)
@@ -3180,6 +3188,81 @@ async fn serve_timelapse(
 /// recorded in the append-only audit log (and returned in an X-Cammy-SHA256
 /// header) so the exported file can be proven unaltered after the fact — the
 /// "give this to police / my insurer" use case. Operator+, RBAC-scoped.
+/// Build (or reuse a cached) watermarked evidence clip for `ev`, returning its
+/// path. The watermark burns provenance (Cammy · camera · local time · event id)
+/// into the pixels. Shared by the `.mp4` and `.zip` evidence exports.
+async fn ensure_evidence_mp4(
+    clips_dir: &std::path::Path,
+    ffmpeg_bin: Option<&std::path::Path>,
+    ev: &crate::db::Event,
+    clip: &std::path::Path,
+) -> ApiResult<PathBuf> {
+    use chrono::TimeZone;
+    let out = clips_dir.join(format!("evidence-{}.mp4", ev.id));
+    if out.exists() {
+        return Ok(out);
+    }
+    // Watermark text → a temp file so we sidestep drawtext's inline escaping.
+    let local = chrono::Local
+        .timestamp_opt(ev.ts, 0)
+        .single()
+        .map(|t| t.format("%Y-%m-%d %H:%M:%S %Z").to_string())
+        .unwrap_or_default();
+    let text = format!("Cammy   {}   {}   event {}", ev.camera, local, ev.id);
+    let txt_path = clips_dir.join(format!("evidence-{}.txt", ev.id));
+    std::fs::write(&txt_path, &text).ok();
+    // Cross-platform font: first that exists. Escape paths for the filtergraph
+    // ('\'->'/' , ':'->'\:').
+    let esc = |s: &str| s.replace('\\', "/").replace(':', "\\:");
+    let font = [
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    ]
+    .into_iter()
+    .find(|p| std::path::Path::new(p).exists());
+    let fontclause = font
+        .map(|f| format!("fontfile='{}':", esc(f)))
+        .unwrap_or_default();
+    let filter = format!(
+        "drawtext={fontclause}textfile='{}':x=12:y=12:fontsize=20:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8",
+        esc(txt_path.to_string_lossy().as_ref())
+    );
+    let ffmpeg = recorder::locate_ffmpeg(ffmpeg_bin)?;
+    let tmp = clips_dir.join(format!("evidence-{}.partial-{}.mp4", ev.id, std::process::id()));
+    let (inp, tmp_c) = (clip.to_path_buf(), tmp.clone());
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-i"])
+            .arg(&inp)
+            .args(["-vf", &filter, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
+            .args(["-movflags", "+faststart", "-y"])
+            .arg(&tmp_c)
+            .no_console()
+            .status()
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    std::fs::remove_file(&txt_path).ok();
+    if !status.success() {
+        std::fs::remove_file(&tmp).ok();
+        return Err(ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "evidence encode failed".into(),
+        ));
+    }
+    if std::fs::rename(&tmp, &out).is_err() && !out.exists() {
+        std::fs::remove_file(&tmp).ok();
+        return Err(ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not publish evidence".into(),
+        ));
+    }
+    Ok(out)
+}
+
 async fn event_evidence(
     State(st): State<AppState>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -3188,8 +3271,6 @@ async fn event_evidence(
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
     req: Request,
 ) -> ApiResult<Response> {
-    use chrono::TimeZone;
-    use sha2::Digest;
     let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
     require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
     let seg = st
@@ -3199,75 +3280,12 @@ async fn event_evidence(
     let clip =
         extract_event_clip(&st.clips_dir, st.ffmpeg_bin.as_deref(), ev.id, &seg, ev.ts, 5, 10)
             .await?;
-
-    let out = st.clips_dir.join(format!("evidence-{id}.mp4"));
-    if !out.exists() {
-        // Watermark text → a temp file so we sidestep drawtext's inline escaping.
-        let local = chrono::Local
-            .timestamp_opt(ev.ts, 0)
-            .single()
-            .map(|t| t.format("%Y-%m-%d %H:%M:%S %Z").to_string())
-            .unwrap_or_default();
-        let text = format!("Cammy   {}   {}   event {}", ev.camera, local, id);
-        let txt_path = st.clips_dir.join(format!("evidence-{id}.txt"));
-        std::fs::write(&txt_path, &text).ok();
-        // Cross-platform font: first that exists. Escape paths for the filtergraph
-        // ('\'->'/' , ':'->'\:').
-        let esc = |s: &str| s.replace('\\', "/").replace(':', "\\:");
-        let font = [
-            "C:/Windows/Fonts/arial.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        ]
-        .into_iter()
-        .find(|p| std::path::Path::new(p).exists());
-        let fontclause = font
-            .map(|f| format!("fontfile='{}':", esc(f)))
-            .unwrap_or_default();
-        let filter = format!(
-            "drawtext={fontclause}textfile='{}':x=12:y=12:fontsize=20:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8",
-            esc(txt_path.to_string_lossy().as_ref())
-        );
-        let ffmpeg = recorder::locate_ffmpeg(st.ffmpeg_bin.as_deref())?;
-        let tmp = st
-            .clips_dir
-            .join(format!("evidence-{id}.partial-{}.mp4", std::process::id()));
-        let (inp, tmp_c) = (clip.clone(), tmp.clone());
-        let status = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(ffmpeg)
-                .args(["-hide_banner", "-loglevel", "error", "-i"])
-                .arg(&inp)
-                .args(["-vf", &filter, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
-                .args(["-movflags", "+faststart", "-y"])
-                .arg(&tmp_c)
-                .no_console()
-                .status()
-        })
-        .await
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        std::fs::remove_file(&txt_path).ok();
-        if !status.success() {
-            std::fs::remove_file(&tmp).ok();
-            return Err(ApiError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "evidence encode failed".into(),
-            ));
-        }
-        if std::fs::rename(&tmp, &out).is_err() && !out.exists() {
-            std::fs::remove_file(&tmp).ok();
-            return Err(ApiError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not publish evidence".into(),
-            ));
-        }
-    }
+    let out = ensure_evidence_mp4(&st.clips_dir, st.ffmpeg_bin.as_deref(), &ev, &clip).await?;
 
     // SHA-256 of the exported file, anchored in the append-only audit log.
     let bytes = std::fs::read(&out)
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let sha = crate::util::hex(&sha2::Sha256::digest(&bytes));
+    let sha = crate::evidence::sha256_hex(&bytes);
     let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
         .0
         .to_string();
@@ -3284,6 +3302,136 @@ async fn event_evidence(
         format!("attachment; filename=\"evidence-{}-{}-{}.mp4\"", ev.camera, ev.label, ev.ts)
             .parse()
             .expect("valid header"),
+    );
+    resp.headers_mut()
+        .insert("x-cammy-sha256", sha.parse().expect("hex header"));
+    Ok(resp)
+}
+
+/// Evidence *bundle* export: the same watermarked clip, packaged in a
+/// self-verifying ZIP with an Ed25519-signed `manifest.json` (pinning the clip's
+/// SHA-256 + full provenance), the signing `PUBLIC_KEY.txt`, and a `VERIFY.txt`.
+/// A recipient can prove the video came from this Cammy install and wasn't
+/// altered — offline, with `zoomy --verify <bundle.zip>`. Readable by any
+/// authenticated user with access to the event's camera (RBAC-scoped), mirroring
+/// the plain `.mp4` export.
+async fn event_evidence_zip(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Response> {
+    use chrono::TimeZone;
+    let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    let seg = st
+        .db
+        .find_segment_at(ev.camera_id, ev.ts)?
+        .ok_or_else(not_found)?;
+    let clip =
+        extract_event_clip(&st.clips_dir, st.ffmpeg_bin.as_deref(), ev.id, &seg, ev.ts, 5, 10)
+            .await?;
+    let mp4_path = ensure_evidence_mp4(&st.clips_dir, st.ffmpeg_bin.as_deref(), &ev, &clip).await?;
+    let mp4 = std::fs::read(&mp4_path)
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let sha = crate::evidence::sha256_hex(&mp4);
+
+    let key = crate::evidence::signing_key(&st.data_dir)
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let local = chrono::Local
+        .timestamp_opt(ev.ts, 0)
+        .single()
+        .map(|t| t.format("%Y-%m-%d %H:%M:%S %Z").to_string())
+        .unwrap_or_default();
+    let manifest = crate::evidence::Manifest {
+        format: crate::evidence::FORMAT.into(),
+        cammy_version: env!("CARGO_PKG_VERSION").into(),
+        event_id: ev.id,
+        camera: ev.camera.clone(),
+        label: ev.label.clone(),
+        event_unix: ev.ts,
+        event_local: local,
+        clip_file: "evidence.mp4".into(),
+        clip_sha256: sha.clone(),
+        generated_unix: chrono::Local::now().timestamp(),
+        public_key: crate::evidence::public_key_b64(&key),
+    };
+    let manifest_json = serde_json::to_vec_pretty(&manifest)
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Sign the EXACT bytes we store, so verification is byte-for-byte.
+    let sig = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        ring::signature::Ed25519KeyPair::sign(&key, &manifest_json).as_ref(),
+    );
+    let readme = format!(
+        "Cammy evidence bundle\n\
+         =====================\n\n\
+         This ZIP contains a surveillance clip and a cryptographically signed\n\
+         record of where it came from.\n\n\
+         Files:\n\
+           evidence.mp4    the clip, with a provenance watermark burned in\n\
+           manifest.json   event details + the clip's SHA-256 hash\n\
+           manifest.sig    an Ed25519 signature over manifest.json (base64)\n\
+           PUBLIC_KEY.txt   the public key the signature verifies against\n\n\
+         To verify nothing was altered, run:\n\
+           zoomy --verify <this-file>.zip\n\n\
+         It re-checks the signature and re-hashes the clip. Any change to the\n\
+         video or the manifest makes verification fail.\n\n\
+         Exported by Cammy v{} on event #{}.\n",
+        env!("CARGO_PKG_VERSION"),
+        ev.id
+    );
+    let entries = vec![
+        crate::evidence::ZipEntry {
+            name: "evidence.mp4".into(),
+            data: mp4,
+        },
+        crate::evidence::ZipEntry {
+            name: "manifest.json".into(),
+            data: manifest_json,
+        },
+        crate::evidence::ZipEntry {
+            name: "manifest.sig".into(),
+            data: sig.into_bytes(),
+        },
+        crate::evidence::ZipEntry {
+            name: "PUBLIC_KEY.txt".into(),
+            data: manifest.public_key.into_bytes(),
+        },
+        crate::evidence::ZipEntry {
+            name: "VERIFY.txt".into(),
+            data: readme.into_bytes(),
+        },
+    ];
+    let zip = crate::evidence::zip_store(&entries);
+
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "evidence_exported",
+        Some(&format!(
+            "bundle event {id} ({} on {}) sha256={sha}",
+            ev.label, ev.camera
+        )),
+    );
+
+    let mut resp = Response::new(axum::body::Body::from(zip));
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        "application/zip".parse().expect("valid header"),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        format!(
+            "attachment; filename=\"evidence-{}-{}-{}.zip\"",
+            ev.camera, ev.label, ev.ts
+        )
+        .parse()
+        .expect("valid header"),
     );
     resp.headers_mut()
         .insert("x-cammy-sha256", sha.parse().expect("hex header"));

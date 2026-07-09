@@ -52,6 +52,12 @@ struct Args {
     /// would inherit the local-access exemption and bypass the password.
     #[arg(long)]
     trusted_proxy: bool,
+
+    /// Verify an exported evidence bundle (.zip) and exit, instead of starting
+    /// the server. Re-checks the Ed25519 signature over its manifest and re-hashes
+    /// the enclosed clip; exits non-zero on any mismatch. Fully offline.
+    #[arg(long, value_name = "BUNDLE.zip")]
+    verify: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -63,6 +69,12 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
+
+    // `--verify <bundle.zip>`: a standalone, offline check — no server, no data
+    // dir needed. Print a human report; a failed check returns Err (non-zero exit).
+    if let Some(bundle) = args.verify.as_ref() {
+        return zoomy::evidence::verify_bundle_cli(bundle);
+    }
 
     // Resolve TLS: explicit cert+key win; otherwise --tls-self-signed mints a
     // reusable self-signed pair under <data_dir>/tls.
