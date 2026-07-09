@@ -415,12 +415,22 @@ export default function ZoneEditor({
               <select
                 aria-label="Zone type"
                 value={z.kind}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const kind = e.target.value as ZoneKind;
+                  // Switching to "ignore" clears the residential toggles below —
+                  // they fire on an object ENTERING, which a detection-suppressing
+                  // ignore zone can never do, so they'd be dead config.
                   onChange(
-                    zones.map((x, j) => (j === i ? { ...x, kind: e.target.value as ZoneKind } : x)),
+                    zones.map((x, j) =>
+                      j === i
+                        ? kind === "ignore"
+                          ? { ...x, kind, alert_enter: false, child_watch: false, supervise: false, water: false }
+                          : { ...x, kind }
+                        : x
+                    ),
                     masks
-                  )
-                }
+                  );
+                }}
               >
                 <option value="required">required</option>
                 <option value="ignore">ignore</option>
@@ -482,46 +492,50 @@ export default function ZoneEditor({
                   )
                 }
               />
-              <label className="muted" title="Residential: fire a zone_enter event (labelled with the object's class) when a tracked object enters — e.g. 'person enters the Pool', 'pet on the Couch'. Needs object tracking.">
-                <input
-                  type="checkbox"
-                  checked={!!z.alert_enter}
-                  onChange={(e) =>
-                    onChange(zones.map((x, j) => (j === i ? { ...x, alert_enter: e.target.checked } : x)), masks)
-                  }
-                />{" "}
-                enter
-              </label>
-              <label className="muted" title="Residential ASSISTIVE: a child-classified person entering fires a 'child' event (stairs/kitchen/driveway). Requires per-camera child calibration on the detect config — a detection aid, NOT guaranteed coverage.">
-                <input
-                  type="checkbox"
-                  checked={!!z.child_watch}
-                  onChange={(e) =>
-                    onChange(zones.map((x, j) => (j === i ? { ...x, child_watch: e.target.checked } : x)), masks)
-                  }
-                />{" "}
-                child*
-              </label>
-              <label className="muted" title="Residential ASSISTIVE: fire 'child_alone' when a child is here with NO adult present (unattended-near-pool). Requires child calibration. NOT a substitute for active supervision or a pool fence; can miss a child if the height heuristic misreads them.">
-                <input
-                  type="checkbox"
-                  checked={!!z.supervise}
-                  onChange={(e) =>
-                    onChange(zones.map((x, j) => (j === i ? { ...x, supervise: e.target.checked } : x)), masks)
-                  }
-                />{" "}
-                alone*
-              </label>
-              <label className="muted" title="Residential EXPERIMENTAL: mark this zone as water (a pool); a motionless person in it fires a 'still_water' hint. This is NOT drowning detection — an above-water camera cannot see a submerged body. Supplement, never a replacement, for supervision/fencing.">
-                <input
-                  type="checkbox"
-                  checked={!!z.water}
-                  onChange={(e) =>
-                    onChange(zones.map((x, j) => (j === i ? { ...x, water: e.target.checked } : x)), masks)
-                  }
-                />{" "}
-                water*
-              </label>
+              {z.kind !== "ignore" && (
+                <>
+                  <label className="muted" title="Residential: fire a zone_enter event (labelled with the object's class) when a tracked object enters — e.g. 'person enters the Pool', 'pet on the Couch'. Needs object tracking.">
+                    <input
+                      type="checkbox"
+                      checked={!!z.alert_enter}
+                      onChange={(e) =>
+                        onChange(zones.map((x, j) => (j === i ? { ...x, alert_enter: e.target.checked } : x)), masks)
+                      }
+                    />{" "}
+                    enter
+                  </label>
+                  <label className="muted" title="Residential ASSISTIVE: a child-classified person entering fires a 'child' event (stairs/kitchen/driveway). Requires per-camera child calibration on the detect config — a detection aid, NOT guaranteed coverage.">
+                    <input
+                      type="checkbox"
+                      checked={!!z.child_watch}
+                      onChange={(e) =>
+                        onChange(zones.map((x, j) => (j === i ? { ...x, child_watch: e.target.checked } : x)), masks)
+                      }
+                    />{" "}
+                    child*
+                  </label>
+                  <label className="muted" title="Residential ASSISTIVE: fire 'child_alone' when a child is here with NO adult present (unattended-near-pool). Requires child calibration. NOT a substitute for active supervision or a pool fence; can miss a child if the height heuristic misreads them.">
+                    <input
+                      type="checkbox"
+                      checked={!!z.supervise}
+                      onChange={(e) =>
+                        onChange(zones.map((x, j) => (j === i ? { ...x, supervise: e.target.checked } : x)), masks)
+                      }
+                    />{" "}
+                    alone*
+                  </label>
+                  <label className="muted" title="Residential EXPERIMENTAL: mark this zone as water (a pool); a motionless person in it fires a 'still_water' hint. This is NOT drowning detection — an above-water camera cannot see a submerged body. Supplement, never a replacement, for supervision/fencing.">
+                    <input
+                      type="checkbox"
+                      checked={!!z.water}
+                      onChange={(e) =>
+                        onChange(zones.map((x, j) => (j === i ? { ...x, water: e.target.checked } : x)), masks)
+                      }
+                    />{" "}
+                    water*
+                  </label>
+                </>
+              )}
               <button
                 type="button"
                 className="btn btn-danger"
