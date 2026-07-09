@@ -32,9 +32,12 @@ almost always a quick fix — see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTI
 - **Live** — a WebRTC grid of every camera at sub-second latency, camera groups,
   saved layouts, a kiosk Wall view, and two-way push-to-talk on supported cameras.
 - **Events** — motion-gated AI detections with annotated snapshots, severity
-  tiers, tags, bookmarks, natural-language + photo search, and CSV export.
+  tiers, tags, bookmarks, natural-language + photo search, CSV export, shareable
+  expiring clip links (send one to the police, no login), and evidence-grade
+  export (watermarked + SHA-256 logged for tamper-evidence).
 - **Recordings** — continuous lossless recording with a scrubbable multi-camera
-  timeline, event-to-recording jumps, clip export, and retention by age or size.
+  timeline, event-to-recording jumps, clip export, one-tap day time-lapse, and
+  retention by age or size.
 - **People** — face recognition with enrollment from an unknown-faces gallery,
   stranger alerts, and a vehicle / license-plate library.
 - **Family** — guided safety modes (baby & nursery, pets, pool & water, aging in
@@ -44,7 +47,8 @@ almost always a quick fix — see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTI
   spoken phrase, a zone crossing, a sound) that fire phone push, webhooks, MQTT,
   or email.
 - **Analytics** — object tracking, line-crossing tripwires, loitering, people
-  counting, occupancy limits, speed, heatmaps, and cross-camera appearance search.
+  counting, occupancy limits, speed, heatmaps, cross-camera appearance search, and
+  an Insights dashboard of detection trends over days and weeks.
 - **Private & secure** — multi-user roles, two-factor auth, privacy masks, an
   audit log, API tokens, HTTPS, and config backup/restore. Zero cloud, zero
   telemetry.
