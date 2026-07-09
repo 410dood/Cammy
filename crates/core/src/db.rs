@@ -1343,6 +1343,7 @@ impl Db {
                  snapshot  TEXT
              );
              CREATE INDEX IF NOT EXISTS events_ts ON events(ts DESC);
+             CREATE INDEX IF NOT EXISTS events_cam_label_ts ON events(camera_id, label, ts DESC);
              CREATE TABLE IF NOT EXISTS segments (
                  id        INTEGER PRIMARY KEY,
                  camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
@@ -2288,6 +2289,11 @@ impl Db {
     // --- notifications (A4) --------------------------------------------------
 
     const NOTIF_KEEP: i64 = 2000;
+    /// Absolute row ceiling regardless of read state — a headless / API-token
+    /// deployment never opens the Notifications panel, so nothing is ever marked
+    /// read and the read-only trim never fires; well above NOTIF_KEEP so normal
+    /// UI installs never hit it.
+    const NOTIF_HARD_CAP: i64 = 20_000;
 
     /// Insert a notification; returns its row id. Self-trims read rows beyond
     /// NOTIF_KEEP so the table stays bounded.
@@ -2309,6 +2315,13 @@ impl Db {
             "DELETE FROM notifications WHERE read = 1 AND id <= \
              (SELECT MAX(id) FROM notifications) - ?1",
             [Self::NOTIF_KEEP],
+        );
+        // Hard ceiling so the table can't grow without bound when notifications
+        // are never read (headless / token deployments) — matches add_audit.
+        let _ = conn.execute(
+            "DELETE FROM notifications WHERE id <= \
+             (SELECT MAX(id) FROM notifications) - ?1",
+            [Self::NOTIF_HARD_CAP],
         );
         Ok(id)
     }

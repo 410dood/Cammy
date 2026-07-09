@@ -664,6 +664,11 @@ async fn change_my_password(
     }
     st.db
         .set_user_password(uid, &crate::auth::hash_password(&req.new_password))?;
+    // Invalidate ALL of this user's sessions, including the current one — someone
+    // rotating their password because they suspect a stolen session must not leave
+    // the attacker's token valid. Every other credential-mutation path already
+    // clears sessions; the caller re-authenticates with the new password.
+    st.sessions.clear_user(uid);
     let now = chrono::Local::now().timestamp();
     st.db.add_audit(
         now,
@@ -2117,6 +2122,12 @@ async fn export_events_csv(
     if let Some(set) = &allow {
         events.retain(|e| set.contains(&e.camera_id));
     }
+    // Honor the same `tag` filter list_events applies post-query, so a
+    // tag-filtered export matches the filtered on-screen view (was ignored
+    // here — an over-inclusive export that broke the record-keeping use case).
+    if let Some(tag) = q.tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        events.retain(|e| e.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)));
+    }
     let csv = events_to_csv(&events);
     Ok((
         [
@@ -2644,7 +2655,19 @@ async fn event_clip(
         std::fs::create_dir_all(&st.clips_dir).ok();
         let ffmpeg = recorder::locate_ffmpeg(st.ffmpeg_bin.as_deref())?;
         let seg_path = seg.path.clone();
-        let out = clip_path.clone();
+        // Extract to a UNIQUE temp path, then atomically rename to the final clip
+        // only on success — so a failed/partial ffmpeg run (e.g. disk full on a
+        // near-full, retention-pruned NVR) can't leave a corrupt file that the
+        // next `clip_path.exists()` short-circuit then serves forever (this is the
+        // "View clip" action embedded in every push notification). Same-dir rename
+        // is atomic (MoveFileEx REPLACE_EXISTING on Windows, rename(2) on Unix), so
+        // concurrent first-time requests are safe — the last successful rename wins.
+        static CLIP_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let uniq = CLIP_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_path = st
+            .clips_dir
+            .join(format!("{clip_name}.partial-{}-{uniq}", std::process::id()));
+        let out = tmp_path.clone();
         let status = tokio::task::spawn_blocking(move || {
             std::process::Command::new(ffmpeg)
                 .args(["-loglevel", "error", "-ss", &offset.to_string(), "-i"])
@@ -2659,10 +2682,22 @@ async fn event_clip(
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         if !status.success() {
+            std::fs::remove_file(&tmp_path).ok();
             return Err(ApiError(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "clip extraction failed".into(),
             ));
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &clip_path) {
+            std::fs::remove_file(&tmp_path).ok();
+            // A concurrent request may have already published clip_path — only
+            // fail if the final clip is genuinely still missing.
+            if !clip_path.exists() {
+                return Err(ApiError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("clip publish failed: {e}"),
+                ));
+            }
         }
     }
 

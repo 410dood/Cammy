@@ -1267,7 +1267,10 @@ pub fn run(
         }
 
         let elapsed = tick.elapsed();
-        let budget = Duration::from_millis(db.settings().poll_ms);
+        // Reuse this tick's already-fetched `settings` (line ~172) instead of a
+        // second full Settings deserialize + KV read under the global DB mutex
+        // every tick; a mid-tick poll_ms change simply applies one tick later.
+        let budget = Duration::from_millis(settings.poll_ms);
         if elapsed < budget {
             sleep_responsive(budget - elapsed, &shutdown);
         }
