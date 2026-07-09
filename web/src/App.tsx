@@ -370,7 +370,8 @@ export default function App() {
 
     api.config().then(setConfig).catch((e) => setError(friendlyError(e)));
     loadNotifs();
-    const notifTimer = setInterval(loadNotifs, 20000);
+    // Pause the always-on notification poll while the tab is backgrounded.
+    const notifTimer = setInterval(() => { if (!document.hidden) loadNotifs(); }, 20000);
     // Cmd/Ctrl-K toggles the command palette.
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {

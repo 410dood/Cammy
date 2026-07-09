@@ -105,7 +105,7 @@ export default function Live({
   useEffect(() => {
     const load = () => api.status().then(setStatus).catch(() => {});
     load();
-    const t = setInterval(load, 5000);
+    const t = setInterval(() => { if (!document.hidden) load(); }, 5000);
     api.settings().then((s) => {
       settingsRef.current = s;
       setViews(s.liveviews ?? []);

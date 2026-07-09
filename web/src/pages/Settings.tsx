@@ -753,7 +753,7 @@ function OffsiteStatusReadout() {
     let live = true;
     const poll = () => api.offsiteStatus().then((s) => live && setSt(s)).catch(() => {});
     poll();
-    const t = setInterval(poll, 5000);
+    const t = setInterval(() => { if (!document.hidden) poll(); }, 5000);
     return () => {
       live = false;
       clearInterval(t);

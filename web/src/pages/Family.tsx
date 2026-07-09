@@ -56,7 +56,9 @@ const MODES: Mode[] = [
     title: "Pool & water safety",
     blurb: "Get alerted when someone enters the pool area — especially a child with no adult nearby.",
     watches: ["person enters pool", "child alone near pool", "no movement in water"],
-    labels: ["child_alone", "still_water"],
+    // "person" catches the headline zone-enter event (a zone-enter fires with the
+    // object's own label, e.g. "person"), not just the child-alone / still-water hints.
+    labels: ["child_alone", "still_water", "person"],
     setup: [
       "On the pool camera, draw a zone over the pool/deck. Tick “enter” for a presence alert, “alone” for the child-with-no-adult alert, and “water” for the motionless-in-water hint.",
       "For the child alerts, set “child height ≤” on that camera (Cameras page) so it can tell children from adults — tune it once for your view.",
@@ -70,7 +72,9 @@ const MODES: Mode[] = [
     title: "Aging in place",
     blurb: "A gentle watch for a fall, a bathroom overstay, or nighttime wandering for a loved one living alone.",
     watches: ["fall", "left a zone at night", "stayed in a zone too long"],
-    labels: ["fall"],
+    // Include the overstay/wandering events (loiter dwell, tripwire crossing), not
+    // just fall — the setup steps point users at exactly those.
+    labels: ["fall", "loiter", "crossing"],
     setup: [
       "On the room camera turn on “body pose monitoring” and “fall detection”.",
       "For overstay/wandering, draw a zone (e.g. a bed) and set a dwell time, or use a doorway tripwire; add a night time-window to the alarm rule.",
@@ -88,7 +92,16 @@ type GoPage = "Cameras" | "Alarms" | "Settings" | "Live";
 /// toggle is on somewhere", NOT "fully configured for this room" (zones/alarms
 /// can't be inferred cheaply). Drives the status badge so a set-up mode looks
 /// different from an untouched one.
-function modeStatus(mode: Mode, cams: Camera[]): "active" | "partial" | "off" {
+/** True when a pose-dependent mode has the pose toggle on but the model is absent. */
+function poseGap(mode: Mode, cams: Camera[], poseAvailable: boolean): boolean {
+  return (
+    (mode.key === "baby" || mode.key === "aging") &&
+    !poseAvailable &&
+    cams.some((c) => !!c.detect_config.pose_detect)
+  );
+}
+
+function modeStatus(mode: Mode, cams: Camera[], poseAvailable: boolean): "active" | "partial" | "off" {
   const any = (pick: (c: Camera) => boolean) => cams.some(pick);
   const pose = any((c) => !!c.detect_config.pose_detect);
   const audio = any((c) => !!c.detect_config.audio_detect);
@@ -96,21 +109,30 @@ function modeStatus(mode: Mode, cams: Camera[]): "active" | "partial" | "off" {
   const fall = any((c) => !!c.detect_config.fall_detect);
   const child = any((c) => c.detect_config.child_height_frac != null);
   const tri = (n: number, total: number) => (n >= total ? "active" : n > 0 ? "partial" : "off");
+  let s: "active" | "partial" | "off";
   switch (mode.key) {
     case "baby":
-      return tri([pose, audio].filter(Boolean).length, 2);
+      s = tri([pose, audio].filter(Boolean).length, 2);
+      break;
     case "pet":
       // Pet OBJECT detection (dog/cat events) works out of the box on any
       // detecting camera — that alone is "partly set up"; the bark/meow audio
       // toggle is the remaining gap, and turning it on completes the mode.
-      return audio ? "active" : detect ? "partial" : "off";
+      s = audio ? "active" : detect ? "partial" : "off";
+      break;
     case "pool":
-      return child ? "active" : "off";
+      s = child ? "active" : "off";
+      break;
     case "aging":
-      return tri([pose, fall].filter(Boolean).length, 2);
+      s = tri([pose, fall].filter(Boolean).length, 2);
+      break;
     default:
-      return "off";
+      s = "off";
   }
+  // Don't claim a pose-dependent mode is fully "On" when the pose MODEL isn't
+  // installed — the toggle is on but the worker silently no-ops until the file exists.
+  if (s === "active" && poseGap(mode, cams, poseAvailable)) s = "partial";
+  return s;
 }
 
 const STATUS_BADGE: Record<"active" | "partial" | "off", { cls: string; text: string }> = {
@@ -129,6 +151,7 @@ function ModeCard({
   events,
   loaded,
   loadError,
+  poseAvailable,
   onGo,
 }: {
   mode: Mode;
@@ -136,13 +159,15 @@ function ModeCard({
   events: CamEvent[];
   loaded: boolean;
   loadError: string | null;
+  poseAvailable: boolean;
   onGo?: (p: GoPage) => void;
 }) {
   const recent = useMemo(
     () => events.filter((e) => mode.labels.includes(e.label)).slice(0, 4),
     [events, mode.labels]
   );
-  const badge = STATUS_BADGE[modeStatus(mode, cameras)];
+  const badge = STATUS_BADGE[modeStatus(mode, cameras, poseAvailable)];
+  const showPoseGap = poseGap(mode, cameras, poseAvailable);
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -150,6 +175,15 @@ function ModeCard({
         <span className={badge.cls} style={{ marginLeft: "auto" }}>{badge.text}</span>
       </div>
       <p className="muted" style={{ margin: 0 }}>{mode.blurb}</p>
+      {showPoseGap && (
+        <div className="callout callout-warn" role="status">
+          <span className="callout-ico"><IconAlert size={16} /></span>
+          <div>
+            Body-pose monitoring is on, but the pose model isn’t installed — fall/posture alerts won’t
+            fire until <code>yolov8n-pose.onnx</code> is added (Settings → Models &amp; capabilities).
+          </div>
+        </div>
+      )}
 
       <div>
         <div className="muted" style={{ fontSize: "var(--text-xs)", marginBottom: 4 }}>Watches for</div>
@@ -215,12 +249,17 @@ export default function Family({ cameras, onGo }: { cameras: Camera[]; onGo?: (p
   const [events, setEvents] = useState<CamEvent[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [poseAvailable, setPoseAvailable] = useState(true); // assume present until told otherwise
   useEffect(() => {
     api
       .events({ limit: 300 })
       .then((d) => { setEvents(d); setLoadError(null); })
       .catch((e) => setLoadError(String(e)))
       .finally(() => setLoaded(true));
+    api
+      .capabilities()
+      .then((r) => setPoseAvailable(r.features.find((f) => f.key === "pose")?.present ?? true))
+      .catch(() => {});
   }, []);
 
   return (
@@ -244,7 +283,7 @@ export default function Family({ cameras, onGo }: { cameras: Camera[]; onGo?: (p
       )}
       <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
         {MODES.map((m) => (
-          <ModeCard key={m.key} mode={m} cameras={cameras} events={events} loaded={loaded} loadError={loadError} onGo={onGo} />
+          <ModeCard key={m.key} mode={m} cameras={cameras} events={events} loaded={loaded} loadError={loadError} poseAvailable={poseAvailable} onGo={onGo} />
         ))}
       </div>
     </div>
