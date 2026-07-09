@@ -2,6 +2,7 @@
 import { api, AlarmRule, Action, ActionKind, ArmMode, Camera, DAY_NAMES } from "../api";
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
+import { prettyGesture } from "../labels";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -296,7 +297,7 @@ export default function Alarms({
       r.face_like ? `face ~ "${r.face_like}"` : null,
       r.face_unknown ? `unknown face (stranger)` : null,
       r.plate_like ? `plate ~ "${r.plate_like}"` : null,
-      r.gesture_like ? `signal ${r.gesture_like}` : null,
+      r.gesture_like ? `signal ${prettyGesture(r.gesture_like)}` : null,
       r.transcript_like ? `said "${r.transcript_like}"` : null,
       r.zone_like ? `in zone ~ "${r.zone_like}"` : null,
       r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
@@ -328,7 +329,7 @@ export default function Alarms({
       r.face_like ? `face ~ "${r.face_like}"` : null,
       r.face_unknown ? "stranger" : null,
       r.plate_like ? `plate ~ "${r.plate_like}"` : null,
-      r.gesture_like ? `signal ${r.gesture_like}` : null,
+      r.gesture_like ? `signal ${prettyGesture(r.gesture_like)}` : null,
       r.transcript_like ? `said "${r.transcript_like}"` : null,
     ].filter(Boolean) as string[];
     if (trigger.length === 0) trigger.push("any object");
@@ -644,7 +645,7 @@ export default function Alarms({
                   <option value="">any / none</option>
                   {GESTURES.map((g) => (
                     <option key={g} value={g}>
-                      {g}
+                      {prettyGesture(g)}
                     </option>
                   ))}
                 </select>

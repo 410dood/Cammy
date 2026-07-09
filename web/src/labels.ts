@@ -13,6 +13,22 @@ const PRETTY: Record<string, string> = {
 
 export const prettyLabel = (l: string) => PRETTY[l] ?? l.replace(/_/g, " ");
 
+// Hand-signal tokens → readable names (Signals overlay, alarm builder, event
+// chips/filters). The value stays the raw token; only rendering changes.
+const GESTURE_PRETTY: Record<string, string> = {
+  open_palm: "Open palm",
+  fist: "Fist",
+  victory: "Victory",
+  point: "Pointing",
+  thumb_up: "Thumb up",
+  thumb_down: "Thumb down",
+  love: "I-love-you",
+  call_me: "Call me",
+  ok: "OK",
+  hand: "Hand",
+};
+export const prettyGesture = (g: string) => GESTURE_PRETTY[g] ?? g.replace(/_/g, " ");
+
 // Camera-side (ONVIF-ingested) events carry a synthetic 1.0 confidence — a
 // "100%" badge on every one of them is noise, so score displays skip them.
 export const isCameraSide = (l: string) => l.startsWith("camera_");

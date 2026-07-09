@@ -20,7 +20,7 @@ import {
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
 // uses it too) — see eventGroups.ts.
 import { Cluster, groupEvents } from "../eventGroups";
-import { isCameraSide, prettyLabel, prettyZone } from "../labels";
+import { isCameraSide, prettyLabel, prettyZone, prettyGesture } from "../labels";
 
 function durationLabel(secs: number): string {
   if (secs < 60) return `${secs}s`;
@@ -777,7 +777,7 @@ export default function Events({
               <option value="">any signal</option>
               {gestures.map((g) => (
                 <option key={g} value={g}>
-                  {g}
+                  {prettyGesture(g)}
                 </option>
               ))}
             </select>
@@ -1000,7 +1000,7 @@ export default function Events({
                         )}
                       </>
                     )}
-                    {ev.gesture && <span className="badge accent"><IconHand size={13} /> {ev.gesture}</span>}
+                    {ev.gesture && <span className="badge accent"><IconHand size={13} /> {prettyGesture(ev.gesture)}</span>}
                     {ev.zone && (
                       <span className="badge" title={ev.zone}>
                         <IconZone size={13} /> {prettyZone(ev.zone)}
@@ -1164,7 +1164,7 @@ export default function Events({
               <span className="badge ok"><IconUser size={13} /> {open.face}</span>
             ) : null}
             {open.plate && <span className="badge warn"><IconCar size={13} /> {open.plate}</span>}
-            {open.gesture && <span className="badge accent"><IconHand size={13} /> {open.gesture}</span>}
+            {open.gesture && <span className="badge accent"><IconHand size={13} /> {prettyGesture(open.gesture)}</span>}
             {open.zone && (
               <span className="badge" title={open.zone}><IconZone size={13} /> {prettyZone(open.zone)}</span>
             )}
