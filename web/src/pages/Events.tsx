@@ -515,9 +515,18 @@ export default function Events({
     return "";
   };
 
+  // Pause the 5s background poll while the tab is hidden or a modal / multi-select
+  // is open, so we don't refetch ~200 rows behind the user's back or yank the grid
+  // out from under an open dialog. (A filter change still forces an immediate
+  // reload via this effect's deps.)
+  const pollBusy = useRef(false);
+  pollBusy.current = !!open || !!playing || !!similar || !!imgSearch || selectMode;
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000); // events appear as they happen
+    const t = setInterval(() => {
+      if (document.hidden || pollBusy.current) return;
+      load();
+    }, 5000); // events appear as they happen
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraId, label, fromTime, toTime, flaggedOnly, tagFilter]);

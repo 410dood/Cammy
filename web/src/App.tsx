@@ -337,8 +337,9 @@ export default function App() {
   // state — so UI clicks, Back/Forward, and manual hash edits share one path and
   // can't drive a setPage↔hashchange loop.
   const navigate = (hash: string) => {
-    if (window.location.hash === hash) refresh(); // same hash won't fire hashchange
-    else window.location.hash = hash;
+    // Same hash won't fire hashchange — nothing to re-apply. (Cameras no longer
+    // refetch per-navigation; they load once on mount + on Cameras-page edits.)
+    if (window.location.hash !== hash) window.location.hash = hash;
   };
   const go = (p: Page) => navigate(pageHash(p));
   const openCamera = (c: Camera) => navigate(`#/live/${c.id}`);
@@ -358,10 +359,10 @@ export default function App() {
       // Camera detail is fully URL-driven: `#/live/<id>` opens it, `#/live` (or any
       // other page) closes it. Resolution against the camera list happens in Live.
       setFocusCameraId(cameraId ?? null);
-      refresh();
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
+    refresh(); // cameras load once on mount; Cameras-page edits call refresh() again
 
     api.config().then(setConfig).catch((e) => setError(friendlyError(e)));
     loadNotifs();

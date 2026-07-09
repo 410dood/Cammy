@@ -376,6 +376,33 @@ export function useToast(): ToastApi {
   return ctx;
 }
 
+/**
+ * Poll `fn` every `ms`, but PAUSE while the tab is backgrounded (document.hidden)
+ * and fire one immediate refresh when it becomes visible again — so a phone in
+ * your pocket or a background tab isn't hammering the NVR, and a returning user
+ * sees fresh data instantly instead of waiting up to a full interval.
+ * Runs `fn` once on mount. `fn` may change identity between renders (captured by
+ * ref), so callers don't need to memoize it.
+ */
+export function usePolling(fn: () => void, ms: number) {
+  const saved = useRef(fn);
+  saved.current = fn;
+  useEffect(() => {
+    saved.current(); // initial load
+    const timer = window.setInterval(() => {
+      if (!document.hidden) saved.current();
+    }, ms);
+    const onVisible = () => {
+      if (!document.hidden) saved.current();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [ms]);
+}
+
 /* ======================================================================== */
 /* Accessible modal (media lightbox / content dialog)                        */
 /* ======================================================================== */

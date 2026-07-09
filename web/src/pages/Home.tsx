@@ -15,7 +15,7 @@ import {
   capacityTone,
   fmtDaysLeft,
 } from "../api";
-import { RelTime, useToast, Modal } from "../ui";
+import { RelTime, useToast, Modal, usePolling } from "../ui";
 import {
   IconVideo,
   IconRecDot,
@@ -143,29 +143,26 @@ export default function Home({
     localStorage.setItem("home_feed_mode", feedMode);
   }, [feedMode]);
 
-  useEffect(() => {
-    const load = () => {
-      // Core data drives the at-a-glance cards; mark loaded only once these
-      // settle so the health tiles don't flash a confident "all healthy" / 0
-      // before the first response.
-      const core = [
-        api.stats().then(setStats),
-        api.status().then(setStatus),
-        api.armMode().then((r) => { setArm(r.arm_mode); setArmErr(false); }).catch((e) => { setArmErr(true); throw e; }),
-        api.events({ limit: 500 }).then(setEvents),
-      ].map((p) => p.catch(() => {}));
-      Promise.allSettled(core).then(() => setLoaded(true));
-      // These are best-effort: the endpoints exist only once the backend
-      // build ships the digest/notifications/analytics features.
-      api.digests(1).then((d) => setDigest(d[0] ?? null)).catch(() => {});
-      api.notifications({ limit: 6 }).then(setNotes).catch(() => {});
-      api.analyticsCounts(startOfToday()).then(setThroughput).catch(() => {});
-      api.analyticsOccupancy().then(setOcc).catch(() => {});
-    };
-    load();
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
-  }, []);
+  const load = () => {
+    // Core data drives the at-a-glance cards; mark loaded only once these
+    // settle so the health tiles don't flash a confident "all healthy" / 0
+    // before the first response.
+    const core = [
+      api.stats().then(setStats),
+      api.status().then(setStatus),
+      api.armMode().then((r) => { setArm(r.arm_mode); setArmErr(false); }).catch((e) => { setArmErr(true); throw e; }),
+      api.events({ limit: 500 }).then(setEvents),
+    ].map((p) => p.catch(() => {}));
+    Promise.allSettled(core).then(() => setLoaded(true));
+    // These are best-effort: the endpoints exist only once the backend
+    // build ships the digest/notifications/analytics features.
+    api.digests(1).then((d) => setDigest(d[0] ?? null)).catch(() => {});
+    api.notifications({ limit: 6 }).then(setNotes).catch(() => {});
+    api.analyticsCounts(startOfToday()).then(setThroughput).catch(() => {});
+    api.analyticsOccupancy().then(setOcc).catch(() => {});
+  };
+  // Poll every 15s, but pause while backgrounded + refresh on return.
+  usePolling(load, 15000);
 
   const setMode = async (m: ArmMode) => {
     const prev = arm;
