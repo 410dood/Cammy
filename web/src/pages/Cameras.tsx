@@ -139,6 +139,28 @@ function TuneModal({
   const [saving, setSaving] = useState(false);
 
   const toast = useToast();
+  const dialog = useDialog();
+  // Guard the tall tuning form against a stray backdrop/Escape click discarding
+  // every edit (thresholds, feature pills, zones) — snapshot the initial state,
+  // and confirm on close when it's dirty. Save/onClose paths bypass the prompt.
+  const initialSnapshot = useRef(JSON.stringify({ dc, subSource }));
+  const confirming = useRef(false);
+  const requestClose = async () => {
+    const dirty = JSON.stringify({ dc, subSource }) !== initialSnapshot.current;
+    if (!dirty || confirming.current) {
+      if (!dirty) onClose();
+      return;
+    }
+    confirming.current = true;
+    const ok = await dialog.confirm({
+      title: "Discard changes?",
+      body: `You have unsaved detection-tuning changes for ${camera.name}.`,
+      confirmLabel: "Discard",
+      danger: true,
+    });
+    confirming.current = false;
+    if (ok) onClose();
+  };
   const save = async () => {
     if (saving) return; // patch restarts go2rtc on detect_source change — don't double-submit
     setSaving(true);
@@ -222,7 +244,7 @@ function TuneModal({
   const featCount = features.filter((f) => f.on).length;
 
   return (
-    <Modal onClose={onClose} title={`Detection tuning — ${camera.name}`} className="modal-wide">
+    <Modal onClose={requestClose} title={`Detection tuning — ${camera.name}`} className="modal-wide">
       <div className="tune-body">
         <Callout tone="info">
           Empty fields <b>inherit the global Settings value</b> — clear a field to fall back to the
@@ -658,7 +680,7 @@ function TuneModal({
       </div>
 
       <div className="dialog-actions tune-foot">
-        <button className="btn btn-ghost" onClick={onClose} disabled={saving}>
+        <button className="btn btn-ghost" onClick={requestClose} disabled={saving}>
           Cancel
         </button>
         <button className="btn btn-primary" onClick={save} disabled={saving}>
