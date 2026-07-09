@@ -16,7 +16,38 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
-### Latest: two-round improvement sweep on main — 23 commits, 2026-07-09
+### Latest: deferred-feature follow-ups — event-aware time-lapse + signed evidence bundle, 2026-07-09
+
+After the backlog below was exhausted, two deferred items shipped one at a time,
+each live-validated on the running release NVR (:8080) and pushed to `main`:
+
+- **Event-aware variable-speed time-lapse** (`b0c7b80`, upgrades P2.12): the day
+  time-lapse now slows near events and zips through quiet stretches. Each event is
+  mapped to its position in the back-to-back concat stream (`segment_index*60 +
+  offset`), given a ±3s window (merged, cap 80), and ffmpeg is driven with a
+  `select=…gte(t-prev_selected_t, if(inside-window, dense, sparse))` filter re-timed
+  to a constant 24fps; `fast_stride` is solved so the clip lands near the requested
+  length while reserving ≥20% of the frame budget for quiet parts. Falls back to
+  uniform `setpts` on an event-free day. LIVE: 0-event → uniform (side, 2.35 MB); an
+  event inside a retained segment → event-aware ("1 event windows", 15.7 MB, valid).
+
+- **Signed, self-verifying evidence bundle + `zoomy --verify` CLI** (`cd0321f`,
+  completes the P2.13 deferral): new `GET /api/events/{id}/evidence.zip` packages the
+  watermarked clip with a `manifest.json` (SHA-256 pin + provenance), `manifest.sig`
+  (Ed25519 over the exact manifest bytes), `PUBLIC_KEY.txt`, and `VERIFY.txt`.
+  Per-install ed25519 seed under `data/keys` (0600). **No new deps** — hand-rolled
+  uncompressed (STORED) zip + in-tree `ring`. `zoomy --verify <bundle.zip>` re-checks
+  the signature + re-hashes the clip fully offline. New `crates/core/src/evidence.rs`
+  (unit-tested: round-trip, CRC-32 vector, tamper). LIVE: Python's `zipfile` opens the
+  bundle *and* our reader opens Python's repacked zip (bidirectional compat); good →
+  VERIFIED, tampered clip → hash mismatch, tampered manifest → signature fails.
+  **Bonus latent-bug fix:** `extract_event_clip`'s temp path ended in `.partial-N`, so
+  ffmpeg couldn't infer the muxer and every clip extraction 500'd once a covering
+  segment existed (unnoticed because happy-path events usually 404) — now the temp name
+  keeps `.mp4` last, restoring `/clip`, share-serve, and both evidence exports. 167
+  core tests (4 new).
+
+### Earlier: two-round improvement sweep on main — 23 commits, 2026-07-09
 
 A long autonomous session driven by two adversarially-verified audit workflows
 (each fanning out read-only lens auditors → per-finding verify → ranked backlog),

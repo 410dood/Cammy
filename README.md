@@ -33,8 +33,10 @@ almost always a quick fix — see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTI
   saved layouts, a kiosk Wall view, and two-way push-to-talk on supported cameras.
 - **Events** — motion-gated AI detections with annotated snapshots, severity
   tiers, tags, bookmarks, natural-language + photo search, CSV export, shareable
-  expiring clip links (send one to the police, no login), and evidence-grade
-  export (watermarked + SHA-256 logged for tamper-evidence).
+  expiring clip links (send one to the police, no login), and a signed
+  **evidence bundle** — a watermarked clip zipped with an Ed25519-signed manifest
+  that anyone can re-check offline with `zoomy --verify` to prove it came from
+  your box and wasn't altered.
 - **Recordings** — continuous lossless recording with a scrubbable multi-camera
   timeline, event-to-recording jumps, clip export, one-tap day time-lapse, and
   retention by age or size.
