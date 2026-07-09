@@ -36,6 +36,35 @@ import { prettyLabel } from "../labels";
 
 const VEHICLES = ["car", "truck", "bus", "motorcycle", "bicycle"];
 
+// Spotlights (docs/08 P2.6): rank recent events by "how much would you want to
+// see this first" rather than pure recency, so a 2am stranger doesn't sink below
+// ten routine daytime car detections. All signals already ride each event.
+function importanceScore(e: CamEvent): number {
+  const sev = e.severity ?? 0;
+  const anom = e.anomaly_score ?? 0;
+  let s = sev * 2; // severity tier 1..4 → 2..8
+  if (e.face === "?") s += 6; // an unrecognized face (stranger) is the headline
+  else if (e.face) s += 3; // a recognized person
+  if (e.gesture) s += 5; // a hand-signal event (often a silent panic button)
+  if (e.plate) s += 2;
+  if (anom >= 0.6) s += anom * 5; // flagged unusual by the anomaly worker
+  if (e.flagged) s += 4; // the user bookmarked it
+  return s;
+}
+
+// A short "why surfaced" chip — only for signals NOT already shown as a badge
+// (stranger / known-face / gesture render their own badges in the feed row).
+function spotlightReason(e: CamEvent): string | null {
+  const sev = e.severity ?? 0;
+  const anom = e.anomaly_score ?? 0;
+  if (sev >= 4) return "Critical";
+  if (anom >= 0.6) return "Unusual";
+  if (sev >= 3) return "High";
+  if (e.plate && !e.face) return `Plate ${e.plate}`;
+  if (e.flagged) return "Saved";
+  return null;
+}
+
 const ARM_MODES: { id: ArmMode; label: string; icon: JSX.Element; hint: string }[] = [
   { id: "home", label: "Home", icon: <IconHome size={15} />, hint: "Armed — you're home" },
   { id: "away", label: "Away", icon: <IconShield size={15} />, hint: "Armed — fully away" },
@@ -107,6 +136,12 @@ export default function Home({
   const [lightbox, setLightbox] = useState<CamEvent | null>(null);
   const [throughput, setThroughput] = useState<AnalyticsCounts | null>(null);
   const [occ, setOcc] = useState<OccupancyReport | null>(null);
+  const [feedMode, setFeedMode] = useState<"spot" | "recent">(() =>
+    localStorage.getItem("home_feed_mode") === "recent" ? "recent" : "spot",
+  );
+  useEffect(() => {
+    localStorage.setItem("home_feed_mode", feedMode);
+  }, [feedMode]);
 
   useEffect(() => {
     const load = () => {
@@ -184,6 +219,24 @@ export default function Home({
   const lastStranger = events.find((e) => e.face === "?");
 
   const recent = events.slice(0, 10);
+  // Rank the most-recent ~120 events by importance × recency for the Spotlights
+  // feed: a stranger/critical event floats up, but a fresh routine event still
+  // beats a 3-day-old one — recency halves the weight roughly every 12h.
+  const spotlights = useMemo(() => {
+    const now = Date.now() / 1000;
+    return events
+      .slice(0, 120)
+      .map((e) => {
+        const ageHours = Math.max(0, (now - e.ts) / 3600);
+        const recency = 1 / (1 + ageHours / 12);
+        return { ev: e, score: importanceScore(e) * recency };
+      })
+      .sort((a, b) => b.score - a.score || b.ev.ts - a.ev.ts)
+      .slice(0, 6)
+      .map((x) => x.ev);
+  }, [events]);
+  const spotOn = feedMode === "spot" && spotlights.length > 0;
+  const feed = spotOn ? spotlights : recent;
 
   // Escalate the disk tile when the drive is filling up (data-loss risk),
   // sharing the Recordings capacity thresholds. days_until_full is the only
@@ -338,16 +391,40 @@ export default function Home({
 
         <div className="card">
           <div className="card-head">
-            <h2 style={{ margin: 0 }}>Recent activity</h2>
-            <button className="btn btn-ghost ev-act" style={{ marginLeft: "auto" }} onClick={onOpenEvents}>
-              View all
-            </button>
+            <h2 style={{ margin: 0 }}>{spotOn ? "Spotlights" : "Recent activity"}</h2>
+            <div className="row" style={{ marginLeft: "auto", gap: 6, alignItems: "center" }}>
+              <div className="row" role="group" aria-label="Feed ranking" style={{ gap: 4 }}>
+                <button
+                  type="button"
+                  className={`btn ${feedMode === "spot" ? "btn-primary" : "btn-ghost"} ev-act`}
+                  aria-pressed={feedMode === "spot"}
+                  title="Rank by importance — strangers, critical and unusual events first"
+                  onClick={() => setFeedMode("spot")}
+                >
+                  Spotlights
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${feedMode === "recent" ? "btn-primary" : "btn-ghost"} ev-act`}
+                  aria-pressed={feedMode === "recent"}
+                  title="Most recent first"
+                  onClick={() => setFeedMode("recent")}
+                >
+                  Recent
+                </button>
+              </div>
+              <button className="btn btn-ghost ev-act" onClick={onOpenEvents}>
+                View all
+              </button>
+            </div>
           </div>
-          {recent.length === 0 ? (
+          {feed.length === 0 ? (
             <p className="muted">No events yet.</p>
           ) : (
             <div className="recent-feed">
-              {recent.map((e) => (
+              {feed.map((e) => {
+                const reason = spotOn ? spotlightReason(e) : null;
+                return (
                 <div className="feed-item" key={e.id}>
                   {e.snapshot && (
                     <button
@@ -377,10 +454,16 @@ export default function Home({
                         <IconHand size={11} /> {e.gesture}
                       </span>
                     )}
+                    {reason && (
+                      <span className="badge" style={{ marginLeft: 6 }} title="Why this is spotlighted">
+                        {reason}
+                      </span>
+                    )}
                     <RelTime ts={e.ts} className="muted clock" style={{ display: "block", fontSize: "var(--text-xs)" }} />
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

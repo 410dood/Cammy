@@ -151,6 +151,9 @@ export interface CamEvent {
   gait?: string | null;
   /** Severity tier 1 (low) .. 4 (critical) — drives push gating + badges. */
   severity?: number;
+  /** Anomaly score 0..1 from the opt-in anomaly worker (null = unscored);
+   *  a ranking signal for the Home Spotlights feed. */
+  anomaly_score?: number | null;
   /** User-applied tags (multi-tag taxonomy beyond flag+note). */
   tags?: string[];
 }
