@@ -1,0 +1,125 @@
+# Release: build the Windows NSIS installer + Tauri updater artifacts and
+# attach them (plus latest.json) to a GitHub Release, so installed desktop apps
+# can auto-update via the tauri-plugin-updater endpoint
+# (releases/latest/download/latest.json).
+#
+# Trigger: push a tag like v0.5.0 (or run manually).
+#
+# Secrets (all OPTIONAL — the build succeeds unsigned without them):
+#   TAURI_SIGNING_PRIVATE_KEY           updater signing key (contents of
+#                                       ~/.tauri/cammy_updater.key). Without it
+#                                       the updater artifacts are NOT signed and
+#                                       installed apps will refuse the update.
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password ("" if none).
+#   CAMMY_SIGN_THUMBPRINT /             Windows Authenticode signing, consumed
+#   CAMMY_SIGN_COMMAND                  by crates/desktop/sign.ps1 (no-op when
+#                                       unset -> SmartScreen "unknown publisher").
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    permissions:
+      contents: write # create the release + upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # whisper-rs (bindgen) needs libclang; the runner's LLVM provides it.
+      - name: Configure libclang (whisper-rs bindgen)
+        shell: pwsh
+        run: |
+          $llvm = "C:\Program Files\LLVM\bin"
+          if (-not (Test-Path "$llvm\libclang.dll")) { choco install llvm -y --no-progress }
+          echo "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build web UI
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      # The NSIS bundle embeds go2rtc/ffmpeg and every AI model listed in
+      # tauri.conf.json's resources map — fetch them all (none are committed).
+      - name: Fetch bundled binaries + models
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force bin | Out-Null
+          $fetch = @(
+            @{u='https://github.com/AlexxIT/go2rtc/releases/latest/download/go2rtc_win64.zip'; o='go2rtc.zip'},
+            @{u='https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip'; o='ffmpeg.zip'},
+            @{u='https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.onnx'; o='yolov8n.onnx'},
+            @{u='https://huggingface.co/immich-app/buffalo_l/resolve/main/detection/model.onnx'; o='det_10g.onnx'},
+            @{u='https://huggingface.co/immich-app/buffalo_l/resolve/main/recognition/model.onnx'; o='w600k_r50.onnx'},
+            @{u='https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model_quantized.onnx'; o='clip_vision.onnx'},
+            @{u='https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/text_model_quantized.onnx'; o='clip_text.onnx'},
+            @{u='https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/tokenizer.json'; o='clip_tokenizer.json'},
+            @{u='https://huggingface.co/onnx-community/yolos-small-finetuned-license-plate-detection-ONNX/resolve/main/onnx/model_quantized.onnx'; o='plate_det.onnx'},
+            @{u='https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/english/rec.onnx'; o='plate_rec.onnx'},
+            @{u='https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/english/dict.txt'; o='plate_dict.txt'},
+            @{u='https://huggingface.co/jafet21/yamnetonnx/resolve/main/yamnet.onnx'; o='yamnet.onnx'},
+            @{u='https://huggingface.co/jafet21/yamnetonnx/resolve/main/yamnet_class_map.csv'; o='yamnet_class_map.csv'},
+            @{u='https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin'; o='ggml-tiny.en.bin'}
+          )
+          foreach ($f in $fetch) {
+            Write-Host "fetching $($f.o)"
+            Invoke-WebRequest -Uri $f.u -OutFile $f.o -MaximumRetryCount 3 -RetryIntervalSec 5
+          }
+          Expand-Archive go2rtc.zip -DestinationPath go2rtc_x
+          Get-ChildItem go2rtc_x -Recurse -Filter go2rtc.exe | Select-Object -First 1 | Copy-Item -Destination bin\go2rtc.exe
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_x
+          Get-ChildItem ffmpeg_x -Recurse -Filter ffmpeg.exe | Select-Object -First 1 | Copy-Item -Destination bin\ffmpeg.exe
+          Remove-Item go2rtc.zip, ffmpeg.zip -Force
+          if (-not (Test-Path bin\go2rtc.exe)) { throw "go2rtc.exe missing" }
+          if (-not (Test-Path bin\ffmpeg.exe)) { throw "ffmpeg.exe missing" }
+
+      # createUpdaterArtifacts requires SOME updater key at build time. Without
+      # the real secret, generate a throwaway key so the build still succeeds —
+      # the release is then installable but NOT auto-update-consumable (installed
+      # apps verify against the committed pubkey and will reject it), which is
+      # the graceful-degradation contract.
+      - name: Updater signing key (ephemeral fallback when secret is absent)
+        shell: pwsh
+        env:
+          REAL_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ($env:REAL_KEY) { Write-Host "using configured updater signing key"; exit 0 }
+          Write-Warning "TAURI_SIGNING_PRIVATE_KEY not configured - signing updater artifacts with a THROWAWAY key. Installed apps will not accept this update."
+          npx --yes "@tauri-apps/cli" signer generate -w ephemeral.key --password "" --ci
+          $key = Get-Content ephemeral.key -Raw
+          "TAURI_SIGNING_PRIVATE_KEY<<CAMMY_EOF`n$key`nCAMMY_EOF" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Remove-Item ephemeral.key
+
+      # tauri-action builds the NSIS bundle + updater artifacts, creates/updates
+      # the GitHub Release for the tag, uploads the assets and latest.json.
+      # Updater signing only happens when the key secret exists; Authenticode
+      # only when the CAMMY_SIGN_* secrets exist (sign.ps1 no-ops otherwise).
+      - name: Build + release (tauri-action)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CAMMY_SIGN_THUMBPRINT: ${{ secrets.CAMMY_SIGN_THUMBPRINT }}
+          CAMMY_SIGN_COMMAND: ${{ secrets.CAMMY_SIGN_COMMAND }}
+        with:
+          projectPath: crates/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "Cammy ${{ github.ref_name }}"
+          releaseDraft: true
+          includeUpdaterJson: true
