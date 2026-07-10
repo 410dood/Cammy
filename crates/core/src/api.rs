@@ -2692,6 +2692,52 @@ struct ClipQuery {
 }
 
 /// Export a short MP4 around an event, packet-copied out of the containing
+/// Run ffmpeg so that `final_path` is written ATOMICALLY: encode to a unique
+/// same-dir temp whose real extension stays LAST (ffmpeg infers the muxer from
+/// it — a `.partial-N` suffix would hide it and every run fails; the P2.13
+/// gotcha), then rename over the final path only on success. A failed/partial
+/// run can never poison a `final_path.exists()` cache check, and concurrent
+/// first-time builders race safely (same-dir rename is atomic; last wins).
+/// `build` appends the caller's args to the Command and MUST write its output
+/// to the temp path it is given.
+async fn run_ffmpeg_atomic(
+    ffmpeg_bin: Option<&std::path::Path>,
+    final_path: &std::path::Path,
+    build: impl FnOnce(&mut std::process::Command, &std::path::Path) + Send + 'static,
+) -> anyhow::Result<()> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let uniq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let ext = final_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin");
+    let stem = final_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("out");
+    let tmp =
+        final_path.with_file_name(format!("{stem}.partial-{}-{uniq}.{ext}", std::process::id()));
+    let ffmpeg = recorder::locate_ffmpeg(ffmpeg_bin)?;
+    let tmp_c = tmp.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new(ffmpeg);
+        build(&mut cmd, &tmp_c);
+        cmd.no_console().status()
+    })
+    .await??;
+    if !status.success() {
+        std::fs::remove_file(&tmp).ok();
+        anyhow::bail!("ffmpeg failed");
+    }
+    if std::fs::rename(&tmp, final_path).is_err() {
+        std::fs::remove_file(&tmp).ok();
+        if !final_path.exists() {
+            anyhow::bail!("could not publish ffmpeg output");
+        }
+    }
+    Ok(())
+}
+
 /// segment (no re-encode) and cached under data/clips. Frigate-style clips.
 /// Extract (or reuse a cached) event clip — a `pre`+`post` second window around
 /// the event, packet-copied from the containing segment. Shared by the
@@ -2716,52 +2762,21 @@ async fn extract_event_clip(
     let clip_path = clips_dir.join(&clip_name);
     if !clip_path.exists() {
         std::fs::create_dir_all(clips_dir).ok();
-        let ffmpeg = recorder::locate_ffmpeg(ffmpeg_bin)?;
         let seg_path = seg.path.clone();
-        // Extract to a UNIQUE temp path, then atomically rename to the final clip
-        // only on success — so a failed/partial ffmpeg run (e.g. disk full on a
-        // near-full, retention-pruned NVR) can't leave a corrupt file that the
-        // next `clip_path.exists()` short-circuit then serves forever. Same-dir
-        // rename is atomic (MoveFileEx REPLACE_EXISTING on Windows, rename(2) on
-        // Unix), so concurrent first-time requests are safe — last rename wins.
-        static CLIP_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let uniq = CLIP_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // Keep the `.mp4` extension LAST so ffmpeg can infer the output muxer from
-        // it — a temp name ending in `.partial-N` leaves ffmpeg with no format.
-        let tmp_path = clips_dir.join(format!(
-            "event-{event_id}-{pre}-{post}.partial-{}-{uniq}.mp4",
-            std::process::id()
-        ));
-        let out = tmp_path.clone();
-        let status = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(ffmpeg)
-                .args(["-loglevel", "error", "-ss", &offset.to_string(), "-i"])
+        run_ffmpeg_atomic(ffmpeg_bin, &clip_path, move |cmd, out| {
+            cmd.args(["-loglevel", "error", "-ss", &offset.to_string(), "-i"])
                 .arg(&seg_path)
                 .args(["-t", &duration.to_string(), "-c", "copy"])
                 .args(["-movflags", "+faststart", "-y"])
-                .arg(&out)
-                .no_console()
-                .status()
+                .arg(out);
         })
         .await
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        if !status.success() {
-            std::fs::remove_file(&tmp_path).ok();
-            return Err(ApiError(
+        .map_err(|e| {
+            ApiError(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "clip extraction failed".into(),
-            ));
-        }
-        if let Err(e) = std::fs::rename(&tmp_path, &clip_path) {
-            std::fs::remove_file(&tmp_path).ok();
-            if !clip_path.exists() {
-                return Err(ApiError(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("clip publish failed: {e}"),
-                ));
-            }
-        }
+                format!("clip extraction failed: {e}"),
+            )
+        })?;
     }
     Ok(clip_path)
 }
@@ -3092,12 +3107,11 @@ async fn create_timelapse(
         Some(&format!("{} {date} ({} event windows)", cam.name, merged.len())),
     );
 
-    let clips_dir = st.clips_dir.clone();
     let ffmpeg_bin = st.ffmpeg_bin.clone();
     let out_c = out.clone();
     let marker_c = marker.clone();
     tokio::spawn(async move {
-        let res = build_timelapse(&clips_dir, ffmpeg_bin.as_deref(), &segs, vf, &out_c).await;
+        let res = build_timelapse(ffmpeg_bin.as_deref(), &segs, vf, &out_c).await;
         std::fs::remove_file(&marker_c).ok();
         if let Err(e) = res {
             tracing::warn!("timelapse build failed: {e:#}");
@@ -3109,14 +3123,12 @@ async fn create_timelapse(
 /// Concat the day's segments and apply the caller-built video filter `vf`
 /// (either a uniform `setpts` speed-up or the event-aware variable-speed `select`).
 async fn build_timelapse(
-    clips_dir: &std::path::Path,
     ffmpeg_bin: Option<&std::path::Path>,
     segs: &[crate::db::SegmentRow],
     vf: String,
     out: &std::path::Path,
 ) -> anyhow::Result<()> {
     use std::io::Write;
-    let ffmpeg = recorder::locate_ffmpeg(ffmpeg_bin)?;
 
     // ffmpeg concat-demuxer list of absolute paths (single-quoted; escape any
     // embedded quote — paths are server-generated, so this is defensive).
@@ -3128,35 +3140,18 @@ async fn build_timelapse(
             writeln!(f, "file '{p}'")?;
         }
     }
-    let tmp = clips_dir.join(format!(
-        "timelapse.partial-{}-{}.mp4",
-        std::process::id(),
-        segs.first().map(|s| s.start_ts).unwrap_or(0)
-    ));
     let list_c = list_path.clone();
-    let tmp_c = tmp.clone();
-    let status = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(ffmpeg)
-            .args(["-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"])
+    let res = run_ffmpeg_atomic(ffmpeg_bin, out, move |cmd, tmp| {
+        cmd.args(["-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"])
             .arg(&list_c)
             .args(["-vf", &vf, "-an", "-r", "24"])
             .args(["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
             .args(["-movflags", "+faststart", "-y"])
-            .arg(&tmp_c)
-            .no_console()
-            .status()
+            .arg(tmp);
     })
-    .await??;
+    .await;
     std::fs::remove_file(&list_path).ok();
-    if !status.success() {
-        std::fs::remove_file(&tmp).ok();
-        anyhow::bail!("ffmpeg timelapse encode failed");
-    }
-    if std::fs::rename(&tmp, out).is_err() && !out.exists() {
-        std::fs::remove_file(&tmp).ok();
-        anyhow::bail!("could not publish timelapse");
-    }
-    Ok(())
+    res.map_err(|e| anyhow::anyhow!("timelapse encode failed: {e}"))
 }
 
 /// Serve a built time-lapse MP4 (404 until ready). Same RBAC scoping as clips.
@@ -3231,37 +3226,22 @@ async fn ensure_evidence_mp4(
         "drawtext={fontclause}textfile='{}':x=12:y=12:fontsize=20:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=8",
         esc(txt_path.to_string_lossy().as_ref())
     );
-    let ffmpeg = recorder::locate_ffmpeg(ffmpeg_bin)?;
-    let tmp = clips_dir.join(format!("evidence-{}.partial-{}.mp4", ev.id, std::process::id()));
-    let (inp, tmp_c) = (clip.to_path_buf(), tmp.clone());
-    let status = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(ffmpeg)
-            .args(["-hide_banner", "-loglevel", "error", "-i"])
+    let inp = clip.to_path_buf();
+    let res = run_ffmpeg_atomic(ffmpeg_bin, &out, move |cmd, tmp| {
+        cmd.args(["-hide_banner", "-loglevel", "error", "-i"])
             .arg(&inp)
             .args(["-vf", &filter, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
             .args(["-movflags", "+faststart", "-y"])
-            .arg(&tmp_c)
-            .no_console()
-            .status()
+            .arg(tmp);
     })
-    .await
-    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .await;
     std::fs::remove_file(&txt_path).ok();
-    if !status.success() {
-        std::fs::remove_file(&tmp).ok();
-        return Err(ApiError(
+    res.map_err(|e| {
+        ApiError(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "evidence encode failed".into(),
-        ));
-    }
-    if std::fs::rename(&tmp, &out).is_err() && !out.exists() {
-        std::fs::remove_file(&tmp).ok();
-        return Err(ApiError(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "could not publish evidence".into(),
-        ));
-    }
+            format!("evidence encode failed: {e}"),
+        )
+    })?;
     Ok(out)
 }
 
@@ -4259,16 +4239,15 @@ async fn segment_thumb(
             return Err(not_found()); // pruned by retention; index lags
         }
         std::fs::create_dir_all(&thumbs_dir).ok();
-        static THUMB_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let uniq = THUMB_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Amortize the cache-size sweep (a full directory scan) to ~1 in 32
         // misses — a miss already pays for an ffmpeg run.
-        if uniq.is_multiple_of(32) {
+        static THUMB_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        if THUMB_MISSES
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .is_multiple_of(32)
+        {
             prune_thumbs(&thumbs_dir);
         }
-        let ffmpeg = recorder::locate_ffmpeg(st.ffmpeg_bin.as_deref())?;
-        let tmp_path = thumbs_dir.join(format!("seg-{id}.partial-{}-{uniq}.jpg", std::process::id()));
-        let (seg_path, out) = (seg.path.clone(), tmp_path.clone());
         // Cap concurrent extractions: a cold scrub grid lazy-loads dozens of
         // tiles at once, and unbounded parallel ffmpeg decodes would starve
         // the live recorder/detector on small boxes.
@@ -4278,36 +4257,22 @@ async fn segment_thumb(
             .acquire()
             .await
             .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let status = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(ffmpeg)
-                // -ss AFTER -i would decode; before -i it keyframe-seeks. 0 =
-                // the segment's first keyframe — cheap and deterministic.
-                .args(["-loglevel", "error", "-ss", "0", "-i"])
+        let seg_path = seg.path.clone();
+        run_ffmpeg_atomic(st.ffmpeg_bin.as_deref(), &thumb_path, move |cmd, out| {
+            // -ss AFTER -i would decode; before -i it keyframe-seeks. 0 =
+            // the segment's first keyframe — cheap and deterministic.
+            cmd.args(["-loglevel", "error", "-ss", "0", "-i"])
                 .arg(&seg_path)
                 .args(["-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "6", "-y"])
-                .arg(&out)
-                .no_console()
-                .status()
+                .arg(out);
         })
         .await
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        if !status.success() {
-            std::fs::remove_file(&tmp_path).ok();
-            return Err(ApiError(
+        .map_err(|e| {
+            ApiError(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "thumbnail extraction failed".into(),
-            ));
-        }
-        if std::fs::rename(&tmp_path, &thumb_path).is_err() {
-            std::fs::remove_file(&tmp_path).ok();
-            if !thumb_path.exists() {
-                return Err(ApiError(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "thumbnail publish failed".into(),
-                ));
-            }
-        }
+                format!("thumbnail extraction failed: {e}"),
+            )
+        })?;
     }
     let mut resp = ServeFile::new(thumb_path).oneshot(req).await.into_response();
     resp.headers_mut().insert(
