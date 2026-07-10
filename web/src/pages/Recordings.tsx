@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from "react";
-import { api, CamEvent, Camera, capacityTone, fmtBytes, fmtDaysLeft, fmtTime, Segment, Stats } from "../api";
+import { api, CamEvent, Camera, capacityTone, fmtBytes, fmtDaysLeft, fmtTime, MotionHit, Segment, Stats } from "../api";
 import Timeline from "../Timeline";
 import CrossTimeline from "../CrossTimeline";
 import { IconPlay, IconFilm, IconAlert, IconChevronDown, IconChevronRight } from "../icons";
@@ -14,6 +14,212 @@ const WINDOWS = [
   { label: "6h", secs: 6 * 3600 },
   { label: "24h", secs: 24 * 3600 },
 ];
+
+// P2.3 retroactive region motion search: draw a rectangle on the camera's
+// frame, get every archived minute with motion inside it (from the persisted
+// 64x64 motion-mask index — no video decode), click a hit to play it.
+function MotionSearchModal({
+  cameraId,
+  from,
+  to,
+  onPlay,
+  onClose,
+}: {
+  cameraId: number;
+  from: number;
+  to: number;
+  onPlay: (segId: number, startTs: number, offset: number) => void;
+  onClose: () => void;
+}) {
+  const [rect, setRect] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
+  const [hits, setHits] = useState<MotionHit[] | null>(null);
+  const [truncated, setTruncated] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const frac = (e: React.PointerEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
+      y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
+    };
+  };
+
+  const search = async () => {
+    if (!rect) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.motionSearch({ camera_id: cameraId, ...rect, from, to });
+      setHits(r.hits);
+      setTruncated(r.truncated);
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal onClose={onClose} className="modal-wide">
+      <h2 style={{ marginTop: 0 }}>Motion search</h2>
+      <p className="muted" style={{ marginTop: -6 }}>
+        Drag a box over the area you care about — a gate, a driveway, a doorway — then search the
+        recorded motion index for this window.
+      </p>
+      <div
+        className="motion-frame"
+        style={{ touchAction: "none" }}
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          const p = frac(e);
+          setDrag(p);
+          setRect({ x1: p.x, y1: p.y, x2: p.x, y2: p.y });
+        }}
+        onPointerMove={(e) => {
+          if (!drag) return;
+          const p = frac(e);
+          setRect({
+            x1: Math.min(drag.x, p.x),
+            y1: Math.min(drag.y, p.y),
+            x2: Math.max(drag.x, p.x),
+            y2: Math.max(drag.y, p.y),
+          });
+        }}
+        onPointerUp={() => setDrag(null)}
+      >
+        <img src={`/api/cameras/${cameraId}/frame.jpg`} alt="Current camera frame" draggable={false} />
+        {rect && (
+          <div
+            className="motion-rect"
+            style={{
+              left: `${rect.x1 * 100}%`,
+              top: `${rect.y1 * 100}%`,
+              width: `${(rect.x2 - rect.x1) * 100}%`,
+              height: `${(rect.y2 - rect.y1) * 100}%`,
+            }}
+          />
+        )}
+      </div>
+      <div className="row" style={{ marginTop: 10, alignItems: "center" }}>
+        <button
+          className="btn btn-primary"
+          disabled={!rect || rect.x2 - rect.x1 < 0.01 || busy}
+          onClick={search}
+        >
+          {busy ? "Searching…" : "Search this window"}
+        </button>
+        {rect && (
+          <button className="btn btn-ghost" onClick={() => { setRect(null); setHits(null); }}>
+            Clear box
+          </button>
+        )}
+        <span className="muted">
+          {new Date(from * 1000).toLocaleString()} → {new Date(to * 1000).toLocaleString()}
+        </span>
+      </div>
+      {error && <p className="muted" role="alert" style={{ color: "var(--danger, #e66)" }}>{error}</p>}
+      {hits && (
+        <div style={{ marginTop: 12 }}>
+          {hits.length === 0 ? (
+            <p className="muted">No motion recorded in that area during this window.</p>
+          ) : (
+            <>
+              <p className="muted">
+                {hits.length} moment{hits.length === 1 ? "" : "s"}
+                {truncated ? " (showing the most recent 300)" : ""} — click to play.
+              </p>
+              <div className="scrub-grid">
+                {hits.map((h) => (
+                  <button
+                    key={h.ts}
+                    type="button"
+                    className="scrub-tile"
+                    disabled={h.segment_id == null}
+                    title={h.segment_id == null ? "Recording no longer retained" : "Play"}
+                    onClick={() => h.segment_id != null && onPlay(h.segment_id, h.ts, h.offset_secs ?? 0)}
+                  >
+                    {h.segment_id != null ? (
+                      <img src={`/api/recordings/${h.segment_id}/thumb.jpg`} loading="lazy" alt="" />
+                    ) : (
+                      <div className="scrub-missing">expired</div>
+                    )}
+                    <span className="scrub-cap">
+                      {new Date(h.ts * 1000).toLocaleString([], {
+                        month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit",
+                      })}
+                      {h.end_ts - h.ts > 60 && (
+                        <span className="scrub-count">{Math.round((h.end_ts - h.ts) / 60)}m</span>
+                      )}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// P2.4 thumbnail scrub: the selected camera's window as a grid of segment
+// keyframes — eyeball a whole day in seconds instead of scrubbing a timeline.
+// One tile per 15-minute bucket; a multi-segment bucket expands in place to
+// its per-minute tiles, and clicking any expanded tile plays that segment.
+function ScrubGrid({ segments, onPlay }: { segments: Segment[]; onPlay: (s: Segment) => void }) {
+  const [openBuckets, setOpenBuckets] = useState<Set<number>>(new Set());
+  const buckets = useMemo(() => {
+    const by = new Map<number, Segment[]>();
+    for (const s of segments) {
+      const b = Math.floor(s.start_ts / 900) * 900;
+      const arr = by.get(b) ?? [];
+      arr.push(s);
+      by.set(b, arr);
+    }
+    return [...by.entries()]
+      .map(([ts, segs]) => ({ ts, segs: segs.sort((a, b) => a.start_ts - b.start_ts) }))
+      .sort((a, b) => a.ts - b.ts);
+  }, [segments]);
+
+  if (buckets.length === 0) return null;
+  const tile = (s: Segment, caption: string, count?: number, onClick?: () => void) => (
+    <button
+      key={`${s.id}-${caption}`}
+      type="button"
+      className="scrub-tile"
+      onClick={onClick ?? (() => onPlay(s))}
+      title={count && count > 1 ? `${count} clips — click to expand` : `Play ${caption}`}
+    >
+      <img src={`/api/recordings/${s.id}/thumb.jpg`} loading="lazy" alt="" />
+      <span className="scrub-cap">
+        {caption}
+        {count && count > 1 ? <span className="scrub-count">×{count}</span> : null}
+      </span>
+    </button>
+  );
+  return (
+    <div className="card">
+      <div className="scrub-grid">
+        {buckets.map((b) => {
+          const cap = new Date(b.ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+          if (!openBuckets.has(b.ts) && b.segs.length > 1) {
+            return tile(b.segs[0], cap, b.segs.length, () =>
+              setOpenBuckets((prev) => new Set(prev).add(b.ts))
+            );
+          }
+          return b.segs.map((s) =>
+            tile(s, new Date(s.start_ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))
+          );
+        })}
+      </div>
+      <p className="muted" style={{ marginBottom: 0 }}>
+        One frame per clip — click a ×N tile to expand its quarter-hour, click a frame to play.
+      </p>
+    </div>
+  );
+}
 
 export default function Recordings({ cameras }: { cameras: Camera[] }) {
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -32,6 +238,8 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
 
   // Day picker: "" = live (anchored at now); a date scrubs that day's history.
   const [day, setDay] = useState("");
+  const [scrub, setScrub] = useState(false);
+  const [motionOpen, setMotionOpen] = useState(false);
   const [tlBusy, setTlBusy] = useState(false);
   const toast = useToast();
 
@@ -277,6 +485,25 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             Live
           </button>
         )}
+        {cameraId !== "" && (
+          <button
+            className={`btn ${scrub ? "btn-primary" : "btn-ghost"}`}
+            onClick={() => setScrub((v) => !v)}
+            title="Show this window as a grid of video thumbnails"
+            aria-pressed={scrub}
+          >
+            Scrub
+          </button>
+        )}
+        {cameraId !== "" && (
+          <button
+            className="btn btn-ghost"
+            onClick={() => setMotionOpen(true)}
+            title="Find all recorded motion inside an area you draw on the frame"
+          >
+            Motion search
+          </button>
+        )}
         {cameraId !== "" && day && (
           <button
             className="btn btn-ghost"
@@ -313,6 +540,10 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           onSeek={seekTo}
           nowTs={anchor}
         />
+      )}
+
+      {scrub && cameraId !== "" && segments.length > 0 && (
+        <ScrubGrid segments={segments} onPlay={(s) => setPlaying({ segment: s, offset: 0 })} />
       )}
 
       {segments.length === 0 ? (
@@ -386,6 +617,21 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           </table>
           </div>
         </div>
+      )}
+
+      {motionOpen && cameraId !== "" && (
+        <MotionSearchModal
+          cameraId={cameraId}
+          from={anchor - windowSecs}
+          to={anchor}
+          onClose={() => setMotionOpen(false)}
+          onPlay={(segId, ts, offset) => {
+            const seg =
+              segments.find((s) => s.id === segId) ??
+              ({ id: segId, camera_id: cameraId, camera: "", start_ts: ts - offset, bytes: 0, path: "" } as Segment);
+            setPlaying({ segment: seg, offset });
+          }}
+        />
       )}
 
       {playing && (

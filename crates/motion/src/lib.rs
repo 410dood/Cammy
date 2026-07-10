@@ -12,6 +12,10 @@ use image::{imageops::FilterType, DynamicImage, GrayImage};
 /// reports at this resolution (as 0..1 frame fractions).
 const DIFF_SIZE: u32 = 64;
 
+/// Side of the square diff grid that [`MotionGate::packed_mask`] indexes —
+/// public so consumers can map region coordinates onto mask bits.
+pub const GRID: u32 = DIFF_SIZE;
+
 /// Per-pixel luma delta (0-255) below which a change is treated as noise.
 const PIXEL_NOISE_FLOOR: u8 = 25;
 
@@ -92,6 +96,26 @@ impl MotionGate {
 
         self.prev = Some(thumb);
         verdict
+    }
+
+    /// The changed-cell mask from the most recent [`MotionGate::update`], packed
+    /// row-major into `DIFF_SIZE²/8` bytes (bit i = cell i changed). `None` when
+    /// the last frame was a baseline or fewer than 2 cells changed (single-cell
+    /// flicker is sensor noise, not motion worth indexing). This feeds the
+    /// retroactive region-motion index: OR these per minute and you can later ask
+    /// "was there ever motion inside this rectangle?" without re-decoding video.
+    pub fn packed_mask(&self) -> Option<[u8; (DIFF_SIZE * DIFF_SIZE / 8) as usize]> {
+        let n = (DIFF_SIZE * DIFF_SIZE) as usize;
+        if self.mask.len() != n || self.mask.iter().filter(|&&c| c).count() < 2 {
+            return None;
+        }
+        let mut out = [0u8; (DIFF_SIZE * DIFF_SIZE / 8) as usize];
+        for (i, &c) in self.mask.iter().enumerate() {
+            if c {
+                out[i / 8] |= 1 << (i % 8);
+            }
+        }
+        Some(out)
     }
 
     /// Bounding boxes (0..1 frame fractions) of the connected blobs of changed
@@ -265,5 +289,26 @@ mod tests {
         }
         gate.update(&DynamicImage::ImageRgb8(img));
         assert_eq!(gate.motion_regions().len(), 2, "two disjoint blobs");
+    }
+
+    #[test]
+    fn packed_mask_maps_changed_corner_to_low_bits() {
+        let mut gate = MotionGate::new(0.0);
+        let mut img = RgbImage::from_pixel(128, 128, Rgb([0, 0, 0]));
+        assert!(gate.packed_mask().is_none(), "baseline has no mask");
+        gate.update(&DynamicImage::ImageRgb8(img.clone()));
+        // Brighten the top-left 32x32 quarter-quadrant -> cells in rows 0..~16,
+        // cols 0..~16 of the 64x64 grid.
+        for y in 0..32 {
+            for x in 0..32 {
+                img.put_pixel(x, y, Rgb([255, 255, 255]));
+            }
+        }
+        gate.update(&DynamicImage::ImageRgb8(img));
+        let mask = gate.packed_mask().expect("mask after change");
+        // Cell (0,0) = bit 0 set; a cell in the untouched bottom-right is not.
+        assert_eq!(mask[0] & 1, 1, "top-left cell changed");
+        let far = (63 * 64 + 63) as usize;
+        assert_eq!(mask[far / 8] & (1 << (far % 8)), 0, "bottom-right untouched");
     }
 }

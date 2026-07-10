@@ -1407,7 +1407,17 @@ impl Db {
             [],
         );
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS faces (
+            // P2.3 retroactive region motion search: per-camera, per-minute OR of
+            // the 64x64 changed-cell motion mask (512-byte bitset). Written by the
+            // detection pipeline, read by /api/motion/search. ~0.7 MB/day/camera
+            // worst case; pruned alongside recordings retention.
+            "CREATE TABLE IF NOT EXISTS motion_grid (
+                 camera_id INTEGER NOT NULL,
+                 minute_ts INTEGER NOT NULL,
+                 cells     BLOB NOT NULL,
+                 PRIMARY KEY (camera_id, minute_ts)
+             ) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS faces (
                  id         INTEGER PRIMARY KEY,
                  name       TEXT NOT NULL,
                  embedding  BLOB NOT NULL,
@@ -3464,6 +3474,45 @@ impl Db {
                     bytes: r.get::<_, i64>(4)? as u64,
                     path: r.get(5)?,
                 })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Flush one minute's OR'd motion mask (P2.3). REPLACE semantics: the
+    /// pipeline writes each (camera, minute) at most once per run; a restart
+    /// mid-minute just rewrites the row with what it saw since.
+    pub fn add_motion_grid(&self, camera_id: i64, minute_ts: i64, cells: &[u8]) -> Result<()> {
+        self.conn().execute(
+            "INSERT OR REPLACE INTO motion_grid (camera_id, minute_ts, cells) VALUES (?1, ?2, ?3)",
+            params![camera_id, minute_ts, cells],
+        )?;
+        Ok(())
+    }
+
+    pub fn prune_motion_grid_before(&self, ts: i64) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM motion_grid WHERE minute_ts < ?1", params![ts])?;
+        Ok(())
+    }
+
+    /// Minute rows for a camera in [from, to], ascending. The region bit-test
+    /// happens in the caller (SQLite can't test bits inside a BLOB).
+    pub fn motion_grid_rows(
+        &self,
+        camera_id: i64,
+        from: i64,
+        to: i64,
+    ) -> Result<Vec<(i64, Vec<u8>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT minute_ts, cells FROM motion_grid
+             WHERE camera_id = ?1 AND minute_ts >= ?2 AND minute_ts <= ?3
+             ORDER BY minute_ts ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![camera_id, from, to], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)

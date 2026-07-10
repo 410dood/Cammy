@@ -140,6 +140,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/recordings", get(list_recordings))
         .route("/api/recordings/at", get(recording_at))
         .route("/api/recordings/{id}/video", get(segment_video))
+        .route("/api/recordings/{id}/thumb.jpg", get(segment_thumb))
+        .route("/api/motion/search", get(motion_search))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route(
             "/api/license",
@@ -4231,6 +4233,175 @@ async fn segment_video(
     let seg = st.db.get_segment(id)?.ok_or_else(not_found)?;
     require_camera(&allowed_cameras(&st, &p)?, seg.camera_id)?;
     Ok(ServeFile::new(seg.path).oneshot(req).await.into_response())
+}
+
+/// One keyframe of a recording segment as a small JPEG (P2.4 thumbnail scrub:
+/// the Recordings page renders a day as a grid of these). Extracted lazily by
+/// ffmpeg, cached under <data_dir>/thumbs, served immutable (a segment's first
+/// frame never changes). Same temp+atomic-rename discipline as event clips so
+/// a failed run can't poison the cache.
+async fn segment_thumb(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    req: Request,
+) -> ApiResult<Response> {
+    let seg = st.db.get_segment(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, seg.camera_id)?;
+
+    let thumbs_dir = st.data_dir.join("thumbs");
+    let thumb_path = thumbs_dir.join(format!("seg-{id}.jpg"));
+    if !thumb_path.exists() {
+        if !std::path::Path::new(&seg.path).exists() {
+            return Err(not_found()); // pruned by retention; index lags
+        }
+        std::fs::create_dir_all(&thumbs_dir).ok();
+        prune_thumbs(&thumbs_dir);
+        let ffmpeg = recorder::locate_ffmpeg(st.ffmpeg_bin.as_deref())?;
+        static THUMB_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let uniq = THUMB_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_path = thumbs_dir.join(format!("seg-{id}.partial-{}-{uniq}.jpg", std::process::id()));
+        let (seg_path, out) = (seg.path.clone(), tmp_path.clone());
+        let status = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(ffmpeg)
+                // -ss AFTER -i would decode; before -i it keyframe-seeks. 0 =
+                // the segment's first keyframe — cheap and deterministic.
+                .args(["-loglevel", "error", "-ss", "0", "-i"])
+                .arg(&seg_path)
+                .args(["-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "6", "-y"])
+                .arg(&out)
+                .no_console()
+                .status()
+        })
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if !status.success() {
+            std::fs::remove_file(&tmp_path).ok();
+            return Err(ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "thumbnail extraction failed".into(),
+            ));
+        }
+        if std::fs::rename(&tmp_path, &thumb_path).is_err() {
+            std::fs::remove_file(&tmp_path).ok();
+            if !thumb_path.exists() {
+                return Err(ApiError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "thumbnail publish failed".into(),
+                ));
+            }
+        }
+    }
+    let mut resp = ServeFile::new(thumb_path).oneshot(req).await.into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, max-age=604800, immutable"),
+    );
+    Ok(resp)
+}
+
+#[derive(serde::Deserialize)]
+struct MotionSearchQuery {
+    camera_id: i64,
+    /// Search region as 0..1 frame fractions.
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    from: i64,
+    to: i64,
+}
+
+/// P2.3 retroactive region motion search: "was there ever motion inside this
+/// rectangle?" answered from the persisted per-minute 64x64 motion-mask index
+/// (`motion_grid`) — no video decoding. Returns consecutive-minute hit ranges,
+/// each resolved to the covering recording segment for click-to-play.
+async fn motion_search(
+    State(st): State<AppState>,
+    Query(q): Query<MotionSearchQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_camera(&allowed_cameras(&st, &p)?, q.camera_id)?;
+    let (x1, x2) = (q.x1.clamp(0.0, 1.0), q.x2.clamp(0.0, 1.0));
+    let (y1, y2) = (q.y1.clamp(0.0, 1.0), q.y2.clamp(0.0, 1.0));
+    if x2 <= x1 || y2 <= y1 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "empty region".into()));
+    }
+    if q.to <= q.from || q.to - q.from > 46 * 86_400 {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "time range must be positive and at most 46 days".into(),
+        ));
+    }
+
+    // Rasterize the rectangle onto the mask grid as a 512-byte bitset.
+    let n = motion::GRID as usize;
+    let (gx1, gy1) = ((x1 * n as f32) as usize, (y1 * n as f32) as usize);
+    let gx2 = ((x2 * n as f32).ceil() as usize).clamp(gx1 + 1, n);
+    let gy2 = ((y2 * n as f32).ceil() as usize).clamp(gy1 + 1, n);
+    let mut region = [0u8; 512];
+    for gy in gy1..gy2 {
+        for gx in gx1..gx2 {
+            let idx = gy * n + gx;
+            region[idx / 8] |= 1 << (idx % 8);
+        }
+    }
+
+    let rows = st.db.motion_grid_rows(q.camera_id, q.from, q.to)?;
+    let mut hits: Vec<i64> = Vec::new();
+    for (minute, cells) in rows {
+        if cells.iter().zip(region.iter()).any(|(c, r)| c & r != 0) {
+            hits.push(minute);
+        }
+    }
+
+    // Fold consecutive minutes into ranges, newest first, capped.
+    let mut ranges: Vec<(i64, i64)> = Vec::new();
+    for m in hits {
+        match ranges.last_mut() {
+            Some((_, end)) if m == *end + 60 => *end = m,
+            _ => ranges.push((m, m)),
+        }
+    }
+    ranges.reverse();
+    let truncated = ranges.len() > 300;
+    ranges.truncate(300);
+
+    let mut out = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        let seg = st.db.find_segment_at(q.camera_id, start)?;
+        out.push(serde_json::json!({
+            "ts": start,
+            "end_ts": end + 60,
+            "segment_id": seg.as_ref().map(|s| s.id),
+            "offset_secs": seg.as_ref().map(|s| (start - s.start_ts).max(0)),
+        }));
+    }
+    Ok(Json(serde_json::json!({ "hits": out, "truncated": truncated })))
+}
+
+/// Keep the thumb cache bounded: when it grows past ~6000 files (a few hundred
+/// MB of nothing at ~15 KB each is fine; runaway growth is not), drop the
+/// oldest ~1000 by mtime. Called only on a cache MISS (which already pays for
+/// an ffmpeg run), so the directory scan is amortized.
+fn prune_thumbs(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let md = e.metadata().ok()?;
+            md.is_file()
+                .then(|| (md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH), e.path()))
+        })
+        .collect();
+    if files.len() <= 6000 {
+        return;
+    }
+    files.sort();
+    for (_, p) in files.iter().take(files.len() - 5000) {
+        std::fs::remove_file(p).ok();
+    }
 }
 
 // --- stats -----------------------------------------------------------------

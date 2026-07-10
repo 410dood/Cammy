@@ -175,6 +175,14 @@ export interface Segment {
   path: string;
 }
 
+/** One region-motion hit range (P2.3): consecutive minutes with motion in the region. */
+export interface MotionHit {
+  ts: number;
+  end_ts: number;
+  segment_id: number | null;
+  offset_secs: number | null;
+}
+
 export interface Settings {
   detect_labels: string[];
   confidence: number;
@@ -679,6 +687,11 @@ export const api = {
   recordingAt: (camera_id: number, ts: number) =>
     req<{ segment: Segment; offset_secs: number }>(
       `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
+    ),
+  /** P2.3: minutes with motion inside a 0..1 frame rectangle, as playable ranges. */
+  motionSearch: (q: { camera_id: number; x1: number; y1: number; x2: number; y2: number; from: number; to: number }) =>
+    req<{ hits: MotionHit[]; truncated: boolean }>(
+      `/api/motion/search?camera_id=${q.camera_id}&x1=${q.x1}&y1=${q.y1}&x2=${q.x2}&y2=${q.y2}&from=${q.from}&to=${q.to}`
     ),
   // Kick off (or poll) a day time-lapse; returns {status: ready|building, url}.
   timelapse: (camera_id: number, date: string) =>

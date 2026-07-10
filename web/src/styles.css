@@ -2093,3 +2093,51 @@ img.identity-thumb { background: var(--n-0); }
   .modal-head .icon-btn,
   .notif-head .icon-btn { width: 40px; height: 40px; }
 }
+
+/* P2.4 thumbnail scrub (Recordings): a window of footage as a keyframe grid. */
+.scrub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.scrub-tile {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel-2, var(--panel));
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--dur-1, 120ms) ease, transform var(--dur-1, 120ms) ease;
+}
+.scrub-tile:hover { border-color: var(--accent); transform: translateY(-1px); }
+.scrub-tile img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: #000; }
+.scrub-cap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--text-2, var(--muted));
+  font-variant-numeric: tabular-nums;
+}
+.scrub-count { color: var(--accent); font-weight: 600; }
+
+/* P2.3 region motion search modal */
+.motion-frame { position: relative; user-select: none; cursor: crosshair; border-radius: 8px; overflow: hidden; }
+.motion-frame img { width: 100%; display: block; pointer-events: none; }
+.motion-rect {
+  position: absolute;
+  border: 2px solid var(--accent);
+  background: color-mix(in oklab, var(--accent) 22%, transparent);
+  pointer-events: none;
+}
+.scrub-missing {
+  aspect-ratio: 16 / 9;
+  display: grid;
+  place-items: center;
+  color: var(--text-2, var(--muted));
+  font-size: 12px;
+  background: var(--panel-2, var(--panel));
+}

@@ -146,6 +146,11 @@ pub fn run(
     // Per-camera motion gate, keyed with the threshold it was built for so a
     // settings or per-camera-config change rebuilds it.
     let mut gates: HashMap<i64, (f32, MotionGate)> = HashMap::new();
+    // P2.3 region motion index: per camera, the minute being accumulated and
+    // the OR of that minute's changed-cell masks. Flushed to `motion_grid`
+    // when the minute rolls over (partial trailing minutes are lost on
+    // shutdown — a one-minute index gap, not footage).
+    let mut motion_acc: HashMap<i64, (i64, [u8; 512])> = HashMap::new();
     let mut last_event: HashMap<(i64, &'static str), i64> = HashMap::new();
     // Per-camera object tracker + analytics memory (line-crossing, loitering).
     // Only used on cameras that configure a tripwire or a dwell zone.
@@ -383,6 +388,29 @@ pub fn run(
                 }
             };
             let verdict = gate.update(&frame);
+            // Region motion index (P2.3): OR this frame's changed cells into the
+            // camera's current minute; flush the previous minute on rollover.
+            // Indexes ALL changed frames (even sub-threshold "still" ones), so a
+            // small far-away movement is still findable retroactively.
+            if let Some(mask) = gate.packed_mask() {
+                let minute = chrono::Local::now().timestamp() / 60 * 60;
+                let acc = motion_acc.entry(cam.id).or_insert((minute, [0u8; 512]));
+                if acc.0 != minute {
+                    let (done_min, cells) = *acc;
+                    if let Err(e) = db.add_motion_grid(cam.id, done_min, &cells) {
+                        tracing::debug!("motion grid write failed: {e:#}");
+                    }
+                    // Ride the hourly rollover to prune the index tail (45 days
+                    // is comfortably past any recording retention).
+                    if done_min % 3600 == 0 {
+                        let _ = db.prune_motion_grid_before(minute - 45 * 86_400);
+                    }
+                    *acc = (minute, [0u8; 512]);
+                }
+                for (a, b) in acc.1.iter_mut().zip(mask.iter()) {
+                    *a |= b;
+                }
+            }
             // Capture WHERE the motion was (for the snapshot highlight) right
             // after the diff, while the gate's mask is fresh — an owned Vec so we
             // can release the gate borrow. Only when a snapshot will actually be
