@@ -181,6 +181,7 @@ export interface MotionHit {
   end_ts: number;
   segment_id: number | null;
   offset_secs: number | null;
+  segment_start_ts: number | null;
 }
 
 export interface Settings {

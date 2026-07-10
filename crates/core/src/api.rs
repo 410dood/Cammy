@@ -4250,18 +4250,34 @@ async fn segment_thumb(
     require_camera(&allowed_cameras(&st, &p)?, seg.camera_id)?;
 
     let thumbs_dir = st.data_dir.join("thumbs");
-    let thumb_path = thumbs_dir.join(format!("seg-{id}.jpg"));
+    // Cache key includes start_ts: SQLite can reuse a deleted segment's rowid,
+    // and an `immutable`-cached thumb keyed by id alone could then show a
+    // different (even another camera's) recording for a week.
+    let thumb_path = thumbs_dir.join(format!("seg-{id}-{}.jpg", seg.start_ts));
     if !thumb_path.exists() {
         if !std::path::Path::new(&seg.path).exists() {
             return Err(not_found()); // pruned by retention; index lags
         }
         std::fs::create_dir_all(&thumbs_dir).ok();
-        prune_thumbs(&thumbs_dir);
-        let ffmpeg = recorder::locate_ffmpeg(st.ffmpeg_bin.as_deref())?;
         static THUMB_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let uniq = THUMB_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Amortize the cache-size sweep (a full directory scan) to ~1 in 32
+        // misses — a miss already pays for an ffmpeg run.
+        if uniq.is_multiple_of(32) {
+            prune_thumbs(&thumbs_dir);
+        }
+        let ffmpeg = recorder::locate_ffmpeg(st.ffmpeg_bin.as_deref())?;
         let tmp_path = thumbs_dir.join(format!("seg-{id}.partial-{}-{uniq}.jpg", std::process::id()));
         let (seg_path, out) = (seg.path.clone(), tmp_path.clone());
+        // Cap concurrent extractions: a cold scrub grid lazy-loads dozens of
+        // tiles at once, and unbounded parallel ffmpeg decodes would starve
+        // the live recorder/detector on small boxes.
+        static THUMB_SEM: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+        let _permit = THUMB_SEM
+            .get_or_init(|| tokio::sync::Semaphore::new(3))
+            .acquire()
+            .await
+            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         let status = tokio::task::spawn_blocking(move || {
             std::process::Command::new(ffmpeg)
                 // -ss AFTER -i would decode; before -i it keyframe-seeks. 0 =
@@ -4335,9 +4351,11 @@ async fn motion_search(
         ));
     }
 
-    // Rasterize the rectangle onto the mask grid as a 512-byte bitset.
+    // Rasterize the rectangle onto the mask grid as a 512-byte bitset. The
+    // `.min(n - 1)` keeps a box hugging the right/bottom edge in bounds.
     let n = motion::GRID as usize;
-    let (gx1, gy1) = ((x1 * n as f32) as usize, (y1 * n as f32) as usize);
+    let gx1 = ((x1 * n as f32) as usize).min(n - 1);
+    let gy1 = ((y1 * n as f32) as usize).min(n - 1);
     let gx2 = ((x2 * n as f32).ceil() as usize).clamp(gx1 + 1, n);
     let gy2 = ((y2 * n as f32).ceil() as usize).clamp(gy1 + 1, n);
     let mut region = [0u8; 512];
@@ -4348,36 +4366,69 @@ async fn motion_search(
         }
     }
 
-    let rows = st.db.motion_grid_rows(q.camera_id, q.from, q.to)?;
-    let mut hits: Vec<i64> = Vec::new();
-    for (minute, cells) in rows {
-        if cells.iter().zip(region.iter()).any(|(c, r)| c & r != 0) {
-            hits.push(minute);
+    // The scan reads up to 45 days of 512-byte rows plus the camera's segment
+    // index — genuine blocking work, so keep it off the tokio workers (the
+    // smart-search convention).
+    let db = st.db.clone();
+    let seg_slack = i64::from(st.db.settings().segment_seconds) + 15;
+    let (camera_id, from, to) = (q.camera_id, q.from, q.to);
+    let (out, truncated) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let rows = db.motion_grid_rows(camera_id, from, to)?;
+        let mut hits: Vec<i64> = Vec::new();
+        for (minute, cells) in rows {
+            if cells.iter().zip(region.iter()).any(|(c, r)| c & r != 0) {
+                hits.push(minute);
+            }
         }
-    }
 
-    // Fold consecutive minutes into ranges, newest first, capped.
-    let mut ranges: Vec<(i64, i64)> = Vec::new();
-    for m in hits {
-        match ranges.last_mut() {
-            Some((_, end)) if m == *end + 60 => *end = m,
-            _ => ranges.push((m, m)),
+        // Fold consecutive minutes into ranges, newest first, capped.
+        let mut ranges: Vec<(i64, i64)> = Vec::new();
+        for m in hits {
+            match ranges.last_mut() {
+                Some((_, end)) if m == *end + 60 => *end = m,
+                _ => ranges.push((m, m)),
+            }
         }
-    }
-    ranges.reverse();
-    let truncated = ranges.len() > 300;
-    ranges.truncate(300);
+        ranges.reverse();
+        let truncated = ranges.len() > 300;
+        ranges.truncate(300);
 
-    let mut out = Vec::with_capacity(ranges.len());
-    for (start, end) in ranges {
-        let seg = st.db.find_segment_at(q.camera_id, start)?;
-        out.push(serde_json::json!({
-            "ts": start,
-            "end_ts": end + 60,
-            "segment_id": seg.as_ref().map(|s| s.id),
-            "offset_secs": seg.as_ref().map(|s| (start - s.start_ts).max(0)),
-        }));
-    }
+        // Resolve ranges to recordings with ONE segment-index fetch (not one
+        // query per range), sorted ascending for binary search.
+        let mut segs = db.list_segments(Some(camera_id), Some(to + seg_slack), 200_000)?;
+        segs.sort_by_key(|s| s.start_ts);
+        // The newest segment starting at or before `ts`, but only if `ts`
+        // actually falls inside it — the recording_at duration guard. Without
+        // it, a hit minute inside a recording gap resolves to some unrelated
+        // older segment and the UI plays the wrong footage.
+        let seg_covering = |ts: i64| {
+            let i = segs.partition_point(|s| s.start_ts <= ts);
+            let s = segs.get(i.checked_sub(1)?)?;
+            (ts - s.start_ts <= seg_slack).then_some(s)
+        };
+
+        let mut out = Vec::with_capacity(ranges.len());
+        for (start, end) in ranges {
+            // A range's first minute can predate the recording (retention
+            // boundary, recorder restart) while the rest is on disk — walk a
+            // few minutes in before declaring it unplayable.
+            let hit = (start..=end)
+                .step_by(60)
+                .take(10)
+                .find_map(|m| seg_covering(m).map(|s| (m, s)));
+            out.push(serde_json::json!({
+                "ts": start,
+                "end_ts": end + 60,
+                "segment_id": hit.map(|(_, s)| s.id),
+                "offset_secs": hit.map(|(m, s)| (m - s.start_ts).max(0)),
+                "segment_start_ts": hit.map(|(_, s)| s.start_ts),
+            }));
+        }
+        Ok((out, truncated))
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+
     Ok(Json(serde_json::json!({ "hits": out, "truncated": truncated })))
 }
 

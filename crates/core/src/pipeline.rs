@@ -147,10 +147,14 @@ pub fn run(
     // settings or per-camera-config change rebuilds it.
     let mut gates: HashMap<i64, (f32, MotionGate)> = HashMap::new();
     // P2.3 region motion index: per camera, the minute being accumulated and
-    // the OR of that minute's changed-cell masks. Flushed to `motion_grid`
-    // when the minute rolls over (partial trailing minutes are lost on
-    // shutdown — a one-minute index gap, not footage).
+    // the OR of that minute's changed-cell masks. Flushed to `motion_grid` on
+    // the first frame after the minute rolls over — motion or not — so the
+    // latest burst is searchable within ~a minute (only the in-progress minute
+    // can be lost to a shutdown).
     let mut motion_acc: HashMap<i64, (i64, [u8; 512])> = HashMap::new();
+    // Wall-clock hour of the last motion-index prune (once per hour, total —
+    // not per camera, and not contingent on any particular minute having motion).
+    let mut motion_prune_hour: i64 = 0;
     let mut last_event: HashMap<(i64, &'static str), i64> = HashMap::new();
     // Per-camera object tracker + analytics memory (line-crossing, loitering).
     // Only used on cameras that configure a tripwire or a dwell zone.
@@ -389,26 +393,33 @@ pub fn run(
             };
             let verdict = gate.update(&frame);
             // Region motion index (P2.3): OR this frame's changed cells into the
-            // camera's current minute; flush the previous minute on rollover.
-            // Indexes ALL changed frames (even sub-threshold "still" ones), so a
-            // small far-away movement is still findable retroactively.
-            if let Some(mask) = gate.packed_mask() {
+            // camera's current minute. Indexes ALL changed frames (even
+            // sub-threshold "still" ones), so a small far-away movement is
+            // still findable retroactively.
+            {
                 let minute = chrono::Local::now().timestamp() / 60 * 60;
-                let acc = motion_acc.entry(cam.id).or_insert((minute, [0u8; 512]));
-                if acc.0 != minute {
-                    let (done_min, cells) = *acc;
-                    if let Err(e) = db.add_motion_grid(cam.id, done_min, &cells) {
-                        tracing::debug!("motion grid write failed: {e:#}");
+                // Flush a completed minute on the NEXT frame, motion or not —
+                // a quiet camera must not sit on its last burst for hours.
+                if let Some(&(done_min, cells)) = motion_acc.get(&cam.id) {
+                    if done_min != minute {
+                        if let Err(e) = db.add_motion_grid(cam.id, done_min, &cells) {
+                            tracing::debug!("motion grid write failed: {e:#}");
+                        }
+                        motion_acc.remove(&cam.id);
                     }
-                    // Ride the hourly rollover to prune the index tail (45 days
-                    // is comfortably past any recording retention).
-                    if done_min % 3600 == 0 {
-                        let _ = db.prune_motion_grid_before(minute - 45 * 86_400);
-                    }
-                    *acc = (minute, [0u8; 512]);
                 }
-                for (a, b) in acc.1.iter_mut().zip(mask.iter()) {
-                    *a |= b;
+                // Hourly tail prune (45 days is comfortably past any recording
+                // retention), on wall clock — independent of motion patterns.
+                let hour = minute / 3600;
+                if hour != motion_prune_hour {
+                    motion_prune_hour = hour;
+                    let _ = db.prune_motion_grid_before(minute - 45 * 86_400);
+                }
+                if let Some(mask) = gate.packed_mask() {
+                    let acc = motion_acc.entry(cam.id).or_insert((minute, [0u8; 512]));
+                    for (a, b) in acc.1.iter_mut().zip(mask.iter()) {
+                        *a |= b;
+                    }
                 }
             }
             // Capture WHERE the motion was (for the snapshot highlight) right

@@ -3519,10 +3519,26 @@ impl Db {
     }
 
     pub fn get_segment(&self, id: i64) -> Result<Option<SegmentRow>> {
-        Ok(self
-            .list_segments(None, None, u32::MAX)?
-            .into_iter()
-            .find(|s| s.id == id))
+        let conn = self.conn();
+        let row = conn
+            .query_row(
+                "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path
+                 FROM segments s JOIN cameras c ON c.id = s.camera_id
+                 WHERE s.id = ?1",
+                params![id],
+                |r| {
+                    Ok(SegmentRow {
+                        id: r.get(0)?,
+                        camera_id: r.get(1)?,
+                        camera: r.get(2)?,
+                        start_ts: r.get(3)?,
+                        bytes: r.get::<_, i64>(4)? as u64,
+                        path: r.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
     }
 
     /// The newest segment for a camera that starts at or before `ts` — i.e. the

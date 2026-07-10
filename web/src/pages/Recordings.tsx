@@ -28,7 +28,7 @@ function MotionSearchModal({
   cameraId: number;
   from: number;
   to: number;
-  onPlay: (segId: number, startTs: number, offset: number) => void;
+  onPlay: (segId: number, segStartTs: number, offset: number) => void;
   onClose: () => void;
 }) {
   const [rect, setRect] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
@@ -138,7 +138,9 @@ function MotionSearchModal({
                     className="scrub-tile"
                     disabled={h.segment_id == null}
                     title={h.segment_id == null ? "Recording no longer retained" : "Play"}
-                    onClick={() => h.segment_id != null && onPlay(h.segment_id, h.ts, h.offset_secs ?? 0)}
+                    onClick={() =>
+                      h.segment_id != null && onPlay(h.segment_id, h.segment_start_ts ?? h.ts, h.offset_secs ?? 0)
+                    }
                   >
                     {h.segment_id != null ? (
                       <img src={`/api/recordings/${h.segment_id}/thumb.jpg`} loading="lazy" alt="" />
@@ -625,10 +627,11 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           from={anchor - windowSecs}
           to={anchor}
           onClose={() => setMotionOpen(false)}
-          onPlay={(segId, ts, offset) => {
+          onPlay={(segId, segStartTs, offset) => {
+            const cam = cameras.find((c) => c.id === cameraId);
             const seg =
               segments.find((s) => s.id === segId) ??
-              ({ id: segId, camera_id: cameraId, camera: "", start_ts: ts - offset, bytes: 0, path: "" } as Segment);
+              ({ id: segId, camera_id: cameraId, camera: cam?.name ?? "", start_ts: segStartTs, bytes: 0, path: "" } as Segment);
             setPlaying({ segment: seg, offset });
           }}
         />
