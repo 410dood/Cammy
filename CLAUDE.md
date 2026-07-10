@@ -16,7 +16,42 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
-### Latest: Windows seamless-experience sweep (docs/agent-task-windows-seamless.md), 2026-07-09
+### Latest: overnight backlog sweep — P2.4 thumbnail scrub + P2.3 region motion search + self-review hardening, 2026-07-10
+
+Autonomous overnight session (user asleep), commits `160a0a2`..`fa2d117` on `main`:
+
+- **P2.4 thumbnail scrub**: `GET /api/recordings/{id}/thumb.jpg` (ffmpeg
+  keyframe, cached under `data/thumbs`, RBAC'd, immutable headers, bounded
+  cache) + a Recordings "Scrub" toggle rendering the window as a quarter-hour
+  keyframe grid with ×N expanders. LIVE-validated (real IR keyframe, 25-tile
+  grid in Chrome).
+- **P2.3 retroactive region motion search**: `motion::packed_mask` (64×64
+  changed-cell bitset, unit-tested) OR'd per camera-minute by the pipeline into
+  a new `motion_grid` table (512 B/minute, WITHOUT ROWID, 45-day prune);
+  `GET /api/motion/search` rasterizes a 0..1 rect, bit-tests stored minutes,
+  folds consecutive-minute ranges, resolves each to its covering segment with
+  a recording_at-style duration guard; Recordings "Motion search" modal
+  (drag-a-box over the live frame → hit tiles → click to play). Read path
+  LIVE-validated via a synthetic quadrant row (hit + miss + correct
+  segment/offset); write path confirmed by a Monitor watch on the live DB.
+- **Self-review hardening (`fa2d117`)**: an 8-angle adversarial review of the
+  diff found 6 CONFIRMED issues, all fixed: trailing-minute flush gap (lone
+  night motion unsearchable until the next motion), recording-gap
+  misresolution (wrong footage playable), a prune that effectively never
+  fired, `db.get_segment` full-table scan (now WHERE id=?), uncapped
+  concurrent ffmpeg thumb extraction (now semaphore 3), sync scan in the
+  async handler + 300-query N+1 (now spawn_blocking + one fetch + binary
+  search), thumb cache key id-reuse hazard (now id+start_ts), per-miss
+  directory sweeps (now ~1/32). Keep running the self-review pattern — it
+  catches real bugs every time.
+- Polish: prettyGesture in the Settings duress dropdown (deferred item cleared).
+
+**Backlog next (docs/08)**: P2.5 CLIP attribute facets, P2.16 object lifecycle
+view, P2.9 deterrence actions, P2.14 selective offsite. GOTCHA: to restart the
+NVR from a session, use a detached process (PowerShell `Start-Process`), NOT a
+timed background shell; the data-dir lock will correctly refuse a double-start.
+
+### Earlier: Windows seamless-experience sweep (docs/agent-task-windows-seamless.md), 2026-07-09
 
 All six deliverables of the seamless spec shipped on `main`, one commit each:
 
