@@ -80,6 +80,51 @@ The unit pins `WorkingDirectory=/opt/cammy` (so models resolve) and a separate
 
 ---
 
+## 2b. Windows service (headless 24/7 recording)
+
+The desktop app runs in your login session — it keeps recording when the window
+is closed (tray), but **stops at sign-out**. For a true appliance that records
+at the lock screen and with nobody signed in, install the headless engine as a
+Windows service (runs as LocalSystem, auto-starts at boot, and the OS restarts
+it on a crash):
+
+```powershell
+# From an ELEVATED (Administrator) prompt, in the folder that holds
+# zoomy.exe alongside .\bin\go2rtc.exe, .\web\dist and the model files:
+.\zoomy.exe --install-service --data-dir D:\CammyData --port 8080
+
+# Manage it like any service:
+net stop cammy
+net start cammy
+
+# Remove it:
+.\zoomy.exe --uninstall-service
+```
+
+The install captures the **absolute** data/UI paths and the working directory,
+so `./bin` and relative model paths resolve exactly as a terminal run. Logs go
+to `<data-dir>\service.log`.
+
+**Service vs. desktop app:** they are mutually exclusive **per data folder** —
+an exclusive lock on `<data-dir>\.cammy.lock` makes whichever starts second
+fail fast with a clear message instead of double-recording into the same files.
+Run the service for 24/7 capture and use a browser at `http://localhost:8080/`
+as the UI; don't point the desktop app at the same data folder.
+
+### Reaching the UI from phones on your LAN
+
+Windows Firewall blocks inbound connections by default. Allow Cammy's port
+(elevated prompt; pick your service port):
+
+```powershell
+netsh advfirewall firewall add rule name="Cammy NVR" dir=in action=allow protocol=TCP localport=8080
+```
+
+Then browse to `http://<this-PC's-LAN-IP>:8080/` (find it with `ipconfig`) and
+set a password in Settings → Remote access first.
+
+---
+
 ## 3. Reverse proxy + TLS
 
 Run Cammy on loopback with `--trusted-proxy` and let the proxy own the certificate
@@ -210,5 +255,30 @@ brute-force throttle and loopback exemption would then key off an attacker-spoof
   mirror to any S3-compatible bucket (incl. MinIO/NAS) via Settings → Offsite backup.
 - **Storage:** set the recordings location + retention (age + total-bytes cap) in
   Settings; watch free space on the Overview/Storage card.
-- **Updates:** stop the service, replace the binary + `web/dist`, restart. The
-  SQLite schema self-migrates on start. Take a `GET /api/backup` first.
+- **Updates:** the **desktop app self-updates** — it checks GitHub Releases on
+  launch, and tray → "Check for updates" / "Install update vX" applies one (it
+  never installs without your click; recording resumes after the restart).
+  Headless/server installs: stop the service, replace the binary + `web/dist`,
+  restart. The SQLite schema self-migrates on start. Take a `GET /api/backup` first.
+
+---
+
+## 6. Releasing (maintainers): auto-update artifacts + code signing
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it fetches go2rtc/
+ffmpeg/models, builds the NSIS installer + Tauri **updater artifacts**, and
+attaches them plus `latest.json` to a draft GitHub Release. Installed desktop
+apps poll `releases/latest/download/latest.json` (endpoint + Ed25519-style
+pubkey pinned in `crates/desktop/tauri.conf.json`).
+
+Repo secrets the owner supplies (all optional; builds succeed unsigned without
+them):
+
+| Secret | Purpose |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` (+ `_PASSWORD`) | Updater signature. Generate once with `npx @tauri-apps/cli signer generate -w ~/.tauri/cammy_updater.key`; the matching pubkey is committed in `tauri.conf.json`. **Without it, releases are installable but existing apps will refuse to auto-update to them.** Never commit the private key. |
+| `CAMMY_SIGN_THUMBPRINT` **or** `CAMMY_SIGN_COMMAND` | Windows Authenticode (SmartScreen trust). Consumed by `crates/desktop/sign.ps1`, which is a no-op when unset. Thumbprint = a code-signing cert in the machine's store; command = a full custom `signtool`/Azure Trusted Signing invocation with `%1` as the artifact path. |
+
+Local installer builds now also want the updater key:
+`$env:TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME\.tauri\cammy_updater.key"` before
+`npx @tauri-apps/cli build` (or unset `createUpdaterArtifacts` temporarily).

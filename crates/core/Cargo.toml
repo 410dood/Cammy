@@ -54,3 +54,8 @@ motion = { path = "../motion" }
 pose = { path = "../pose" }
 recorder = { path = "../recorder" }
 tracker = { path = "../tracker" }
+
+# Windows service plumbing for the headless NVR (`zoomy --install-service`):
+# pure-Rust bindings over the SCM — records at the lock screen / logged out.
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
