@@ -279,6 +279,12 @@ them):
 | `TAURI_SIGNING_PRIVATE_KEY` (+ `_PASSWORD`) | Updater signature. Generate once with `npx @tauri-apps/cli signer generate -w ~/.tauri/cammy_updater.key`; the matching pubkey is committed in `tauri.conf.json`. **Without it, releases are installable but existing apps will refuse to auto-update to them.** Never commit the private key. |
 | `CAMMY_SIGN_THUMBPRINT` **or** `CAMMY_SIGN_COMMAND` | Windows Authenticode (SmartScreen trust). Consumed by `crates/desktop/sign.ps1`, which is a no-op when unset. Thumbprint = a code-signing cert in the machine's store; command = a full custom `signtool`/Azure Trusted Signing invocation with `%1` as the artifact path. |
 
-Local installer builds now also want the updater key:
-`$env:TAURI_SIGNING_PRIVATE_KEY_PATH="$HOME\.tauri\cammy_updater.key"` before
-`npx @tauri-apps/cli build` (or unset `createUpdaterArtifacts` temporarily).
+Local installer builds now also want the updater key —
+`TAURI_SIGNING_PRIVATE_KEY` takes either the key **contents or its path**
+(there is no separate `_PATH` variable):
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = "$HOME\.tauri\cammy_updater.key"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
+npx @tauri-apps/cli build   # from crates/desktop
+```

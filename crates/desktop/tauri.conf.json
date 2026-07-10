@@ -23,8 +23,20 @@
     "active": true,
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
+    "publisher": "Cammy",
+    "shortDescription": "Cammy — self-hosted camera recording with local AI",
+    "longDescription": "Cammy is a self-hosted NVR: 24/7 camera recording, AI object detection that runs locally on your GPU, and a web UI. Your cameras, your data — no cloud, no subscription.",
+    "copyright": "© 2026 Cammy contributors",
+    "licenseFile": "../../LICENSE-MIT",
     "windows": {
-      "signCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File sign.ps1 %1"
+      "signCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File sign.ps1 %1",
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "startMenuFolder": "Cammy",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
     },
     "icon": [
       "icons/32x32.png",

@@ -17,7 +17,9 @@ processed locally on your machine.
 1. Download the latest **`Cammy_x64-setup.exe`** from
    [Releases](https://github.com/410dood/Cammy/releases/latest).
 2. Run it. go2rtc, ffmpeg, and the core AI models are **bundled inside** — there
-   is nothing else to install.
+   is nothing else to install — and no admin rights needed (it installs
+   per-user). You get Start Menu + desktop shortcuts, and uninstalling later
+   **keeps your recordings and settings** unless you say otherwise.
 3. Launch Cammy. A first-run wizard walks you through a password and your first
    camera. Your 30-day trial starts automatically; no signup.
 
