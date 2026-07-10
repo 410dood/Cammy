@@ -1198,6 +1198,44 @@ function AboutCard() {
   );
 }
 
+// Desktop-shell-only card: launch-at-login. The web UI normally runs in a plain
+// browser (or against the headless server), where the OS login item is out of
+// reach — so this renders ONLY inside the Tauri webview, detected by the
+// injected `window.__TAURI__` global, and talks straight to the autostart
+// plugin over IPC (no server round-trip; the setting lives in the OS, not the DB).
+function DesktopCard() {
+  const tauri = (window as unknown as { __TAURI__?: { core: { invoke: (cmd: string) => Promise<unknown> } } }).__TAURI__;
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!tauri) return;
+    tauri.core
+      .invoke("plugin:autostart|is_enabled")
+      .then((v) => setEnabled(!!v))
+      .catch(() => setEnabled(null));
+  }, []);
+  if (!tauri || enabled === null) return null;
+  const toggle = () => {
+    const next = !enabled;
+    setEnabled(next);
+    tauri.core.invoke(next ? "plugin:autostart|enable" : "plugin:autostart|disable").catch(() => {
+      setEnabled(!next); // OS rejected it — reflect reality, don't lie
+    });
+  };
+  return (
+    <div className="card" data-settings-group="license">
+      <h2>Desktop app</h2>
+      <div className="row" style={{ alignItems: "center", gap: 10 }}>
+        <TogglePill on={enabled} onClick={toggle} ariaLabel="Start Cammy when I sign in">
+          Start Cammy when I sign in
+        </TogglePill>
+      </div>
+      <p className="muted" style={{ marginTop: 6 }}>
+        Launches Cammy (and recording) automatically at sign-in. Also available from the tray menu.
+      </p>
+    </div>
+  );
+}
+
 function SettingsTabs({ active, onSelect }: { active: GroupKey; onSelect: (g: GroupKey) => void }) {
   // Apply on every switch, and re-apply when a card mounts later (Users appears
   // once admin loads, 2FA/Account/Audit after their fetches) so an async card
@@ -1901,6 +1939,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <LicensePane />
 
         <AboutCard />
+
+        <DesktopCard />
 
         <div className="card" data-settings-group="recording">
           <h2>Offsite backup</h2>

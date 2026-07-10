@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Main window: the bundled web UI (served by the embedded engine over loopback) may query/toggle launch-at-login.","remote":{"urls":["http://127.0.0.1:18080","http://localhost:18080"]},"local":true,"windows":["main"],"permissions":["core:default","autostart:allow-enable","autostart:allow-disable","autostart:allow-is-enabled"]}}
