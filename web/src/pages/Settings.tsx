@@ -2,6 +2,7 @@ import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout } from "../ui";
 import { LicensePane } from "../License";
+import { prettyGesture } from "../labels";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
   IconDownload, IconUpload, IconCheck, IconUser, IconShield, IconAlert,
@@ -1645,7 +1646,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 {["open_palm", "fist", "victory", "point", "thumb_up", "thumb_down", "love", "ok", "call_me"].map(
                   (g) => (
                     <option key={g} value={g}>
-                      {g}
+                      {prettyGesture(g)}
                     </option>
                   )
                 )}
