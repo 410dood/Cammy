@@ -16,7 +16,52 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
-### Latest: deferred-feature follow-ups — event-aware time-lapse + signed evidence bundle, 2026-07-09
+### Latest: Windows seamless-experience sweep (docs/agent-task-windows-seamless.md), 2026-07-09
+
+All six deliverables of the seamless spec shipped on `main`, one commit each:
+
+- **Data-dir exclusivity lock**: `zoomy::run` takes an advisory OS lock on
+  `<data_dir>/.cammy.lock` (fs2, in-tree) — two engines on one data dir can no
+  longer double-run go2rtc/recorder and corrupt recordings. Fails fast with a
+  user-facing message; the desktop app surfaces engine-startup errors in its
+  window via a self-contained `data:` URL error page (early-exit from the
+  health wait). LIVE: second instance on the same dir exits 1 with the message.
+- **Windows service** (`crates/core/src/winsvc.rs`, windows-service 0.8):
+  `zoomy --install-service/--uninstall-service` + hidden `--run-service` SCM
+  entry; LocalSystem, auto-start, restart-on-crash 3×/day, absolute paths +
+  install-time workdir captured (services start in System32), logs to
+  `<data_dir>/service.log`. Coexistence = mutually exclusive per data dir (the
+  lock). main.rs is now sync; `server_config()` shared. NOT yet exercised: a
+  real elevated install/boot (needs UAC).
+- **Single-instance + autostart** (desktop): tauri-plugin-single-instance
+  (second launch focuses the window), tauri-plugin-autostart with a tray
+  check-item "Start Cammy when I sign in", enabled BY DEFAULT on first packaged
+  run (marker `.autostart-default-applied`), plus a Settings → License-tab
+  "Desktop app" card that toggles it over remote-origin Tauri IPC
+  (`withGlobalTauri` + `capabilities/default.json` remote urls; hidden in plain
+  browsers via `window.__TAURI__` detection).
+- **Auto-update**: tauri-plugin-updater (rustls); endpoint = GitHub Releases
+  `latest.json`, pubkey pinned in tauri.conf.json (private key at
+  `~/.tauri/cammy_updater.key`, NEVER committed). Launch check + tray "Check
+  for updates" → explicit "Install update vX" click (never interrupts recording
+  unasked) → clean restart. `.github/workflows/release.yml` (tag `v*`):
+  fetches go2rtc/ffmpeg/all models, tauri-action builds NSIS + updater
+  artifacts + latest.json into a draft release; missing signing secrets degrade
+  gracefully (ephemeral updater key + unsigned Authenticode).
+- **Code signing**: `bundle.windows.signCommand` → `crates/desktop/sign.ps1`,
+  a no-op without `CAMMY_SIGN_THUMBPRINT`/`CAMMY_SIGN_COMMAND` (owner supplies
+  the cert; documented in DEPLOYMENT.md §6).
+- **Seamless touches**: tray tooltip live status ("N cameras online · M
+  recording" off `/api/status` each minute); DEPLOYMENT.md §2b Windows-service
+  install steps + LAN firewall one-liner.
+
+**Owner inputs still needed**: repo secrets `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)`
+(from `~/.tauri/cammy_updater.key`) and an Authenticode cert
+(`CAMMY_SIGN_THUMBPRINT` or `CAMMY_SIGN_COMMAND`); one elevated
+`--install-service` run to confirm boot-survival; first `v*` tag to exercise
+release.yml end-to-end.
+
+### Earlier: deferred-feature follow-ups — event-aware time-lapse + signed evidence bundle, 2026-07-09
 
 After the backlog below was exhausted, two deferred items shipped one at a time,
 each live-validated on the running release NVR (:8080) and pushed to `main`:

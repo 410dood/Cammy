@@ -21,8 +21,16 @@ processed locally on your machine.
 3. Launch Cammy. A first-run wizard walks you through a password and your first
    camera. Your 30-day trial starts automatically; no signup.
 
-That's it — AI detection works out of the box. macOS and Linux run the same
-engine; build from source (below) until native installers ship.
+That's it — AI detection works out of the box. Cammy **starts with Windows** by
+default (toggle it in the tray menu or Settings → Desktop app), only ever runs
+one copy (a second launch just focuses the window), and **updates itself** —
+tray → "Check for updates" installs a new version with one click and resumes
+recording. For headless 24/7 recording at the lock screen / logged out, install
+the engine as a **Windows service**: see
+[DEPLOYMENT.md §2b](DEPLOYMENT.md) (`zoomy --install-service`).
+
+macOS and Linux run the same engine; build from source (below) until native
+installers ship.
 
 Stuck? A black camera tile, no events, or an ONVIF scan that finds nothing are
 almost always a quick fix — see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
