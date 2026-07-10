@@ -95,12 +95,44 @@ impl Default for ServerConfig {
     }
 }
 
+/// Take the exclusive advisory lock on `<data_dir>/.cammy.lock`. The returned
+/// handle owns the lock — keep it alive for the whole run. Fails fast (no
+/// blocking wait) with a user-facing message when another engine holds it.
+fn lock_data_dir(data_dir: &std::path::Path) -> Result<std::fs::File> {
+    std::fs::create_dir_all(data_dir)
+        .with_context(|| format!("creating data dir {}", data_dir.display()))?;
+    let path = data_dir.join(".cammy.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening lock file {}", path.display()))?;
+    fs2::FileExt::try_lock_exclusive(&file).map_err(|_| {
+        anyhow::anyhow!(
+            "Another Cammy instance is already using this data folder ({}). \
+             Close the other copy first — the desktop app (check the tray), the \
+             Windows service (`zoomy --uninstall-service` or `net stop cammy`), \
+             or a `zoomy` terminal window — then try again.",
+            data_dir.display()
+        )
+    })?;
+    Ok(file)
+}
+
 /// Run the whole platform until `shutdown_rx` fires (any change), then tear
 /// down in order: HTTP server -> workers (ffmpeg finalizes segments) -> go2rtc.
 pub async fn run(
     cfg: ServerConfig,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
+    // Exclusive data-dir lock: two engines on one data dir (desktop app +
+    // service, or app + CLI) means duplicate go2rtc/recorder processes writing
+    // the same segment files — corrupted recordings. Advisory OS file lock,
+    // held for the life of this run; released by the OS even on a crash.
+    let _data_lock = lock_data_dir(&cfg.data_dir)?;
+
     let db = db::Db::open(&cfg.data_dir.join("zoomy.db")).context("opening database")?;
     let settings = db.settings();
     db.save_settings(&settings)?; // persist defaults on first run
@@ -391,4 +423,20 @@ pub async fn run(
     .await;
     go2rtc.stop();
     Ok(())
+}
+
+#[cfg(test)]
+mod data_lock_tests {
+    use super::lock_data_dir;
+
+    #[test]
+    fn second_lock_fails_until_first_released() {
+        let dir = std::env::temp_dir().join(format!("cammy-lock-test-{}", std::process::id()));
+        let first = lock_data_dir(&dir).expect("first lock");
+        let err = lock_data_dir(&dir).expect_err("second lock must fail");
+        assert!(err.to_string().contains("already using this data folder"));
+        drop(first);
+        let _again = lock_data_dir(&dir).expect("relock after release");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
