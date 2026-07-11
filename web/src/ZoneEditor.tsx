@@ -455,8 +455,8 @@ export default function ZoneEditor({
                     onChange={(e) => upd({ labels: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
                   />
                 </label>
-                <label className="field" title="Loiter alert: seconds an object must dwell inside this zone to fire a loiter event (blank/0 = off, needs tracking)">
-                  dwell&nbsp;(s)
+                <label className="field" title="Alert if someone stays in this zone longer than this many seconds. Blank = off. Needs object tracking.">
+                  loiter&nbsp;alert&nbsp;after&nbsp;(s)
                   <input
                     type="number"
                     min="0"
@@ -468,8 +468,8 @@ export default function ZoneEditor({
                     onChange={(e) => upd({ dwell_secs: e.target.value === "" ? null : Number(e.target.value) })}
                   />
                 </label>
-                <label className="field" title="Occupancy limit: an occupancy event fires when the live count of objects inside this zone first exceeds this number (blank/0 = off, needs tracking)">
-                  max&nbsp;#
+                <label className="field" title="Alert when more than this many people or objects are inside. Blank = off. Needs object tracking.">
+                  max&nbsp;occupants
                   <input
                     type="number"
                     min="0"
@@ -617,7 +617,7 @@ export default function ZoneEditor({
           <div className="row" style={{ alignItems: "center" }}>
             <span className="dot" style={{ background: COLORS.calib }} />
             <label className="field">
-              width (m)
+              real width (m)
               <input
                 type="number"
                 min="0.1"
@@ -628,7 +628,7 @@ export default function ZoneEditor({
               />
             </label>
             <label className="field">
-              length (m)
+              real length (m)
               <input
                 type="number"
                 min="0.1"

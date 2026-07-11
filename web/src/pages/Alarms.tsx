@@ -57,7 +57,7 @@ const targetHint = (kind: ActionKind) =>
   kind === "webhook"
     ? "https://… (receives the event JSON)"
     : kind === "mqtt"
-      ? "topic suffix — published under <MQTT prefix>/alarms/<suffix>"
+      ? "topic name, published under <your MQTT prefix>/alarms/<name>"
       : kind === "email"
         ? "recipient@example.com (blank = default from Settings)"
         : "https://ntfy.sh/your-private-topic — free phone push, snapshot attached";
@@ -141,7 +141,15 @@ export default function Alarms({
   };
 
   const removeRule = async (r: AlarmRule) => {
-    if (!(await dialog.confirm({ title: `Delete rule “${r.name}”?`, confirmLabel: "Delete", danger: true }))) return;
+    if (
+      !(await dialog.confirm({
+        title: `Delete rule “${r.name}”?`,
+        body: "This alert rule is removed permanently.",
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    )
+      return;
     try {
       await api.deleteAlarm(r.id);
       toast.success("Rule deleted");
@@ -678,6 +686,10 @@ export default function Alarms({
                     </option>
                   ))}
                 </select>
+                <small className="muted">
+                  Fire only if this other event was also seen on the same camera within the time
+                  window.
+                </small>
               </label>
               {confirmLabel && (
                 <label className="field" title="Time window (seconds) the confirming event must fall within.">
@@ -833,13 +845,16 @@ export default function Alarms({
           <div className="row" style={{ marginTop: 12 }}>
             <span className="muted">…anti-fatigue:</span>
             <label className="field">
-              cooldown (s)
+              quiet period (s)
               <input
                 type="number" min="0" style={{ width: 90 }}
                 value={cooldown}
                 onChange={(e) => setCooldown(Math.max(0, Number(e.target.value) || 0))}
                 title="Minimum seconds between firings of this rule (debounces the whole scene)."
               />
+              <small className="muted">
+                Least time between alerts from this rule, so you aren't pinged repeatedly.
+              </small>
             </label>
           </div>
           {!label &&

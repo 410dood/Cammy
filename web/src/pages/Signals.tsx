@@ -43,7 +43,7 @@ const PRETTY: Record<string, string> = {
   point: "Pointing",
   thumb_up: "Thumb up",
   thumb_down: "Thumb down",
-  love: "I-love-you",
+  love: "I-love-you sign",
   call_me: "Call me",
   ok: "OK",
   hand: "Hand",
@@ -156,7 +156,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
       return;
     }
     setStarting(true);
-    setStatus("Loading hand-landmark model…");
+    setStatus("Getting hand-signal reading ready…");
     try {
       // @vite-ignore — the module URL is dynamic (CDN / self-hosted).
       const vision: any = await import(/* @vite-ignore */ MP_MODULE);
@@ -206,7 +206,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
       loop();
     } catch (e) {
       setStatus(
-        `Could not start: ${e}. The model loads from a CDN — check your connection, or set a self-hosted model URL in Settings.`
+        `Couldn't start hand-signal reading: ${e}. The detector downloads on first use, so check your internet connection, or set a self-hosted model URL in Settings to run offline.`
       );
       stop();
     } finally {
@@ -319,9 +319,9 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
     <>
       <h1>Hand signals</h1>
       <p className="muted" style={{ marginTop: -8 }}>
-        Real-time hand-landmark tracking in your browser — from this device's webcam{" "}
-        <b>or any camera's live stream</b>. Hold an armed signal for {holdSecs.toFixed(1)}s to log
-        an event and trigger any matching alarm — a silent hand-signal "panic button" for your NVR.
+        Cammy can watch for hand signals you choose, right in your browser, from this device's
+        webcam <b>or any camera's live stream</b>. Hold a signal for {holdSecs.toFixed(1)}s to
+        quietly raise an alert, like a silent panic button.
       </p>
 
       <div className="card">
@@ -348,7 +348,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
           </label>
           {ptzOk && (
             <label className="toggle field" title="Steer this PTZ camera with an open palm; make a fist to stop.">
-              touchless PTZ
+              steer camera by hand (PTZ)
               <input type="checkbox" checked={touchless} onChange={() => setTouchless((t) => !t)} />
             </label>
           )}
@@ -433,7 +433,7 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
               }}
             >
               {pretty(current.gesture)} {(current.score * 100).toFixed(0)}%
-              {!isArmed(current.gesture) && <span style={{ opacity: 0.6 }}> · not armed</span>}
+              {!isArmed(current.gesture) && <span style={{ opacity: 0.6 }}> · not active</span>}
             </div>
           )}
         </div>
@@ -455,9 +455,9 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
       </div>
 
       <div className="card">
-        <h2>Armed signals</h2>
+        <h2>Active signals</h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          These hand signals create an event when held. Edit the list (and the hold time) in
+          Holding one of these signals raises an alert. Edit the list (and the hold time) in
           Settings → Hand signals. Create an Alarm with a matching <b>gesture</b> condition to get a
           push notification.
         </p>
@@ -471,12 +471,12 @@ export default function Signals({ cameras }: { cameras: Camera[] }) {
           </div>
         ) : (
           <p className="muted" style={{ marginBottom: 0 }}>
-            <b>Any</b> recognized signal is currently armed. To arm only specific ones, set the list
-            under Settings → Hand signals.
+            <b>Any</b> recognized signal is currently active. To use only specific ones, set the
+            list under Settings → Hand signals.
           </p>
         )}
         <p className="muted" style={{ marginBottom: 0 }}>
-          Recognizes: open palm, fist, victory, pointing, thumb up/down, and I-love-you. Runs fully
+          Recognizes: open palm, fist, victory, pointing, thumb up/down, and the I-love-you sign. Runs fully
           on this device — nothing leaves the browser except the recognized signal name.
         </p>
       </div>

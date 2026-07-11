@@ -89,7 +89,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
     try {
       await api.enrollGait(ev.id, name);
       setGaitNames((n) => ({ ...n, [ev.id]: "" }));
-      toast.success(`Enrolled ${name}'s gait`);
+      toast.success(`Saved how ${name} walks`);
       load();
     } catch (e) {
       onError(String(e));
@@ -97,7 +97,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
   };
   const renameGait = async (p: GaitProfile) => {
     const next = await dialog.prompt({
-      title: "Rename gait identity",
+      title: "Rename this person",
       label: `New name for "${p.name}"`,
       defaultValue: p.name,
       maxLength: 64,
@@ -112,11 +112,11 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
     }
   };
   const forgetGait = async (p: GaitProfile) => {
-    if (!(await dialog.confirm({ title: `Forget "${p.name}"'s gait?`, confirmLabel: "Forget", danger: true })))
+    if (!(await dialog.confirm({ title: `Forget how ${p.name} walks?`, confirmLabel: "Forget", danger: true })))
       return;
     try {
       await api.deleteGait(p.id);
-      toast.success(`Forgot ${p.name}'s gait`);
+      toast.success(`Forgot how ${p.name} walks`);
       load();
     } catch (e) {
       onError(String(e));
@@ -176,7 +176,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
     try {
       await api.enrollFace(name, file);
       setNames((n) => ({ ...n, [file]: "" }));
-      toast.success(`Enrolled ${name}`);
+      toast.success(`Saved ${name}`);
       load();
     } catch (e) {
       onError(String(e));
@@ -283,8 +283,8 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
         <h2>People</h2>
         {faceMissing && (
           <Callout tone="warn" icon={<IconAlert size={16} />}>
-            Face recognition model isn't installed, so faces won't be detected or named. Add
-            the model, then see Settings → Detection &amp; AI → Models &amp; capabilities.
+            Face recognition isn't set up, so faces won't be named yet. Check Settings, Detection
+            &amp; AI, Models &amp; capabilities to see what's missing and where to get it.
           </Callout>
         )}
         {identities.length === 0 ? (
@@ -295,8 +295,8 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
           ) : (
             <EmptyState
               icon={<IconUser />}
-              title="Nobody enrolled or seen yet"
-              hint="Name a face from the unknown gallery below — detections of that person will then carry their name."
+              title="Nobody saved or seen yet"
+              hint="Name a face in the unknown faces gallery below. New sightings of that person will then carry their name."
             />
           )
         ) : (
@@ -342,7 +342,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                   <div className="identity-body">
                     <div className="identity-head">
                       <b>{s.name}</b>
-                      {!s.enrolled && <span className="badge" title="Seen in past events but no longer enrolled">past</span>}
+                      {!s.enrolled && <span className="badge" title="Seen in past events but no longer enrolled">no longer saved</span>}
                     </div>
                     <div className="muted">
                       {s.count === 0
@@ -395,7 +395,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                     {s.entry && <span style={{ fontWeight: 600 }}>{s.entry.name}</span>}
                     {s.cls === "deny" && (
                       <span className="badge danger">
-                        <IconAlert size={11} /> {s.entry ? "watch" : "of interest"}
+                        <IconAlert size={11} /> alerts on
                       </span>
                     )}
                     {s.cls === "allow" && !s.entry && (
@@ -441,9 +441,9 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
       <div className="card" id="plate-library">
         <h2>Plate library</h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          Name known vehicles and flag vehicles of interest — the car analog of the People library.
-          A <b>watch</b> plate sends a vehicle-of-interest push to your phone (uses the push topic
-          set in Settings → Modes &amp; alerts) the moment it's read on any camera; <b>known</b>{" "}
+          Name the vehicles you know and flag the ones to watch for, just like the people above.
+          An <b>alert me when seen</b> plate sends a push to your phone (uses the push topic set in
+          Settings → Modes &amp; alerts) the moment it's read on any camera; <b>known vehicle</b>{" "}
           plates just get labelled.
         </p>
         <div className="row" style={{ marginBottom: 12 }}>
@@ -464,15 +464,15 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
             onKeyDown={(e) => e.key === "Enter" && addPlate()}
           />
           <select value={pCat} onChange={(e) => setPCat(e.target.value as PlateCategory)}>
-            <option value="known">known</option>
-            <option value="watch">watch (alert)</option>
+            <option value="known">known vehicle</option>
+            <option value="watch">alert me when seen</option>
           </select>
           <button className="btn btn-primary" disabled={!pPlate.trim() || !pName.trim()} onClick={addPlate}>
             <IconPlus size={14} /> Add
           </button>
         </div>
         {lib.length === 0 ? (
-          <p className="muted">No plates yet. Add one above, or click “name” on a vehicle seen.</p>
+          <p className="muted">No plates yet. Add one above, or click Name on any vehicle Cammy has seen.</p>
         ) : (
           <div className="table-scroll">
             <table>
@@ -497,8 +497,8 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                         value={p.category}
                         onChange={(e) => setPlateCategory(p, e.target.value as PlateCategory)}
                       >
-                        <option value="known">known</option>
-                        <option value="watch">watch (alert)</option>
+                        <option value="known">known vehicle</option>
+                        <option value="watch">alert me when seen</option>
                       </select>
                     </td>
                     <td className="muted">{sightingsByLib[p.plate] ?? 0}</td>
@@ -518,8 +518,8 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
       <div className="card">
         <h2>Unknown faces</h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          Confident face detections that didn't match anyone. The same person may appear more than
-          once — name any one crop to enroll them (a clear, frontal crop works best).
+          Faces Cammy spotted but couldn't name. The same person may appear more than once. Type a
+          name under any clear, front-facing shot to save them.
         </p>
         {unknown.length === 0 ? (
           <p className="muted">None waiting.</p>
@@ -544,7 +544,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                         disabled={!(names[file] || "").trim()}
                         onClick={() => enroll(file)}
                       >
-                        Enroll
+                        Save name
                       </button>
                     </div>
                   </div>
@@ -574,12 +574,12 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
       </div>
 
       <div className="card">
-        <h2>Gait identities</h2>
+        <h2>People by walk</h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          Identify people by how they walk — works at a distance and when the face isn't visible.
-          Enable <b>gait identification</b> per camera (Cameras → tuning). It's a coarse
-          body-and-motion signature (build, bob/sway, pace), best as a re-ID aid alongside faces, not
-          a forensic match. Name an unknown walker below to enroll them.
+          Recognize people by how they walk (gait). It works at a distance and when the face isn't
+          visible. Enable <b>gait identification</b> per camera (Cameras → tuning). It recognizes
+          people by build and walking style. Treat it as a helpful hint alongside face recognition,
+          not a certain match. Name an unknown walker below to save them.
         </p>
         {gaitProfiles.length > 0 && (
           <div className="identity-grid" style={{ marginBottom: 12 }}>
@@ -604,7 +604,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
         <h3 style={{ margin: "8px 0" }}>Unknown walkers</h3>
         {gaitCands.length === 0 ? (
           <p className="muted">
-            None waiting. Confident person tracks that didn't match an enrolled gait appear here.
+            Nobody waiting. People seen walking who weren't recognized will appear here.
           </p>
         ) : (
           <div className="event-grid">
@@ -628,7 +628,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
                       disabled={!(gaitNames[ev.id] || "").trim()}
                       onClick={() => enrollGait(ev)}
                     >
-                      Enroll
+                      Save name
                     </button>
                   </div>
                 </div>

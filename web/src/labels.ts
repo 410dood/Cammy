@@ -22,7 +22,7 @@ const GESTURE_PRETTY: Record<string, string> = {
   point: "Pointing",
   thumb_up: "Thumb up",
   thumb_down: "Thumb down",
-  love: "I-love-you",
+  love: "I-love-you sign",
   call_me: "Call me",
   ok: "OK",
   hand: "Hand",

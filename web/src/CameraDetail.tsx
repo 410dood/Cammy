@@ -40,7 +40,7 @@ export default function CameraDetail({
     const label = (
       await dialog.prompt({
         title: "Log an event",
-        label: "What happened? Saved as a bookmarked event with a snapshot; alarm rules matching the label will fire.",
+        label: "What happened? Cammy saves a snapshot, and any alert rules for this label will fire.",
         placeholder: "e.g. Delivery arrived",
         maxLength: 48,
       })
@@ -48,7 +48,7 @@ export default function CameraDetail({
     if (!label) return;
     try {
       await api.softTrigger(camera.id, label);
-      toast.success(`Logged “${label}” — saved with a snapshot`);
+      toast.success(`Logged “${label}”, saved with a snapshot`);
     } catch (e) {
       toast.error(String(e));
     }
@@ -75,7 +75,7 @@ export default function CameraDetail({
       if (holdingTalk.current) setTalking(true);
     } catch {
       holdingTalk.current = false;
-      toast.error("Microphone blocked — allow mic access in your browser to talk.");
+      toast.error("Microphone blocked. Allow mic access in your browser to talk.");
     }
   };
   const stopTalk = () => {
@@ -156,7 +156,7 @@ export default function CameraDetail({
         <button
           className="btn btn-primary"
           onClick={logEvent}
-          title="Create a bookmarked event with a snapshot of this moment (soft trigger)"
+          title="Save this moment as an event with a snapshot."
         >
           <IconPlus size={14} /> Log event
         </button>
@@ -174,7 +174,7 @@ export default function CameraDetail({
             {twoWay && (
               <button
                 className={`talk-btn ${talking ? "on" : ""}`}
-                title="Hold to talk through this camera's speaker (best-effort; needs a camera with a speaker)"
+                title="Hold to talk through this camera's speaker, if it has one."
                 aria-pressed={talking}
                 onPointerDown={(e) => {
                   e.preventDefault();

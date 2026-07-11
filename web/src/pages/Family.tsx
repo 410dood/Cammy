@@ -30,11 +30,11 @@ const MODES: Mode[] = [
     setup: [
       "On the nursery camera (Cameras page) turn on “body pose monitoring” and “audio detection”.",
       "In that camera’s zone editor, draw a zone over the crib and name it (e.g. “Crib”).",
-      "Download the pose model (yolov8n-pose.onnx) and set its path in Settings → Recording & backup → “pose model path”.",
-      "On the Alarms page add rules: object “standing” in zone “Crib”, object “covered_face” in zone “Crib”, and a “Baby cry” sound alarm — pick how you want to be notified.",
+      "Posture and fall alerts need a one-time extra download (the pose model). Get it from the models list in the README, then point Settings, Models & capabilities at the file.",
+      "On the Alarms page add rules: “Standing (standing)” in zone “Crib”, “Covered face (covered_face)” in zone “Crib”, and a “Baby cry” sound alarm. Pick how you want to be notified.",
     ],
     safety:
-      "Assistive only — this is NOT a breathing, SpO₂ or SIDS monitor and cannot guarantee detection. Always follow safe-sleep practices and check on your baby in person.",
+      "Assistive only. This is NOT a breathing, oxygen, or SIDS monitor and cannot guarantee detection. Always follow safe-sleep practices and check on your baby in person.",
   },
   {
     key: "pet",
@@ -62,7 +62,7 @@ const MODES: Mode[] = [
     setup: [
       "On the pool camera, draw a zone over the pool/deck. Tick “enter” for a presence alert, “alone” for the child-with-no-adult alert, and “water” for the motionless-in-water hint.",
       "For the child alerts, set “child height ≤” on that camera (Cameras page) so it can tell children from adults — tune it once for your view.",
-      "On the Alarms page add rules: object “child_alone” in your pool zone (and optionally “still_water”).",
+      "On the Alarms page add rules: “Child alone (child_alone)” in your pool zone (and optionally “Motionless in water (still_water)”).",
     ],
     safety:
       "This is a supplement, NOT a replacement for a pool fence and active supervision. It is NOT drowning detection — an above-water camera cannot see a submerged child, and the child/adult guess can be wrong. Never rely on it alone.",
@@ -179,8 +179,8 @@ function ModeCard({
         <div className="callout callout-warn" role="status">
           <span className="callout-ico"><IconAlert size={16} /></span>
           <div>
-            Body-pose monitoring is on, but the pose model isn’t installed — fall/posture alerts won’t
-            fire until <code>yolov8n-pose.onnx</code> is added (Settings → Models &amp; capabilities).
+            Body pose monitoring is on, but the pose model isn’t installed. Posture and fall alerts
+            stay off until the pose model is added (Settings, Models &amp; capabilities).
           </div>
         </div>
       )}

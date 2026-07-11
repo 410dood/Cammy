@@ -65,8 +65,8 @@ function MotionSearchModal({
     <Modal onClose={onClose} className="modal-wide">
       <h2 style={{ marginTop: 0 }}>Motion search</h2>
       <p className="muted" style={{ marginTop: -6 }}>
-        Drag a box over the area you care about — a gate, a driveway, a doorway — then search the
-        recorded motion index for this window.
+        Drag a box over the area you care about (a gate, a driveway, a doorway), then search for
+        recorded motion there in this time window.
       </p>
       <div
         className="motion-frame"
@@ -128,7 +128,7 @@ function MotionSearchModal({
             <>
               <p className="muted">
                 {hits.length} moment{hits.length === 1 ? "" : "s"}
-                {truncated ? " (showing the most recent 300)" : ""} — click to play.
+                {truncated ? " (showing the most recent 300)" : ""}. Click to play.
               </p>
               <div className="scrub-grid">
                 {hits.map((h) => (
@@ -192,7 +192,7 @@ function ScrubGrid({ segments, onPlay }: { segments: Segment[]; onPlay: (s: Segm
       type="button"
       className="scrub-tile"
       onClick={onClick ?? (() => onPlay(s))}
-      title={count && count > 1 ? `${count} clips — click to expand` : `Play ${caption}`}
+      title={count && count > 1 ? `${count} clips, click to expand` : `Play ${caption}`}
     >
       <img src={`/api/recordings/${s.id}/thumb.jpg`} loading="lazy" alt="" />
       <span className="scrub-cap">
@@ -217,7 +217,7 @@ function ScrubGrid({ segments, onPlay }: { segments: Segment[]; onPlay: (s: Segm
         })}
       </div>
       <p className="muted" style={{ marginBottom: 0 }}>
-        One frame per clip — click a ×N tile to expand its quarter-hour, click a frame to play.
+        Each thumbnail is one clip. Click a stacked (×N) tile to see the 15 minutes inside, or click any frame to play.
       </p>
     </div>
   );
@@ -253,7 +253,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
     try {
       let r = await api.timelapse(cameraId, day);
       if (r.status === "building") {
-        toast.info("Building the time-lapse — a full day can take a minute…");
+        toast.info("Building the time-lapse. A full day can take a minute…");
         const started = Date.now();
         while (r.status === "building" && Date.now() - started < 5 * 60 * 1000) {
           await new Promise((res) => setTimeout(res, 4000));
@@ -262,9 +262,9 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       }
       if (r.status === "ready") {
         window.open(r.url, "_blank");
-        toast.success("Time-lapse ready — opening it now");
+        toast.success("Time-lapse ready, opening it now");
       } else {
-        toast.error("Time-lapse is taking longer than expected — check back shortly.");
+        toast.error("Time-lapse is taking longer than expected. Check back shortly.");
       }
     } catch (e) {
       toast.error(`Couldn't build the time-lapse: ${errMsg(e)}`);
@@ -376,7 +376,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
                 )}
               </>
             )}
-            {rh != null && <> · retention caps history at {fmtDaysLeft(rh)}</>}
+            {rh != null && <> · recordings older than {fmtDaysLeft(rh)} are removed</>}
             <span style={{ opacity: 0.7 }}> · estimated</span>
           </>
         );
@@ -403,7 +403,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           {stats.write_bytes_per_day > 0 &&
             (showCap ? (
               <Callout tone={capTone!} style={{ marginBottom: 12 }}>
-                <b>Disk is filling up</b> — add disk or shorten retention to keep more history.
+                <b>Disk is filling up</b>. Add more storage, or shorten recording history (retention) so it doesn't run out.
                 <div className="muted" style={{ marginTop: 2 }}>
                   {capDetail}
                 </div>
@@ -411,7 +411,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             ) : (
               <div className="row" style={{ marginBottom: 12 }}>
                 <span className="muted">
-                  <b>Capacity</b> — {capDetail}
+                  <b>Capacity</b>: {capDetail}
                 </span>
               </div>
             ))}
@@ -423,7 +423,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
                   <span
                     className="badge"
                     style={{ marginLeft: 6 }}
-                    title="This camera is disabled (Cameras page) — old footage is kept until retention prunes it"
+                    title="This camera is turned off (Cameras page). Its old footage is kept until recording history limits remove it."
                   >
                     disabled
                   </span>
@@ -438,7 +438,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
                 />
               </div>
               <span className="muted" style={{ width: 220 }}>
-                {fmtBytes(c.bytes)} · {c.segments} segments
+                {fmtBytes(c.bytes)} · {c.segments} clips
                 {c.oldest_ts ? ` · since ${new Date(c.oldest_ts * 1000).toLocaleDateString()}` : ""}
               </span>
             </div>
@@ -561,7 +561,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           <EmptyState
             icon={<IconFilm />}
             title="No recordings yet"
-            hint="Segments land here about a minute after a record-enabled camera connects. Check that recording is on for at least one camera."
+            hint="Recordings appear here about a minute after a camera with recording turned on connects. Check that recording is on for at least one camera."
           />
         )
       ) : (

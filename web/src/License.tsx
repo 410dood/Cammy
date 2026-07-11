@@ -113,7 +113,7 @@ function StatusLine({ ent, trialDays }: { ent: Entitlement; trialDays: number })
         <span className="role-pill role-admin" style={{ marginRight: 6 }}>
           Licensed
         </span>
-        {ent.plan === "lifetime" ? "Perpetual license" : "Updates plan"} · {ent.email} ·{" "}
+        {ent.plan === "lifetime" ? "Lifetime license" : "License with updates"} · {ent.email} ·{" "}
         {ent.seats} seat{ent.seats === 1 ? "" : "s"}
         {ent.expires != null && <> · updates until {fmtDate(ent.expires)}</>}
       </p>

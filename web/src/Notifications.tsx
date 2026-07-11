@@ -76,7 +76,7 @@ export default function NotificationsPanel({
             <EmptyState
               icon={<IconCheck />}
               title="You're all caught up"
-              hint="Strangers, camera offline/online alerts, anomalies, and daily digests show up here."
+              hint="Strangers, cameras going offline or coming back, unusual activity, and daily summaries show up here."
             />
           ) : (
             notes.map((n) => {
@@ -93,7 +93,7 @@ export default function NotificationsPanel({
                 <button
                   key={n.id}
                   className={`notif-item ${n.read ? "" : "unread"}`}
-                  aria-label={`${n.read ? "" : "Unread — "}${n.title}${n.body ? `. ${n.body}` : ""}`}
+                  aria-label={`${n.read ? "" : "Unread. "}${n.title}${n.body ? `. ${n.body}` : ""}`}
                   onClick={() => {
                     if (!n.read) onMarkRead(n.id);
                     if (n.event_id) onOpenEvent(n.event_id);

@@ -294,7 +294,7 @@ export default function Events({
       a.click();
       URL.revokeObjectURL(url);
     } catch {
-      toast.error("No recording covers this event — nothing to clip.");
+      toast.error("No recording covers this event, so there's no clip to save.");
     }
   };
 
@@ -302,7 +302,7 @@ export default function Events({
   // the audit trail, so the file can be proven unaltered later.
   const exportEvidence = async (ev: CamEvent) => {
     try {
-      toast.info("Building evidence export (watermark + hash)…");
+      toast.info("Preparing your evidence copy…");
       const r = await fetch(`/api/events/${ev.id}/evidence.mp4`);
       if (!r.ok) throw new Error();
       const sha = r.headers.get("x-cammy-sha256") ?? "";
@@ -315,11 +315,11 @@ export default function Events({
       URL.revokeObjectURL(url);
       toast.success(
         sha
-          ? `Evidence exported · SHA-256 ${sha.slice(0, 16)}… (recorded in the audit log)`
-          : "Evidence exported",
+          ? "Evidence saved. A tamper-evident fingerprint was recorded so the clip can be verified later."
+          : "Evidence saved",
       );
     } catch {
-      toast.error("Couldn't build the evidence export — no recording covers this event?");
+      toast.error("Couldn't create the evidence copy. No recording covers this event.");
     }
   };
 
@@ -328,7 +328,7 @@ export default function Events({
   // (`zoomy --verify bundle.zip`). The recipient needs no login and no Cammy.
   const exportBundle = async (ev: CamEvent) => {
     try {
-      toast.info("Building signed evidence bundle (clip + manifest + signature)…");
+      toast.info("Preparing your evidence bundle…");
       const r = await fetch(`/api/events/${ev.id}/evidence.zip`);
       if (!r.ok) throw new Error();
       const sha = r.headers.get("x-cammy-sha256") ?? "";
@@ -341,11 +341,11 @@ export default function Events({
       URL.revokeObjectURL(url);
       toast.success(
         sha
-          ? `Signed bundle exported · verify with "zoomy --verify" (SHA-256 ${sha.slice(0, 16)}…)`
-          : "Signed evidence bundle exported",
+          ? "Evidence bundle saved. It includes instructions for proving the clip is genuine."
+          : "Evidence bundle saved",
       );
     } catch {
-      toast.error("Couldn't build the evidence bundle — no recording covers this event?");
+      toast.error("Couldn't create the evidence bundle. No recording covers this event.");
     }
   };
 
@@ -360,7 +360,7 @@ export default function Events({
         .catch(() => false);
       toast.success(
         copied
-          ? "Share link copied — anyone with it can view this clip for 24h."
+          ? "Share link copied. Anyone with it can view this clip for 24 hours."
           : `Share link (valid 24h): ${url}`,
       );
     } catch {
@@ -644,7 +644,7 @@ export default function Events({
         <span className="smart-ico"><IconSparkles size={18} /></span>
         <input
           type="text"
-          placeholder='Smart search — what you saw or heard ("person in a dark coat", "someone yelling help")'
+          placeholder='Smart search: what you saw or heard ("person in a dark coat", "someone yelling help")'
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -668,7 +668,7 @@ export default function Events({
         />
         <button
           className="btn btn-ghost"
-          title="Search by a reference photo — find this person/vehicle across all cameras (CLIP appearance match)"
+          title="Upload a photo to find that person or vehicle across your cameras."
           onClick={() => imgFileRef.current?.click()}
         >
           <IconUpload size={16} /> Photo
@@ -705,7 +705,7 @@ export default function Events({
           className={`btn ${flaggedOnly ? "btn-primary" : "btn-ghost"}`}
           onClick={() => setFlaggedOnly((v) => !v)}
           aria-pressed={flaggedOnly}
-          title="Show only bookmarked events (kept past retention)"
+          title="Show only saved events. Saved events are never deleted automatically."
         >
           <IconStar size={15} filled={flaggedOnly} /> Saved
         </button>
@@ -713,15 +713,15 @@ export default function Events({
           className={`btn ${highOnly ? "btn-primary" : "btn-ghost"}`}
           onClick={() => setHighOnly((v) => !v)}
           aria-pressed={highOnly}
-          title="Show only high & critical severity events (strangers, safety events, loitering…) — the same tiers the notification filter in Settings uses"
+          title="Show only events worth a look, like strangers, safety events, or someone lingering. Matches the notification filter in Settings."
         >
-          <IconAlert size={15} /> High &amp; up
+          <IconAlert size={15} /> Important only
         </button>
         {tagFilter && (
           <button
             className="btn btn-primary"
             onClick={() => setTagFilter(null)}
-            title="Showing only this tag — click to clear"
+            title="Showing only this tag. Click to clear."
             aria-label={`Clear tag filter ${tagFilter}`}
           >
             <IconTag size={13} /> {tagFilter} <IconX size={12} />
@@ -790,7 +790,7 @@ export default function Events({
         onToggle={(e) => setMoreFilters(e.currentTarget.open)}
       >
         <summary>
-          More filters — hand signal, zone, time range, plate
+          More filters: hand signal, zone, time range, plate
           {anyHiddenFilter && (
             <span className="badge accent" style={{ marginLeft: 8 }}>
               {hiddenFilters} active
@@ -926,7 +926,7 @@ export default function Events({
           <EmptyState
             icon={<IconBell />}
             title="No events yet"
-            hint="Events appear here when a detect-enabled camera sees motion and the AI recognizes an object — a person, vehicle, package, and more. Detections only fire on movement, so try walking in front of a camera."
+            hint="Events appear here when a camera with detection turned on sees motion and the AI recognizes an object (a person, vehicle, package, and more). Detections only fire on movement, so try walking in front of a camera."
             action={
               <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
                 <a className="btn btn-ghost" href="#/cameras">Is a camera online with “detect” on? → Cameras</a>
@@ -990,11 +990,11 @@ export default function Events({
                   )}
                   <span className="muted">{ev.camera}</span>
                   {(ev.severity ?? 2) >= 4 ? (
-                    <span className="badge danger" title="Critical severity — safety or security-integrity event">
+                    <span className="badge danger" title="Critical: a possible safety or security concern.">
                       <IconAlert size={12} /> critical
                     </span>
                   ) : (ev.severity ?? 2) === 3 ? (
-                    <span className="badge warn" title="High severity — likely worth a look">
+                    <span className="badge warn" title="High: likely worth a look.">
                       <IconAlert size={12} /> high
                     </span>
                   ) : null}
@@ -1019,7 +1019,7 @@ export default function Events({
                           <IconCar size={13} /> {ev.plate}
                         </span>
                         {plateClass(ev.plate) === "deny" && (
-                          <span className="badge danger"><IconAlert size={12} /> of interest</span>
+                          <span className="badge danger"><IconAlert size={12} /> on watch list</span>
                         )}
                         {plateClass(ev.plate) === "allow" && (
                           <span className="badge ok"><IconCheck size={12} /> known</span>
@@ -1033,11 +1033,11 @@ export default function Events({
                       </span>
                     )}
                     {ev.gait === "?" ? (
-                      <span className="badge warn" title="Tracked walking but matched no enrolled gait">
-                        <IconStranger size={13} /> unknown walk
+                      <span className="badge warn" title="Seen walking but not recognized">
+                        <IconStranger size={13} /> unrecognized walk
                       </span>
                     ) : ev.gait ? (
-                      <span className="badge ok" title="Identified by gait (how they walk)">
+                      <span className="badge ok" title="Identified by how they walk (gait)">
                         <IconUser size={13} /> {ev.gait} · gait
                       </span>
                     ) : null}
@@ -1047,7 +1047,7 @@ export default function Events({
                   <div className="ev-caption">“{ev.caption}”</div>
                 )}
                 {ev.transcript && (
-                  <div className="ev-line" title="Speech-to-text of the event audio">
+                  <div className="ev-line" title="What was heard (speech to text)">
                     <IconMic size={13} /> <span>“{ev.transcript}”</span>
                   </div>
                 )}
@@ -1080,8 +1080,8 @@ export default function Events({
                     aria-pressed={ev.flagged}
                     title={
                       ev.flagged
-                        ? "Bookmarked — kept past retention. Click to remove."
-                        : "Bookmark this event (keep it past retention)"
+                        ? "Saved. This event is never deleted automatically. Click to unsave."
+                        : "Save this event so it's never deleted automatically"
                     }
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1114,12 +1114,13 @@ export default function Events({
                   </button>
                   <button
                     className="btn btn-ghost ev-act"
+                    title={noClip === ev.id ? "This camera wasn't recording at that moment." : undefined}
                     onClick={(e) => {
                       e.stopPropagation();
                       jumpToRecording(ev);
                     }}
                   >
-                    <IconPlay size={13} /> {noClip === ev.id ? "no clip" : "Recording"}
+                    <IconPlay size={13} /> {noClip === ev.id ? "No recording" : "Recording"}
                   </button>
                   <button
                     className="btn btn-ghost ev-act"
@@ -1143,7 +1144,7 @@ export default function Events({
                   </button>
                   <button
                     className="btn btn-ghost ev-act"
-                    title="Export a watermarked evidence copy whose SHA-256 is logged for verification"
+                    title="Save a watermarked copy. A tamper-evident fingerprint is recorded so the clip can be verified later."
                     onClick={(e) => {
                       e.stopPropagation();
                       exportEvidence(ev);
@@ -1153,7 +1154,7 @@ export default function Events({
                   </button>
                   <button
                     className="btn btn-ghost ev-act"
-                    title="Export a self-verifying evidence bundle (ZIP: watermarked clip + Ed25519-signed manifest). Anyone can re-check it offline with: zoomy --verify"
+                    title="Save a tamper-evident copy (watermarked clip plus a signed manifest) that anyone can verify offline. Instructions are included in the file."
                     onClick={(e) => {
                       e.stopPropagation();
                       exportBundle(ev);
@@ -1237,8 +1238,8 @@ export default function Events({
                 <p className="muted">Searching across cameras…</p>
               ) : !similar.res.available ? (
                 <p className="muted">
-                  No appearance fingerprint for this event — appearance search needs the smart-search
-                  (CLIP) models installed and applies to object detections.
+                  This event can't be matched yet. Similar search needs the smart search models
+                  installed (Settings, Models &amp; capabilities) and works on people and vehicles.
                 </p>
               ) : similar.res.results.length === 0 ? (
                 <p className="muted">No similar appearances found on any camera yet.</p>
@@ -1316,8 +1317,9 @@ export default function Events({
                 <p className="muted">Matching your photo across cameras…</p>
               ) : !imgSearch.res.available ? (
                 <p className="muted">
-                  Photo search needs the smart-search (CLIP) models installed; it ranks against
-                  stored object-detection crops.
+                  Photo search needs the smart search models installed (Settings, Models &amp;
+                  capabilities). It compares your photo against people and vehicles your cameras
+                  have seen.
                 </p>
               ) : imgSearch.res.results.length === 0 ? (
                 <p className="muted">No similar appearances found on any camera yet.</p>

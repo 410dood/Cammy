@@ -144,7 +144,7 @@ export default function Onboarding({
             {found && (
               <p className="muted" style={{ fontSize: "var(--text-sm)" }}>
                 {found.length === 0
-                  ? "No ONVIF cameras responded — you can still add one by IP on the Cameras page."
+                  ? "No cameras answered the scan. You can still add one by its network address on the Cameras page."
                   : `Found ${found.length} camera${found.length === 1 ? "" : "s"}: ${found.map((c) => c.host).join(", ")}`}
               </p>
             )}

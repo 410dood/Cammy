@@ -981,7 +981,14 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
     }
   };
   const remove = async (u: User) => {
-    if (!(await dialog.confirm({ title: `Delete ${u.username}?`, confirmLabel: "Delete", danger: true })))
+    if (
+      !(await dialog.confirm({
+        title: `Delete ${u.username}?`,
+        body: "Removes this account and signs them out everywhere. This can't be undone.",
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    )
       return;
     try {
       await api.deleteUser(u.id);
@@ -1319,7 +1326,7 @@ function ModelsCard() {
         . Models are picked up within a minute of being added.
       </p>
       {err ? (
-        <p className="muted">Couldn't load capabilities: {err}</p>
+        <p className="muted">Couldn't load the AI feature list: {err}</p>
       ) : !caps ? (
         <span className="skeleton" style={{ width: "100%", height: 36 }} />
       ) : (
@@ -1519,6 +1526,10 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.confidence}
                 onChange={(e) => set({ confidence: num(e.target.value, s.confidence) })}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                How sure the AI must be before logging an object (0 to 1). Higher means fewer
+                false alerts but more misses. 0.4 is a good start.
+              </span>
             </label>
             <label className="field">
               motion threshold (0-1)
@@ -1527,6 +1538,10 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.motion_threshold}
                 onChange={(e) => set({ motion_threshold: num(e.target.value, s.motion_threshold) })}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Fraction of the frame that must change before the AI looks for objects. Lower is
+                more sensitive.
+              </span>
             </label>
             <label className="field">
               sample interval (ms)
@@ -1535,14 +1550,22 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.poll_ms}
                 onChange={(e) => set({ poll_ms: num(e.target.value, s.poll_ms) })}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Milliseconds between analyzed frames. Higher is easier on your machine but reacts
+                slower.
+              </span>
             </label>
             <label className="field">
-              event cooldown (s)
+              time between repeat events (s)
               <input
                 type="number" min="0"
                 value={s.event_cooldown_secs}
                 onChange={(e) => set({ event_cooldown_secs: num(e.target.value, s.event_cooldown_secs) })}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Wait this long before logging the same object again, so one visitor isn't fifty
+                events.
+              </span>
             </label>
             <label
               className="toggle field"
@@ -1556,8 +1579,11 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               />
             </label>
             <label className="toggle field">
-              force CPU
+              run detection on CPU only
               <input type="checkbox" checked={s.force_cpu} onChange={() => set({ force_cpu: !s.force_cpu })} />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Use this if GPU detection causes problems. Slower but more compatible.
+              </span>
             </label>
             <label className="toggle field">
               face recognition
@@ -1574,6 +1600,10 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.face_match_threshold}
                 onChange={(e) => set({ face_match_threshold: num(e.target.value, s.face_match_threshold) })}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                How closely a face must match a saved person to count. Higher is stricter and
+                gives fewer wrong names.
+              </span>
             </label>
             <label className="field" style={{ flex: 1, minWidth: 280 }} title="Plates (or partials) of interest — a match fires a guaranteed high-priority push.">
               plate deny-list (vehicles of interest, comma-separated)
@@ -1653,12 +1683,15 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               </select>
             </label>
             <label className="field" style={{ flex: 1, minWidth: 320 }}>
-              model URL (MediaPipe .task; default = Google CDN, override to self-host offline)
+              hand tracking model URL (advanced)
               <input
                 type="text"
                 value={s.gesture_model_url ?? ""}
                 onChange={(e) => set({ gesture_model_url: e.target.value })}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Leave blank for the default. Set this only to run fully offline.
+              </span>
             </label>
           </div>
         </div>
@@ -1686,7 +1719,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               />
             </label>
             <label className="field" style={{ flex: 1, minWidth: 320 }}>
-              endpoint (Ollama-compatible /api/generate)
+              AI server address (Ollama compatible)
               <input
                 type="text"
                 placeholder="http://localhost:11434/api/generate"
@@ -1788,8 +1821,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             })}
           </div>
           <small className="muted" style={{ display: "block", marginTop: 8 }}>
-            {s.audio_labels.length} AudioSet label(s) active. Chips map to exact YAMNet
-            class names so detection fires reliably.
+            Listening for {s.audio_labels.length} sound type(s).
           </small>
         </div>
 
@@ -2088,11 +2120,11 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <div className="card" data-settings-group="security">
           <h2>Reverse-proxy SSO</h2>
           <p className="muted" style={{ marginTop: 0 }}>
-            Sit Cammy behind an auth proxy (Authelia, oauth2-proxy, Cloudflare Access, Tailscale) and
-            trust the authenticated-user header it sets — single sign-on without a Cammy password.
-            Set the header below, then enter the user header name your proxy sends. Leave the
-            user header blank to turn SSO off. If the username matches a Cammy account, that account's
-            role applies.
+            Skip the Cammy login when you already sign in through a gateway like Cloudflare
+            Access or Authelia. Cammy sits behind the auth proxy (Authelia, oauth2-proxy,
+            Cloudflare Access, Tailscale) and trusts the authenticated-user header it sets.
+            Enter the user header name your proxy sends below. Leave the user header blank to
+            turn SSO off. If the username matches a Cammy account, that account's role applies.
           </p>
           <div className="callout callout-danger" role="note">
             <span className="callout-ico"><IconAlert size={16} /></span>
@@ -2141,7 +2173,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           <h2>Notifications</h2>
           <div className="row">
             <label className="field" style={{ minWidth: 260 }}>
-              only push events at or above severity
+              notify me only about
               <select
                 value={s.notify_min_severity ?? 1}
                 onChange={(e) => set({ notify_min_severity: Number(e.target.value) })}
@@ -2206,6 +2238,9 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.mqtt_prefix}
                 onChange={(e) => set({ mqtt_prefix: e.target.value })}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Text at the start of every topic. The default is fine.
+              </span>
             </label>
             <label className="toggle field" title="Publish MQTT-discovery configs so Home Assistant auto-creates a binary_sensor per (camera, object) and a last-detection sensor per camera.">
               Home Assistant discovery
@@ -2214,6 +2249,9 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 checked={s.mqtt_ha_discovery}
                 onChange={() => set({ mqtt_ha_discovery: !s.mqtt_ha_discovery })}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Lets Home Assistant find your cameras automatically.
+              </span>
             </label>
             <label className="field">
               HA discovery prefix
@@ -2222,6 +2260,9 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.mqtt_ha_prefix}
                 onChange={(e) => set({ mqtt_ha_prefix: e.target.value })}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Text at the start of every topic. The default is fine.
+              </span>
             </label>
             <label className="field" title="Seconds a Home Assistant binary_sensor stays ON after a detection before auto-clearing.">
               sensor ON timeout (s)
@@ -2315,12 +2356,16 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               />
             </label>
             <label className="field">
-              model path
+              detector model file
               <input
                 type="text"
                 value={s.model_path}
                 onChange={(e) => set({ model_path: e.target.value })}
               />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Path to the object detection model. Leave as is unless you know you need to
+                change it.
+              </span>
             </label>
             <label
               className="field"
@@ -2334,8 +2379,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(e) => set({ pose_model: e.target.value })}
               />
             </label>
-            <label className="toggle field">
-              record audio (AAC)
+            <label className="toggle field" title="Audio is saved in the recording as AAC.">
+              record audio
               <input
                 type="checkbox"
                 checked={s.record_audio}

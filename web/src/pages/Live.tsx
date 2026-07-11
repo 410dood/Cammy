@@ -233,8 +233,8 @@ export default function Live({
           title="No cameras yet"
           hint={
             <>
-              Add your first camera on the <b>Cameras</b> page — paste an RTSP URL or let ONVIF
-              auto-discover it on your network.
+              Add your first camera on the <b>Cameras</b> page. Scan finds most cameras on your
+              network automatically, or paste a stream address (RTSP).
             </>
           }
         />
@@ -245,8 +245,8 @@ export default function Live({
     <>
       <div className="row" style={{ alignItems: "center" }}>
         <h1 style={{ marginRight: "auto" }}>Live</h1>
-        <label className="field" title="go2rtc restreams one camera connection to all viewers; pick the transport that works best on your network.">
-          transport
+        <label className="field" title="Pick the option that plays most smoothly on your network.">
+          Playback
           <select
             value={mode}
             onChange={(e) => {
@@ -255,9 +255,9 @@ export default function Live({
               setStreamMode(m);
             }}
           >
-            <option value="webrtc">WebRTC (lowest latency)</option>
-            <option value="mse">MSE (compatible, over TCP)</option>
-            <option value="mjpeg">MJPEG (most compatible)</option>
+            <option value="webrtc">Smoothest (WebRTC)</option>
+            <option value="mse">Most reliable (MSE)</option>
+            <option value="mjpeg">Works everywhere (MJPEG)</option>
           </select>
         </label>
         <button
@@ -373,7 +373,7 @@ export default function Live({
                 )}
               </div>
               {alert && (
-                <div className="tile-alert" title={tamper ? "Possible camera tampering — the view changed abruptly (covered, moved, or defocused)" : "Stream frozen — camera online but no fresh frames"}>
+                <div className="tile-alert" title={tamper ? "Possible camera tampering. The view changed abruptly (covered, moved, or defocused)." : "Stream frozen. The camera is online but isn't sending new video."}>
                   <IconAlert size={13} /> {alert}
                 </div>
               )}

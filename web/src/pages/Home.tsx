@@ -66,8 +66,8 @@ function spotlightReason(e: CamEvent): string | null {
 }
 
 const ARM_MODES: { id: ArmMode; label: string; icon: JSX.Element; hint: string }[] = [
-  { id: "home", label: "Home", icon: <IconHome size={15} />, hint: "Armed — you're home" },
-  { id: "away", label: "Away", icon: <IconShield size={15} />, hint: "Armed — fully away" },
+  { id: "home", label: "Home", icon: <IconHome size={15} />, hint: "Armed while you're home" },
+  { id: "away", label: "Away", icon: <IconShield size={15} />, hint: "Armed, fully away" },
   { id: "disarmed", label: "Disarmed", icon: <IconLock size={15} />, hint: "Alerts paused" },
 ];
 
@@ -170,7 +170,7 @@ export default function Home({
     try {
       const r = await api.arm(m);
       setArm(r.arm_mode);
-      toast.success(m === "disarmed" ? "System disarmed" : `Armed — ${m === "home" ? "Home" : "Away"}`);
+      toast.success(m === "disarmed" ? "System disarmed" : `Armed (${m === "home" ? "Home" : "Away"})`);
     } catch (e) {
       setArm(prev);
       toast.error(String(e));
@@ -272,7 +272,7 @@ export default function Home({
       </div>
       {loaded && arm === null && (
         <p className="muted" style={{ marginTop: -10, marginBottom: 18 }}>
-          {armErr ? "Couldn't reach the security-mode control — retrying." : "Security mode unavailable."}
+          {armErr ? "Couldn't reach the security mode control. Retrying." : "Security mode unavailable."}
         </p>
       )}
 
@@ -329,8 +329,8 @@ export default function Home({
             <span className="eyebrow"><IconSparkles size={13} /> Daily digest</span>
             <span className="muted clock" style={{ marginLeft: "auto" }} title={fmtTime(digest.ts)}>
               {Date.now() / 1000 - digest.ts > 26 * 3600 && (
-                <span className="badge warn" style={{ marginRight: 8 }} title="No newer digest has been generated — check 'daily digest' in Settings → Detection & AI">
-                  outdated
+                <span className="badge warn" style={{ marginRight: 8 }} title="No new daily summary yet. You can adjust it under Settings, Detection & AI, daily digest.">
+                  not updated
                 </span>
               )}
               <RelTime ts={digest.ts} />
@@ -395,7 +395,7 @@ export default function Home({
                   type="button"
                   className={`btn ${feedMode === "spot" ? "btn-primary" : "btn-ghost"} ev-act`}
                   aria-pressed={feedMode === "spot"}
-                  title="Rank by importance — strangers, critical and unusual events first"
+                  title="Rank by importance: strangers, critical and unusual events first"
                   onClick={() => setFeedMode("spot")}
                 >
                   Spotlights
@@ -470,13 +470,13 @@ export default function Home({
         <div className="home-cols">
           {lines.length > 0 && (
             <div className="card">
-              <h2>Throughput today</h2>
+              <h2>Comings and goings today</h2>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <div className="muted" style={{ display: "flex", fontSize: "var(--text-xs)" }}>
-                  <span style={{ flex: 1 }}>Line</span>
+                  <span style={{ flex: 1 }}>Crossing</span>
                   <span style={{ width: 48, textAlign: "right" }}>In</span>
                   <span style={{ width: 48, textAlign: "right" }}>Out</span>
-                  <span style={{ width: 56, textAlign: "right" }}>Net</span>
+                  <span style={{ width: 56, textAlign: "right" }}>Difference</span>
                 </div>
                 {lines.map((l) => (
                   <div key={l.name} style={{ display: "flex", alignItems: "center" }}>

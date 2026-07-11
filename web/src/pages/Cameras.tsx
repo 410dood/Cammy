@@ -286,6 +286,9 @@ function TuneModal({
               {dc.min_score == null && settings && (
                 <span className="feat-help">using global: {settings.confidence}</span>
               )}
+              <span className="feat-help">
+                How sure the AI must be (0 to 1). Higher means fewer false alerts.
+              </span>
             </label>
             <label className="field">
               Motion threshold
@@ -965,7 +968,7 @@ export default function Cameras({
                 <th>Detect</th>
                 <th>Record</th>
                 <th>Group</th>
-                <th>Perf</th>
+                <th title="How long the AI takes per frame and whether it uses the GPU or CPU.">Speed</th>
                 <th></th>
               </tr>
             </thead>
@@ -1053,7 +1056,7 @@ export default function Cameras({
             {scanning ? "Scanning…" : (<><IconRadar size={15} /> Scan network for cameras</>)}
           </button>
           {scanned !== null && scanned.length === 0 && (
-            <span className="muted">no ONVIF cameras responded</span>
+            <span className="muted">No cameras answered the scan. You can still add one below by address.</span>
           )}
           {scanned?.map((c) => (
             <TogglePill
@@ -1082,7 +1085,7 @@ export default function Cameras({
             <input type="password" autoComplete="off" value={pass} onChange={(e) => setPass(e.target.value)} onKeyDown={onResolveKey} />
           </label>
           <button type="button" className="btn btn-ghost" disabled={busy || !ip.trim()} onClick={resolve}>
-            <IconSearch size={15} /> Resolve via ONVIF
+            <IconSearch size={15} /> Find streams (ONVIF)
           </button>
           {found && (
             <span className="save-ok"><IconCheck size={14} /> {found} (form filled below)</span>
@@ -1100,7 +1103,7 @@ export default function Cameras({
             />
           </label>
           <label className="field" style={{ flex: 1, minWidth: 280 }}>
-            source (RTSP URL or any go2rtc source)
+            camera address (RTSP link or other source)
             <input
               type="text"
               placeholder="rtsp://user:pass@192.168.1.50:554/stream1"
@@ -1109,12 +1112,19 @@ export default function Cameras({
               required
               style={{ width: "100%" }}
             />
+            <span className="feat-help">
+              Most cameras use rtsp://… Not sure? Use Scan or Find streams above to fill this in.
+            </span>
           </label>
-          <label className="field" style={{ flex: 1, minWidth: 220 }}>
-            sub-stream for detection (optional)
+          <label
+            className="field"
+            style={{ flex: 1, minWidth: 220 }}
+            title="A smaller copy of the video the AI analyzes to save CPU. Usually filled in automatically."
+          >
+            low-res stream for detection (optional)
             <input
               type="text"
-              placeholder="auto-filled by ONVIF resolve"
+              placeholder="usually filled in automatically"
               value={detectSource}
               onChange={(e) => setDetectSource(e.target.value)}
               style={{ width: "100%" }}
