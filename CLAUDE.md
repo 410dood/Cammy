@@ -16,7 +16,22 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
-### Latest: overnight backlog sweep — P2.4 thumbnail scrub + P2.3 region motion search + self-review hardening, 2026-07-10
+### Latest: plain-language copy sweep, 2026-07-10
+
+`f3ff9d3` on `main`: a three-agent copy audit (monitor / config / people
+surfaces) found ~80 places the UI spoke developer at homeowners — raw model
+filenames and `zoomy --verify` CLI commands in toasts, meaning hidden in
+hover-only `title=` tooltips, bare jargon labels (cooldown, min confidence,
+force CPU, enroll, armed, transport), dead-end errors. All rewritten in place,
+**display strings only, zero behavior change** (option `value=`s, handlers,
+state untouched). Terminology now consistent: "clips" not "segments", "saved"
+not "bookmarked/enrolled", "recording history" not "retention" (technical term
+kept as a parenthetical for the tinkerer persona). Every Settings detection
+knob gained a visible one-line helper with a good-start value. tsc+vite green;
+live-validated in Chrome on :8080 (Live playback dropdown, Settings helpers,
+Events "Important only" filter).
+
+### Earlier: overnight backlog sweep — P2.4 thumbnail scrub + P2.3 region motion search + self-review hardening, 2026-07-10
 
 Autonomous overnight session (user asleep), commits `160a0a2`..`fa2d117` on `main`:
 
