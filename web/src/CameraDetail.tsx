@@ -36,6 +36,8 @@ export default function CameraDetail({
   // Coarse playhead position (whole seconds) for the timeline marker.
   const [posTs, setPosTs] = useState<number | null>(null);
   const [findOpen, setFindOpen] = useState(false);
+  const findOpenRef = useRef(false);
+  findOpenRef.current = findOpen;
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
   const [talking, setTalking] = useState(false);
@@ -115,9 +117,11 @@ export default function CameraDetail({
     };
     load();
     const t = setInterval(load, 10000);
-    // Esc steps back one level: playback → live first, then close the view.
+    // Esc steps back one level: an open modal handles its own Esc, then
+    // playback → live, and only then close the whole view.
     const esc = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (findOpenRef.current) return; // the Find-in-frame modal closes itself
       if (playbackRef.current) setPlayback(null);
       else onClose();
     };
@@ -366,6 +370,9 @@ function FrameSearchModal({ cameraId, onClose }: { cameraId: number; onClose: ()
   const [res, setRes] = useState<SimilarResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The search crops from the frame image — if it can't load (camera offline),
+  // say so and keep the search disabled instead of a silent dead click.
+  const [frameOk, setFrameOk] = useState(true);
   const imgRef = useRef<HTMLImageElement>(null);
 
   const frac = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -413,7 +420,12 @@ function FrameSearchModal({ cameraId, onClose }: { cameraId: number; onClose: ()
       </p>
       <div
         className="motion-frame"
-        style={{ touchAction: "none" }}
+        style={{
+          touchAction: "none",
+          // A failed image has no intrinsic size — keep the box from collapsing
+          // so the "camera offline" message has somewhere to live.
+          ...(frameOk ? {} : { aspectRatio: "16 / 9", background: "var(--bg-sunken)" }),
+        }}
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId);
           const p = frac(e);
@@ -437,7 +449,24 @@ function FrameSearchModal({ cameraId, onClose }: { cameraId: number; onClose: ()
           src={`/api/cameras/${cameraId}/frame.jpg`}
           alt="Current camera frame"
           draggable={false}
+          onError={() => setFrameOk(false)}
+          style={frameOk ? undefined : { visibility: "hidden" }}
         />
+        {!frameOk && (
+          <div
+            className="muted"
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "grid",
+              placeItems: "center",
+              padding: 12,
+              textAlign: "center",
+            }}
+          >
+            No live picture — the camera must be online to search from its view.
+          </div>
+        )}
         {rect && (
           <div
             className="motion-rect"
@@ -453,7 +482,7 @@ function FrameSearchModal({ cameraId, onClose }: { cameraId: number; onClose: ()
       <div className="row" style={{ marginTop: 10, alignItems: "center" }}>
         <button
           className="btn btn-primary"
-          disabled={!rect || rect.x2 - rect.x1 < 0.01 || busy}
+          disabled={!frameOk || !rect || rect.x2 - rect.x1 < 0.01 || busy}
           onClick={search}
         >
           {busy ? "Searching…" : "Find across cameras"}

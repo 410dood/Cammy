@@ -307,7 +307,11 @@ export default function Events({
       /* ignore */
     }
     if (ev) setOpen(ev);
+    // A pasted/new-tab link to an old event can't be resolved (no stash, and
+    // it's beyond the loaded list) — say so instead of silently doing nothing.
+    else toast.info("Couldn't open that event — it's older than the recent list shown here.");
     onFocusHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusEventId, events, onFocusHandled]);
 
   // Protect-style playback shortcuts: space pause, arrows seek (shift =
@@ -315,7 +319,11 @@ export default function Events({
   useEffect(() => {
     if (!playing) return;
     const onKey = (e: KeyboardEvent) => {
-      const v = document.querySelector<HTMLVideoElement>(".modal-bg video");
+      // The clip player can stack over the event viewer (which has its own
+      // inline video) — control the TOPMOST modal's video, i.e. the last one
+      // in DOM order, not the hidden one behind it.
+      const vids = document.querySelectorAll<HTMLVideoElement>(".modal-bg video");
+      const v = vids[vids.length - 1];
       if (!v) return;
       if (e.key === " ") {
         e.preventDefault();
@@ -333,6 +341,13 @@ export default function Events({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, [playing]);
+
+  // When the full-recording player stacks over the event viewer, silence the
+  // viewer's inline clip behind it — two audio tracks at once is chaos.
+  useEffect(() => {
+    if (!playing) return;
+    document.querySelector<HTMLVideoElement>(".lightbox-video")?.pause();
   }, [playing]);
 
   const jumpToRecording = async (ev: CamEvent) => {

@@ -1,4 +1,4 @@
-﻿import { FormEvent, useEffect, useRef, useState } from "react";
+﻿import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, AlarmRule, Action, ActionKind, ArmMode, CamEvent, Camera, DAY_NAMES } from "../api";
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
@@ -166,10 +166,43 @@ export default function Alarms({
       .finally(() => setLoaded(true));
     api.alarmStats().then(setStats).catch(() => {});
     api
-      .events({ after: Math.floor(Date.now() / 1000) - 86400, limit: 500 })
+      .events({ after: Math.floor(Date.now() / 1000) - 86400, limit: 1000 })
       .then(setRecent)
       .catch(() => {});
   };
+  // On a busy system the 24h window can exceed the server's 1000-row cap —
+  // the previews then cover a shorter window and must say so, not read low.
+  const recentCapped = recent.length >= 1000;
+  const recentWindow = recentCapped
+    ? `since ${new Date(recent[recent.length - 1].ts * 1000).toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit",
+      })}`
+    : "24h";
+  // Memoized so typing in unrelated builder fields (rule name, action targets)
+  // doesn't re-run rules × recent matching on every keystroke.
+  const ruleCounts = useMemo(
+    () => new Map(rules.map((r) => [r.id, recent.filter((e) => matchPreview(r, e)).length])),
+    [rules, recent],
+  );
+  // Builder preview inputs, memoized on the condition fields only.
+  const previewCond = useMemo(
+    () => ({
+      camera_id: cameraId === "" ? null : cameraId,
+      label: label || null,
+      face_like: faceUnknown ? null : faceLike.trim() || null,
+      plate_like: plateLike.trim() || null,
+      gesture_like: gestureLike.trim() || null,
+      transcript_like: transcriptLike.trim() || null,
+      zone_like: zoneLike.trim() || null,
+      face_unknown: faceUnknown,
+    }),
+    [cameraId, label, faceLike, plateLike, gestureLike, transcriptLike, zoneLike, faceUnknown],
+  );
+  const previewHits = useMemo(
+    () => recent.filter((e) => matchPreview(previewCond, e)),
+    [recent, previewCond],
+  );
   useEffect(load, []);
 
   // "New rule" can sit below a long rules list — when the builder opens via
@@ -529,13 +562,22 @@ export default function Alarms({
                       <span style={{ fontSize: "var(--text-sm)" }}>not since startup</span>
                     )}
                     {recent.length > 0 && (() => {
-                      const n = recent.filter((e) => matchPreview(r, e)).length;
+                      const n = ruleCounts.get(r.id) ?? 0;
+                      // An AI-gated rule (watch prompt / verification question)
+                      // decides on far fewer than its raw candidates — label
+                      // the number honestly instead of implying fired alerts.
+                      const aiGated =
+                        !!(r.prompt_like ?? "").trim() || !!(r.vlm_prompt ?? "").trim();
                       return (
                         <div
                           style={{ fontSize: "var(--text-sm)" }}
-                          title="Events in the last 24 hours matching this rule's conditions — before schedules, cooldowns, and AI checks."
+                          title="Events matching this rule's conditions — before schedules, cooldowns, and AI checks."
                         >
-                          <span className="tnum">{n}</span> matching event{n === 1 ? "" : "s"} · 24h
+                          <span className="tnum">{n}</span>{" "}
+                          {aiGated
+                            ? `candidate${n === 1 ? "" : "s"} for the AI check`
+                            : `matching event${n === 1 ? "" : "s"}`}{" "}
+                          · {recentWindow}
                         </div>
                       );
                     })()}
@@ -813,16 +855,7 @@ export default function Alarms({
               show what the rule WOULD have fired on in the last 24 hours —
               catching an over-broad or dead rule before it's saved. */}
           {(() => {
-            const cond = {
-              camera_id: cameraId === "" ? null : cameraId,
-              label: label || null,
-              face_like: faceUnknown ? null : faceLike.trim() || null,
-              plate_like: plateLike.trim() || null,
-              gesture_like: gestureLike.trim() || null,
-              transcript_like: transcriptLike.trim() || null,
-              zone_like: zoneLike.trim() || null,
-              face_unknown: faceUnknown,
-            };
+            const cond = previewCond;
             const anyCond =
               cond.camera_id != null ||
               !!cond.label ||
@@ -833,13 +866,14 @@ export default function Alarms({
               !!cond.zone_like ||
               cond.face_unknown;
             if (!anyCond) return null;
-            const hits = recent.filter((e) => matchPreview(cond, e));
+            const hits = previewHits;
             const aiGated = !!(vlmPrompt.trim() || promptLike.trim());
             return (
               <div className="rule-preview" role="status">
                 <span className="muted">
                   Would have matched <b className="tnum">{hits.length}</b> event
-                  {hits.length === 1 ? "" : "s"} in the last 24 hours
+                  {hits.length === 1 ? "" : "s"}{" "}
+                  {recentCapped ? recentWindow : "in the last 24 hours"}
                   {aiGated ? " (before the AI check runs)" : ""}
                   {hits.length === 0 ? " — nothing recent fits these conditions." : "."}
                 </span>

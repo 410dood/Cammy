@@ -434,6 +434,12 @@ export function usePolling(fn: () => void, ms: number) {
 /* Accessible modal (media lightbox / content dialog)                        */
 /* ======================================================================== */
 
+// Stack of open modal instances (mount order). Modals can nest — e.g. a clip
+// player launched from the event viewer — and Escape must peel ONE layer, the
+// topmost, not close every open modal at once (each instance listens on
+// window, and stopPropagation can't silence sibling listeners there).
+const modalStack: symbol[] = [];
+
 export function Modal({
   children,
   onClose,
@@ -450,14 +456,26 @@ export function Modal({
 }) {
   const labelId = useId();
   const cardRef = useRef<HTMLDivElement>(null);
+  const instance = useRef<symbol | null>(null);
+  if (instance.current === null) instance.current = Symbol("modal");
   useFocusTrap(cardRef);
 
-  // Escape-to-close. Keyed on onClose, which callers often pass as an inline
-  // arrow, so this effect may re-run on every parent render — that's fine, it
-  // only swaps a window listener.
+  // Register in the modal stack for the component's lifetime.
+  useEffect(() => {
+    const id = instance.current!;
+    modalStack.push(id);
+    return () => {
+      const i = modalStack.indexOf(id);
+      if (i >= 0) modalStack.splice(i, 1);
+    };
+  }, []);
+
+  // Escape-to-close, only when this modal is the topmost. Keyed on onClose,
+  // which callers often pass as an inline arrow, so this effect may re-run on
+  // every parent render — that's fine, it only swaps a window listener.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && modalStack[modalStack.length - 1] === instance.current) {
         e.stopPropagation();
         onClose();
       }

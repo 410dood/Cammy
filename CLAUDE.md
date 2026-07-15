@@ -52,6 +52,33 @@ each LIVE-validated in Chrome on :8080:
 - Polish: event-viewer `← →` kbd hint (hidden on touch); ZoneEditor hides its
   frame `<img>` when failed (the plain-language fallback already explains).
 
+Round 4 (same day) — **adversarial self-review of the session diff** (3
+parallel lens agents: React correctness / UX edge cases / perf+CSS; every
+finding hand-verified). 2 HIGH-MED + several LOW confirmed, all fixed +
+live-validated:
+
+- **Stacked-modal Escape (HIGH)**: every `Modal` listened for Esc on `window`
+  (stopPropagation can't silence sibling listeners there), so Esc with the
+  clip player over the event viewer closed BOTH, and Esc in Find-in-frame
+  tore down the whole camera view. Fix: a module-level modal stack in ui.tsx
+  (push on mount; only the topmost closes on Esc) + a `findOpenRef` guard in
+  CameraDetail's own Esc handler. LIVE: Esc peels 2→1→0.
+- **Stacked-player shortcuts (MED)**: the playback-shortcut effect grabbed
+  the FIRST `.modal-bg video` (the hidden inline one) — now targets the last
+  (topmost); the inline viewer clip also pauses when the full player opens.
+- **Find-in-frame offline dead-end (MED)**: frame.jpg failure now shows "No
+  live picture — the camera must be online…" and disables the search (the
+  same onError treatment Heatmap/ZoneEditor got; this modal was missed).
+- **Honesty**: AI-gated rules' table figure is now "N candidates for the AI
+  check" (matchPreview counts pre-CLIP candidates, not fires); counts fetch
+  1000 events and the label switches to "since h:mm" if capped; a pasted
+  deep link to an out-of-window event toasts instead of silently no-opping.
+- **Perf**: hover-thumb requests debounced 150ms per segment (uncached
+  keyframes cost an ffmpeg run behind the shared 3-permit semaphore the
+  Scrub grid also uses); Timeline's track nodes memoized so pointer-move
+  re-renders skip reconciling ~400 elements; Alarms counts/preview memoized
+  off unrelated keystrokes; zero-width guards on timeline math.
+
 Round 3 (same day, third commit) — the last three research findings:
 
 - **Timeline hover-scrub previews**: pointer over any `Timeline` (camera

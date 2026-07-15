@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CamEvent, Segment } from "./api";
 import { eventClass } from "./CrossTimeline";
 import { isCameraSide, prettyLabel } from "./labels";
@@ -34,11 +34,21 @@ export default function Timeline({
   // Keyboard scrubbing: a cursor (0..1) the arrow keys move; Enter plays from it.
   const [cursor, setCursor] = useState<number | null>(null);
   // Hover preview: the keyframe of the segment under the pointer plus the
-  // clock, so scrubbing gives instant visual feedback before any click
-  // (the thumbs endpoint caches per segment, so tracking is cheap).
+  // clock, so scrubbing gives instant visual feedback before any click.
   const [hover, setHover] = useState<{ frac: number; ts: number; segId: number | null } | null>(
     null,
   );
+  // The thumbnail request is debounced until the pointer settles on a segment:
+  // uncached keyframes cost an ffmpeg run behind a small shared semaphore, and
+  // a fast drag across a cold 6h window would otherwise queue dozens of jobs
+  // (starving the Scrub grid, which shares that budget). Position and clock
+  // stay instant; only the image waits.
+  const [thumbSeg, setThumbSeg] = useState<number | null>(null);
+  const thumbTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSeg = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (thumbTimer.current) clearTimeout(thumbTimer.current);
+  }, []);
   const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
   const tsAt = (f: number) => Math.round(start + f * windowSecs);
   const fmtClock = (ts: number) =>
@@ -81,15 +91,44 @@ export default function Timeline({
     [events, windowSecs]
   );
 
-  // Hour gridlines (or 10-minute lines for the 1h window).
-  const gridStep = windowSecs <= 3600 ? 600 : 3600;
-  const gridLines: number[] = [];
-  for (let t = Math.ceil(start / gridStep) * gridStep; t < now; t += gridStep) {
-    gridLines.push(frac(t));
-  }
+  // The static track (gridlines + coverage blocks + event ticks) is memoized
+  // as one element tree, so the per-pointer-move hover re-renders bail out of
+  // reconciling its several hundred nodes (React skips identical elements).
+  const track = useMemo(() => {
+    // Hour gridlines (or 10-minute lines for the 1h window).
+    const gridStep = windowSecs <= 3600 ? 600 : 3600;
+    const gridLines: number[] = [];
+    for (let t = Math.ceil(start / gridStep) * gridStep; t < now; t += gridStep) {
+      gridLines.push((t - start) / windowSecs);
+    }
+    return (
+      <>
+        {gridLines.map((g, i) => (
+          <div className="tl-grid" key={i} style={{ left: `${g * 100}%` }} />
+        ))}
+        {blocks.map((b, i) => (
+          <div
+            className="tl-block"
+            key={i}
+            style={{ left: `${b.left * 100}%`, width: `${Math.max(0.15, b.width * 100)}%` }}
+          />
+        ))}
+        {ticks.map(({ left, e }, i) => (
+          <div
+            className={`tl-tick ${eventClass(e.label)}`}
+            key={i}
+            style={{ left: `${left * 100}%` }}
+            title={`${prettyLabel(e.label)}${isCameraSide(e.label) ? "" : ` ${(e.score * 100).toFixed(0)}%`} @ ${new Date(e.ts * 1000).toLocaleTimeString()}`}
+          />
+        ))}
+      </>
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blocks, ticks, windowSecs, now]);
 
   const click = (ev: React.MouseEvent<HTMLDivElement>) => {
     const rect = ev.currentTarget.getBoundingClientRect();
+    if (rect.width === 0) return;
     const f = clamp01((ev.clientX - rect.left) / rect.width);
     // Snap to a nearby event tick (within ~6px) so the markers are actionable —
     // seek a few seconds before the event so you see it happen. Clicks elsewhere
@@ -112,10 +151,26 @@ export default function Timeline({
 
   const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width === 0) return;
     const f = clamp01((e.clientX - rect.left) / rect.width);
     const ts = tsAt(f);
     const seg = segments.find((s) => ts >= s.start_ts && ts < s.start_ts + segmentSecs);
-    setHover({ frac: f, ts, segId: seg?.id ?? null });
+    const segId = seg?.id ?? null;
+    if (segId !== lastSeg.current) {
+      // Crossed a segment boundary: drop the old image and restart the settle
+      // timer for the new one.
+      lastSeg.current = segId;
+      setThumbSeg(null);
+      if (thumbTimer.current) clearTimeout(thumbTimer.current);
+      if (segId != null) thumbTimer.current = setTimeout(() => setThumbSeg(segId), 150);
+    }
+    setHover({ frac: f, ts, segId });
+  };
+  const onLeave = () => {
+    if (thumbTimer.current) clearTimeout(thumbTimer.current);
+    lastSeg.current = null;
+    setThumbSeg(null);
+    setHover(null);
   };
 
   return (
@@ -126,8 +181,8 @@ export default function Timeline({
           style={{ left: `clamp(84px, ${hover.frac * 100}%, calc(100% - 84px))` }}
           aria-hidden="true"
         >
-          {hover.segId != null && (
-            <img src={`/api/recordings/${hover.segId}/thumb.jpg`} alt="" />
+          {thumbSeg != null && thumbSeg === hover.segId && (
+            <img src={`/api/recordings/${thumbSeg}/thumb.jpg`} alt="" />
           )}
           <span className="clock">{fmtClock(hover.ts)}</span>
         </div>
@@ -137,7 +192,7 @@ export default function Timeline({
       onClick={click}
       onKeyDown={onKey}
       onPointerMove={onMove}
-      onPointerLeave={() => setHover(null)}
+      onPointerLeave={onLeave}
       role="slider"
       tabIndex={0}
       aria-label="Recording scrubber — arrow keys move the cursor, Enter plays from there"
@@ -147,24 +202,7 @@ export default function Timeline({
       aria-valuetext={cursor != null ? fmtClock(tsAt(cursor)) : "now"}
       title="Click, or focus and use ← → + Enter, to play from a moment"
     >
-      {gridLines.map((g, i) => (
-        <div className="tl-grid" key={i} style={{ left: `${g * 100}%` }} />
-      ))}
-      {blocks.map((b, i) => (
-        <div
-          className="tl-block"
-          key={i}
-          style={{ left: `${b.left * 100}%`, width: `${Math.max(0.15, b.width * 100)}%` }}
-        />
-      ))}
-      {ticks.map(({ left, e }, i) => (
-        <div
-          className={`tl-tick ${eventClass(e.label)}`}
-          key={i}
-          style={{ left: `${left * 100}%` }}
-          title={`${prettyLabel(e.label)}${isCameraSide(e.label) ? "" : ` ${(e.score * 100).toFixed(0)}%`} @ ${new Date(e.ts * 1000).toLocaleTimeString()}`}
-        />
-      ))}
+      {track}
       {cursor != null && (
         <div className="tl-cursor" style={{ left: `${cursor * 100}%` }} aria-hidden="true" />
       )}
