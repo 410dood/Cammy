@@ -5,7 +5,7 @@ import { LicensePane } from "../License";
 import { prettyGesture } from "../labels";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
-  IconDownload, IconUpload, IconCheck, IconUser, IconShield, IconAlert,
+  IconDownload, IconUpload, IconCheck, IconUser, IconShield, IconAlert, IconMic,
 } from "../icons";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -1304,6 +1304,63 @@ function baseUrlWarning(raw: string): string | null {
 // Surfaces which optional AI models are actually present, so an enabled feature
 // whose model isn't downloaded reads as "not downloaded" instead of silently
 // no-op'ing (the dominant silent-failure gap). Read-only; fetches on mount.
+/// Live readiness line for the Speech-transcription card: is the model file
+/// present, and how many cameras are actually listening? Surfaces the two
+/// silent preconditions (model + per-camera audio detection) that otherwise
+/// make an enabled toggle do nothing.
+function TranscriptionReadiness({ enabled }: { enabled: boolean }) {
+  const [modelPresent, setModelPresent] = useState<boolean | null>(null);
+  const [cams, setCams] = useState<Camera[] | null>(null);
+  useEffect(() => {
+    api
+      .capabilities()
+      .then((r) => setModelPresent(r.features.find((f) => f.key === "transcription")?.present ?? false))
+      .catch(() => {});
+    api.cameras().then(setCams).catch(() => {});
+  }, []);
+  if (modelPresent === null && cams === null) return null;
+  const listening = (cams ?? []).filter((c) => c.enabled && c.detect_config.audio_detect);
+  const total = (cams ?? []).filter((c) => c.enabled);
+  const blocked = enabled && (modelPresent === false || (cams !== null && listening.length === 0));
+  return (
+    <div
+      className={blocked ? "callout callout-warn" : undefined}
+      role={blocked ? "status" : undefined}
+      style={blocked ? { marginTop: 8 } : { marginTop: 8, fontSize: "var(--text-sm)" }}
+    >
+      {modelPresent !== null && (
+        <div className={blocked ? undefined : "muted"}>
+          {modelPresent ? (
+            <>
+              <IconCheck size={13} /> Speech model installed.
+            </>
+          ) : (
+            <>
+              Speech model not downloaded yet — transcription won't run until it is. See the{" "}
+              <a href="https://github.com/410dood/Cammy#optional-ai-models" target="_blank" rel="noreferrer">
+                model download guide
+              </a>
+              .
+            </>
+          )}
+        </div>
+      )}
+      {cams !== null && (
+        <div className={blocked ? undefined : "muted"}>
+          {listening.length > 0 ? (
+            <>Listening on {listening.length} of {total.length} cameras (those with audio detection on).</>
+          ) : (
+            <>
+              No camera is listening yet — turn on <b>Audio detection</b> in a camera's
+              Detection tuning (Cameras page) to transcribe speech near it.
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ModelsCard() {
   const [caps, setCaps] = useState<Capability[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -1748,13 +1805,13 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <div className="card" data-settings-group="detection">
-          <h2>Audio transcription</h2>
+          <h2>Speech transcription (what was said)</h2>
           <p className="muted" style={{ marginTop: 0 }}>
-            Speech-to-text for audio events, using a <b>bundled, in-process</b> whisper.cpp engine —
-            audio never leaves this machine and there's no separate software to run.{" "}
-            <b>Off by default.</b> When on, this applies to <b>every camera with audio detection
-            enabled</b>: a sound event captures a short clip and the transcript is written onto the
-            event (shown on cards). Needs the whisper model file present.
+            Turn spoken words near your cameras into text. When a sound event fires, Cammy
+            captures a short clip and writes what it heard onto the event — shown with a{" "}
+            <IconMic size={12} /> on Events cards, searchable ("someone yelling help"), and
+            usable as a spoken-phrase alarm trigger (Alarms page). Everything runs on this
+            machine — audio never leaves it, no extra software to run.
           </p>
           <div className="row">
             <label className="toggle field">
@@ -1765,16 +1822,21 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={() => set({ transcription_enabled: !s.transcription_enabled })}
               />
             </label>
-            <label className="field" style={{ flex: 1, minWidth: 320 }} title="Path to a whisper GGML model (downloaded separately), e.g. ggml-tiny.en.bin or ggml-base.en.bin.">
-              whisper model file
+            <label className="field" style={{ flex: 1, minWidth: 320 }}>
+              speech model file
               <input
                 type="text"
                 placeholder="ggml-tiny.en.bin"
                 value={s.transcription_model ?? ""}
                 onChange={(e) => set({ transcription_model: e.target.value })}
               />
+              <small className="muted">
+                A Whisper GGML file, downloaded separately — ggml-tiny.en.bin (~75 MB) is a
+                good start; ggml-base.en.bin is more accurate.
+              </small>
             </label>
           </div>
+          <TranscriptionReadiness enabled={s.transcription_enabled} />
         </div>
 
         <div className="card" data-settings-group="detection">
@@ -1784,7 +1846,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             (glass break, smoke/fire alarm, gunshot, scream) and <b>family</b> (baby cry,
             child crying, dog bark, cat meow, doorbell) — and raises an audio event you can
             alarm on. Enable it per camera with <b>audio detection</b> on the Cameras page;
-            nothing leaves this machine.
+            nothing leaves this machine. Pair it with <b>Speech transcription</b> (above) to
+            also read what was said.
           </p>
           <label className="field" style={{ maxWidth: 460 }}>
             sensitivity — higher fires fewer, more confident triggers (

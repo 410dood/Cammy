@@ -195,7 +195,7 @@ function TuneModal({
     },
     {
       label: "Audio detection",
-      help: "Classify sounds (baby cry, bark, glass, smoke alarm…).",
+      help: "Listen for sounds (baby cry, bark, glass, smoke alarm…). Also required for speech-to-text — turn on transcription in Settings → Detection & AI to see what was said on event cards.",
       on: dc.audio_detect,
       toggle: () => setDc({ ...dc, audio_detect: !dc.audio_detect }),
     },

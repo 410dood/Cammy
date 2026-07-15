@@ -153,7 +153,11 @@ export default function Alarms({
   // The last 24 hours of events, for the per-rule match counts and the
   // builder's "would have matched" preview (Protect-style trigger previews).
   const [recent, setRecent] = useState<CamEvent[]>([]);
+  // Whether speech transcription is on globally — a spoken-phrase rule can
+  // never fire without it, so the builder warns instead of arming a dead rule.
+  const [transcriptionOn, setTranscriptionOn] = useState<boolean | null>(null);
   const load = () => {
+    api.settings().then((s) => setTranscriptionOn(s.transcription_enabled)).catch(() => {});
     api
       .alarms()
       .then((r) => {
@@ -754,7 +758,7 @@ export default function Alarms({
                   ))}
                 </select>
               </label>
-              <label className="field" title="Fire when this phrase is spoken near the camera (needs audio transcription enabled). A spoken safe word, e.g. 'help'.">
+              <label className="field">
                 spoken phrase (optional)
                 <input
                   type="text"
@@ -762,6 +766,15 @@ export default function Alarms({
                   onChange={(e) => setTranscriptLike(e.target.value)}
                   placeholder='e.g. "help"'
                 />
+                <small className="muted">
+                  Fires when this is heard near the camera — a spoken safe word.
+                </small>
+                {transcriptLike.trim() !== "" && transcriptionOn === false && (
+                  <small style={{ color: "var(--warn)" }} role="status">
+                    Speech transcription is off, so this rule can't fire — turn it on in
+                    Settings → Detection &amp; AI.
+                  </small>
+                )}
               </label>
               <label className="field" title="Fire only when the object is inside a named detection zone (substring, case-insensitive) — e.g. a 'Pool' zone for 'person in the Pool'. Draw zones on the camera's detect config.">
                 in zone (optional)
