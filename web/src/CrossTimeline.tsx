@@ -59,6 +59,52 @@ export function EventLegend() {
   );
 }
 
+/** Protect-style activity overview: per-interval detection counts as a slim
+ *  bar chart over the same time axis as a timeline, so you can see WHERE the
+ *  busy periods are before you scrub. Purely informational (bars aren't
+ *  clickable — the timeline right below is the interaction surface). */
+export function ActivityStrip({
+  events,
+  windowSecs,
+  nowTs,
+  embedded = false,
+}: {
+  events: CamEvent[];
+  windowSecs: number;
+  nowTs: number;
+  embedded?: boolean;
+}) {
+  const start = nowTs - windowSecs;
+  const buckets = windowSecs <= 3600 ? 12 : windowSecs <= 6 * HOUR ? 24 : 48;
+  const size = windowSecs / buckets;
+  const counts = new Array<number>(buckets).fill(0);
+  for (const e of events) {
+    if (e.ts < start || e.ts > nowTs) continue;
+    counts[Math.min(buckets - 1, Math.floor((e.ts - start) / size))]++;
+  }
+  const max = Math.max(...counts);
+  if (max === 0) return null;
+  const fmt = (t: number) =>
+    new Date(t * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return (
+    <div
+      className={`act-strip ${embedded ? "" : "standalone"}`}
+      role="img"
+      aria-label="Detections per interval across this window"
+    >
+      {counts.map((n, i) => (
+        <span
+          key={i}
+          className="act-col"
+          title={`${n} event${n === 1 ? "" : "s"} · ${fmt(start + i * size)}–${fmt(start + (i + 1) * size)}`}
+        >
+          <span className="act-bar" style={{ height: `${n === 0 ? 0 : Math.max(14, (n / max) * 100)}%` }} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function CrossTimeline({
   cameras,
   segments,
@@ -116,6 +162,8 @@ export default function CrossTimeline({
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
+  const hasActivity = events.some((e) => e.ts >= start && e.ts <= nowTs);
+
   return (
     <div className="xtl card">
       <div className="xtl-grid">
@@ -124,6 +172,19 @@ export default function CrossTimeline({
         ))}
         {cursor != null && <span className="xtl-cursor" style={{ left: `${cursor * 100}%` }} />}
       </div>
+      {hasActivity && (
+        <div className="xtl-row">
+          <div
+            className="xtl-name"
+            title="Detections per interval, all cameras — spot the busy periods before scrubbing"
+          >
+            Activity
+          </div>
+          <div className="xtl-lane act-lane">
+            <ActivityStrip events={events} windowSecs={windowSecs} nowTs={nowTs} embedded />
+          </div>
+        </div>
+      )}
       {cameras.map((cam) => {
         const blocks = coalesce(segments.filter((s) => s.camera_id === cam.id), segmentSecs);
         const evs = events.filter((e) => e.camera_id === cam.id && e.ts >= start);

@@ -287,7 +287,25 @@ export default function Events({
   // this fires once per click without a guard (and re-clicks work).
   useEffect(() => {
     if (!focusEventId || events.length === 0) return;
-    const ev = events.find((e) => e.id === focusEventId);
+    let ev = events.find((e) => e.id === focusEventId);
+    // Not in the loaded window (frame-seeded search can land on an old event) —
+    // the navigating surface stashes the full event for exactly this case.
+    if (!ev) {
+      try {
+        const raw = sessionStorage.getItem("cammy-focus-event");
+        if (raw) {
+          const stashed = JSON.parse(raw) as CamEvent;
+          if (stashed.id === focusEventId) ev = stashed;
+        }
+      } catch {
+        /* fall through to best-effort behavior */
+      }
+    }
+    try {
+      sessionStorage.removeItem("cammy-focus-event");
+    } catch {
+      /* ignore */
+    }
     if (ev) setOpen(ev);
     onFocusHandled?.();
   }, [focusEventId, events, onFocusHandled]);
@@ -1334,6 +1352,11 @@ export default function Events({
             >
               <IconShield size={14} /> Bundle
             </button>
+            {(openPrev || openNext) && (
+              <span className="muted lightbox-hint" aria-hidden="true">
+                <kbd>←</kbd> <kbd>→</kbd> move between events
+              </span>
+            )}
           </div>
         </Modal>
         );

@@ -12,6 +12,7 @@ export default function Timeline({
   events,
   onSeek,
   nowTs,
+  markTs,
 }: {
   windowSecs: number;
   segmentSecs: number;
@@ -21,6 +22,9 @@ export default function Timeline({
   /** Right edge of the window (unix secs); defaults to now — a day picker
    *  passes end-of-day to scrub history. */
   nowTs?: number;
+  /** Current playback position (unix secs) — rendered as a playhead so the
+   *  unified live/playback player shows where in time you are. */
+  markTs?: number | null;
 }) {
   const now = nowTs ?? Math.floor(Date.now() / 1000);
   const start = now - windowSecs;
@@ -134,6 +138,9 @@ export default function Timeline({
       ))}
       {cursor != null && (
         <div className="tl-cursor" style={{ left: `${cursor * 100}%` }} aria-hidden="true" />
+      )}
+      {markTs != null && markTs >= start && markTs <= now && (
+        <div className="tl-mark" style={{ left: `${frac(markTs) * 100}%` }} aria-hidden="true" />
       )}
       <div className="tl-times">
         <span>{new Date(start * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>

@@ -137,6 +137,11 @@ function TuneModal({
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
   const [saving, setSaving] = useState(false);
+  // Protect-style task-scoped tabs (Detection / Zones / Stream & recording)
+  // instead of a scroll of disclosures. Every field's value lives in dc /
+  // subSource (lifted state), so switching panels never loses an in-flight
+  // edit even though inactive panels unmount.
+  const [tab, setTab] = useState<"detect" | "zones" | "stream">("detect");
 
   const toast = useToast();
   const dialog = useDialog();
@@ -251,11 +256,34 @@ function TuneModal({
           default. Size filters and child height are simply <b>off</b> when left blank.
         </Callout>
 
-        {/* 1. Detection sensitivity — the recurring false-positive tuning task; open by default. */}
-        <details className="adv tune-sec" open>
-          <summary>
+        <div className="arm-bar tune-tabs" role="tablist" aria-label="Tuning sections">
+          {(
+            [
+              ["detect", "Detection"],
+              ["zones", "Zones & privacy"],
+              ["stream", "Stream & recording"],
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              role="tab"
+              aria-selected={tab === k}
+              className={`arm-opt ${tab === k ? "active" : ""}`}
+              onClick={() => setTab(k)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "detect" && (
+          <>
+        {/* 1. Detection sensitivity — the recurring false-positive tuning task. */}
+        <section className="tune-sec">
+          <h3 className="tune-h">
             <IconSliders size={15} /> Detection sensitivity
-          </summary>
+          </h3>
           <div className="tune-grid">
             <label className="field span-full">
               Objects to detect
@@ -343,13 +371,13 @@ function TuneModal({
               title="Only alert on new or moving objects. Suppresses repeat events for a parked car / idle object that keeps re-tripping the motion gate (wind, shadows, lighting). A new arrival or an object that moves still fires; the event cooldown still rate-limits moving objects. Leave off for a doorway counter that wants every detection."
             />
           </div>
-        </details>
+        </section>
 
         {/* 2. Detection features — install-once capability toggles. */}
-        <details className="adv tune-sec">
-          <summary>
+        <section className="tune-sec">
+          <h3 className="tune-h">
             <IconLayers size={15} /> Detection features <span className="tune-count">({featCount} on)</span>
-          </summary>
+          </h3>
           <div className="feat-grid">
             {features.map((f) => (
               <Feature
@@ -384,13 +412,17 @@ function TuneModal({
               </span>
             </label>
           )}
-        </details>
+        </section>
+          </>
+        )}
 
+        {tab === "stream" && (
+          <>
         {/* 3. Stream & performance — install-once / expert knobs, off the everyday path. */}
-        <details className="adv tune-sec">
-          <summary>
+        <section className="tune-sec">
+          <h3 className="tune-h">
             <IconCctv size={15} /> Stream &amp; performance
-          </summary>
+          </h3>
           <div className="tune-grid">
             <label className="field span-full">
               Detection sub-stream
@@ -452,13 +484,13 @@ function TuneModal({
               </select>
             </label>
           </div>
-        </details>
+        </section>
 
         {/* 4. Recording & retention. */}
-        <details className="adv tune-sec">
-          <summary>
+        <section className="tune-sec">
+          <h3 className="tune-h">
             <IconFilm size={15} /> Recording &amp; retention
-          </summary>
+          </h3>
           <div className="feat-grid">
             <Feature
               on={dc.event_only_recording}
@@ -562,13 +594,17 @@ function TuneModal({
               </p>
             </div>
           )}
-        </details>
+        </section>
+          </>
+        )}
 
+        {tab === "detect" && (
+          <>
         {/* 5. Residential safety & privacy — assistive, liability-sensitive. */}
-        <details className="adv tune-sec">
-          <summary>
+        <section className="tune-sec">
+          <h3 className="tune-h">
             <IconShield size={15} /> Residential safety &amp; privacy (assistive*)
-          </summary>
+          </h3>
           <Callout tone="warn" style={{ marginTop: 8 }}>
             Fall detection and child classification are <b>assistive, best-effort</b> safety aids —
             not medical devices and not guaranteed. They can miss events and must never replace
@@ -654,10 +690,14 @@ function TuneModal({
               </span>
             </label>
           </div>
-        </details>
+        </section>
+          </>
+        )}
 
+        {tab === "zones" && (
+          <>
         {/* 6. Zones & privacy masks. */}
-        <div className="card-head" style={{ marginTop: 16, marginBottom: 8 }}>
+        <div className="card-head" style={{ marginTop: 8, marginBottom: 8 }}>
           <IconZone size={18} />
           <div>
             <p className="eyebrow">Detection areas</p>
@@ -680,6 +720,8 @@ function TuneModal({
           onTripwires={(tripwires) => setDc({ ...dc, tripwires })}
           onCalib={(ground_calib) => setDc({ ...dc, ground_calib })}
         />
+          </>
+        )}
       </div>
 
       <div className="dialog-actions tune-foot">

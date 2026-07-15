@@ -16,7 +16,43 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
-### Latest: UniFi-benchmark de-clunk pass (grid→viewer inversion), 2026-07-15
+### Latest: UniFi-benchmark round 2 — the four structural patterns, 2026-07-15
+
+Same session, second commit: the research's remaining "top transferable
+patterns" shipped web-only (plus one tiny cross-page stash), tsc+vite green,
+each LIVE-validated in Chrome on :8080:
+
+- **Unified live↔playback player** (CameraDetail): clicking the camera's
+  timeline now swaps the covering recording IN PLACE of the live stream — no
+  modal. A "Recorded · h:mm:ss" pill ticks with playback (onTimeUpdate →
+  whole-second state), a red `.tl-mark` playhead tracks it on the timeline
+  (new Timeline `markTs` prop), segments **auto-advance** on end and return
+  to live once caught up; "Back to live" button; Esc steps back one level
+  (playback → live → close); a LIVE pill + PTZ/talk render only when live.
+- **Activity count chart** (`ActivityStrip` in CrossTimeline.tsx): per-interval
+  detection counts as slim accent bars over the same time axis — embedded as
+  an "Activity" lane atop the cross-camera timeline, standalone above the
+  single-camera Recordings timeline and the camera-detail timeline. Aim
+  before scrubbing (Protect 6.0's object-count charts).
+- **Frame-seeded search** ("Find in frame" in the camera-detail header):
+  drag a box on the current frame → canvas-crop at native res (same-origin,
+  untainted) → `POST /api/search/by-image` (existing CLIP endpoint) → ranked
+  matches grid → click deep-links `#/events/<id>`. LIVE: boxed the blue Tesla
+  → 91/89/88% matches of the same car across history. Because a match can be
+  older than Events' loaded 200, the full event rides a
+  `sessionStorage("cammy-focus-event")` stash that Events' focus effect
+  falls back to (validated on a 7/4 event: viewer opened, honest
+  "Snapshot only" state since retention had pruned that footage).
+- **TuneModal → 3 task-scoped tabs** (Detection / Zones & privacy / Stream &
+  recording) using the sanctioned `.arm-bar` segmented control; the five
+  `details.adv` sections became plain `<section class=tune-sec>` headings
+  under their tabs. Panels unmount on switch — safe because every field's
+  value lives in lifted `dc`/`subSource` state (validated: min-score edit
+  survives a tab round-trip; ZoneEditor mounts fresh per visit).
+- Polish: event-viewer `← →` kbd hint (hidden on touch); ZoneEditor hides its
+  frame `<img>` when failed (the plain-language fallback already explains).
+
+### Earlier: UniFi-benchmark de-clunk pass (grid→viewer inversion), 2026-07-15
 
 A research-driven UX pass against UniFi Protect 5/6 (web-research agent report:
 IA, timeline mechanics, event review, user complaints → 12 transferable

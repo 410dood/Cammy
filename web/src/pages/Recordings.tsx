@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useState } from "react";
 import { api, CamEvent, Camera, capacityTone, fmtBytes, fmtDaysLeft, fmtTime, MotionHit, Segment, Stats } from "../api";
 import Timeline from "../Timeline";
-import CrossTimeline from "../CrossTimeline";
+import CrossTimeline, { ActivityStrip } from "../CrossTimeline";
 import { IconPlay, IconFilm, IconAlert, IconChevronDown, IconChevronRight } from "../icons";
 import { Callout, EmptyState, ErrorState, Modal, useToast } from "../ui";
 
@@ -483,14 +483,17 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           />
         )
       ) : (
-        <Timeline
-          windowSecs={windowSecs}
-          segmentSecs={segmentSecs}
-          segments={segments}
-          events={events}
-          onSeek={seekTo}
-          nowTs={anchor}
-        />
+        <>
+          <ActivityStrip events={events} windowSecs={windowSecs} nowTs={anchor} />
+          <Timeline
+            windowSecs={windowSecs}
+            segmentSecs={segmentSecs}
+            segments={segments}
+            events={events}
+            onSeek={seekTo}
+            nowTs={anchor}
+          />
+        </>
       )}
 
       {scrub && cameraId !== "" && segments.length > 0 && (

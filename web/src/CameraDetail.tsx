@@ -1,12 +1,13 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
-import { api, CamEvent, Camera, Segment, getStreamMode } from "./api";
+import { api, CamEvent, Camera, Segment, SimilarResult, getStreamMode } from "./api";
 import { RelTime, Modal, useToast, useDialog, useFocusTrap } from "./ui";
 import Timeline from "./Timeline";
+import { ActivityStrip } from "./CrossTimeline";
 import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
 import Heatmap from "./Heatmap";
 import {
-  IconX, IconMic, IconUser, IconCar, IconDownload, IconVideo,
+  IconX, IconMic, IconUser, IconCar, IconDownload, IconVideo, IconSparkles, IconRecDot,
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight, IconPlus, IconMinus,
 } from "./icons";
 import { groupEvents } from "./eventGroups";
@@ -25,7 +26,16 @@ export default function CameraDetail({
 }) {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [events, setEvents] = useState<CamEvent[]>([]);
-  const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
+  // Unified live↔playback player (Protect's signature): seeking the timeline
+  // swaps the live stream for the covering recording IN PLACE — no modal, no
+  // page change — and "Back to live" (or Esc, or playing past the last
+  // segment) returns to the stream.
+  const [playback, setPlayback] = useState<{ segment: Segment; offset: number } | null>(null);
+  const playbackRef = useRef<typeof playback>(null);
+  playbackRef.current = playback;
+  // Coarse playhead position (whole seconds) for the timeline marker.
+  const [posTs, setPosTs] = useState<number | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
   const [talking, setTalking] = useState(false);
@@ -105,7 +115,12 @@ export default function CameraDetail({
     };
     load();
     const t = setInterval(load, 10000);
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // Esc steps back one level: playback → live first, then close the view.
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (playbackRef.current) setPlayback(null);
+      else onClose();
+    };
     window.addEventListener("keydown", esc);
     return () => {
       clearInterval(t);
@@ -117,11 +132,27 @@ export default function CameraDetail({
   const seekTo = async (ts: number) => {
     try {
       const r = await api.recordingAt(camera.id, ts);
-      setPlaying({ segment: r.segment, offset: r.offset_secs });
+      setPlayback({ segment: r.segment, offset: r.offset_secs });
+      setPosTs(Math.floor(r.segment.start_ts + r.offset_secs));
     } catch {
       // No segment covers this instant (retention-pruned or a recording gap) —
       // tell the user instead of a silent dead-click.
       toast.error("No recording covers this moment");
+    }
+  };
+
+  // Played past the end of a segment: continue seamlessly into the next one,
+  // or return to live once we've caught up with now.
+  const advancePlayback = () => {
+    const cur = playbackRef.current;
+    if (!cur) return;
+    const sorted = [...segments].sort((a, b) => a.start_ts - b.start_ts);
+    const next = sorted.find((s) => s.start_ts > cur.segment.start_ts);
+    if (next) {
+      setPlayback({ segment: next, offset: 0 });
+      setPosTs(next.start_ts);
+    } else {
+      setPlayback(null);
     }
   };
 
@@ -154,6 +185,13 @@ export default function CameraDetail({
           ))}
         </div>
         <button
+          className="btn btn-secondary"
+          onClick={() => setFindOpen(true)}
+          title="Draw a box around a person or vehicle in this camera's view, then find them across all cameras."
+        >
+          <IconSparkles size={14} /> Find in frame
+        </button>
+        <button
           className="btn btn-primary"
           onClick={logEvent}
           title="Save this moment as an event with a snapshot."
@@ -168,33 +206,91 @@ export default function CameraDetail({
       <div className="detail-body">
         <div className="detail-main">
           <div className="tile" style={{ aspectRatio: "16 / 9" }}>
-            <LiveVideo name={camera.name} mode={getStreamMode()} audio mic={talking} online={online} />
-            <PrivacyOverlay masks={camera.detect_config.privacy_masks} />
-            {ptz && <PtzInline cameraId={camera.id} />}
-            {twoWay && (
-              <button
-                className={`talk-btn ${talking ? "on" : ""}`}
-                title="Hold to talk through this camera's speaker, if it has one."
-                aria-pressed={talking}
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  startTalk();
-                }}
-                onPointerUp={stopTalk}
-                onPointerLeave={stopTalk}
-                onPointerCancel={stopTalk}
-              >
-                <IconMic size={15} /> {talking ? "Talking…" : "Hold to talk"}
-              </button>
+            {playback ? (
+              <>
+                <video
+                  key={`${playback.segment.id}-${playback.offset}`}
+                  className="detail-playback"
+                  src={`/api/recordings/${playback.segment.id}/video`}
+                  controls
+                  autoPlay
+                  playsInline
+                  onLoadedMetadata={(e) => {
+                    const v = e.currentTarget;
+                    // Clamp: clicking near "now" can resolve into the last
+                    // closed segment with an offset past its end.
+                    if (playback.offset > 0)
+                      v.currentTime = Math.min(playback.offset, Math.max(0, v.duration - 2));
+                  }}
+                  onTimeUpdate={(e) => {
+                    const t = Math.floor(playback.segment.start_ts + e.currentTarget.currentTime);
+                    setPosTs((prev) => (prev === t ? prev : t));
+                  }}
+                  onEnded={advancePlayback}
+                />
+                <div className="playback-bar">
+                  <span className="playback-when">
+                    Recorded ·{" "}
+                    {new Date((posTs ?? playback.segment.start_ts) * 1000).toLocaleTimeString([], {
+                      hour: "numeric",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
+                  <a
+                    className="btn btn-ghost ev-act"
+                    href={`/api/recordings/${playback.segment.id}/video`}
+                    download
+                  >
+                    <IconDownload size={14} /> Download
+                  </a>
+                  <button className="btn btn-primary ev-act" onClick={() => setPlayback(null)}>
+                    <IconRecDot size={10} /> Back to live
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <LiveVideo name={camera.name} mode={getStreamMode()} audio mic={talking} online={online} />
+                <PrivacyOverlay masks={camera.detect_config.privacy_masks} />
+                <span className="live-pill" aria-hidden="true">
+                  <IconRecDot size={9} /> LIVE
+                </span>
+                {ptz && <PtzInline cameraId={camera.id} />}
+                {twoWay && (
+                  <button
+                    className={`talk-btn ${talking ? "on" : ""}`}
+                    title="Hold to talk through this camera's speaker, if it has one."
+                    aria-pressed={talking}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      startTalk();
+                    }}
+                    onPointerUp={stopTalk}
+                    onPointerLeave={stopTalk}
+                    onPointerCancel={stopTalk}
+                  >
+                    <IconMic size={15} /> {talking ? "Talking…" : "Hold to talk"}
+                  </button>
+                )}
+              </>
             )}
           </div>
-          <Timeline
-            windowSecs={windowSecs}
-            segmentSecs={segmentSecs}
-            segments={segments}
-            events={events}
-            onSeek={seekTo}
-          />
+          <div>
+            <ActivityStrip
+              events={events}
+              windowSecs={windowSecs}
+              nowTs={Math.floor(Date.now() / 1000)}
+            />
+            <Timeline
+              windowSecs={windowSecs}
+              segmentSecs={segmentSecs}
+              segments={segments}
+              events={events}
+              onSeek={seekTo}
+              markTs={playback ? posTs : null}
+            />
+          </div>
         </div>
 
         <div className="detail-side">
@@ -255,31 +351,181 @@ export default function CameraDetail({
         <Heatmap camera={camera} />
       </div>
 
-      {playing && (
-        <Modal bare onClose={() => setPlaying(null)}>
-          <div style={{ position: "relative", lineHeight: 0 }}>
-            <video
-              src={`/api/recordings/${playing.segment.id}/video`}
-              controls
-              autoPlay
-              onLoadedMetadata={(e) => {
-                const v = e.currentTarget;
-                if (playing.offset > 0)
-                  v.currentTime = Math.min(playing.offset, Math.max(0, v.duration - 2));
-              }}
-            />
-            <a
-              className="btn btn-ghost ev-act"
-              href={`/api/recordings/${playing.segment.id}/video`}
-              download
-              style={{ position: "absolute", top: 8, right: 8 }}
-            >
-              <IconDownload size={14} /> Download
-            </a>
-          </div>
-        </Modal>
-      )}
+      {findOpen && <FrameSearchModal cameraId={camera.id} onClose={() => setFindOpen(false)} />}
     </div>
+  );
+}
+
+/// Frame-seeded appearance search (Protect 6's "pause a frame, select a
+/// person, find every moment they appear"): drag a box on this camera's
+/// current frame, the crop is CLIP-matched against every camera's history.
+/// Clicking a match deep-links into that event's viewer.
+function FrameSearchModal({ cameraId, onClose }: { cameraId: number; onClose: () => void }) {
+  const [rect, setRect] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
+  const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
+  const [res, setRes] = useState<SimilarResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  const frac = (e: React.PointerEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
+      y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)),
+    };
+  };
+
+  const search = async () => {
+    const img = imgRef.current;
+    if (!img || !rect || !img.naturalWidth) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // Crop the selection out of the frame at native resolution (same-origin
+      // image, so the canvas stays untainted) and search by that image.
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      const sw = Math.max(1, Math.round((rect.x2 - rect.x1) * w));
+      const sh = Math.max(1, Math.round((rect.y2 - rect.y1) * h));
+      const cv = document.createElement("canvas");
+      cv.width = sw;
+      cv.height = sh;
+      const ctx = cv.getContext("2d");
+      if (!ctx) throw new Error("Couldn't crop the frame in this browser.");
+      ctx.drawImage(img, rect.x1 * w, rect.y1 * h, sw, sh, 0, 0, sw, sh);
+      const blob = await new Promise<Blob | null>((r) => cv.toBlob(r, "image/jpeg", 0.9));
+      if (!blob) throw new Error("Couldn't crop the frame.");
+      setRes(await api.searchByImage(blob, 24));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal onClose={onClose} className="modal-wide">
+      <h2 style={{ marginTop: 0 }}>Find in frame</h2>
+      <p className="muted" style={{ marginTop: -6 }}>
+        Drag a box around a person or vehicle in the current view, then search everywhere your
+        cameras have seen them.
+      </p>
+      <div
+        className="motion-frame"
+        style={{ touchAction: "none" }}
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          const p = frac(e);
+          setDrag(p);
+          setRect({ x1: p.x, y1: p.y, x2: p.x, y2: p.y });
+        }}
+        onPointerMove={(e) => {
+          if (!drag) return;
+          const p = frac(e);
+          setRect({
+            x1: Math.min(drag.x, p.x),
+            y1: Math.min(drag.y, p.y),
+            x2: Math.max(drag.x, p.x),
+            y2: Math.max(drag.y, p.y),
+          });
+        }}
+        onPointerUp={() => setDrag(null)}
+      >
+        <img
+          ref={imgRef}
+          src={`/api/cameras/${cameraId}/frame.jpg`}
+          alt="Current camera frame"
+          draggable={false}
+        />
+        {rect && (
+          <div
+            className="motion-rect"
+            style={{
+              left: `${rect.x1 * 100}%`,
+              top: `${rect.y1 * 100}%`,
+              width: `${(rect.x2 - rect.x1) * 100}%`,
+              height: `${(rect.y2 - rect.y1) * 100}%`,
+            }}
+          />
+        )}
+      </div>
+      <div className="row" style={{ marginTop: 10, alignItems: "center" }}>
+        <button
+          className="btn btn-primary"
+          disabled={!rect || rect.x2 - rect.x1 < 0.01 || busy}
+          onClick={search}
+        >
+          {busy ? "Searching…" : "Find across cameras"}
+        </button>
+        {rect && (
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              setRect(null);
+              setRes(null);
+            }}
+          >
+            Clear box
+          </button>
+        )}
+      </div>
+      {error && (
+        <p className="muted" role="alert" style={{ color: "var(--danger)" }}>{error}</p>
+      )}
+      {res &&
+        (!res.available ? (
+          <p className="muted" style={{ marginTop: 12 }}>
+            This search needs the smart search models installed (Settings, Models &amp;
+            capabilities). It matches people and vehicles your cameras have seen.
+          </p>
+        ) : res.results.length === 0 ? (
+          <p className="muted" style={{ marginTop: 12 }}>
+            No matches on any camera yet. Try a tighter box around just the person or vehicle.
+          </p>
+        ) : (
+          <div style={{ marginTop: 12 }}>
+            <p className="muted">Closest matches across your cameras. Click one to open it.</p>
+            <div className="scrub-grid">
+              {res.results.map((m) => (
+                <button
+                  key={m.event.id}
+                  type="button"
+                  className="scrub-tile"
+                  title="Open this event"
+                  onClick={() => {
+                    // A match can be older than the Events page's loaded list —
+                    // stash the full event so its viewer can open regardless.
+                    try {
+                      sessionStorage.setItem("cammy-focus-event", JSON.stringify(m.event));
+                    } catch {
+                      /* stash is best-effort; the deep link still works for recent events */
+                    }
+                    window.location.hash = `#/events/${m.event.id}`;
+                  }}
+                >
+                  {m.event.snapshot ? (
+                    <img src={`/api/snapshots/${m.event.snapshot}?w=300`} loading="lazy" alt="" />
+                  ) : (
+                    <div className="scrub-missing">no snapshot</div>
+                  )}
+                  <span className="scrub-cap">
+                    {(m.similarity * 100).toFixed(0)}% · {m.event.camera}
+                    <span className="scrub-count">
+                      {new Date(m.event.ts * 1000).toLocaleString([], {
+                        month: "numeric",
+                        day: "numeric",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+    </Modal>
   );
 }
 

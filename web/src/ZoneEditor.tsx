@@ -187,7 +187,16 @@ export default function ZoneEditor({
           alt={camera.name}
           onError={onErr}
           onLoad={onOk}
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain" }}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            // Suppress the broken-image glyph — the failed state already
+            // explains what's wrong in plain language.
+            visibility: failed ? "hidden" : undefined,
+          }}
         />
         {failed && (
           <div
