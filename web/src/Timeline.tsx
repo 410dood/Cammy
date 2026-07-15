@@ -137,7 +137,9 @@ export default function Timeline({
       )}
       <div className="tl-times">
         <span>{new Date(start * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-        <span>now</span>
+        {/* Only claim "now" when the right edge really is now — a day scrub or
+            an event viewer anchors the window in the past. */}
+        <span>{Math.abs(Date.now() / 1000 - now) < 120 ? "now" : fmtClock(now)}</span>
       </div>
     </div>
   );

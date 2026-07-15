@@ -350,102 +350,51 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
     return groups;
   }, [segments]);
 
+  // Severity keys ONLY on actual disk headroom (days_until_full): <7 days
+  // gets a warn callout and <2 a danger one instead of muted text. The
+  // retention horizon is routine pruning, not data loss — it stays
+  // neutral informational copy, never a warning. Badge and callout are gated
+  // together (the write-rate estimate must exist) so a bare unexplained
+  // warning badge can never appear.
+  const capTone = stats ? capacityTone(stats.days_until_full) : null;
+  const showCap = stats != null && capTone != null && stats.write_bytes_per_day > 0;
+  const capDetail = stats && (
+    <>
+      writing ~{fmtBytes(stats.write_bytes_per_day)}/day
+      {stats.days_until_full != null && (
+        <>
+          {" "}
+          · {fmtDaysLeft(stats.days_until_full)} until full
+          {stats.est_full_ts != null && (
+            <> ({new Date(stats.est_full_ts * 1000).toLocaleDateString()})</>
+          )}
+        </>
+      )}
+      {stats.retention_horizon_days != null && (
+        <> · recordings older than {fmtDaysLeft(stats.retention_horizon_days)} are removed</>
+      )}
+      <span style={{ opacity: 0.7 }}> · estimated</span>
+    </>
+  );
+
   return (
     <>
       <h1>Recordings</h1>
       <p className="muted" style={{ marginTop: -8 }}>
-        Continuous footage and storage. For AI detections (person, vehicle, and more), see Events.
+        Continuous footage — pick a moment on the timeline to play it. For AI detections (person,
+        vehicle, and more), see Events.
       </p>
 
-      {stats && (() => {
-        // Severity keys ONLY on actual disk headroom (days_until_full): <7 days
-        // gets a warn callout and <2 a danger one instead of muted text. The
-        // retention horizon is routine pruning, not data loss — it stays
-        // neutral informational copy below, never a warning.
-        const capTone = capacityTone(stats.days_until_full);
-        const rh = stats.retention_horizon_days;
-        const capDetail = (
-          <>
-            writing ~{fmtBytes(stats.write_bytes_per_day)}/day
-            {stats.days_until_full != null && (
-              <>
-                {" "}
-                · {fmtDaysLeft(stats.days_until_full)} until full
-                {stats.est_full_ts != null && (
-                  <> ({new Date(stats.est_full_ts * 1000).toLocaleDateString()})</>
-                )}
-              </>
-            )}
-            {rh != null && <> · recordings older than {fmtDaysLeft(rh)} are removed</>}
-            <span style={{ opacity: 0.7 }}> · estimated</span>
-          </>
-        );
-        // Badge and callout are gated together (the write-rate estimate must
-        // exist) so a bare unexplained warning badge can never appear.
-        const showCap = capTone != null && stats.write_bytes_per_day > 0;
-        return (
-        <div className="card">
-          <div className="card-head">
-            <h2 style={{ margin: 0 }}>Storage</h2>
-            {showCap && (
-              <span className={`badge ${capTone}`} style={{ marginLeft: 8 }}>
-                <IconAlert size={11} /> {capTone === "danger" ? "Nearly full" : "Filling up"}
-              </span>
-            )}
-          </div>
-          <div className="row" style={{ marginBottom: 10 }}>
-            <span className="muted">
-              {fmtBytes(stats.total_bytes)} of recordings · {fmtBytes(stats.snapshots_bytes)} of
-              snapshots · {stats.events_total} events all-time
-              {stats.disk_free_bytes != null && <> · {fmtBytes(stats.disk_free_bytes)} free on disk</>}
-            </span>
-          </div>
-          {stats.write_bytes_per_day > 0 &&
-            (showCap ? (
-              <Callout tone={capTone!} style={{ marginBottom: 12 }}>
-                <b>Disk is filling up</b>. Add more storage, or shorten recording history (retention) so it doesn't run out.
-                <div className="muted" style={{ marginTop: 2 }}>
-                  {capDetail}
-                </div>
-              </Callout>
-            ) : (
-              <div className="row" style={{ marginBottom: 12 }}>
-                <span className="muted">
-                  <b>Capacity</b>: {capDetail}
-                </span>
-              </div>
-            ))}
-          {stats.cameras.map((c) => (
-            <div className="row" key={c.camera_id} style={{ marginBottom: 6 }}>
-              <span style={{ width: 120 }}>
-                <b>{c.camera}</b>
-                {cameras.find((cc) => cc.id === c.camera_id)?.enabled === false && (
-                  <span
-                    className="badge"
-                    style={{ marginLeft: 6 }}
-                    title="This camera is turned off (Cameras page). Its old footage is kept until recording history limits remove it."
-                  >
-                    disabled
-                  </span>
-                )}
-              </span>
-              <div className="usage-bar">
-                <div
-                  className="usage-fill"
-                  style={{
-                    width: `${stats.total_bytes ? Math.max(2, (c.bytes / stats.total_bytes) * 100) : 0}%`,
-                  }}
-                />
-              </div>
-              <span className="muted" style={{ width: 220 }}>
-                {fmtBytes(c.bytes)} · {c.segments} clips
-                {c.oldest_ts ? ` · since ${new Date(c.oldest_ts * 1000).toLocaleDateString()}` : ""}
-              </span>
-            </div>
-          ))}
-        </div>
-        );
-      })()}
+      {/* An action-required disk warning stays loud and first; the routine
+          storage breakdown lives in a disclosure at the bottom of the page so
+          footage — what people come here for — leads. */}
+      {stats && showCap && (
+        <Callout tone={capTone!} style={{ marginBottom: 14 }}>
+          <b>Disk is filling up</b>. Add more storage, or shorten recording history (retention) so
+          it doesn't run out.
+          <div className="muted" style={{ marginTop: 2 }}>{capDetail}</div>
+        </Callout>
+      )}
 
       <div className="row" style={{ marginBottom: 16 }}>
         <select value={cameraId} onChange={(e) => setCameraId(e.target.value === "" ? "" : Number(e.target.value))}>
@@ -619,6 +568,70 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           </table>
           </div>
         </div>
+      )}
+
+      {stats && (
+        <details className="adv" style={{ marginTop: 16 }}>
+          <summary>
+            Storage
+            <span className="muted" style={{ marginLeft: 8 }}>
+              {fmtBytes(stats.total_bytes)} recorded
+              {stats.disk_free_bytes != null && <> · {fmtBytes(stats.disk_free_bytes)} free</>}
+              {stats.write_bytes_per_day > 0 && stats.days_until_full != null && (
+                <> · {fmtDaysLeft(stats.days_until_full)} until full</>
+              )}
+            </span>
+            {showCap && (
+              <span className={`badge ${capTone}`} style={{ marginLeft: 8 }}>
+                <IconAlert size={11} /> {capTone === "danger" ? "Nearly full" : "Filling up"}
+              </span>
+            )}
+          </summary>
+          <div className="card" style={{ marginTop: 10 }}>
+            <div className="row" style={{ marginBottom: 10 }}>
+              <span className="muted">
+                {fmtBytes(stats.total_bytes)} of recordings · {fmtBytes(stats.snapshots_bytes)} of
+                snapshots · {stats.events_total} events all-time
+                {stats.disk_free_bytes != null && <> · {fmtBytes(stats.disk_free_bytes)} free on disk</>}
+              </span>
+            </div>
+            {stats.write_bytes_per_day > 0 && !showCap && (
+              <div className="row" style={{ marginBottom: 12 }}>
+                <span className="muted">
+                  <b>Capacity</b>: {capDetail}
+                </span>
+              </div>
+            )}
+            {stats.cameras.map((c) => (
+              <div className="row" key={c.camera_id} style={{ marginBottom: 6 }}>
+                <span style={{ width: 120 }}>
+                  <b>{c.camera}</b>
+                  {cameras.find((cc) => cc.id === c.camera_id)?.enabled === false && (
+                    <span
+                      className="badge"
+                      style={{ marginLeft: 6 }}
+                      title="This camera is turned off (Cameras page). Its old footage is kept until recording history limits remove it."
+                    >
+                      disabled
+                    </span>
+                  )}
+                </span>
+                <div className="usage-bar">
+                  <div
+                    className="usage-fill"
+                    style={{
+                      width: `${stats.total_bytes ? Math.max(2, (c.bytes / stats.total_bytes) * 100) : 0}%`,
+                    }}
+                  />
+                </div>
+                <span className="muted" style={{ width: 220 }}>
+                  {fmtBytes(c.bytes)} · {c.segments} clips
+                  {c.oldest_ts ? ` · since ${new Date(c.oldest_ts * 1000).toLocaleDateString()}` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
 
       {motionOpen && cameraId !== "" && (

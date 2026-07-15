@@ -1,6 +1,7 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import { api, CamEvent, Camera, fmtTime, Segment, SimilarResult } from "../api";
 import { useToast, useDialog, Modal, RelTime, EmptyState, ErrorState, TogglePill } from "../ui";
+import Timeline from "../Timeline";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -16,6 +17,7 @@ import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil, IconLink, IconShield,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
   IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX, IconVideo,
+  IconChevronLeft, IconChevronRight,
 } from "../icons";
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
 // uses it too) — see eventGroups.ts.
@@ -230,7 +232,54 @@ export default function Events({
   const [imgSearch, setImgSearch] = useState<{ url: string; res: SimilarResult | null } | null>(null);
   const imgReq = useRef(0);
   const imgFileRef = useRef<HTMLInputElement>(null);
-  const [noClip, setNoClip] = useState<number | null>(null);
+
+  // The detail viewer plays the covering recording inline when one exists
+  // (Protect-style: open an event → watch it happen). "none" = probed and no
+  // recording covers this moment → fall back to the snapshot, and recording-
+  // dependent actions disable themselves instead of failing on click.
+  const [openClip, setOpenClip] = useState<{ segId: number; offset: number } | "none" | null>(null);
+  // Coverage for the viewer's mini-timeline: this camera's segments around the
+  // event, so you can scrub for context without leaving the event (and without
+  // Protect's ±5-minute cap — any retained moment is reachable).
+  const [openSegs, setOpenSegs] = useState<Segment[]>([]);
+  const [segmentSecs, setSegmentSecs] = useState(60);
+  const clipReq = useRef(0);
+  useEffect(() => {
+    setOpenClip(null);
+    setOpenSegs([]);
+    if (!open) return;
+    const token = ++clipReq.current;
+    api.recordingAt(open.camera_id, open.ts).then(
+      (r) => {
+        if (token === clipReq.current)
+          // Land a few seconds before the event so you see it happen.
+          setOpenClip({ segId: r.segment.id, offset: Math.max(0, r.offset_secs - 3) });
+      },
+      () => {
+        if (token === clipReq.current) setOpenClip("none");
+      },
+    );
+    api
+      .recordings({ camera_id: open.camera_id, before: open.ts + 1800, limit: 90 })
+      .then((s) => {
+        if (token === clipReq.current) setOpenSegs(s);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open?.id]);
+
+  // Scrub within the open event's viewer: resolve the covering segment at ts
+  // and swap the inline player to it.
+  const seekOpenClip = async (ts: number) => {
+    if (!open) return;
+    const token = ++clipReq.current;
+    try {
+      const r = await api.recordingAt(open.camera_id, ts);
+      if (token === clipReq.current) setOpenClip({ segId: r.segment.id, offset: r.offset_secs });
+    } catch {
+      toast.error("No recording covers that moment.");
+    }
+  };
 
   // Deep-link from a notification: once events have loaded, open the matching
   // event's detail (best-effort — the event is usually recent and in the list),
@@ -274,8 +323,7 @@ export default function Events({
       // Land a few seconds before the event so you see it happen.
       setPlaying({ segment: r.segment, offset: Math.max(0, r.offset_secs - 3) });
     } catch {
-      setNoClip(ev.id);
-      setTimeout(() => setNoClip(null), 2500);
+      toast.error("No recording covers this event.");
     }
   };
 
@@ -572,6 +620,7 @@ export default function Events({
         setAlertLabels(s.alert_labels ?? ["person"]);
         setPlateDeny(s.plate_denylist ?? []);
         setPlateAllow(s.plate_allowlist ?? []);
+        setSegmentSecs(s.segment_seconds);
       })
       .catch(() => {});
   }, []);
@@ -627,6 +676,28 @@ export default function Events({
   const list: { ev: CamEvent; cluster?: Cluster }[] = grouped
     ? groupEvents(shown).map((c) => ({ ev: c.rep, cluster: c }))
     : shown.map((ev) => ({ ev }));
+
+  // Detail-viewer navigation through the list as currently filtered/ordered
+  // (newest first): ← steps to the newer event, → to the older one.
+  const openIdx = open ? list.findIndex(({ ev }) => ev.id === open.id) : -1;
+  const openPrev = openIdx > 0 ? list[openIdx - 1].ev : null;
+  const openNext = openIdx >= 0 && openIdx < list.length - 1 ? list[openIdx + 1].ev : null;
+  useEffect(() => {
+    // Only while the detail viewer is the top surface — the clip-playback modal
+    // keeps its own arrow-seek shortcuts, and search modals keep their focus.
+    if (!open || playing || similar || imgSearch) return;
+    const onKey = (e: KeyboardEvent) => {
+      // Don't double-act: a focused <video> uses arrows to seek, and the
+      // mini-timeline's own arrow scrubbing calls preventDefault().
+      if (e.defaultPrevented) return;
+      const t = e.target as HTMLElement | null;
+      if (t && ["VIDEO", "INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
+      if (e.key === "ArrowLeft" && openPrev) setOpen(openPrev);
+      else if (e.key === "ArrowRight" && openNext) setOpen(openNext);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, playing, similar, imgSearch, openPrev, openNext]);
 
   // Explore: object-type counts across the loaded window (pre object-filter).
   const exploreBase = searchResults ?? events;
@@ -967,6 +1038,24 @@ export default function Events({
                   {isSel && <IconCheck size={14} />}
                 </span>
               )}
+              {!selectMode && (
+                <button
+                  className={`ev-save ${ev.flagged ? "on" : ""}`}
+                  aria-pressed={ev.flagged}
+                  aria-label={ev.flagged ? `Unsave this ${ev.label} event` : `Save this ${ev.label} event`}
+                  title={
+                    ev.flagged
+                      ? "Saved. This event is never deleted automatically. Click to unsave."
+                      : "Save this event so it's never deleted automatically"
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleFlag(ev);
+                  }}
+                >
+                  <IconStar size={15} filled={ev.flagged} />
+                </button>
+              )}
               {ev.snapshot ? (
                 <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={`${ev.label} on ${ev.camera}`} loading="lazy" decoding="async" />
               ) : (
@@ -1074,107 +1163,6 @@ export default function Events({
                   </div>
                 )}
                 <RelTime ts={ev.ts} className="muted ev-time" />
-                <div className="ev-actions">
-                  <button
-                    className={`btn ev-act ${ev.flagged ? "btn-primary" : "btn-ghost"}`}
-                    aria-pressed={ev.flagged}
-                    title={
-                      ev.flagged
-                        ? "Saved. This event is never deleted automatically. Click to unsave."
-                        : "Save this event so it's never deleted automatically"
-                    }
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleFlag(ev);
-                    }}
-                  >
-                    <IconStar size={14} filled={ev.flagged} /> {ev.flagged ? "Saved" : "Save"}
-                  </button>
-                  <button
-                    className="btn btn-ghost ev-act"
-                    aria-label={ev.note ? "Edit note" : "Add note"}
-                    title={ev.note ? "Edit note" : "Add a note"}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      editNote(ev);
-                    }}
-                  >
-                    <IconPencil size={14} />
-                  </button>
-                  <button
-                    className="btn btn-ghost ev-act"
-                    aria-label="Edit tags"
-                    title={(ev.tags ?? []).length ? "Edit tags" : "Add tags"}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      editTags(ev);
-                    }}
-                  >
-                    <IconTag size={14} />
-                  </button>
-                  <button
-                    className="btn btn-ghost ev-act"
-                    title={noClip === ev.id ? "This camera wasn't recording at that moment." : undefined}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      jumpToRecording(ev);
-                    }}
-                  >
-                    <IconPlay size={13} /> {noClip === ev.id ? "No recording" : "Recording"}
-                  </button>
-                  <button
-                    className="btn btn-ghost ev-act"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      downloadClip(ev);
-                    }}
-                    title="Download a short clip"
-                  >
-                    <IconDownload size={14} /> Clip
-                  </button>
-                  <button
-                    className="btn btn-ghost ev-act"
-                    title="Copy a no-login link to this clip (expires in 24h)"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      shareClip(ev);
-                    }}
-                  >
-                    <IconLink size={14} /> Share
-                  </button>
-                  <button
-                    className="btn btn-ghost ev-act"
-                    title="Save a watermarked copy. A tamper-evident fingerprint is recorded so the clip can be verified later."
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      exportEvidence(ev);
-                    }}
-                  >
-                    <IconShield size={14} /> Evidence
-                  </button>
-                  <button
-                    className="btn btn-ghost ev-act"
-                    title="Save a tamper-evident copy (watermarked clip plus a signed manifest) that anyone can verify offline. Instructions are included in the file."
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      exportBundle(ev);
-                    }}
-                  >
-                    <IconShield size={14} /> Bundle
-                  </button>
-                  {ev.snapshot && (
-                    <button
-                      className="btn btn-ghost ev-act"
-                      title="Find this person/vehicle on other cameras (appearance search)"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        findSimilar(ev);
-                      }}
-                    >
-                      <IconUser size={14} /> Similar
-                    </button>
-                  )}
-                </div>
               </div>
             </div>
             );
@@ -1182,14 +1170,74 @@ export default function Events({
         </div>
       )}
 
-      {open && (
+      {open && (() => {
+        const noRec = openClip === "none";
+        const recTitle = (base: string) =>
+          noRec ? "This camera wasn't recording at that moment." : base;
+        return (
         <Modal className="lightbox" title={`${prettyLabel(open.label)} · ${open.camera}`} onClose={() => setOpen(null)}>
-          {open.snapshot && (
-            <img
-              className="lightbox-img"
-              src={`/api/snapshots/${open.snapshot}`}
-              alt={`${open.label} detected at ${open.camera}, ${fmtTime(open.ts)}`}
-            />
+          <div className="lightbox-media">
+            {openClip && openClip !== "none" ? (
+              <video
+                key={`${open.id}-${openClip.segId}-${openClip.offset}`}
+                className="lightbox-video"
+                src={`/api/recordings/${openClip.segId}/video`}
+                poster={open.snapshot ? `/api/snapshots/${open.snapshot}` : undefined}
+                controls
+                autoPlay
+                playsInline
+                onLoadedMetadata={(e) => {
+                  const v = e.currentTarget;
+                  // Clamp: an event near a segment's end can resolve past it.
+                  if (openClip.offset > 0)
+                    v.currentTime = Math.min(openClip.offset, Math.max(0, v.duration - 2));
+                }}
+              />
+            ) : open.snapshot ? (
+              <img
+                className="lightbox-img"
+                src={`/api/snapshots/${open.snapshot}`}
+                alt={`${open.label} detected at ${open.camera}, ${fmtTime(open.ts)}`}
+              />
+            ) : (
+              <div className="lightbox-img" style={{ display: "grid", placeItems: "center", minHeight: 200 }}>
+                <span className="muted" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <IconVideo size={16} /> No snapshot for this event
+                </span>
+              </div>
+            )}
+            {openPrev && (
+              <button
+                className="lightbox-nav prev"
+                onClick={() => setOpen(openPrev)}
+                aria-label="Newer event"
+                title="Newer event (←)"
+              >
+                <IconChevronLeft size={20} />
+              </button>
+            )}
+            {openNext && (
+              <button
+                className="lightbox-nav next"
+                onClick={() => setOpen(openNext)}
+                aria-label="Older event"
+                title="Older event (→)"
+              >
+                <IconChevronRight size={20} />
+              </button>
+            )}
+          </div>
+          {openSegs.length > 0 && (
+            <div className="lightbox-tl">
+              <Timeline
+                windowSecs={3600}
+                segmentSecs={segmentSecs}
+                segments={openSegs}
+                events={events.filter((e) => e.camera_id === open.camera_id)}
+                onSeek={seekOpenClip}
+                nowTs={open.ts + 900}
+              />
+            </div>
           )}
           <div className="lightbox-meta">
             {!isCameraSide(open.label) && (
@@ -1205,11 +1253,91 @@ export default function Events({
             {open.zone && (
               <span className="badge" title={open.zone}><IconZone size={13} /> {prettyZone(open.zone)}</span>
             )}
-            <span className="muted clock" style={{ marginLeft: "auto" }}>{fmtTime(open.ts)}</span>
+            {noRec && (
+              <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                Snapshot only — no recording covers this moment.
+              </span>
+            )}
+            <span className="muted clock" style={{ marginLeft: "auto" }}>
+              {openIdx >= 0 && <span className="tnum">{openIdx + 1} of {list.length} · </span>}
+              {fmtTime(open.ts)}
+            </span>
           </div>
-          {open.transcript && <p className="ev-line" style={{ margin: "10px 0 0" }}><IconMic size={14} /> <span>“{open.transcript}”</span></p>}
+          {open.transcript && <p className="ev-line" style={{ margin: "8px 16px 0" }}><IconMic size={14} /> <span>“{open.transcript}”</span></p>}
+          {open.note && <p className="ev-line" style={{ margin: "8px 16px 0" }}><IconPencil size={14} /> <span>{open.note}</span></p>}
+          <div className="lightbox-actions">
+            <button
+              className={`btn ev-act ${open.flagged ? "btn-primary" : "btn-ghost"}`}
+              aria-pressed={open.flagged}
+              title={
+                open.flagged
+                  ? "Saved. This event is never deleted automatically. Click to unsave."
+                  : "Save this event so it's never deleted automatically"
+              }
+              onClick={() => toggleFlag(open)}
+            >
+              <IconStar size={14} filled={open.flagged} /> {open.flagged ? "Saved" : "Save"}
+            </button>
+            <button className="btn btn-ghost ev-act" onClick={() => editNote(open)}>
+              <IconPencil size={14} /> {open.note ? "Edit note" : "Note"}
+            </button>
+            <button className="btn btn-ghost ev-act" title={(open.tags ?? []).length ? "Edit tags" : "Add tags"} onClick={() => editTags(open)}>
+              <IconTag size={14} /> Tags
+            </button>
+            {open.snapshot && (
+              <button
+                className="btn btn-ghost ev-act"
+                title="Find this person/vehicle on other cameras (appearance search)"
+                onClick={() => findSimilar(open)}
+              >
+                <IconUser size={14} /> Similar
+              </button>
+            )}
+            <span className="lightbox-sep" aria-hidden="true" />
+            <button
+              className="btn btn-ghost ev-act"
+              disabled={noRec}
+              title={recTitle("Open the full recording around this moment")}
+              onClick={() => jumpToRecording(open)}
+            >
+              <IconPlay size={13} /> Full recording
+            </button>
+            <button
+              className="btn btn-ghost ev-act"
+              disabled={noRec}
+              title={recTitle("Download a short clip")}
+              onClick={() => downloadClip(open)}
+            >
+              <IconDownload size={14} /> Clip
+            </button>
+            <button
+              className="btn btn-ghost ev-act"
+              disabled={noRec}
+              title={recTitle("Copy a no-login link to this clip (expires in 24h)")}
+              onClick={() => shareClip(open)}
+            >
+              <IconLink size={14} /> Share
+            </button>
+            <button
+              className="btn btn-ghost ev-act"
+              disabled={noRec}
+              title={recTitle("Save a watermarked copy. A tamper-evident fingerprint is recorded so the clip can be verified later.")}
+              onClick={() => exportEvidence(open)}
+            >
+              <IconShield size={14} /> Evidence
+            </button>
+            <button
+              className="btn btn-ghost ev-act"
+              disabled={noRec}
+              title={recTitle("Save a tamper-evident copy (watermarked clip plus a signed manifest) that anyone can verify offline. Instructions are included in the file.")}
+              onClick={() => exportBundle(open)}
+            >
+              <IconShield size={14} /> Bundle
+            </button>
+          </div>
         </Modal>
-      )}
+        );
+      })()}
 
       {similar && (
         <Modal

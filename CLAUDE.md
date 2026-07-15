@@ -16,7 +16,42 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
-### Latest: plain-language copy sweep, 2026-07-10
+### Latest: UniFi-benchmark de-clunk pass (grid→viewer inversion), 2026-07-15
+
+A research-driven UX pass against UniFi Protect 5/6 (web-research agent report:
+IA, timeline mechanics, event review, user complaints → 12 transferable
+patterns) plus a live Chrome audit of every surface. **Web-only, 7 files, no
+API/backend change**, tsc+vite green, every surface live-validated in Chrome on
+:8080 (desktop + 390px mobile):
+
+- **Events — the action model was inverted and is now Protect-shaped.** Cards
+  dropped their 9 always-visible buttons (~1,800 buttons on a 200-event page)
+  for a clean thumbnail + meta + hover/saved quick-save star; the detail
+  lightbox became a real **event viewer**: probes `recordingAt` and plays the
+  covering clip inline (snapshot fallback with an honest "no recording covers
+  this moment" line + disabled recording actions), prev/next chevrons and
+  ←/→ keys walk the filtered list ("N of M"), and an embedded **mini-timeline**
+  (1h window around the event, coverage + class-colored ticks) scrubs to any
+  retained moment via `recordingAt` — deliberately unbounded, vs Protect's
+  ±5-min cap (their #1 player complaint). Keyboard guard: a focused video/
+  timeline keeps its own arrows (`defaultPrevented` + tag check). LIVE: clip
+  autoplay, arrow nav (1→2 of 200), timeline-click segment swap all verified.
+- **Recordings — playback-first IA.** The big storage card moved off the top
+  into a bottom `details.adv` disclosure ("Storage · 21 GB · 673 GB free · ~30
+  days until full"); a warn/danger capacity callout still renders loud at the
+  top (severity never hides). Timeline legibility: `.xtl-cov` opacity .34→.62,
+  `.tl-block` .5→.72, row-hover highlights the lane + name.
+- **Live — one toolbar, whole-tile click.** Header = h1 + Activity-first pill +
+  playback select + Wall; groups and saved views merged into ONE chip row
+  (`.chip-sep` divider, "Views none saved" label deleted). The whole tile now
+  opens the camera (Protect's click-to-expand); the corner expand button stays
+  as the keyboard/SR path; PTZ pad stops propagation (verified: pad click
+  doesn't navigate).
+- **Polish**: Heatmap hides its backdrop `frame.jpg` on error (no more broken-
+  image glyph; retries per camera/range); Timeline's right edge label only says
+  "now" when it IS now (day-scrub/event windows show the real clock); Home's
+  digest text card moved below the Spotlights/last-seen columns (recap, not
+  headline).
 
 `f3ff9d3` on `main`: a three-agent copy audit (monitor / config / people
 surfaces) found ~80 places the UI spoke developer at homeowners — raw model

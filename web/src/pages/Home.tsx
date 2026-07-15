@@ -323,31 +323,6 @@ export default function Home({
         />
       </div>
 
-      {digest && (
-        <div className="card digest-card">
-          <div className="card-head">
-            <span className="eyebrow"><IconSparkles size={13} /> Daily digest</span>
-            <span className="muted clock" style={{ marginLeft: "auto" }} title={fmtTime(digest.ts)}>
-              {Date.now() / 1000 - digest.ts > 26 * 3600 && (
-                <span className="badge warn" style={{ marginRight: 8 }} title="No new daily summary yet. You can adjust it under Settings, Detection & AI, daily digest.">
-                  not updated
-                </span>
-              )}
-              <RelTime ts={digest.ts} />
-            </span>
-          </div>
-          {digestSentences.length > 1 ? (
-            <ul className="digest-list">
-              {digestSentences.map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="digest-text">{digest.text}</p>
-          )}
-        </div>
-      )}
-
       <div className="home-cols">
         <div className="card">
           <h2>Today by type</h2>
@@ -465,6 +440,33 @@ export default function Home({
           )}
         </div>
       </div>
+
+      {/* The digest is a recap, not the headline — live activity above reads
+          first; yesterday's summary follows it. */}
+      {digest && (
+        <div className="card digest-card">
+          <div className="card-head">
+            <span className="eyebrow"><IconSparkles size={13} /> Daily digest</span>
+            <span className="muted clock" style={{ marginLeft: "auto" }} title={fmtTime(digest.ts)}>
+              {Date.now() / 1000 - digest.ts > 26 * 3600 && (
+                <span className="badge warn" style={{ marginRight: 8 }} title="No new daily summary yet. You can adjust it under Settings, Detection & AI, daily digest.">
+                  not updated
+                </span>
+              )}
+              <RelTime ts={digest.ts} />
+            </span>
+          </div>
+          {digestSentences.length > 1 ? (
+            <ul className="digest-list">
+              {digestSentences.map((s, i) => (
+                <li key={i}>{s}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="digest-text">{digest.text}</p>
+          )}
+        </div>
+      )}
 
       {(lines.length > 0 || occRows.length > 0) && (
         <div className="home-cols">

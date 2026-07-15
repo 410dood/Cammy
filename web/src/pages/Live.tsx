@@ -10,7 +10,7 @@ import PrivacyOverlay from "../PrivacyOverlay";
 import { useToast, useDialog, EmptyState, TogglePill } from "../ui";
 import {
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight,
-  IconPlus, IconMinus, IconExpand, IconRecDot, IconLayers, IconX, IconVideo, IconAlert,
+  IconPlus, IconMinus, IconExpand, IconRecDot, IconX, IconVideo, IconAlert,
 } from "../icons";
 
 // Humanized camera-tamper kinds (#63) for the live-tile warning chip.
@@ -55,7 +55,9 @@ function PtzPad({ cameraId }: { cameraId: number }) {
   );
 
   return (
-    <div className="ptz-pad">
+    // Stop clicks here: the PTZ pad sits on a tile whose click opens the
+    // camera view, and nudging the camera must not also navigate.
+    <div className="ptz-pad" onClick={(e) => e.stopPropagation()}>
       <span />
       {btn(<IconArrowUp size={17} />, "Tilt up", 0, 0.5, 0)}
       <span />
@@ -245,24 +247,30 @@ export default function Live({
     <>
       <div className="row" style={{ alignItems: "center" }}>
         <h1 style={{ marginRight: "auto" }}>Live</h1>
-        <label className="field" title="Pick the option that plays most smoothly on your network.">
-          Playback
-          <select
-            value={mode}
-            onChange={(e) => {
-              const m = e.target.value as StreamMode;
-              setMode(m);
-              setStreamMode(m);
-            }}
-          >
-            <option value="webrtc">Smoothest (WebRTC)</option>
-            <option value="mse">Most reliable (MSE)</option>
-            <option value="mjpeg">Works everywhere (MJPEG)</option>
-          </select>
-        </label>
+        <TogglePill
+          on={activitySort}
+          onClick={toggleActivitySort}
+          title="Cameras with a detection in the last 5 minutes float to the top of the grid"
+          ariaLabel="Sort cameras by recent activity"
+        >
+          Activity first
+        </TogglePill>
+        <select
+          value={mode}
+          aria-label="Playback method"
+          title="Pick the option that plays most smoothly on your network."
+          onChange={(e) => {
+            const m = e.target.value as StreamMode;
+            setMode(m);
+            setStreamMode(m);
+          }}
+        >
+          <option value="webrtc">Smoothest (WebRTC)</option>
+          <option value="mse">Most reliable (MSE)</option>
+          <option value="mjpeg">Works everywhere (MJPEG)</option>
+        </select>
         <button
           className="btn btn-secondary"
-          style={{ alignSelf: "flex-end" }}
           title="Full-screen wall mode for a dedicated monitor"
           onClick={() => {
             setWall(true);
@@ -272,11 +280,21 @@ export default function Live({
           <IconExpand size={15} /> Wall
         </button>
       </div>
+      {/* One picker row: camera groups, then saved views — not two stacked
+          strips with orphaned labels. */}
       <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-        <span className="muted views-label">
-          <IconLayers size={14} /> Views
-        </span>
-        {views.length === 0 && <span className="muted" style={{ fontSize: "var(--text-sm)" }}>none saved</span>}
+        {groups.length > 0 &&
+          ["All", ...groups, ...(hasUngrouped ? ["Ungrouped"] : [])].map((g) => (
+            <TogglePill
+              key={g}
+              on={!viewName && group === g}
+              ariaLabel={`Show ${g} cameras`}
+              onClick={() => pickGroup(g)}
+            >
+              {g}
+            </TogglePill>
+          ))}
+        {groups.length > 0 && views.length > 0 && <span className="chip-sep" aria-hidden="true" />}
         {views.map((v) =>
           viewName === v.name ? (
             // Active view: a sibling delete button beside the pill (not nested
@@ -313,32 +331,7 @@ export default function Live({
         >
           <IconPlus size={13} /> Save view
         </button>
-        <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <span className="muted" style={{ fontSize: "var(--text-sm)" }}>Sort</span>
-          <TogglePill
-            on={activitySort}
-            onClick={toggleActivitySort}
-            title="Cameras with a detection in the last 5 minutes float to the top of the grid"
-            ariaLabel="Sort cameras by recent activity"
-          >
-            Activity first
-          </TogglePill>
-        </span>
       </div>
-      {groups.length > 0 && (
-        <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-          {["All", ...groups, ...(hasUngrouped ? ["Ungrouped"] : [])].map((g) => (
-            <TogglePill
-              key={g}
-              on={!viewName && group === g}
-              ariaLabel={`Show ${g} cameras`}
-              onClick={() => pickGroup(g)}
-            >
-              {g}
-            </TogglePill>
-          ))}
-        </div>
-      )}
       {live.length === 0 ? (
         <EmptyState
           title={`No cameras in “${group}”`}
@@ -365,7 +358,10 @@ export default function Live({
           const dotCls = !s ? "" : !s.online ? "off" : tamper || stale ? "warn" : "on";
           const alert = tamper ? TAMPER_LABEL[tamper] ?? "Tampered" : stale ? "No signal" : null;
           return (
-            <div className="tile" key={cam.id}>
+            // The whole tile opens the camera (Protect's "click a camera to
+            // expand it") — the corner expand button stays as the keyboard/
+            // screen-reader path, so the tile itself isn't a second tab stop.
+            <div className="tile" key={cam.id} onClick={() => showCamera(cam)}>
               <div className="label">
                 <span className={`dot ${dotCls}`} /> {cam.name}
                 {s?.recording && (
@@ -383,7 +379,10 @@ export default function Live({
                 className="expand"
                 title="Open camera view"
                 aria-label={`Open ${cam.name} camera view`}
-                onClick={() => showCamera(cam)}
+                onClick={(e) => {
+                  e.stopPropagation(); // the tile handles the same click
+                  showCamera(cam);
+                }}
               >
                 <IconExpand size={16} />
               </button>
