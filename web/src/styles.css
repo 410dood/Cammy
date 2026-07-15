@@ -780,6 +780,34 @@ button.pill:disabled { opacity: 0.5; cursor: default; }
 .ptz-btn:active { background: var(--accent); border-color: var(--accent); }
 
 /* --- timeline scrubber ---------------------------------------------------- */
+/* Hover-scrub preview: keyframe + clock bubble above the pointer position. */
+.tl-wrap { position: relative; }
+.tl-bubble {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 4px 3px;
+  background: var(--elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-2);
+  pointer-events: none;
+}
+.tl-bubble img {
+  width: 148px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--r-xs);
+  background: #000;
+  display: block;
+}
+.tl-bubble .clock { font-size: var(--text-xs); color: var(--text-muted); }
+
 .timeline {
   position: relative;
   height: 58px;
@@ -2223,6 +2251,28 @@ img.identity-thumb { background: var(--n-0); }
 .arm-opt.arm-home.active { color: var(--accent); border-color: var(--accent-border); background: var(--accent-tint); }
 .arm-opt.arm-away.active { color: var(--ok); border-color: var(--ok); background: var(--success-bg); }
 .arm-opt.arm-disarmed.active { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+
+/* Rule-builder historical trigger preview */
+.rule-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 2px 0 14px;
+  padding: 10px 12px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  font-size: var(--text-sm);
+}
+.rule-preview-strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rule-preview-thumb {
+  width: 84px;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: var(--r-xs);
+  background: var(--bg-sunken);
+  display: block;
+}
 
 /* Alarm "scene" editor — repeatable action rows */
 .actions-edit { display: flex; flex-direction: column; gap: 8px; }

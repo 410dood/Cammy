@@ -33,6 +33,12 @@ export default function Timeline({
 
   // Keyboard scrubbing: a cursor (0..1) the arrow keys move; Enter plays from it.
   const [cursor, setCursor] = useState<number | null>(null);
+  // Hover preview: the keyframe of the segment under the pointer plus the
+  // clock, so scrubbing gives instant visual feedback before any click
+  // (the thumbs endpoint caches per segment, so tracking is cheap).
+  const [hover, setHover] = useState<{ frac: number; ts: number; segId: number | null } | null>(
+    null,
+  );
   const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
   const tsAt = (f: number) => Math.round(start + f * windowSecs);
   const fmtClock = (ts: number) =>
@@ -104,11 +110,34 @@ export default function Timeline({
     onSeek(tsAt(f));
   };
 
+  const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const f = clamp01((e.clientX - rect.left) / rect.width);
+    const ts = tsAt(f);
+    const seg = segments.find((s) => ts >= s.start_ts && ts < s.start_ts + segmentSecs);
+    setHover({ frac: f, ts, segId: seg?.id ?? null });
+  };
+
   return (
+    <div className="tl-wrap">
+      {hover && (
+        <div
+          className="tl-bubble"
+          style={{ left: `clamp(84px, ${hover.frac * 100}%, calc(100% - 84px))` }}
+          aria-hidden="true"
+        >
+          {hover.segId != null && (
+            <img src={`/api/recordings/${hover.segId}/thumb.jpg`} alt="" />
+          )}
+          <span className="clock">{fmtClock(hover.ts)}</span>
+        </div>
+      )}
     <div
       className="timeline"
       onClick={click}
       onKeyDown={onKey}
+      onPointerMove={onMove}
+      onPointerLeave={() => setHover(null)}
       role="slider"
       tabIndex={0}
       aria-label="Recording scrubber — arrow keys move the cursor, Enter plays from there"
@@ -148,6 +177,7 @@ export default function Timeline({
             an event viewer anchors the window in the past. */}
         <span>{Math.abs(Date.now() / 1000 - now) < 120 ? "now" : fmtClock(now)}</span>
       </div>
+    </div>
     </div>
   );
 }

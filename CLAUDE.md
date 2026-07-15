@@ -52,6 +52,29 @@ each LIVE-validated in Chrome on :8080:
 - Polish: event-viewer `← →` kbd hint (hidden on touch); ZoneEditor hides its
   frame `<img>` when failed (the plain-language fallback already explains).
 
+Round 3 (same day, third commit) — the last three research findings:
+
+- **Timeline hover-scrub previews**: pointer over any `Timeline` (camera
+  detail, Recordings single-camera, event-viewer mini-timeline) floats a
+  `.tl-bubble` above the position with the covering segment's keyframe
+  (`/api/recordings/{id}/thumb.jpg`, P2.4 cache — cheap) + clock; clock-only
+  over gaps. Component root became `.tl-wrap` (bubble escapes the old
+  overflow:hidden).
+- **Alarms 24h match counts**: the rules table's Last-fired cell adds "N
+  matching events · 24h" per rule, computed client-side from one 24h events
+  fetch (limit 500) through `matchPreview` — a faithful re-implementation of
+  `AlarmRule::matches`'s event-shaped conditions (exact label, substring
+  face/plate/zone/transcript, "?" stranger sentinel, exact gesture);
+  schedules/min-score/cooldowns/AI gates deliberately excluded and the
+  tooltip says so. LIVE: any-object AI-watch rules honestly show all 89
+  candidates.
+- **"Would have matched" builder preview** (Protect 6's historical trigger
+  previews): as rule conditions change, a `.rule-preview` strip shows the
+  live count + up to 6 snapshot thumbnails of last-24h events the rule would
+  have fired on, "(before the AI check runs)" when vlm/prompt set — catches
+  over-broad or dead rules before saving. LIVE: object=person → 10 events
+  w/ thumbnails.
+
 ### Earlier: UniFi-benchmark de-clunk pass (grid→viewer inversion), 2026-07-15
 
 A research-driven UX pass against UniFi Protect 5/6 (web-research agent report:

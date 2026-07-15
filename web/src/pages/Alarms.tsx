@@ -1,10 +1,46 @@
 ﻿import { FormEvent, useEffect, useRef, useState } from "react";
-import { api, AlarmRule, Action, ActionKind, ArmMode, Camera, DAY_NAMES } from "../api";
+import { api, AlarmRule, Action, ActionKind, ArmMode, CamEvent, Camera, DAY_NAMES } from "../api";
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
 import { prettyGesture } from "../labels";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/// Client-side approximation of the server's AlarmRule::matches, used for the
+/// historical "would have matched" preview and the rules-table 24h counts.
+/// Same semantics for the event-shaped conditions (exact label, substring
+/// face/plate/zone/transcript, exact-word gesture, "?" stranger sentinel);
+/// deliberately NOT applied: schedules/arm modes, min-score, cooldowns,
+/// cross-modal confirmation, and the AI gates (vlm_prompt / prompt_like) —
+/// the preview shows candidates before those server-side filters run.
+function matchPreview(
+  cond: {
+    camera_id: number | null;
+    label: string | null;
+    face_like: string | null;
+    plate_like: string | null;
+    gesture_like: string | null;
+    transcript_like: string | null;
+    zone_like: string | null;
+    face_unknown: boolean;
+  },
+  ev: CamEvent,
+): boolean {
+  if (cond.camera_id != null && ev.camera_id !== cond.camera_id) return false;
+  if (cond.label && ev.label !== cond.label) return false;
+  if (cond.face_unknown && ev.face !== "?") return false;
+  if (cond.face_like && !(ev.face ?? "").toLowerCase().includes(cond.face_like.toLowerCase()))
+    return false;
+  if (cond.plate_like && !(ev.plate ?? "").toUpperCase().includes(cond.plate_like.toUpperCase()))
+    return false;
+  if (cond.gesture_like && (ev.gesture ?? "").toLowerCase() !== cond.gesture_like.toLowerCase())
+    return false;
+  const phrase = cond.transcript_like?.trim();
+  if (phrase && !(ev.transcript ?? "").toLowerCase().includes(phrase.toLowerCase())) return false;
+  if (cond.zone_like && !(ev.zone ?? "").toLowerCase().includes(cond.zone_like.toLowerCase()))
+    return false;
+  return true;
+}
 
 const LABELS = [
   "person", "car", "truck", "bus", "bicycle", "motorcycle", "dog", "cat",
@@ -114,6 +150,9 @@ export default function Alarms({
   // deleting the last rule the list should lead, not the builder).
   const firstLoad = useRef(true);
   const [stats, setStats] = useState<Record<string, { last_fired_ts: number; suppressed_since: number }>>({});
+  // The last 24 hours of events, for the per-rule match counts and the
+  // builder's "would have matched" preview (Protect-style trigger previews).
+  const [recent, setRecent] = useState<CamEvent[]>([]);
   const load = () => {
     api
       .alarms()
@@ -126,6 +165,10 @@ export default function Alarms({
       .catch((e) => setLoadError(errMsg(e)))
       .finally(() => setLoaded(true));
     api.alarmStats().then(setStats).catch(() => {});
+    api
+      .events({ after: Math.floor(Date.now() / 1000) - 86400, limit: 500 })
+      .then(setRecent)
+      .catch(() => {});
   };
   useEffect(load, []);
 
@@ -485,6 +528,17 @@ export default function Alarms({
                     ) : (
                       <span style={{ fontSize: "var(--text-sm)" }}>not since startup</span>
                     )}
+                    {recent.length > 0 && (() => {
+                      const n = recent.filter((e) => matchPreview(r, e)).length;
+                      return (
+                        <div
+                          style={{ fontSize: "var(--text-sm)" }}
+                          title="Events in the last 24 hours matching this rule's conditions — before schedules, cooldowns, and AI checks."
+                        >
+                          <span className="tnum">{n}</span> matching event{n === 1 ? "" : "s"} · 24h
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td>
                     <TogglePill
@@ -755,6 +809,60 @@ export default function Alarms({
               </div>
             </div>
           </details>
+          {/* Protect-style historical trigger preview: as conditions change,
+              show what the rule WOULD have fired on in the last 24 hours —
+              catching an over-broad or dead rule before it's saved. */}
+          {(() => {
+            const cond = {
+              camera_id: cameraId === "" ? null : cameraId,
+              label: label || null,
+              face_like: faceUnknown ? null : faceLike.trim() || null,
+              plate_like: plateLike.trim() || null,
+              gesture_like: gestureLike.trim() || null,
+              transcript_like: transcriptLike.trim() || null,
+              zone_like: zoneLike.trim() || null,
+              face_unknown: faceUnknown,
+            };
+            const anyCond =
+              cond.camera_id != null ||
+              !!cond.label ||
+              !!cond.face_like ||
+              !!cond.plate_like ||
+              !!cond.gesture_like ||
+              !!cond.transcript_like ||
+              !!cond.zone_like ||
+              cond.face_unknown;
+            if (!anyCond) return null;
+            const hits = recent.filter((e) => matchPreview(cond, e));
+            const aiGated = !!(vlmPrompt.trim() || promptLike.trim());
+            return (
+              <div className="rule-preview" role="status">
+                <span className="muted">
+                  Would have matched <b className="tnum">{hits.length}</b> event
+                  {hits.length === 1 ? "" : "s"} in the last 24 hours
+                  {aiGated ? " (before the AI check runs)" : ""}
+                  {hits.length === 0 ? " — nothing recent fits these conditions." : "."}
+                </span>
+                {hits.length > 0 && (
+                  <div className="rule-preview-strip">
+                    {hits.slice(0, 6).map((e) =>
+                      e.snapshot ? (
+                        <img
+                          key={e.id}
+                          className="rule-preview-thumb"
+                          src={`/api/snapshots/${e.snapshot}?w=160`}
+                          alt={`${e.label} on ${e.camera}`}
+                          loading="lazy"
+                          title={`${e.label} · ${e.camera} · ${new Date(e.ts * 1000).toLocaleString()}`}
+                        />
+                      ) : null,
+                    )}
+                    {hits.length > 6 && <span className="muted tnum">+{hits.length - 6} more</span>}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <div className="row" style={{ marginBottom: 12 }}>
             <span className="muted">…armed (optional):</span>
             {DAY_NAMES.map((d, i) => (
