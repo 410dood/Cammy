@@ -122,7 +122,12 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
                     let deliver = match sub.user_id {
                         None => true,
                         Some(uid) => {
-                            db.pref_enabled(uid, rule_id, "push")
+                            // A system notification (rule_id NULL) isn't governed
+                            // by any per-rule/Default pref — the matrix only lists
+                            // rules — so it always pushes (still camera-gated,
+                            // though system rows carry no camera_id). An alarm is
+                            // gated by the user's pref for that rule (or Default).
+                            (n.rule_id.is_none() || db.pref_enabled(uid, rule_id, "push"))
                                 && n.camera_id
                                     .is_none_or(|cid| db.user_can_see_camera(uid, cid))
                         }
