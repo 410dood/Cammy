@@ -16,6 +16,55 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: roadmap-finish Wave 2 — CLIP/pipeline (P2.5 + P2.8b + P2.16 + P3.5·2), 2026-07-16
+
+Second wave of the roadmap-finish run — the CLIP/embedding + pipeline cluster,
+serialized on `main` (all four hook the crop-embedding pass). Five validated
+commits (`49b1039`, `72f23c1`, `972351b`, `34d5cc2`, `314e3aa`), then batched:
+release rebuilt + NVR restarted (5/5 cams back), cross-feature self-review
+(no HIGH/MED integration bugs — verified the shared CLIP embedder isn't
+double-init'd, the P2.8b suppression keys off the crop label not the rule label,
+`row_to_event` columns align, zone_open events get no spurious track_id), and
+API+Chrome live-validated on :8080. clippy -D warnings clean, **199 core tests**,
+web green.
+
+- **P2.5 CLIP attribute facets** (`49b1039`): a curated 26-facet catalog
+  (attributes.rs: vehicle colour/type, person/clothing colour; make/model out) —
+  a near-verbatim generalization of the shipped P2.2 prompt path. New
+  `AlarmRule.attr_like` (catalog KEY, rides schedule_json, no migration) firing
+  through the same is_prompt_rule/effective_prompt/crop-cosine machinery; `GET
+  /api/attributes` + `GET /api/search/by-attr` (RBAC like event_similar). Events
+  "Attributes" filter chips + an Alarms attr_like select. LIVE: catalog (26
+  facets, CLIP available), by-attr `veh_color_red` returned 5 ranked results;
+  chips render (Red/White/…/Sedan/SUV/Pickup).
+- **P2.8b per-camera feedback learning** (`72f23c1`, honest v0): "Not this" stores
+  an alert's crop embedding (new `alert_feedback` table, self-trimmed 200/(cam,
+  label)); future CLIP-similar alerts on that camera+label are quieted via
+  `smart::any_similar` (0.90 cosine, FAIL-OPEN everywhere). v0 gates ONLY the two
+  paths where the crop embedding already exists at fire time — fire_prompt_alarms
+  (prompt/attr) + genai::vlm_gate — NOT plain label-match rules (documented in UI
+  + code; the hoist is deferred v1). `POST /api/events/{id}/feedback` (RBAC like
+  bookmark_event; honest `{ok:false,reason:"no_crop"}`). LIVE: honest no_crop.
+- **P2.16 object lifecycle detail view** (`972351b`, + docs/08 P1.5): persist
+  `events.track_id`/`path_json` on tracker-driven narrative events; `GET
+  /api/events/{id}/lifecycle` aggregates the same-track story, GAP-BOUNDED (≤600s
+  clusters) so a per-camera track id that reset to 1 after a restart can't merge
+  two objects (pure `cluster_bounds`, unit-tested). Events "Track" step-list modal
+  (click-to-seek, reuses the covering-recording resolution). LIVE: honest
+  `{available:false}` for non-track events.
+- **P3.5 Part 2 — CLIP zone-state classifier v0** (`34d5cc2`): watch a named zone,
+  classify open/closed from two CLIP text prompts (garage/gate/pool cover),
+  reusing the SHARED CLIP session (never a 2nd), 15s cadence + 2-reading debounce,
+  emitting `zone_open`/`zone_closed` (→ alarms via `zone_like`). New pure
+  zonestate.rs (bbox + margin classify, 6 tests); fail-open + zero cost when
+  unused. ZoneEditor experimental toggle + prompt inputs. `314e3aa` fix (self-
+  review LOW): prune zone-state on classify-off/rename so re-enabling doesn't fire
+  a stale transition. NEEDS OWNER LIVE CHECK: CLIP models present here, but needs
+  a real garage/gate zone + prompt tuning (STATE_MARGIN=0.01 is a v0 guess).
+
+**Deferred to later waves:** P3.5 Part 1 (OpenVINO EP → Wave 5). Next: W3 forensic/
+web (P3.1 journey fusion, P2.18 hotspots, P3.8 detection-triggered recording).
+
 ### Latest: roadmap-finish Wave 1 — notify/arm spine (P2.10 + P2.11 + P2.9), 2026-07-16
 
 First wave of the autonomous "finish the docs/08 roadmap" run (orchestrator +
