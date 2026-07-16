@@ -1,9 +1,16 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import { api, AttributesCatalog, CamEvent, Camera, fmtTime, Segment, SimilarResult } from "../api";
-import { useToast, useDialog, Modal, RelTime, EmptyState, ErrorState, TogglePill } from "../ui";
+import { useToast, useDialog, Modal, RelTime, EmptyState, ErrorState, TogglePill, Callout } from "../ui";
 import Timeline from "../Timeline";
+import CrossTimeline from "../CrossTimeline";
+import JourneyMap, { JourneyStep } from "../JourneyMap";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/// Absolute wall-clock ("3:42 PM") for the journey narrative — the ordered
+/// step list reads as a time-of-day sequence, not relative "4m ago".
+const fmtClock = (ts: number) =>
+  new Date(ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
 /// Hide an AI caption that argues with the detection ("No cat detected, just a
 /// swimming pool…") — the card contradicting itself erodes trust more than a
@@ -17,7 +24,7 @@ import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil, IconLink, IconShield,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
   IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX, IconVideo,
-  IconChevronLeft, IconChevronRight, IconThumbDown, IconRadar,
+  IconChevronLeft, IconChevronRight, IconThumbDown, IconRadar, IconRoute, IconGrid,
 } from "../icons";
 import LifecycleModal from "../LifecycleModal";
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
@@ -282,6 +289,13 @@ export default function Events({
   const [open, setOpen] = useState<CamEvent | null>(null);
   const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
   const [similar, setSimilar] = useState<{ ev: CamEvent; res: SimilarResult | null } | null>(null);
+  // P3.1 journey fusion: the Similar modal has a Grid | Journey view. Journey
+  // re-sorts the SAME already-fetched matches chronologically (no new fetch) into
+  // a numbered narrative + a floor-plan path + a mini cross-camera timeline.
+  const [simView, setSimView] = useState<"grid" | "journey">("grid");
+  // Recording coverage for the journey mini-timeline (involved cameras only),
+  // fetched lazily the first time Journey mode is opened.
+  const [journeySegs, setJourneySegs] = useState<Segment[]>([]);
   // Object-lifecycle ("Track story") view: the seed event whose track is being told.
   const [lifecycleFor, setLifecycleFor] = useState<CamEvent | null>(null);
   // Upload-a-photo appearance search: query is a local object-URL preview.
@@ -529,6 +543,8 @@ export default function Events({
   const similarReq = useRef(0);
   const findSimilar = async (ev: CamEvent) => {
     const token = ++similarReq.current;
+    setSimView("grid"); // each open starts on the familiar grid
+    setJourneySegs([]);
     setSimilar({ ev, res: null }); // open the modal in a loading state
     try {
       const res = await api.eventSimilar(ev.id, 24);
@@ -540,6 +556,29 @@ export default function Events({
       }
     }
   };
+
+  // Journey mini-timeline coverage: fetch the involved cameras' recording
+  // segments once, the first time Journey mode is shown (grid never needs it).
+  // Keyed on `similar` (so it re-runs when the matches arrive) + `simView`.
+  useEffect(() => {
+    if (simView !== "journey" || !similar?.res?.results.length) return;
+    if (journeySegs.length > 0) return; // already loaded for this modal
+    const evs = [similar.ev, ...similar.res.results.map((m) => m.event)];
+    const cids = [...new Set(evs.map((e) => e.camera_id))];
+    const maxTs = Math.max(...evs.map((e) => e.ts));
+    let cancelled = false;
+    Promise.all(
+      cids.map((cid) =>
+        api.recordings({ camera_id: cid, before: maxTs + 120, limit: 800 }).catch(() => [] as Segment[]),
+      ),
+    ).then((lists) => {
+      if (!cancelled) setJourneySegs(lists.flat());
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [similar, simView]);
 
   // Upload-a-reference-photo search: CLIP-rank the crop corpus against an image
   // the user picks (a suspect/vehicle never enrolled or even seen by our cameras).
@@ -1521,86 +1560,201 @@ export default function Events({
         );
       })()}
 
-      {similar && (
+      {similar && (() => {
+        const res = similar.res;
+        const hasResults = !!res?.available && res.results.length > 0;
+        // Journey narrative: the seed event PLUS every appearance match, sorted
+        // chronologically. Same already-fetched results as the grid — no new
+        // fetch. similarity is null for the seed you started from.
+        const steps: JourneyStep[] = hasResults
+          ? [
+              { ev: similar.ev, similarity: null as number | null },
+              ...res!.results.map((m) => ({ ev: m.event, similarity: m.similarity })),
+            ].sort((a, b) => a.ev.ts - b.ev.ts)
+          : [];
+        const involvedIds = new Set(steps.map((s) => s.ev.camera_id));
+        const involvedCams = cameras.filter((c) => involvedIds.has(c.id));
+        // Clicking any journey surface (step row / map pin / timeline) reuses the
+        // existing event viewer — same close-then-open pattern as the grid.
+        const pick = (ev: CamEvent) => {
+          similarReq.current++;
+          setSimilar(null);
+          setOpen(ev);
+        };
+        // Time window for the mini cross-timeline: bracket all steps with padding.
+        const tsList = steps.map((s) => s.ev.ts);
+        const minTs = tsList.length ? Math.min(...tsList) : Math.floor(Date.now() / 1000) - 3600;
+        const maxTs = tsList.length ? Math.max(...tsList) : Math.floor(Date.now() / 1000);
+        const pad = Math.max(120, Math.round((maxTs - minTs) * 0.08));
+        const jNow = maxTs + pad;
+        const jWindow = Math.max(600, maxTs - minTs + pad * 2);
+        return (
         <Modal
-          title={`Similar to this ${prettyLabel(similar.ev.label)} · ${similar.ev.camera}`}
+          className="modal-wide"
+          title={`Appearances like this ${prettyLabel(similar.ev.label)} · ${similar.ev.camera}`}
           onClose={() => {
             similarReq.current++; // ignore any in-flight response after close
             setSimilar(null);
           }}
         >
-          <div className="row" style={{ alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
-            {similar.ev.snapshot && (
-              <div style={{ flex: "0 0 180px" }}>
-                <img
-                  src={`/api/snapshots/${similar.ev.snapshot}?w=360`}
-                  alt={`${similar.ev.label} on ${similar.ev.camera}`}
-                  decoding="async"
-                  style={{ width: "100%", borderRadius: 8, border: "2px solid var(--accent-border)" }}
-                />
-                <div className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                  query · {fmtTime(similar.ev.ts)}
-                </div>
+          {hasResults && (
+            <div className="arm-bar" role="tablist" aria-label="Appearance results view">
+              <button
+                role="tab"
+                aria-selected={simView === "grid"}
+                className={`arm-opt ${simView === "grid" ? "active" : ""}`}
+                onClick={() => setSimView("grid")}
+              >
+                <IconGrid size={15} /> Grid
+              </button>
+              <button
+                role="tab"
+                aria-selected={simView === "journey"}
+                className={`arm-opt ${simView === "journey" ? "active" : ""}`}
+                onClick={() => setSimView("journey")}
+              >
+                <IconRoute size={15} /> Journey
+              </button>
+            </div>
+          )}
+
+          {simView === "journey" && hasResults ? (
+            <div className="journey">
+              <Callout tone="info">
+                These are <b>appearance-similarity</b> matches (same-looking clothing or
+                vehicle), <b>not confirmed identity</b>. Review each one before acting.
+              </Callout>
+
+              <div className="journey-steps">
+                {steps.map((s, i) => (
+                  <button key={s.ev.id} className="journey-step" onClick={() => pick(s.ev)}>
+                    <span className="journey-step-n" aria-hidden="true">{i + 1}</span>
+                    {s.ev.snapshot ? (
+                      <img
+                        className="journey-step-thumb"
+                        src={`/api/snapshots/${s.ev.snapshot}?w=200`}
+                        alt={`${s.ev.label} on ${s.ev.camera}`}
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : (
+                      <span className="journey-step-thumb placeholder" />
+                    )}
+                    <span className="journey-step-meta">
+                      <span className="journey-step-top">
+                        <b>{fmtClock(s.ev.ts)}</b>
+                        <span className="muted">{s.ev.camera}</span>
+                      </span>
+                      <span className="journey-step-sub">
+                        {s.similarity == null ? (
+                          <span className="badge accent">the event you started from</span>
+                        ) : (
+                          <span className="badge accent score">{(s.similarity * 100).toFixed(0)}% match</span>
+                        )}
+                        <span className="muted">{fmtTime(s.ev.ts)}</span>
+                      </span>
+                    </span>
+                  </button>
+                ))}
               </div>
-            )}
-            <div style={{ flex: "1 1 320px", minWidth: "min(280px, 100%)" }}>
-              {!similar.res ? (
-                <p className="muted">Searching across cameras…</p>
-              ) : !similar.res.available ? (
-                <p className="muted">
-                  This event can't be matched yet. Similar search needs the smart search models
-                  installed (Settings, Models &amp; capabilities) and works on people and vehicles.
-                </p>
-              ) : similar.res.results.length === 0 ? (
-                <p className="muted">No similar appearances found on any camera yet.</p>
-              ) : (
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
-                    gap: 10,
+
+              <h3 className="journey-h">Path across your cameras</h3>
+              <JourneyMap steps={steps} onPick={pick} />
+
+              <h3 className="journey-h">On the timeline</h3>
+              {involvedCams.length > 0 ? (
+                <CrossTimeline
+                  cameras={involvedCams}
+                  segments={journeySegs}
+                  events={steps.map((s) => s.ev)}
+                  windowSecs={jWindow}
+                  segmentSecs={segmentSecs}
+                  nowTs={jNow}
+                  onSeek={(camId, ts) => {
+                    // Reuse the viewer: open the nearest step on that camera.
+                    const cand = steps.filter((s) => s.ev.camera_id === camId);
+                    if (cand.length === 0) return;
+                    const best = cand.reduce((a, b) =>
+                      Math.abs(a.ev.ts - ts) <= Math.abs(b.ev.ts - ts) ? a : b,
+                    );
+                    pick(best.ev);
                   }}
-                >
-                  {similar.res.results.map((m) => (
-                    <button
-                      key={m.event.id}
-                      className="event-card"
-                      style={{
-                        textAlign: "left",
-                        cursor: "pointer",
-                        // .event-card was authored for a <div>; reset UA button chrome.
-                        appearance: "none",
-                        font: "inherit",
-                        color: "inherit",
-                        padding: 0,
-                        width: "100%",
-                      }}
-                      onClick={() => {
-                        similarReq.current++;
-                        setSimilar(null);
-                        setOpen(m.event);
-                      }}
-                    >
-                      {m.event.snapshot ? (
-                        <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={`${m.event.label} on ${m.event.camera}`} loading="lazy" decoding="async" />
-                      ) : (
-                        <div style={{ aspectRatio: "4 / 3", background: "var(--bg-sunken)" }} />
-                      )}
-                      <div className="meta">
-                        <div className="ev-head">
-                          <span className="badge accent score">{(m.similarity * 100).toFixed(0)}%</span>
-                          <span className="muted">{m.event.camera}</span>
-                        </div>
-                        <RelTime ts={m.event.ts} className="muted ev-time" />
-                      </div>
-                    </button>
-                  ))}
-                </div>
+                />
+              ) : (
+                <p className="muted">No live cameras remain for these appearances.</p>
               )}
             </div>
-          </div>
+          ) : (
+            <div className="row" style={{ alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
+              {similar.ev.snapshot && (
+                <div style={{ flex: "0 0 180px" }}>
+                  <img
+                    src={`/api/snapshots/${similar.ev.snapshot}?w=360`}
+                    alt={`${similar.ev.label} on ${similar.ev.camera}`}
+                    decoding="async"
+                    style={{ width: "100%", borderRadius: 8, border: "2px solid var(--accent-border)" }}
+                  />
+                  <div className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                    query · {fmtTime(similar.ev.ts)}
+                  </div>
+                </div>
+              )}
+              <div style={{ flex: "1 1 320px", minWidth: "min(280px, 100%)" }}>
+                {!similar.res ? (
+                  <p className="muted">Searching across cameras…</p>
+                ) : !similar.res.available ? (
+                  <p className="muted">
+                    This event can't be matched yet. Similar search needs the smart search models
+                    installed (Settings, Models &amp; capabilities) and works on people and vehicles.
+                  </p>
+                ) : similar.res.results.length === 0 ? (
+                  <p className="muted">No similar appearances found on any camera yet.</p>
+                ) : (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+                      gap: 10,
+                    }}
+                  >
+                    {similar.res.results.map((m) => (
+                      <button
+                        key={m.event.id}
+                        className="event-card"
+                        style={{
+                          textAlign: "left",
+                          cursor: "pointer",
+                          // .event-card was authored for a <div>; reset UA button chrome.
+                          appearance: "none",
+                          font: "inherit",
+                          color: "inherit",
+                          padding: 0,
+                          width: "100%",
+                        }}
+                        onClick={() => pick(m.event)}
+                      >
+                        {m.event.snapshot ? (
+                          <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={`${m.event.label} on ${m.event.camera}`} loading="lazy" decoding="async" />
+                        ) : (
+                          <div style={{ aspectRatio: "4 / 3", background: "var(--bg-sunken)" }} />
+                        )}
+                        <div className="meta">
+                          <div className="ev-head">
+                            <span className="badge accent score">{(m.similarity * 100).toFixed(0)}% match</span>
+                            <span className="muted">{m.event.camera}</span>
+                          </div>
+                          <RelTime ts={m.event.ts} className="muted ev-time" />
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </Modal>
-      )}
+        );
+      })()}
 
       {lifecycleFor && (
         <LifecycleModal

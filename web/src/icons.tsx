@@ -567,6 +567,15 @@ export const IconRadar = (p: IconProps) => (
   </Svg>
 );
 
+// Route / journey: two waypoints joined by a winding path (P3.1 journey fusion).
+export const IconRoute = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="6" cy="19" r="3" />
+    <path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15" />
+    <circle cx="18" cy="5" r="3" />
+  </Svg>
+);
+
 /* --- high-value hand poses (rest reuse IconHand + a text label) -------------- */
 
 export const IconThumbUp = (p: IconProps) => (
