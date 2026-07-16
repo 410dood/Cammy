@@ -124,6 +124,16 @@ export interface DetectConfig {
   /** Stationary-object suppression: only alert on new or moving objects, not on
    *  every motion-gate trip while a parked car / idle object sits in view. */
   suppress_stationary?: boolean;
+  /** Detection-triggered recording (P3.8): a tighter, asymmetric retention mode.
+   *  Recording stays continuous; only pruning is harder — keep pre/post-roll
+   *  around each detection and delete the rest within ~a minute. Mutually
+   *  exclusive with event_only_recording (UI-enforced). Bookmarked events are
+   *  always kept. */
+  trigger_recording?: boolean;
+  /** Seconds of footage kept BEFORE each detection (pre-roll); null = 10s. */
+  trigger_pre_roll_secs?: number | null;
+  /** Seconds of footage kept AFTER each detection (post-roll); null = 30s. */
+  trigger_post_roll_secs?: number | null;
 }
 
 export interface Camera {

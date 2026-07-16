@@ -183,7 +183,8 @@ pub fn run(
             {
                 let older_than = chrono::Local::now().timestamp() - 15 * 60;
                 let span = i64::from(settings.segment_seconds);
-                match db.eventless_segments(cam.id, older_than, span, span) {
+                // (span, span) reproduces the original symmetric window exactly.
+                match db.eventless_segments(cam.id, older_than, span, span, span) {
                     Ok(paths) if !paths.is_empty() => {
                         let mut dropped = 0u32;
                         for path in paths {
@@ -201,6 +202,58 @@ pub fn run(
                     }
                     Ok(_) => {}
                     Err(e) => tracing::warn!("event-only retention failed: {e:#}"),
+                }
+            }
+
+            // Detection-triggered recording (P3.8): a TIGHTER, ASYMMETRIC
+            // variant of event-only retention. Continuous packet-copy segmenting
+            // is untouched (the segmenter never stops, so the pre-roll footage is
+            // real) — this only prunes HARDER. Keep a short pre-roll and a longer
+            // post-roll around each detection and delete everything else fast, so
+            // a quiet camera sheds disk in about a minute. Flagged/bookmarked
+            // events are ordinary event rows (never pruned), so their segment is
+            // always kept by the same nearby-event check. Fail-SAFE: any DB error
+            // skips pruning this tick — on doubt, footage is kept.
+            for cam in cameras
+                .iter()
+                .filter(|c| c.record && c.detect_config.trigger_recording)
+            {
+                let span = i64::from(settings.segment_seconds);
+                let pre = i64::from(cam.detect_config.trigger_pre_roll_secs.unwrap_or(10));
+                let post = i64::from(cam.detect_config.trigger_post_roll_secs.unwrap_or(30));
+                // Settle grace: only prune a segment once its END (start_ts +
+                // span) is older than now - (max(pre,post) + 30s). A segment still
+                // being written or still inside a possible post-roll window is
+                // NEVER eligible; the `pre` term also holds a segment long enough
+                // that a LATER detection whose pre-roll reaches back to it (up to
+                // `pre` seconds) will already exist and protect it via the
+                // NOT-EXISTS check before it becomes eligible — so a large pre-roll
+                // can't lose earlier footage. `eventless_segments` bounds
+                // `start_ts`, so subtract the span too.
+                let grace = post.max(pre) + 30;
+                let older_than = chrono::Local::now().timestamp() - span - grace;
+                match db.eventless_segments(cam.id, older_than, span, pre, post) {
+                    Ok(paths) if !paths.is_empty() => {
+                        let mut dropped = 0u32;
+                        for path in paths {
+                            let p = PathBuf::from(&path);
+                            if !p.exists() || std::fs::remove_file(&p).is_ok() {
+                                let _ = db.delete_segment_by_path(&path);
+                                dropped += 1;
+                            }
+                        }
+                        tracing::info!(
+                            camera = %cam.name,
+                            count = dropped,
+                            pre_roll = pre,
+                            post_roll = post,
+                            "detection-triggered retention: dropped un-triggered segments"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(
+                        "detection-triggered retention failed (keeping footage): {e:#}"
+                    ),
                 }
             }
 

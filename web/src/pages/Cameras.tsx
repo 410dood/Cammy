@@ -134,6 +134,9 @@ function TuneModal({
     no_clip: camera.detect_config.no_clip ?? false,
     record_schedule: camera.detect_config.record_schedule ?? null,
     suppress_stationary: camera.detect_config.suppress_stationary ?? false,
+    trigger_recording: camera.detect_config.trigger_recording ?? false,
+    trigger_pre_roll_secs: camera.detect_config.trigger_pre_roll_secs ?? null,
+    trigger_post_roll_secs: camera.detect_config.trigger_post_roll_secs ?? null,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
   const [saving, setSaving] = useState(false);
@@ -491,14 +494,99 @@ function TuneModal({
           <h3 className="tune-h">
             <IconFilm size={15} /> Recording &amp; retention
           </h3>
+          {/* Recording mode: Continuous | Event-only | Detection-triggered.
+              Mutually exclusive — selecting one clears the others' flags. The
+              recorder never stops segmenting; these modes only prune harder. */}
+          <div className="feat" style={{ marginBottom: 10 }}>
+            <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "#aeb4c0" }}>
+              Recording mode
+            </span>
+            <div
+              className="arm-bar"
+              role="group"
+              aria-label="Recording mode"
+              style={{ margin: "4px 0 6px" }}
+            >
+              {(
+                [
+                  { id: "continuous", label: "Continuous" },
+                  { id: "event", label: "Event-only" },
+                  { id: "trigger", label: "Detection-triggered" },
+                ] as const
+              ).map((m) => {
+                const cur = dc.trigger_recording
+                  ? "trigger"
+                  : dc.event_only_recording
+                    ? "event"
+                    : "continuous";
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={`arm-opt ${cur === m.id ? "active" : ""}`}
+                    aria-pressed={cur === m.id}
+                    onClick={() =>
+                      setDc({
+                        ...dc,
+                        event_only_recording: m.id === "event",
+                        trigger_recording: m.id === "trigger",
+                      })
+                    }
+                  >
+                    {m.label}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="feat-help">
+              {dc.trigger_recording
+                ? `Keeps ${dc.trigger_pre_roll_secs ?? 10}s before and ${
+                    dc.trigger_post_roll_secs ?? 30
+                  }s after each detection; everything else is deleted within ~a minute. Recording itself stays continuous, so the "before" footage is real. Trades storage for less history — bookmarked events are always kept.`
+                : dc.event_only_recording
+                  ? "Keeps footage near any detection and deletes quiet segments after a ~15-minute grace. Trades storage for less history — bookmarked events are always kept."
+                  : "Keeps all footage until the age / disk retention below prunes it."}
+            </span>
+          </div>
+          {dc.trigger_recording && (
+            <div className="tune-grid" style={{ marginBottom: 10 }}>
+              <label className="field">
+                Pre-roll (seconds before)
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="10"
+                  value={dc.trigger_pre_roll_secs ?? ""}
+                  onChange={(e) =>
+                    setDc({
+                      ...dc,
+                      trigger_pre_roll_secs:
+                        e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0),
+                    })
+                  }
+                />
+                <span className="feat-help">Footage kept before each detection (default 10).</span>
+              </label>
+              <label className="field">
+                Post-roll (seconds after)
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="30"
+                  value={dc.trigger_post_roll_secs ?? ""}
+                  onChange={(e) =>
+                    setDc({
+                      ...dc,
+                      trigger_post_roll_secs:
+                        e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0),
+                    })
+                  }
+                />
+                <span className="feat-help">Footage kept after each detection (default 30).</span>
+              </label>
+            </div>
+          )}
           <div className="feat-grid">
-            <Feature
-              on={dc.event_only_recording}
-              onToggle={() => setDc({ ...dc, event_only_recording: !dc.event_only_recording })}
-              label="Event-only recording"
-              help="Keep only footage near events; delete quiet segments after a grace period."
-              title="Keep only footage near events: segments with no detection within a segment-length margin are deleted after a 15-minute grace period. Saves most of the disk on quiet cameras."
-            />
             <Feature
               on={dc.record_schedule != null}
               onToggle={() =>

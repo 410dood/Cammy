@@ -322,6 +322,25 @@ pub struct DetectConfig {
     /// `pipeline.rs` (`moved_enough`).
     #[serde(default)]
     pub suppress_stationary: bool,
+    /// Detection-triggered recording (P3.8): a TIGHTER, asymmetric variant of
+    /// event-only retention. Continuous packet-copy segmenting is UNCHANGED —
+    /// real pre-roll footage exists only because the segmenter never stops — so
+    /// this never starts/stops ffmpeg; it only prunes segments HARDER. A segment
+    /// is deleted unless a detection lands inside its
+    /// `[event.ts - pre_roll, event.ts + post_roll]` window, after a short
+    /// settle grace (`post_roll + 30s` past the segment's END) instead of the
+    /// flat 15-minute event-only grace, so a quiet camera sheds disk fast.
+    /// Flagged/bookmarked events are ordinary event rows (never pruned from
+    /// `events`), so their footage is always kept. Off by default; mutually
+    /// exclusive with `event_only_recording` in the UI. See `record.rs`.
+    #[serde(default)]
+    pub trigger_recording: bool,
+    /// Seconds of footage to keep BEFORE each detection (pre-roll). `None` = 10s.
+    #[serde(default)]
+    pub trigger_pre_roll_secs: Option<u32>,
+    /// Seconds of footage to keep AFTER each detection (post-roll). `None` = 30s.
+    #[serde(default)]
+    pub trigger_post_roll_secs: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2621,15 +2640,27 @@ impl Db {
         Ok(rows)
     }
 
-    /// Segments of `camera_id` starting before `older_than` with no event
-    /// within `margin` seconds of the segment's span — the deletion set for
-    /// event-only recording retention.
+    /// Segments of `camera_id` starting before `older_than` whose span
+    /// `[start_ts, start_ts + span_secs]` overlaps NO event's keep window
+    /// `[event.ts - margin_before, event.ts + margin_after]` — the deletion set
+    /// for event-bracketed retention (event-only and detection-triggered modes).
+    ///
+    /// The margins are asymmetric so detection-triggered recording can keep a
+    /// short pre-roll and a longer post-roll around each detection. A segment
+    /// overlaps an event's window iff
+    /// `event.ts BETWEEN start_ts - margin_after AND start_ts + span_secs + margin_before`,
+    /// so `margin_before` (pre-roll) reaches back to segments that START before
+    /// the event and `margin_after` (post-roll) forward to segments after it.
+    /// Passing `(span, span)` reproduces the original symmetric event-only
+    /// window byte-for-byte. Flagged/bookmarked events are ordinary event rows
+    /// (never pruned from `events`), so the segment holding one is always kept.
     pub fn eventless_segments(
         &self,
         camera_id: i64,
         older_than: i64,
         span_secs: i64,
-        margin: i64,
+        margin_before: i64,
+        margin_after: i64,
     ) -> Result<Vec<String>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -2638,13 +2669,14 @@ impl Db {
                AND NOT EXISTS (
                  SELECT 1 FROM events e
                  WHERE e.camera_id = s.camera_id
-                   AND e.ts BETWEEN s.start_ts - ?4 AND s.start_ts + ?3 + ?4
+                   AND e.ts BETWEEN s.start_ts - ?5 AND s.start_ts + ?3 + ?4
                )",
         )?;
         let rows = stmt
-            .query_map(params![camera_id, older_than, span_secs, margin], |r| {
-                r.get(0)
-            })?
+            .query_map(
+                params![camera_id, older_than, span_secs, margin_before, margin_after],
+                |r| r.get(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -5178,6 +5210,9 @@ mod tests {
             package_zone: Some(vec![[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]),
             package_labels: vec!["package".to_string()],
             suppress_stationary: true,
+            trigger_recording: true,
+            trigger_pre_roll_secs: Some(15),
+            trigger_post_roll_secs: Some(45),
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
@@ -5647,7 +5682,9 @@ mod tests {
             cam.id, 2030, "person", 0.9, [0.0; 4], None, None, None, None, None,
         )
         .unwrap();
-        let mut doomed = db.eventless_segments(cam.id, 5000, 60, 15).unwrap();
+        // Event-only mode passes (span, span) → the original symmetric window,
+        // byte-for-byte unchanged from the pre-P3.8 single-margin signature.
+        let mut doomed = db.eventless_segments(cam.id, 5000, 60, 15, 15).unwrap();
         doomed.sort();
         assert_eq!(
             doomed,
@@ -5655,8 +5692,79 @@ mod tests {
         );
         // Grace period: nothing older than 1500 except segment 1.
         assert_eq!(
-            db.eventless_segments(cam.id, 1500, 60, 15).unwrap(),
+            db.eventless_segments(cam.id, 1500, 60, 15, 15).unwrap(),
             vec!["p1000.mp4".to_string()]
+        );
+    }
+
+    #[test]
+    fn eventless_segments_asymmetric_margins() {
+        // P3.8 detection-triggered recording: pre-roll (margin_before) keeps the
+        // segment BEFORE a detection, post-roll (margin_after) the one AFTER.
+        let db = mem_db();
+        let cam = db
+            .add_camera("porch", "rtsp://x", None, true, true)
+            .unwrap();
+        // Three 60s segments at t=1000/2000/3000; one detection early in the
+        // middle segment (t=2010).
+        for ts in [1000, 2000, 3000] {
+            db.upsert_segment(cam.id, ts, &format!("p{ts}.mp4"), 10)
+                .unwrap();
+        }
+        db.add_event(
+            cam.id, 2010, "person", 0.9, [0.0; 4], None, None, None, None, None,
+        )
+        .unwrap();
+
+        // Large pre-roll (1000s), tiny post-roll (5s): the pre-roll reaches back
+        // into the PREVIOUS segment, so only the later segment is eventless.
+        assert_eq!(
+            db.eventless_segments(cam.id, 100_000, 60, 1000, 5).unwrap(),
+            vec!["p3000.mp4".to_string()],
+        );
+        // Mirror: tiny pre-roll (5s), large post-roll (1000s): the post-roll
+        // reaches forward into the NEXT segment, so only the earlier is eventless.
+        assert_eq!(
+            db.eventless_segments(cam.id, 100_000, 60, 5, 1000).unwrap(),
+            vec!["p1000.mp4".to_string()],
+        );
+    }
+
+    #[test]
+    fn eventless_segments_keeps_flagged_event_footage() {
+        // A detection-triggered prune must never delete a bookmarked clip: a
+        // flagged event survives event-retention, so it keeps protecting its
+        // segment even after the surrounding un-flagged events are gone.
+        let db = mem_db();
+        let cam = db
+            .add_camera("porch", "rtsp://x", None, true, true)
+            .unwrap();
+        for ts in [1000, 2000, 3000] {
+            db.upsert_segment(cam.id, ts, &format!("p{ts}.mp4"), 10)
+                .unwrap();
+        }
+        // An un-flagged detection in seg1; a BOOKMARKED detection in seg2.
+        db.add_event(
+            cam.id, 1010, "person", 0.9, [0.0; 4], None, None, None, None, None,
+        )
+        .unwrap();
+        let saved = db
+            .add_event(
+                cam.id, 2010, "person", 0.9, [0.0; 4], None, None, None, None, None,
+            )
+            .unwrap();
+        db.set_event_bookmark(saved, true, Some("keep this")).unwrap();
+
+        // Event retention removes every un-flagged event; the bookmark survives.
+        db.prune_events_before(5000).unwrap();
+
+        // A tight detection-triggered prune (10s pre / 5s post) now finds seg1
+        // and seg3 eventless, but seg2 is still protected by the bookmark.
+        let mut doomed = db.eventless_segments(cam.id, 100_000, 60, 10, 5).unwrap();
+        doomed.sort();
+        assert_eq!(
+            doomed,
+            vec!["p1000.mp4".to_string(), "p3000.mp4".to_string()]
         );
     }
 
