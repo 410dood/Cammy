@@ -16,6 +16,46 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: roadmap-finish Wave 4 — recording/perf core (P2.14 + P3.7 + P3.6), 2026-07-16
+
+Fourth wave — the deepest core changes (footage retention + the detection hot
+path), all made DEFAULT-SAFE. Four validated commits (`ff6edcd`, `87ac138`,
+`a5c8bba`, `dc28858`), release-rebuilt + restarted, detection confirmed live.
+clippy clean, **206 core tests**, web green.
+
+- **P2.14 v0 selective offsite + bookmarked-segment protection** (`ff6edcd`): a
+  REAL bug fix — a flagged event's row+snapshot survived retention but its raw
+  SEGMENT could still be deleted (silently losing "saved" footage). Now
+  db.flagged_segment_paths() protects covering segments in recorder::prune (both
+  age + byte-cap passes; bytes still counted so other footage is deleted to hit
+  the cap; fail-safe: lookup error → skip the prune). Plus Settings.offsite_
+  events_only (EXISTS-over-events filter on pending_offsite; bookmarks still ship).
+- **P3.7 dual-stream recording** (`87ac138`, OPT-IN default-off): record the
+  low-res {name}_sub alongside main (2nd reused ffmpeg) so you scrub SD / play HD.
+  segments.stream column; record.rs reconcile re-keyed by (camera_id, stream) —
+  a non-opted camera is byte-for-byte unchanged; sub dir <name>__sub (double _)
+  collision-guarded; retention + the P2.14 protection cover both streams; offsite
+  ships only main. CameraDetail HD/SD selector. v1 defers Recordings/Events toggles.
+- **P3.6 detector worker pool** (`a5c8bba`, default detect_workers=1): pipeline::
+  run's loop body extracted VERBATIM into run_worker(idx,n,...) sharded by
+  i%n==idx; run() with n=1 calls it inline = today's exact single-thread path
+  (owns(0,1,i) always true). n>1 spawns detector-0..N threads with thread-safe
+  shared handles (db/status-RwLock/throttle-Mutex-shared-for-global-cooldown/mpsc/
+  AtomicBool); per-camera state stays worker-local. LIVE: detection confirmed
+  firing (YOLO on all 5 cams + a soft-trigger event created through the emit path).
+- **`dc28858` fix (Wave-4 self-review MED, footage-safety):** P2.14's protected
+  set was consulted only by age/byte-cap prune, but the event-only + detection-
+  triggered passes delete "eventless" segments EARLIER with a tighter window
+  (pre_roll 10s < the 15s flagged slack) — a tail bookmark could be deleted first.
+  Now the covering-segment set is built once and honored by ALL deletion passes
+  (do_deletes gates them fail-safe).
+
+Self-review cleared the other interaction axes (offsite double-filter AND-ed;
+sub-segment protection works; stream params correct; P3.6 extraction verbatim).
+**pool2 (cam6) still environmentally not-recording** (see Wave 3 note; unaffected
+by this wave — 4/5 recording). Remaining: Wave 5 ecosystem (P3.3 HA, P3.2 ask-your-
+cameras, P3.4 HomeKit v0, P3.9 archive, P3.10 import, P3.5·1 OpenVINO EP).
+
 ### Latest: roadmap-finish Wave 3 — forensic/web (P2.18 + P3.1 + P3.8), 2026-07-16
 
 Third wave — hotspots, journey fusion, detection-triggered recording. Three
