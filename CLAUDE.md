@@ -52,6 +52,21 @@ each LIVE-validated in Chrome on :8080:
 - Polish: event-viewer `← →` kbd hint (hidden on touch); ZoneEditor hides its
   frame `<img>` when failed (the plain-language fallback already explains).
 
+Round 5 (same day) — **event deep links now work from cold loads**: new
+`GET /api/events/{id}` (RBAC per-camera scoped like the list; 404 clean;
+clippy + 168 tests green, release rebuilt + NVR restarted via detached
+Start-Process, ~90s downtime) + `api.event(id)`; the Events focus effect
+falls back list → sessionStorage stash → fetch → honest toast. TWO real bugs
+found while validating: (1) pre-existing — `focusEvent` seeded `null` instead
+of `parseHash().eventId`, so `#/events/<id>` NEVER opened on a fresh page
+load (only via in-app hashchange; App.tsx one-liner); (2) self-inflicted —
+consuming `focusEventId` up front re-runs the effect, so cleanup-based fetch
+cancellation discarded the very response being awaited (now a ref token, no
+cleanup cancel). LIVE: brand-new tab at `#/events/6079` (7/3, pruned
+footage) → viewer opens with "Snapshot only". GOTCHA: the PWA service worker
+serves a stale app shell for one load after a dist rebuild — validate on the
+SECOND reload.
+
 Round 4 (same day) — **adversarial self-review of the session diff** (3
 parallel lens agents: React correctness / UX edge cases / perf+CSS; every
 finding hand-verified). 2 HIGH-MED + several LOW confirmed, all fixed +

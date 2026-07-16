@@ -285,9 +285,14 @@ export default function Events({
   // event's detail (best-effort — the event is usually recent and in the list),
   // then clear the request. onFocusHandled clears focusEventId synchronously, so
   // this fires once per click without a guard (and re-clicks work).
+  const focusReq = useRef(0);
   useEffect(() => {
     if (!focusEventId || events.length === 0) return;
-    let ev = events.find((e) => e.id === focusEventId);
+    const id = focusEventId;
+    // Consume the request up front so a poll-driven re-render can't re-enter
+    // while the fallback fetch below is in flight.
+    onFocusHandled?.();
+    let ev = events.find((e) => e.id === id);
     // Not in the loaded window (frame-seeded search can land on an old event) —
     // the navigating surface stashes the full event for exactly this case.
     if (!ev) {
@@ -295,10 +300,10 @@ export default function Events({
         const raw = sessionStorage.getItem("cammy-focus-event");
         if (raw) {
           const stashed = JSON.parse(raw) as CamEvent;
-          if (stashed.id === focusEventId) ev = stashed;
+          if (stashed.id === id) ev = stashed;
         }
       } catch {
-        /* fall through to best-effort behavior */
+        /* fall through to the fetch below */
       }
     }
     try {
@@ -306,11 +311,24 @@ export default function Events({
     } catch {
       /* ignore */
     }
-    if (ev) setOpen(ev);
-    // A pasted/new-tab link to an old event can't be resolved (no stash, and
-    // it's beyond the loaded list) — say so instead of silently doing nothing.
-    else toast.info("Couldn't open that event — it's older than the recent list shown here.");
-    onFocusHandled?.();
+    if (ev) {
+      setOpen(ev);
+      return;
+    }
+    // Fresh tab / pasted link to an old event: fetch it directly. Guarded by a
+    // token, NOT effect cleanup — consuming the request above re-runs this
+    // effect (the prop changes), and a cleanup-based cancel would discard the
+    // very response we're waiting for.
+    const token = ++focusReq.current;
+    api.event(id).then(
+      (fetched) => {
+        if (token === focusReq.current) setOpen(fetched);
+      },
+      () => {
+        if (token === focusReq.current)
+          toast.info("Couldn't open that event — it may have been removed at retention.");
+      },
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusEventId, events, onFocusHandled]);
 

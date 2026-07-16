@@ -668,6 +668,8 @@ export const api = {
     if (q.limit) p.set("limit", String(q.limit));
     return req<CamEvent[]>(`/api/events?${p}`);
   },
+  /** One event by id — resolves deep links to events older than a loaded list. */
+  event: (id: number) => req<CamEvent>(`/api/events/${id}`),
   bookmarkEvent: (id: number, flagged: boolean, note?: string | null) =>
     req<{ id: number; flagged: boolean }>(`/api/events/${id}/bookmark`, {
       method: "POST",

@@ -311,7 +311,10 @@ export default function App() {
   const [locked, setLocked] = useState(false);
   const [palette, setPalette] = useState(false);
   const [focusCameraId, setFocusCameraId] = useState<number | null>(() => parseHash().cameraId ?? null);
-  const [focusEvent, setFocusEvent] = useState<number | null>(null);
+  // Seed from the hash like focusCameraId, so a bookmarked / pasted
+  // `#/events/<id>` link opens the event viewer on a fresh page load too —
+  // not only after an in-app hashchange.
+  const [focusEvent, setFocusEvent] = useState<number | null>(() => parseHash().eventId ?? null);
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [notifOpen, setNotifOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);

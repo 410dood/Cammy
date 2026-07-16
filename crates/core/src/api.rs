@@ -70,6 +70,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cameras/{id}/timelapse", axum::routing::post(create_timelapse))
         .route("/api/cameras/{id}/timelapse.mp4", get(serve_timelapse))
         .route("/api/events", get(list_events))
+        .route("/api/events/{id}", get(get_event_api))
         .route("/api/events/export.csv", get(export_events_csv))
         .route(
             "/api/events/{id}/bookmark",
@@ -2066,6 +2067,19 @@ async fn list_events(
         events.retain(|e| e.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)));
     }
     Ok(Json(events))
+}
+
+/// One event by id — the deep-link fetch (`#/events/<id>`) for an event older
+/// than the client's loaded window (e.g. a frame-search match opened in a new
+/// tab). Same per-camera scoping as the list.
+async fn get_event_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<crate::db::Event>> {
+    let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    Ok(Json(ev))
 }
 
 #[derive(Deserialize)]
