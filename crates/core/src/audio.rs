@@ -353,7 +353,7 @@ pub fn run(
                         }) {
                             let suppressed =
                                 crate::notify::take_suppressed(&throttle, rule.id);
-                            crate::notify::fire(rule, &alarm_ev, &mqtt_tx, suppressed);
+                            crate::notify::fire(rule, &alarm_ev, &mqtt_tx, suppressed, &db);
                         }
                     }
                     Err(e) => tracing::warn!("audio event insert failed: {e:#}"),

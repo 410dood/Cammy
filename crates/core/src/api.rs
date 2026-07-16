@@ -108,6 +108,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/audit", get(list_audit))
         .route("/api/me", get(me))
         .route("/api/me/password", axum::routing::post(change_my_password))
+        .route("/api/me/email", axum::routing::post(set_my_email))
         .route("/api/2fa", get(twofa_status))
         .route("/api/2fa/setup", axum::routing::post(twofa_setup))
         .route("/api/2fa/enable", axum::routing::post(twofa_enable))
@@ -120,6 +121,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/users/{id}/cameras",
             get(get_user_cameras).put(put_user_cameras),
+        )
+        .route(
+            "/api/users/{id}/notify-prefs",
+            get(get_notify_prefs).put(put_notify_prefs),
         )
         .route("/api/faces", get(faces_overview).post(enroll_face))
         .route(
@@ -649,16 +654,21 @@ async fn login(
 /// Who the caller is (role + username), for the frontend to gate UI. Reachable
 /// only once authenticated; the middleware injects the principal.
 async fn me(
+    State(st): State<AppState>,
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> Json<serde_json::Value> {
     // Reaching this handler means the caller already passed auth (a session, the
     // local box, an API token, or open mode), so they are authenticated. `named`
     // distinguishes a real user account from the legacy/loopback/token admin.
+    // `email` (P2.11) is the caller's own notification email, for the self-service
+    // field — only a named user has one.
+    let email = p.user_id.and_then(|uid| st.db.user_email(uid).ok().flatten());
     Json(serde_json::json!({
         "authenticated": true,
         "named": p.user_id.is_some(),
         "username": p.username,
         "role": p.role,
+        "email": email,
     }))
 }
 
@@ -774,6 +784,10 @@ struct PatchUserReq {
     /// can log in with just their password and re-enroll.
     #[serde(default)]
     disable_2fa: Option<bool>,
+    /// P2.11 notification email. Absent = leave unchanged; `null`/"" = clear;
+    /// a string = set (validated). `de_some` tells absent from an explicit null.
+    #[serde(default, deserialize_with = "de_some")]
+    email: Option<Option<String>>,
 }
 
 async fn patch_user_api(
@@ -841,6 +855,20 @@ async fn patch_user_api(
         st.sessions.clear_user(id);
         st.db
             .add_audit(now, Some(&ip), "2fa_reset", Some(&format!("#{id}")));
+        changed = true;
+    }
+    if let Some(email) = &req.email {
+        // Present (incl. null) → set/clear the user's notification email.
+        let email = validate_notify_email(email.as_deref())?;
+        if !st.db.set_user_email(id, email.as_deref())? {
+            return Err(not_found());
+        }
+        st.db.add_audit(
+            now,
+            Some(&ip),
+            "user_email_set",
+            Some(&format!("#{id} -> {}", if email.is_some() { "set" } else { "cleared" })),
+        );
         changed = true;
     }
     if !changed {
@@ -1230,6 +1258,89 @@ async fn put_user_cameras(
     Ok(Json(
         serde_json::json!({ "id": id, "cameras": req.camera_ids.len() }),
     ))
+}
+
+/// An Admin lists a user's notification preferences (P2.11). An empty list means
+/// all channels are on for every rule (opt-out model).
+async fn get_notify_prefs(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<Vec<crate::db::NotifyPref>>> {
+    Ok(Json(st.db.list_notify_prefs(id)?))
+}
+
+/// An Admin replaces a user's notification preferences. The body is the full
+/// desired set of (rule_id, channel, enabled) rows; anything omitted falls back
+/// to the user's default row (rule_id 0), else on.
+async fn put_notify_prefs(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<i64>,
+    Json(prefs): Json<Vec<crate::db::NotifyPref>>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !st.db.set_notify_prefs(id, &prefs)? {
+        return Err(not_found());
+    }
+    // Read live per push, so no session invalidation is needed.
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "notify_prefs_set",
+        Some(&format!("#{id} -> {} pref(s)", prefs.len())),
+    );
+    Ok(Json(serde_json::json!({ "id": id, "prefs": prefs.len() })))
+}
+
+/// Validate a notification email: empty/None (clear) or a plausible SINGLE
+/// address (contains '@', ≤190 chars, no control chars, no commas, no internal
+/// whitespace). Rejecting commas + whitespace keeps a personal email one
+/// recipient — a Viewer can't set "a@x,b@y" and turn the server SMTP into a relay
+/// to attacker-chosen addresses. Returns the trimmed value, or `None` when cleared.
+fn validate_notify_email(raw: Option<&str>) -> Result<Option<String>, ApiError> {
+    let Some(v) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if v.len() > 190
+        || !v.contains('@')
+        || v.contains(',')
+        || v.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(bad_request("enter a single valid email address"));
+    }
+    Ok(Some(v.to_string()))
+}
+
+#[derive(Deserialize)]
+struct MyEmailReq {
+    /// Absent or null/"" clears; a string sets. Kept simple (not `de_some`) since
+    /// self-service always sends the intended value.
+    #[serde(default)]
+    email: Option<String>,
+}
+
+/// A logged-in *named* user sets their own notification email (Viewer-reachable
+/// self-service via `/api/me`). The loopback/legacy single-admin has no per-user
+/// account, so it has nowhere to store one — a clear error, mirroring
+/// `change_my_password`.
+async fn set_my_email(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<MyEmailReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let Some(uid) = p.user_id else {
+        return Err(bad_request(
+            "no user account — the local/shared admin can't set a personal email",
+        ));
+    };
+    let email = validate_notify_email(req.email.as_deref())?;
+    if !st.db.set_user_email(uid, email.as_deref())? {
+        return Err(not_found());
+    }
+    Ok(Json(serde_json::json!({ "email": email })))
 }
 
 #[derive(Deserialize)]
@@ -2434,6 +2545,7 @@ async fn record_gesture(
     let camera = cam.name.clone();
     let gesture_owned = canonical.to_string();
     let snap_path = snapshot.as_ref().map(|_| snap_abs.clone());
+    let db = st.db.clone(); // for the per-user notification write in fire() (P2.11)
     tokio::task::spawn_blocking(move || {
         let ev = crate::notify::AlarmEvent {
             event_id: id,
@@ -2503,7 +2615,7 @@ async fn record_gesture(
             }
         }
         for (rule, suppressed) in &rules {
-            crate::notify::fire(rule, &ev, &mqtt_tx, *suppressed);
+            crate::notify::fire(rule, &ev, &mqtt_tx, *suppressed, &db);
         }
     });
 
@@ -2628,6 +2740,7 @@ async fn soft_trigger(
         let camera = cam.name.clone();
         let label_owned = label.clone();
         let snap_path = snapshot.as_ref().map(|_| snap_abs.clone());
+        let db = st.db.clone(); // for the per-user notification write in fire() (P2.11)
         tokio::task::spawn_blocking(move || {
             let ev = crate::notify::AlarmEvent {
                 event_id: id,
@@ -2659,7 +2772,7 @@ async fn soft_trigger(
                 caption: None,
             };
             for (rule, suppressed) in &rules {
-                crate::notify::fire(rule, &ev, &mqtt_tx, *suppressed);
+                crate::notify::fire(rule, &ev, &mqtt_tx, *suppressed, &db);
             }
         });
     }
@@ -3644,6 +3757,7 @@ async fn test_alarm_api(
     let s = st.db.settings();
     let now = chrono::Local::now().timestamp();
     let mqtt_tx = st.mqtt_tx.clone();
+    let db = st.db.clone(); // for the per-user notification write in fire() (P2.11)
     tokio::task::spawn_blocking(move || {
         let ev = crate::notify::AlarmEvent {
             event_id: 0,
@@ -3666,7 +3780,7 @@ async fn test_alarm_api(
             min_push_severity: 1, // a clicked test always delivers
             caption: Some("This is a test of this alarm rule — no event occurred."),
         };
-        crate::notify::fire(&rule, &ev, &mqtt_tx, 0);
+        crate::notify::fire(&rule, &ev, &mqtt_tx, 0, &db);
     })
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -5001,9 +5115,13 @@ async fn push_vapid(State(st): State<AppState>) -> ApiResult<Json<serde_json::Va
 /// even if an authenticated low-privilege user tries to register many.
 const MAX_PUSH_SUBSCRIPTIONS: i64 = 512;
 
-/// Register (or refresh) this browser's push subscription.
+/// Register (or refresh) this browser's push subscription. The subscription is
+/// tagged with the caller's user id (P2.11) so the push worker can route
+/// per-user; a loopback/legacy/token/open-mode caller has no user id and the sub
+/// stays anonymous (unrestricted — today's fan-out-to-everyone behaviour).
 async fn push_subscribe(
     State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Json(body): Json<PushSubBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let endpoint = body.endpoint.trim();
@@ -5022,7 +5140,7 @@ async fn push_subscribe(
         ));
     }
     st.db
-        .add_push_subscription(endpoint, &body.keys.p256dh, &body.keys.auth)?;
+        .add_push_subscription(endpoint, &body.keys.p256dh, &body.keys.auth, p.user_id)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

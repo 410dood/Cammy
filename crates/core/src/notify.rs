@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::db::{Action, AlarmRule};
+use crate::db::{Action, AlarmRule, Db};
 use crate::mqtt::EventMsg;
 
 /// Shared per-rule throttle state (rule id → (last-fired unix seconds, events
@@ -196,15 +196,77 @@ fn push_allowed(severity: u8, min_push_severity: u8, duress: bool) -> bool {
 /// single action for pre-scenes rules. `suppressed` is the rule's drained burst
 /// counter ([`take_suppressed`]) — matches its cooldown swallowed since the
 /// last fire, summarized into the push text.
+///
+/// P2.11: besides the rule author's own actions (webhook/mqtt/ntfy/email to
+/// their explicit targets — dispatched EXACTLY as before), each fire also records
+/// ONE `alarm` notification row tagged with the rule and (for a real event) the
+/// camera. The async push worker consumes that row to deliver per-user PUSH +
+/// EMAIL — so NO network I/O (SMTP included) happens here, keeping this off the
+/// hot detection thread.
 pub fn fire(
     rule: &AlarmRule,
     ev: &AlarmEvent,
     mqtt_tx: &std::sync::mpsc::Sender<EventMsg>,
     suppressed: u32,
+    db: &Db,
 ) {
     tracing::info!(rule = %rule.name, event = ev.event_id, suppressed, "alarm triggered");
     for action in rule.effective_actions() {
         fire_action(&action, &rule.name, ev, mqtt_tx, suppressed);
+    }
+    // A synthetic/test fire (event_id 0) exercises ONLY the rule's own configured
+    // actions above — it must not create a per-user notification (no bell entry /
+    // push / email to everyone), so bail out here.
+    if ev.event_id == 0 {
+        return;
+    }
+    // Resolve the camera id from the camera NAME first. A NULL camera_id makes the
+    // push worker skip the per-user camera-visibility gate (fail-OPEN), so we must
+    // NOT depend on get_event, whose error would silently yield None. camera_by_name
+    // is the reliable path; get_event is only a fallback, and if BOTH miss for a
+    // real event we log so the NULL is explained, never silent.
+    let camera_id = match db.camera_by_name(ev.camera) {
+        Ok(Some(cid)) => Some(cid),
+        _ => {
+            let via_event = db.get_event(ev.event_id).ok().flatten().map(|e| e.camera_id);
+            if via_event.is_none() {
+                tracing::warn!(
+                    event = ev.event_id, camera = %ev.camera,
+                    "alarm notification: unresolved camera id — per-user camera scoping cannot apply"
+                );
+            }
+            via_event
+        }
+    };
+    let title = if ev.duress {
+        format!("DURESS — {}", rule.name)
+    } else {
+        rule.name.clone()
+    };
+    let mut body = format!("{} ({:.0}%) on {}", ev.label, ev.score * 100.0, ev.camera);
+    if let Some(c) = ev.caption {
+        body = format!("{c} — {body}");
+    }
+    if let Some(f) = ev.face {
+        body.push_str(&format!(" — {f}"));
+    }
+    if let Some(p) = ev.plate {
+        body.push_str(&format!(" — plate {p}"));
+    }
+    if suppressed > 0 {
+        body.push_str(&format!(" (+{suppressed} more while muted by cooldown)"));
+    }
+    if let Err(e) = db.add_alarm_notification(
+        ev.ts,
+        "alarm",
+        &title,
+        Some(&body),
+        Some(ev.event_id),
+        Some(rule.id),
+        camera_id,
+        Some(ev.severity as i64),
+    ) {
+        tracing::debug!("alarm notification insert failed: {e:#}");
     }
 }
 
@@ -251,7 +313,7 @@ fn fire_action(
 /// the action's `target` if set, else the configured default `smtp.to`.
 fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) {
     use lettre::message::{header::ContentType, Attachment, MultiPart, SinglePart};
-    use lettre::{Message, Transport};
+    use lettre::Message;
 
     let Some(cfg) = &ev.smtp else {
         tracing::warn!("email action skipped: SMTP not configured in Settings");
@@ -330,6 +392,14 @@ fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) {
             return;
         }
     };
+    send_built(cfg, msg);
+}
+
+/// Build the SMTP transport and send a fully-built message. Shared by the
+/// per-rule `email` action and the per-user [`email_simple`] path (P2.11) so both
+/// go through the same bounded, log-and-swallow transport.
+fn send_built(cfg: &SmtpConfig, msg: lettre::Message) {
+    use lettre::Transport;
     match build_smtp(cfg) {
         Ok(mailer) => {
             if let Err(e) = mailer.send(&msg) {
@@ -337,6 +407,44 @@ fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) {
             }
         }
         Err(e) => tracing::warn!("email transport failed: {e}"),
+    }
+}
+
+/// P2.11: send a plain-text email (no attachment) with an explicit subject/body
+/// to one recipient — the per-user notification email delivered by the push
+/// worker. Factored to share [`send_built`] with the per-rule `email` action.
+/// Best-effort / log-and-swallow, like every other channel.
+pub(crate) fn email_simple(cfg: &SmtpConfig, to: &str, subject: &str, body: &str) {
+    use lettre::message::SinglePart;
+    use lettre::Message;
+
+    if cfg.from.trim().is_empty() || to.trim().is_empty() {
+        return;
+    }
+    let from = match cfg.from.trim().parse() {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("email skipped: bad from address {:?}: {e}", cfg.from);
+            return;
+        }
+    };
+    let mut builder = Message::builder().from(from).subject(subject.to_string());
+    let mut any_to = false;
+    for addr in to.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        match addr.parse() {
+            Ok(a) => {
+                builder = builder.to(a);
+                any_to = true;
+            }
+            Err(e) => tracing::warn!("email: bad recipient {addr:?}: {e}"),
+        }
+    }
+    if !any_to {
+        return;
+    }
+    match builder.singlepart(SinglePart::plain(body.to_string())) {
+        Ok(msg) => send_built(cfg, msg),
+        Err(e) => tracing::warn!("email build failed: {e}"),
     }
 }
 

@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, Me, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { AlarmRule, api, ApiToken, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout } from "../ui";
 import { LicensePane } from "../License";
 import { prettyGesture } from "../labels";
@@ -109,7 +109,15 @@ function PushCard({ onError }: { onError: (e: string) => void }) {
     if (!supported) return;
     navigator.serviceWorker.ready
       .then((reg) => reg.pushManager.getSubscription())
-      .then((sub) => setSubscribed(!!sub))
+      .then((sub) => {
+        setSubscribed(!!sub);
+        // Self-heal ownership (P2.11): re-register any existing browser
+        // subscription so the server stamps it with the current user_id. This is
+        // an idempotent upsert by endpoint, so it just refreshes the row — it
+        // re-owns anonymous subs left after the one-time server-side reset,
+        // without the user toggling push off/on.
+        if (sub) api.pushSubscribe(sub.toJSON()).catch(() => {});
+      })
       .catch(() => {});
   }, [supported]);
 
@@ -465,12 +473,33 @@ function AccountCard({ onError }: { onError: (e: string) => void }) {
   const [oldPw, setOldPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [busy, setBusy] = useState(false);
+  const [email, setEmail] = useState("");
+  const [emailBusy, setEmailBusy] = useState(false);
 
   useEffect(() => {
-    api.me().then(setMe).catch(() => {});
+    api
+      .me()
+      .then((m) => {
+        setMe(m);
+        setEmail(m.email ?? "");
+      })
+      .catch(() => {});
   }, []);
 
   if (!me || !me.named) return null;
+
+  const saveEmail = async () => {
+    setEmailBusy(true);
+    try {
+      const r = await api.setMyEmail(email.trim());
+      setEmail(r.email ?? "");
+      toast.success(r.email ? "Notification email saved" : "Notification email cleared");
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setEmailBusy(false);
+    }
+  };
 
   const submit = async () => {
     if (newPw.length < 6) {
@@ -521,6 +550,24 @@ function AccountCard({ onError }: { onError: (e: string) => void }) {
           onClick={submit}
         >
           Change password
+        </button>
+      </div>
+      <p className="muted" style={{ margin: "14px 0 4px" }}>
+        Notification email — where your own alerts are sent (when an admin has set up
+        email). Leave blank for none.
+      </p>
+      <div className="row">
+        <input
+          type="email"
+          autoComplete="off"
+          placeholder="name@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && saveEmail()}
+          style={{ flex: 1, minWidth: 220 }}
+        />
+        <button type="button" className="btn btn-ghost" disabled={emailBusy} onClick={saveEmail}>
+          Save email
         </button>
       </div>
     </div>
@@ -878,19 +925,87 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
   const [cams, setCams] = useState<Camera[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
   const [editIds, setEditIds] = useState<Set<number>>(new Set());
+  // P2.11 per-user notification matrix panel.
+  const [alarms, setAlarms] = useState<AlarmRule[]>([]);
+  const [notifFor, setNotifFor] = useState<number | null>(null);
+  // Resolved WYSIWYG state, keyed `${rule_id}:${channel}` → on/off. rule_id 0 is
+  // the per-user default row for rules not set individually.
+  const [notifState, setNotifState] = useState<Record<string, boolean>>({});
+  const [notifEmail, setNotifEmail] = useState("");
+  // Whether an SMTP server is configured — email toggles are inert without it.
+  const [smtpConfigured, setSmtpConfigured] = useState(true);
 
   const load = () => {
     api.me().then(setMe).catch(() => {});
     api.users().then(setUsers).catch(() => {});
     api.cameras().then(setCams).catch(() => {});
+    api.alarms().then(setAlarms).catch(() => {});
+    api
+      .settings()
+      .then((s) => setSmtpConfigured(!!s.smtp_url?.trim()))
+      .catch(() => {});
   };
   useEffect(load, []);
+
+  const CHANNELS: ("push" | "email")[] = ["push", "email"];
+
+  const openNotif = async (u: User) => {
+    if (notifFor === u.id) {
+      setNotifFor(null);
+      return;
+    }
+    setEditing(null); // don't stack the two expanders
+    try {
+      const prefs = await api.userNotifyPrefs(u.id);
+      const explicit = new Map(prefs.map((p) => [`${p.rule_id}:${p.channel}`, p.enabled]));
+      // Resolve each cell (exact rule row → user default row → on) into an
+      // explicit grid, so saving writes an unambiguous full set.
+      const resolve = (ruleId: number, ch: "push" | "email") => {
+        const exact = explicit.get(`${ruleId}:${ch}`);
+        if (exact !== undefined) return exact;
+        const def = explicit.get(`0:${ch}`);
+        if (def !== undefined) return def;
+        return true;
+      };
+      const st: Record<string, boolean> = {};
+      for (const ch of CHANNELS) {
+        st[`0:${ch}`] = resolve(0, ch);
+        for (const a of alarms) st[`${a.id}:${ch}`] = resolve(a.id, ch);
+      }
+      setNotifState(st);
+      setNotifEmail(u.email ?? "");
+      setNotifFor(u.id);
+    } catch (e) {
+      onError(String(e));
+    }
+  };
+  const toggleNotif = (ruleId: number, ch: "push" | "email") => {
+    const key = `${ruleId}:${ch}`;
+    setNotifState((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }));
+  };
+  const saveNotif = async (u: User) => {
+    try {
+      // Persist the email (empty clears) then the full pref grid.
+      await api.patchUser(u.id, { email: notifEmail.trim() || null });
+      const prefs: NotifyPref[] = Object.entries(notifState).map(([key, enabled]) => {
+        const [rid, channel] = key.split(":");
+        return { user_id: u.id, rule_id: Number(rid), channel: channel as "push" | "email", enabled };
+      });
+      await api.setUserNotifyPrefs(u.id, prefs);
+      toast.success(`Saved notification settings for ${u.username}`);
+      setNotifFor(null);
+      load();
+    } catch (e) {
+      onError(String(e));
+    }
+  };
 
   const openScope = async (u: User) => {
     if (editing === u.id) {
       setEditing(null);
       return;
     }
+    setNotifFor(null); // don't stack the two expanders
     try {
       const ids = await api.userCameras(u.id);
       setEditIds(new Set(ids));
@@ -1070,6 +1185,14 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
                         Cameras
                       </button>
                     )}
+                    <button
+                      type="button"
+                      className={`btn ev-act ${notifFor === u.id ? "btn-primary" : "btn-ghost"}`}
+                      onClick={() => openNotif(u)}
+                      title="Choose which alerts reach this person, and their email"
+                    >
+                      Notifications
+                    </button>
                     <button type="button" className="btn btn-ghost ev-act" onClick={() => resetPw(u)}>
                       Reset password
                     </button>
@@ -1126,6 +1249,97 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
             <span className="muted">
               {editIds.size === 0 ? "all cameras" : `${editIds.size} selected`}
             </span>
+          </div>
+        </div>
+      )}
+      {notifFor !== null && (
+        <div className="card" style={{ background: "var(--surface-hover)", marginTop: 12, marginBottom: 0 }}>
+          <b>Notifications for {users.find((u) => u.id === notifFor)?.username}</b>
+          <p className="muted" style={{ margin: "4px 0" }}>
+            Choose which alerts reach this person, and where. Push goes to the browsers
+            they’ve turned notifications on for; email goes to the address below. Anything
+            left on stays on — turn a row off to mute it for them. Camera access still
+            applies: they only get alerts from cameras they can see.
+          </p>
+          {!smtpConfigured && (
+            <Callout tone="warn" style={{ margin: "8px 0" }}>
+              Email only sends once the SMTP server is configured in Modes &amp; alerts. The
+              toggles below are saved either way, but no email is delivered until then.
+            </Callout>
+          )}
+          <div className="row" style={{ alignItems: "center", margin: "8px 0" }}>
+            <label style={{ minWidth: 120 }}>Email for alerts</label>
+            <input
+              type="email"
+              autoComplete="off"
+              placeholder="name@example.com (leave blank for none)"
+              value={notifEmail}
+              onChange={(e) => setNotifEmail(e.target.value)}
+              style={{ flex: 1, minWidth: 200 }}
+            />
+          </div>
+          <div className="table-scroll">
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left" }}>Alert</th>
+                  <th style={{ width: 90 }}>Push</th>
+                  <th style={{ width: 90 }}>Email</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <b>Default</b>{" "}
+                    <span className="muted">
+                      · applies to rules not set individually below, and to any added later
+                    </span>
+                  </td>
+                  {CHANNELS.map((ch) => (
+                    <td key={ch} style={{ textAlign: "center" }}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Default ${ch}`}
+                        checked={notifState[`0:${ch}`] ?? true}
+                        onChange={() => toggleNotif(0, ch)}
+                      />
+                    </td>
+                  ))}
+                </tr>
+                {alarms.map((a) => (
+                  <tr key={a.id}>
+                    <td>{a.name}</td>
+                    {CHANNELS.map((ch) => (
+                      <td key={ch} style={{ textAlign: "center" }}>
+                        <input
+                          type="checkbox"
+                          aria-label={`${a.name} ${ch}`}
+                          checked={notifState[`${a.id}:${ch}`] ?? true}
+                          onChange={() => toggleNotif(a.id, ch)}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {alarms.length === 0 && (
+            <p className="muted" style={{ marginTop: 6 }}>
+              No alert rules yet — the Default row still governs any you add later.
+            </p>
+          )}
+          <div className="row" style={{ marginTop: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => saveNotif(users.find((u) => u.id === notifFor)!)}
+            >
+              Save notifications
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={() => setNotifFor(null)}>
+              Cancel
+            </button>
           </div>
         </div>
       )}

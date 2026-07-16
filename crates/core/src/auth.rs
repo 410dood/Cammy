@@ -138,11 +138,11 @@ impl Sessions {
 /// mutations need Operator; account / password / token management needs Admin.
 pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
     use axum::http::Method;
-    // A user changing their OWN password — or managing their OWN 2FA — only
-    // needs to be authenticated (the handler verifies their current password /
-    // a TOTP code), so these stay Viewer-reachable (self-service), listed before
-    // the POST→Operator default below.
-    if path == "/api/me/password" || path.starts_with("/api/2fa") {
+    // A user changing their OWN password — or managing their OWN 2FA / notification
+    // email — only needs to be authenticated (the handler verifies their current
+    // password / a TOTP code, or writes only their own row), so these stay
+    // Viewer-reachable (self-service), listed before the POST→Operator default.
+    if path == "/api/me/password" || path == "/api/me/email" || path.starts_with("/api/2fa") {
         return Role::Viewer;
     }
     // Push subscriptions are per-browser/per-user; a Viewer must be able to

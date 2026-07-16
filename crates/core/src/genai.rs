@@ -272,7 +272,7 @@ fn vlm_gate(db: &Db, j: &VlmGateJob, mqtt_tx: &std::sync::mpsc::Sender<crate::mq
         rule = %j.rule.name, event = j.event_id, confirmed = ?verdict,
         described = caption.is_some(), "deferred alarm: firing"
     );
-    crate::notify::fire(&j.rule, &ev, mqtt_tx, j.suppressed);
+    crate::notify::fire(&j.rule, &ev, mqtt_tx, j.suppressed, db);
 }
 
 /// Decide the in-app notification (if any) for a caption outcome, given whether

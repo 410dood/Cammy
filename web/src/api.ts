@@ -553,6 +553,8 @@ export interface User {
   username: string;
   role: Role;
   created_ts: number;
+  /** P2.11 notification email (Admin-editable). null = unset. */
+  email: string | null;
 }
 
 export interface Me {
@@ -561,6 +563,18 @@ export interface Me {
   named: boolean;
   username: string | null;
   role: Role;
+  /** P2.11 the caller's own notification email (null for the legacy/loopback admin). */
+  email?: string | null;
+}
+
+/** P2.11 one per-user notification preference: does `channel` deliver alerts from
+ *  `rule_id` (0 = the user's default for every rule) to this user? Opt-out model —
+ *  no row means enabled. */
+export interface NotifyPref {
+  user_id: number;
+  rule_id: number;
+  channel: "push" | "email";
+  enabled: boolean;
 }
 
 /** Entitlement state mirrored from crates/core/src/licensing.rs (serde tag = "state"). */
@@ -824,8 +838,10 @@ export const api = {
   users: () => req<User[]>("/api/users"),
   createUser: (body: { username: string; password: string; role: Role }) =>
     req<{ id: number }>("/api/users", { method: "POST", body: JSON.stringify(body) }),
-  patchUser: (id: number, patch: { role?: Role; password?: string; disable_2fa?: boolean }) =>
-    req<{ id: number }>(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  patchUser: (
+    id: number,
+    patch: { role?: Role; password?: string; disable_2fa?: boolean; email?: string | null }
+  ) => req<{ id: number }>(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteUser: (id: number) => req<void>(`/api/users/${id}`, { method: "DELETE" }),
   // Per-camera RBAC scope: the camera ids a user may see (empty = all).
   userCameras: (id: number) => req<number[]>(`/api/users/${id}/cameras`),
@@ -833,6 +849,20 @@ export const api = {
     req<{ id: number; cameras: number }>(`/api/users/${id}/cameras`, {
       method: "PUT",
       body: JSON.stringify({ camera_ids }),
+    }),
+  // P2.11 per-user notification matrix (which rules reach the user over which
+  // channel). Empty list = all defaults on.
+  userNotifyPrefs: (id: number) => req<NotifyPref[]>(`/api/users/${id}/notify-prefs`),
+  setUserNotifyPrefs: (id: number, prefs: NotifyPref[]) =>
+    req<{ id: number; prefs: number }>(`/api/users/${id}/notify-prefs`, {
+      method: "PUT",
+      body: JSON.stringify(prefs),
+    }),
+  // Self-service: the logged-in named user sets their own notification email.
+  setMyEmail: (email: string) =>
+    req<{ email: string | null }>("/api/me/email", {
+      method: "POST",
+      body: JSON.stringify({ email }),
     }),
   setPassword: (password: string) =>
     req<{ enabled: boolean }>("/api/auth/password", {

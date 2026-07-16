@@ -42,6 +42,8 @@ pub struct PushSub {
     pub endpoint: String,
     pub p256dh: String, // base64url uncompressed point
     pub auth: String,   // base64url 16-byte secret
+    /// P2.11 owning user account (NULL for anonymous/legacy subs = unrestricted).
+    pub user_id: Option<i64>,
 }
 
 /// The server's persistent VAPID identity.

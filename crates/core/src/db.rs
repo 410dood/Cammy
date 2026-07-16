@@ -463,6 +463,29 @@ pub struct Notification {
     pub body: Option<String>,
     pub event_id: Option<i64>,
     pub read: bool,
+    /// P2.11: the alarm rule this notification came from (NULL for system
+    /// notifications — stranger/offline/anomaly/digest). Used by the push worker
+    /// to route per user × rule.
+    pub rule_id: Option<i64>,
+    /// P2.11: the camera the alarm fired on (NULL for system notifications).
+    /// Used by the push worker to apply per-user camera visibility.
+    pub camera_id: Option<i64>,
+    /// P2.11: severity tier 1..4 of the alarm fire (NULL for system
+    /// notifications). The push worker gates the human push/email channels on
+    /// `notify_min_severity` using this; NULL always delivers.
+    pub severity: Option<i64>,
+}
+
+/// P2.11 one per-user notification preference: does `channel` ('push' | 'email')
+/// deliver alerts from `rule_id` (0 = the user's default for every rule) to this
+/// user? An absent row means enabled (opt-out model). `enabled` is the stored
+/// value; resolution (exact rule → default → true) lives in [`Db::pref_enabled`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotifyPref {
+    pub user_id: i64,
+    pub rule_id: i64,
+    pub channel: String,
+    pub enabled: bool,
 }
 
 /// One AI daily digest (B1): a natural-language recap of a period's activity.
@@ -481,6 +504,9 @@ pub struct UserRow {
     pub username: String,
     pub role: String,
     pub created_ts: i64,
+    /// P2.11 optional notification email — Admin surfaces/edits it in the
+    /// Users card; the push worker delivers per-user email to it. `None` = unset.
+    pub email: Option<String>,
 }
 
 /// A credential's TOTP 2FA config: `(secret_base32, enabled, recovery_json)`.
@@ -1597,6 +1623,41 @@ impl Db {
         // Last TOTP time-step accepted for this user, to refuse intra-window
         // replay of a code (a code is valid for ~90 s across the skew window).
         let _ = conn.execute("ALTER TABLE users ADD COLUMN totp_last_step INTEGER", []);
+        // P2.11 per-user notification matrix: an optional email address for
+        // per-user email delivery; a nullable owner on each push subscription
+        // (legacy rows stay NULL = anonymous/unrestricted, preserving today's
+        // fan-out-to-everyone behaviour); and rule/camera tags on notifications
+        // so the push worker can route per user × rule × channel. Every existing
+        // add_notification caller leaves rule_id/camera_id NULL.
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN email TEXT", []);
+        let _ = conn.execute("ALTER TABLE push_subscriptions ADD COLUMN user_id INTEGER", []);
+        let _ = conn.execute("ALTER TABLE notifications ADD COLUMN rule_id INTEGER", []);
+        let _ = conn.execute("ALTER TABLE notifications ADD COLUMN camera_id INTEGER", []);
+        // The severity tier (1..4) of an alarm fire, so the push worker can honour
+        // `notify_min_severity` on the per-user push/email channels. NULL on
+        // system notifications (offline/anomaly/digest) — those aren't gated.
+        let _ = conn.execute("ALTER TABLE notifications ADD COLUMN severity INTEGER", []);
+        // One-time: clear stale unowned push subscriptions from before `user_id`
+        // existed. Left as-is they'd deliver as anonymous = unrestricted forever —
+        // a durable camera-scope leak to whoever's browser was subscribed pre-
+        // upgrade. Guarded by a KV marker so this wipes EXACTLY once (never on a
+        // later startup, which would nuke freshly-owned subs). Browsers self-heal
+        // by re-subscribing on next app load, stamping the current user_id.
+        let reset_done = conn
+            .query_row(
+                "SELECT 1 FROM settings WHERE key = 'p211_pushsub_reset'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if !reset_done {
+            let _ = conn.execute("DELETE FROM push_subscriptions", []);
+            let _ = conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('p211_pushsub_reset', '1')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            );
+        }
         // Gait identification (#64): the attributed walking identity on an event
         // (a name or the `?` unknown sentinel) plus its raw signature JSON (kept
         // so an unknown walker can be enrolled straight from the event).
@@ -1633,6 +1694,20 @@ impl Db {
                  home       INTEGER NOT NULL DEFAULT 0,
                  updated_ts INTEGER NOT NULL,
                  created_ts INTEGER NOT NULL
+             );",
+        )?;
+        // P2.11 per-user notification preferences: which alarm rules reach which
+        // user over which channel. Opt-OUT model — no row for a (user, rule,
+        // channel) triple means enabled (mirrors user_cameras' "no rows =
+        // unrestricted"). rule_id 0 is the user's default applied to every rule
+        // without a specific override. Rows cascade-delete with the user.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS notify_prefs (
+                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                 rule_id INTEGER NOT NULL DEFAULT 0,
+                 channel TEXT NOT NULL,
+                 enabled INTEGER NOT NULL,
+                 PRIMARY KEY (user_id, rule_id, channel)
              );",
         )?;
         Ok(Self(Arc::new(Mutex::new(conn))))
@@ -2679,11 +2754,47 @@ impl Db {
         Ok(id)
     }
 
+    /// P2.11 alarm-tagged notification, written by `notify::fire` for every rule
+    /// fire so the push worker can route it per user × rule × camera. Identical
+    /// to [`add_notification`] plus the `rule_id`/`camera_id` tags — kept separate
+    /// so every existing (system-notification) caller stays byte-for-byte the same.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_alarm_notification(
+        &self,
+        ts: i64,
+        kind: &str,
+        title: &str,
+        body: Option<&str>,
+        event_id: Option<i64>,
+        rule_id: Option<i64>,
+        camera_id: Option<i64>,
+        severity: Option<i64>,
+    ) -> Result<i64> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO notifications (ts, kind, title, body, event_id, rule_id, camera_id, severity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![ts, kind, title, body, event_id, rule_id, camera_id, severity],
+        )?;
+        let id = conn.last_insert_rowid();
+        let _ = conn.execute(
+            "DELETE FROM notifications WHERE read = 1 AND id <= \
+             (SELECT MAX(id) FROM notifications) - ?1",
+            [Self::NOTIF_KEEP],
+        );
+        let _ = conn.execute(
+            "DELETE FROM notifications WHERE id <= \
+             (SELECT MAX(id) FROM notifications) - ?1",
+            [Self::NOTIF_HARD_CAP],
+        );
+        Ok(id)
+    }
+
     /// Newest-first notifications; when `unread_only`, only rows with read = 0.
     pub fn list_notifications(&self, unread_only: bool, limit: u32) -> Result<Vec<Notification>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, ts, kind, title, body, event_id, read FROM notifications
+            "SELECT id, ts, kind, title, body, event_id, read, rule_id, camera_id, severity FROM notifications
              WHERE (?1 = 0 OR read = 0) ORDER BY id DESC LIMIT ?2",
         )?;
         let rows = stmt
@@ -2696,6 +2807,9 @@ impl Db {
                     body: r.get(4)?,
                     event_id: r.get(5)?,
                     read: r.get::<_, i64>(6)? != 0,
+                    rule_id: r.get(7)?,
+                    camera_id: r.get(8)?,
+                    severity: r.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2724,7 +2838,7 @@ impl Db {
     pub fn notifications_after(&self, id: i64, limit: u32) -> Result<Vec<Notification>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, ts, kind, title, body, event_id, read FROM notifications
+            "SELECT id, ts, kind, title, body, event_id, read, rule_id, camera_id, severity FROM notifications
              WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
         )?;
         let rows = stmt
@@ -2737,6 +2851,9 @@ impl Db {
                     body: r.get(4)?,
                     event_id: r.get(5)?,
                     read: r.get::<_, i64>(6)? != 0,
+                    rule_id: r.get(7)?,
+                    camera_id: r.get(8)?,
+                    severity: r.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2746,26 +2863,36 @@ impl Db {
     // --- WebPush subscriptions (#68) ----------------------------------------
 
     /// Store (or refresh) a browser push subscription, keyed by its endpoint.
-    pub fn add_push_subscription(&self, endpoint: &str, p256dh: &str, auth: &str) -> Result<()> {
+    /// `user_id` is the subscribing account (P2.11) so the push worker can route
+    /// per user; `None` for the loopback/legacy single-admin or open mode, which
+    /// keeps the subscription anonymous (unrestricted — today's behaviour).
+    pub fn add_push_subscription(
+        &self,
+        endpoint: &str,
+        p256dh: &str,
+        auth: &str,
+        user_id: Option<i64>,
+    ) -> Result<()> {
         self.conn().execute(
-            "INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_ts)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(endpoint) DO UPDATE SET p256dh = ?2, auth = ?3",
-            params![endpoint, p256dh, auth, chrono::Local::now().timestamp()],
+            "INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_ts, user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(endpoint) DO UPDATE SET p256dh = ?2, auth = ?3, user_id = ?5",
+            params![endpoint, p256dh, auth, chrono::Local::now().timestamp(), user_id],
         )?;
         Ok(())
     }
 
     pub fn list_push_subscriptions(&self) -> Result<Vec<crate::webpush::PushSub>> {
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions ORDER BY id")?;
+        let mut stmt = conn
+            .prepare("SELECT endpoint, p256dh, auth, user_id FROM push_subscriptions ORDER BY id")?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(crate::webpush::PushSub {
                     endpoint: r.get(0)?,
                     p256dh: r.get(1)?,
                     auth: r.get(2)?,
+                    user_id: r.get(3)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2893,8 +3020,9 @@ impl Db {
 
     pub fn list_users(&self) -> Result<Vec<UserRow>> {
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT id, username, role, created_ts FROM users ORDER BY username")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, username, role, created_ts, email FROM users ORDER BY username",
+        )?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(UserRow {
@@ -2902,6 +3030,7 @@ impl Db {
                     username: r.get(1)?,
                     role: r.get(2)?,
                     created_ts: r.get(3)?,
+                    email: r.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3134,6 +3263,182 @@ impl Db {
         }
         tx.commit()?;
         Ok(true)
+    }
+
+    // --- per-user notification matrix (P2.11) ----------------------------
+
+    /// Whether `channel` ('push' | 'email') should deliver alerts from `rule_id`
+    /// (0 = the user's default) to this user. Resolution: an exact
+    /// (user, rule, channel) row wins; else the (user, 0, channel) default row;
+    /// else `true` (opt-out model — no row means enabled). **Fail-open**: any DB
+    /// glitch resolves to `true` so a transient error never silently mutes a user.
+    pub fn pref_enabled(&self, user_id: i64, rule_id: i64, channel: &str) -> bool {
+        let conn = self.conn();
+        let lookup = |rid: i64| -> Option<bool> {
+            conn.query_row(
+                "SELECT enabled FROM notify_prefs WHERE user_id = ?1 AND rule_id = ?2 AND channel = ?3",
+                params![user_id, rid, channel],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .map(|v| v != 0)
+        };
+        if let Some(v) = lookup(rule_id) {
+            return v;
+        }
+        if rule_id != 0 {
+            if let Some(v) = lookup(0) {
+                return v;
+            }
+        }
+        true
+    }
+
+    /// A user's stored notification preferences (only the explicit rows — absent
+    /// triples default to enabled).
+    pub fn list_notify_prefs(&self, user_id: i64) -> Result<Vec<NotifyPref>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT user_id, rule_id, channel, enabled FROM notify_prefs
+             WHERE user_id = ?1 ORDER BY rule_id, channel",
+        )?;
+        let rows = stmt
+            .query_map([user_id], |r| {
+                Ok(NotifyPref {
+                    user_id: r.get(0)?,
+                    rule_id: r.get(1)?,
+                    channel: r.get(2)?,
+                    enabled: r.get::<_, i64>(3)? != 0,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Replace a user's notification preferences atomically (delete-all + reinsert
+    /// in one transaction, mirroring [`set_user_cameras`]). Unknown channels are
+    /// skipped; the row's `user_id` is forced to the path `user_id` so a body
+    /// can't write another user's prefs. Returns whether the user exists.
+    pub fn set_notify_prefs(&self, user_id: i64, prefs: &[NotifyPref]) -> Result<bool> {
+        let mut conn = self.conn();
+        let exists = conn
+            .query_row("SELECT 1 FROM users WHERE id = ?1", [user_id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if !exists {
+            return Ok(false);
+        }
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM notify_prefs WHERE user_id = ?1", [user_id])?;
+        {
+            let mut ins = tx.prepare(
+                "INSERT OR REPLACE INTO notify_prefs (user_id, rule_id, channel, enabled)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for p in prefs {
+                if p.channel != "push" && p.channel != "email" {
+                    continue;
+                }
+                ins.execute(params![user_id, p.rule_id, p.channel, p.enabled as i64])?;
+            }
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Set (or clear, with `None`) a user's notification email. Returns whether
+    /// the user existed.
+    pub fn set_user_email(&self, user_id: i64, email: Option<&str>) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE users SET email = ?1 WHERE id = ?2",
+            params![email, user_id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// A user's notification email (`None` if unset or the user is gone).
+    pub fn user_email(&self, user_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT email FROM users WHERE id = ?1", [user_id], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
+    /// `(id, email)` for every user with a non-empty email (push worker email
+    /// fan-out recipients).
+    pub fn users_with_email(&self) -> Result<Vec<(i64, String)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, email FROM users WHERE email IS NOT NULL AND TRIM(email) <> '' ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Does any user have a notification email set? Lets the push worker skip a
+    /// tick entirely when there's no push sub AND no email recipient.
+    pub fn any_user_email(&self) -> bool {
+        self.conn()
+            .query_row(
+                "SELECT 1 FROM users WHERE email IS NOT NULL AND TRIM(email) <> '' LIMIT 1",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|o| o.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Whether `user_id` may see `camera_id`, mirroring the server's
+    /// `allowed_cameras`/`camera_allowed` semantics for the push worker (which has
+    /// no [`crate::auth::Principal`]): Admin ⇒ all; else no user_cameras rows ⇒
+    /// unrestricted; else the camera must be in the allow-list. Unlike a
+    /// pref/read gate this is a **visibility** gate, so it is **conservative on
+    /// error** — an unknown user or any DB failure returns `false` (never leak a
+    /// camera-scoped alert) rather than fail-open.
+    pub fn user_can_see_camera(&self, user_id: i64, camera_id: i64) -> bool {
+        let conn = self.conn();
+        let role: Option<String> = match conn
+            .query_row("SELECT role FROM users WHERE id = ?1", [user_id], |r| r.get(0))
+            .optional()
+        {
+            Ok(r) => r,
+            Err(_) => return false, // DB error: refuse (conservative)
+        };
+        let Some(role) = role else {
+            return false; // unknown user: refuse
+        };
+        if crate::auth::Role::parse(&role) == crate::auth::Role::Admin {
+            return true;
+        }
+        // No allow-list rows ⇒ unrestricted (matches user_cameras' empty = all).
+        let count: i64 = match conn.query_row(
+            "SELECT COUNT(*) FROM user_cameras WHERE user_id = ?1",
+            [user_id],
+            |r| r.get(0),
+        ) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        if count == 0 {
+            return true;
+        }
+        matches!(
+            conn.query_row(
+                "SELECT 1 FROM user_cameras WHERE user_id = ?1 AND camera_id = ?2",
+                params![user_id, camera_id],
+                |_| Ok(()),
+            )
+            .optional(),
+            Ok(Some(()))
+        )
     }
 
     /// Resolve a snapshot filename to the camera that produced it, via the
@@ -4973,5 +5278,122 @@ mod tests {
         s.confidence = 0.7;
         db.save_settings(&s).unwrap();
         assert_eq!(db.settings().confidence, 0.7);
+    }
+
+    // --- P2.11 per-user notification matrix ---------------------------------
+
+    fn pref(user_id: i64, rule_id: i64, channel: &str, enabled: bool) -> NotifyPref {
+        NotifyPref {
+            user_id,
+            rule_id,
+            channel: channel.to_string(),
+            enabled,
+        }
+    }
+
+    #[test]
+    fn notify_pref_resolution_exact_then_default_then_on() {
+        let db = mem_db();
+        let uid = db.add_user("alice", "h", "viewer", 0).unwrap();
+        // No rows at all → opt-out default is ON.
+        assert!(db.pref_enabled(uid, 7, "push"));
+        assert!(db.pref_enabled(uid, 7, "email"));
+        // A user default (rule 0) OFF for push applies to any rule with no override.
+        db.set_notify_prefs(uid, &[pref(uid, 0, "push", false)])
+            .unwrap();
+        assert!(!db.pref_enabled(uid, 7, "push"), "falls back to the default");
+        assert!(db.pref_enabled(uid, 7, "email"), "email untouched → on");
+        // An exact rule row beats the default.
+        db.set_notify_prefs(
+            uid,
+            &[pref(uid, 0, "push", false), pref(uid, 7, "push", true)],
+        )
+        .unwrap();
+        assert!(db.pref_enabled(uid, 7, "push"), "exact override beats default");
+        assert!(!db.pref_enabled(uid, 9, "push"), "others still use default-off");
+        // Replace-with-empty clears everything back to on.
+        db.set_notify_prefs(uid, &[]).unwrap();
+        assert!(db.pref_enabled(uid, 7, "push"));
+    }
+
+    #[test]
+    fn notify_prefs_round_trip_and_unknown_channel_skipped() {
+        let db = mem_db();
+        let uid = db.add_user("bob", "h", "operator", 0).unwrap();
+        let prefs = vec![
+            pref(uid, 0, "push", true),
+            pref(uid, 3, "email", false),
+            pref(uid, 3, "sms", true), // unknown channel → dropped
+        ];
+        assert!(db.set_notify_prefs(uid, &prefs).unwrap());
+        let got = db.list_notify_prefs(uid).unwrap();
+        assert_eq!(got.len(), 2, "unknown channel dropped");
+        assert!(got.iter().all(|p| p.user_id == uid));
+        // A nonexistent user → false (the API turns that into 404).
+        assert!(!db.set_notify_prefs(999_999, &prefs).unwrap());
+    }
+
+    #[test]
+    fn user_can_see_camera_matches_rbac_semantics() {
+        let db = mem_db();
+        let a = db.add_camera("a", "rtsp://a", None, true, true).unwrap();
+        let b = db.add_camera("b", "rtsp://b", None, true, true).unwrap();
+        let admin = db.add_user("admin", "h", "admin", 0).unwrap();
+        let viewer = db.add_user("viewer", "h", "viewer", 0).unwrap();
+        // Admin sees everything.
+        assert!(db.user_can_see_camera(admin, a.id));
+        assert!(db.user_can_see_camera(admin, b.id));
+        // Unrestricted viewer (no user_cameras rows) sees everything.
+        assert!(db.user_can_see_camera(viewer, a.id));
+        // Restrict the viewer to camera a only.
+        assert!(db.set_user_cameras(viewer, &[a.id]).unwrap());
+        assert!(db.user_can_see_camera(viewer, a.id), "in the allow-list");
+        assert!(!db.user_can_see_camera(viewer, b.id), "out of the allow-list");
+        // Unknown user → conservative refuse (never leak a camera-scoped alert).
+        assert!(!db.user_can_see_camera(999_999, a.id));
+    }
+
+    #[test]
+    fn user_email_set_list_clear() {
+        let db = mem_db();
+        let uid = db.add_user("carol", "h", "viewer", 0).unwrap();
+        assert!(!db.any_user_email());
+        assert!(db.set_user_email(uid, Some("carol@example.com")).unwrap());
+        assert_eq!(
+            db.user_email(uid).unwrap().as_deref(),
+            Some("carol@example.com")
+        );
+        assert!(db.any_user_email());
+        assert_eq!(
+            db.users_with_email().unwrap(),
+            vec![(uid, "carol@example.com".to_string())]
+        );
+        // Clearing removes it from every read path.
+        assert!(db.set_user_email(uid, None).unwrap());
+        assert!(db.user_email(uid).unwrap().is_none());
+        assert!(!db.any_user_email());
+    }
+
+    #[test]
+    fn alarm_notification_tags_round_trip() {
+        let db = mem_db();
+        // Alarm-tagged fire: rule_id/camera_id/severity all persist for the worker.
+        // (event_id NULL here — the column has a FK to events; production passes a
+        // real event id.)
+        let id = db
+            .add_alarm_notification(100, "alarm", "Front door", Some("person"), None, Some(42), Some(11), Some(3))
+            .unwrap();
+        let got = db.notifications_after(id - 1, 10).unwrap();
+        let n = got.iter().find(|n| n.id == id).unwrap();
+        assert_eq!(n.rule_id, Some(42));
+        assert_eq!(n.camera_id, Some(11));
+        assert_eq!(n.severity, Some(3));
+        // A plain system notification leaves all the P2.11 tags NULL.
+        let sid = db.add_notification(200, "camera_offline", "Cam down", None, None).unwrap();
+        let sys = db.notifications_after(sid - 1, 10).unwrap();
+        let s = sys.iter().find(|n| n.id == sid).unwrap();
+        assert_eq!(s.rule_id, None);
+        assert_eq!(s.camera_id, None);
+        assert_eq!(s.severity, None);
     }
 }

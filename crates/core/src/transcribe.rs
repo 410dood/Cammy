@@ -279,7 +279,7 @@ fn fire_transcript_alarms(
             && crate::notify::ready(r, throttle, now)
     }) {
         let suppressed = crate::notify::take_suppressed(throttle, rule.id);
-        crate::notify::fire(rule, &alarm_ev, mqtt_tx, suppressed);
+        crate::notify::fire(rule, &alarm_ev, mqtt_tx, suppressed, db);
     }
 }
 

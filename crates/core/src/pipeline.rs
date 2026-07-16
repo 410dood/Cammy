@@ -1124,7 +1124,7 @@ pub fn run(
                                     },
                                 )));
                             } else {
-                                crate::notify::fire(rule, &alarm_ev, &mqtt_tx, suppressed);
+                                crate::notify::fire(rule, &alarm_ev, &mqtt_tx, suppressed, &db);
                             }
                         }
                         // Gait (#64): attribute an identity to this person event
@@ -1578,7 +1578,7 @@ fn emit_analytics_event(
             && crate::notify::ready(r, throttle, now)
     }) {
         let suppressed = crate::notify::take_suppressed(throttle, rule.id);
-        crate::notify::fire(rule, &alarm_ev, mqtt_tx, suppressed);
+        crate::notify::fire(rule, &alarm_ev, mqtt_tx, suppressed, db);
     }
     Some(id)
 }
@@ -1942,7 +1942,7 @@ fn fire_prompt_alarms(
             rule = %rule.name, event = job.event_id, sim = format!("{sim:.3}"),
             "prompt rule fired"
         );
-        crate::notify::fire(rule, &ev, mqtt_tx, suppressed);
+        crate::notify::fire(rule, &ev, mqtt_tx, suppressed, db);
     }
 }
 
