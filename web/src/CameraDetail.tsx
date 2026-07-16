@@ -1,10 +1,11 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
-import { api, CamEvent, Camera, Segment, SimilarResult, getStreamMode } from "./api";
+import { api, CamEvent, Camera, FloorPlan, Segment, SimilarResult, StatusMap, getStreamMode } from "./api";
 import { RelTime, Modal, useToast, useDialog, useFocusTrap } from "./ui";
 import Timeline from "./Timeline";
 import { ActivityStrip } from "./CrossTimeline";
 import LiveVideo from "./LiveVideo";
 import PrivacyOverlay from "./PrivacyOverlay";
+import CameraHotspots from "./CameraHotspots";
 import Heatmap from "./Heatmap";
 import {
   IconX, IconMic, IconUser, IconCar, IconDownload, IconVideo, IconSparkles, IconRecDot,
@@ -17,10 +18,13 @@ import { isCameraSide, prettyLabel } from "./labels";
 /// timeline underneath and its recent detections alongside. Esc closes.
 export default function CameraDetail({
   camera,
+  cameras,
   ptz,
   onClose,
 }: {
   camera: Camera;
+  /** RBAC-scoped camera list — used to resolve floor-plan hotspot neighbors. */
+  cameras: Camera[];
   ptz: boolean;
   onClose: () => void;
 }) {
@@ -41,7 +45,12 @@ export default function CameraDetail({
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
   const [talking, setTalking] = useState(false);
-  const [online, setOnline] = useState<boolean | undefined>(undefined);
+  // Full status map (all cameras) so the floor-plan hotspots can show a live
+  // online dot for each neighbor; this camera's own online state is derived.
+  const [statusMap, setStatusMap] = useState<StatusMap>({});
+  const online = statusMap[String(camera.id)]?.online;
+  // Floor-plan pins (Settings.floorplan) drive camera-adjacency hotspots.
+  const [pins, setPins] = useState<FloorPlan["pins"]>([]);
   const twoWay = !!camera.detect_config.two_way_audio;
   const toast = useToast();
   const dialog = useDialog();
@@ -109,11 +118,24 @@ export default function CameraDetail({
   }, [talking]);
 
   useEffect(() => {
-    api.settings().then((s) => setSegmentSecs(s.segment_seconds)).catch(() => {});
+    api
+      .settings()
+      .then((s) => {
+        setSegmentSecs(s.segment_seconds);
+        // Same guarded parse the Map page uses (FloorPlan.loadPlan).
+        if (s.floorplan) {
+          try {
+            setPins((JSON.parse(s.floorplan) as FloorPlan).pins ?? []);
+          } catch {
+            /* ignore malformed */
+          }
+        }
+      })
+      .catch(() => {});
     const load = () => {
       api.recordings({ camera_id: camera.id, limit: 1000 }).then(setSegments).catch(() => {});
       api.events({ camera_id: camera.id, limit: 50 }).then(setEvents).catch(() => {});
-      api.status().then((m) => setOnline(m[String(camera.id)]?.online)).catch(() => {});
+      api.status().then(setStatusMap).catch(() => {});
     };
     load();
     const t = setInterval(load, 10000);
@@ -257,6 +279,7 @@ export default function CameraDetail({
               <>
                 <LiveVideo name={camera.name} mode={getStreamMode()} audio mic={talking} online={online} />
                 <PrivacyOverlay masks={camera.detect_config.privacy_masks} />
+                <CameraHotspots camera={camera} cameras={cameras} pins={pins} status={statusMap} />
                 <span className="live-pill" aria-hidden="true">
                   <IconRecDot size={9} /> LIVE
                 </span>

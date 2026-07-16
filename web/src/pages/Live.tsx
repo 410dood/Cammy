@@ -397,6 +397,7 @@ export default function Live({
       {detail && (
         <CameraDetail
           camera={detail}
+          cameras={cameras}
           ptz={!!ptz[detail.id]}
           onClose={closeCamera}
         />

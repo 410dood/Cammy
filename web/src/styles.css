@@ -1748,6 +1748,32 @@ button.lastseen-item:hover { background: var(--surface-hover); }
 .fp-dot.off { background: var(--danger); }
 .fp-label { line-height: 1; }
 
+/* --- camera hotspots (P2.18) ---------------------------------------------- */
+/* Adjacent-camera chips overlaid on the expanded live tile. The layer is inert
+   (pointer-events:none) so it never swallows a whole-frame click; only the chips
+   are clickable. z-index 2 keeps it below the interactive PTZ pad / talk button
+   (z 3), which therefore win any overlap. */
+.hotspot-layer { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.hotspot-strip {
+  position: absolute; left: 10px; bottom: 12px; max-width: 62%;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+}
+.hotspot-title {
+  pointer-events: none;
+  font-size: var(--text-xs); font-weight: var(--fw-semibold);
+  color: rgba(255, 255, 255, 0.82); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+.hotspot-chip {
+  pointer-events: auto;
+  display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px 4px 7px;
+  border-radius: var(--r-pill); background: rgba(10, 12, 16, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.2); color: #fff; cursor: pointer;
+  font-size: var(--text-xs); font-weight: var(--fw-semibold); white-space: nowrap;
+  backdrop-filter: blur(4px);
+  transition: border-color var(--dur-1) var(--ease);
+}
+.hotspot-chip:hover { border-color: var(--accent); }
+
 /* --- onboarding (C3) ------------------------------------------------------- */
 .onb {
   background: var(--overlay);
