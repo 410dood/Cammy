@@ -1357,6 +1357,19 @@ pub struct Settings {
     /// On by default; purely cosmetic on the saved JPEG.
     #[serde(default = "default_true")]
     pub highlight_motion: bool,
+    /// P3.6 — number of parallel detection worker threads. Cameras are sharded
+    /// across the workers by list position so one camera's slow/blocking frame
+    /// fetch can't stall the others. Read ONCE at pipeline startup and fixed for
+    /// the process lifetime (a change takes effect after a restart). Clamped to
+    /// 1..=8; a 0/absent value resolves to 1 (the default = today's single
+    /// detection thread, one shared ONNX session). Each extra worker uses its own
+    /// detector session (more RAM/VRAM).
+    #[serde(default = "default_detect_workers")]
+    pub detect_workers: u32,
+}
+
+fn default_detect_workers() -> u32 {
+    1
 }
 
 fn default_arm_mode() -> String {
@@ -1485,6 +1498,7 @@ impl Default for Settings {
             offsite_secret_key: String::new(),
             offsite_events_only: false,
             highlight_motion: true,
+            detect_workers: 1,
         }
     }
 }

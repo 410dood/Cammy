@@ -3,9 +3,15 @@
 //! hand the frame to YOLO. Matching detections become events with annotated
 //! snapshots.
 //!
-//! One thread + one ONNX session serves all cameras: at ~1 fps sampling and
-//! <10 ms GPU inference, a single session comfortably covers a home's worth of
-//! cameras, and the GPU never sees a still frame.
+//! By default one thread + one ONNX session serves all cameras: at ~1 fps
+//! sampling and <10 ms GPU inference, a single session comfortably covers a
+//! home's worth of cameras, and the GPU never sees a still frame.
+//!
+//! P3.6: for a many-camera box, `Settings.detect_workers` (>1) shards cameras
+//! across N worker threads by list position — each worker owns its own ONNX
+//! session and per-camera state over its shard — so one camera's slow/blocking
+//! frame fetch can't hold up the others. The count is fixed at startup; with the
+//! default of 1 the pipeline runs the original single loop inline (no fan-out).
 
 use std::collections::HashMap;
 use std::io::Read as _;
@@ -126,8 +132,99 @@ fn stationary_should_fire(
     }
 }
 
+/// Position-based sharding (P3.6): does worker `worker_idx` (of `num_workers`)
+/// own the camera at list position `camera_index`? Every camera index is owned
+/// by exactly one worker, and with `num_workers == 1` worker 0 owns them all —
+/// so the single-worker default is byte-for-byte the original whole-list loop.
+/// Pure so it can be unit-tested.
+fn owns(worker_idx: usize, num_workers: usize, camera_index: usize) -> bool {
+    camera_index % num_workers == worker_idx
+}
+
+/// Run the detection pipeline, fanning across `Settings.detect_workers` OS
+/// threads. The worker count is read ONCE here and fixed for the process
+/// lifetime (a change takes effect after a restart). Clamped to 1..=8 so a
+/// 0/absent value is one thread and an absurd value can't spawn a thread storm.
+///
+/// With the default of 1, this calls `run_worker(0, 1, ...)` directly on the
+/// caller's thread — the exact single-threaded code path as before, no extra
+/// threads and one shared ONNX session. With >1, it spawns that many
+/// `detector-N` threads (each with its own detector session + per-camera state
+/// over its shard, sharing only the thread-safe db/go2rtc/status/throttle/
+/// channels/shutdown) and joins them all before returning.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
+    db: Db,
+    go2rtc: Arc<Go2Rtc>,
+    snapshots_dir: PathBuf,
+    status: StatusBoard,
+    mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+    throttle: crate::notify::AlarmThrottle,
+    genai_tx: std::sync::mpsc::Sender<crate::genai::Job>,
+    shutdown: Arc<AtomicBool>,
+) {
+    let num_workers = db.settings().detect_workers.clamp(1, 8) as usize;
+    if num_workers == 1 {
+        // Default: run inline on this thread — literally the original single
+        // detection loop (one detector-session cache, one set of per-camera
+        // state maps, `i % 1 == 0` = every camera).
+        run_worker(
+            0, 1, db, go2rtc, snapshots_dir, status, mqtt_tx, throttle, genai_tx, shutdown,
+        );
+        return;
+    }
+    tracing::info!(workers = num_workers, "detection pipeline: multi-worker mode");
+    let mut handles = Vec::with_capacity(num_workers);
+    for idx in 0..num_workers {
+        // Everything each worker needs is cheaply cloneable and thread-safe:
+        // db (Arc<Mutex<Connection>>), go2rtc (Arc), status (Arc<RwLock<..>>),
+        // throttle (Arc<Mutex<..>> — SHARED so per-rule alarm cooldown stays
+        // global, not per-worker), the mpsc Senders (multi-producer), and the
+        // shared shutdown flag. No per-camera pipeline state is shared.
+        let db = db.clone();
+        let go2rtc = go2rtc.clone();
+        let snapshots_dir = snapshots_dir.clone();
+        let status = status.clone();
+        let mqtt_tx = mqtt_tx.clone();
+        let throttle = throttle.clone();
+        let genai_tx = genai_tx.clone();
+        let shutdown = shutdown.clone();
+        match std::thread::Builder::new()
+            .name(format!("detector-{idx}"))
+            .spawn(move || {
+                run_worker(
+                    idx,
+                    num_workers,
+                    db,
+                    go2rtc,
+                    snapshots_dir,
+                    status,
+                    mqtt_tx,
+                    throttle,
+                    genai_tx,
+                    shutdown,
+                )
+            }) {
+            Ok(h) => handles.push(h),
+            Err(e) => tracing::error!("failed to spawn detector-{idx}: {e:#}"),
+        }
+    }
+    // Block (like the original run did) until every worker observes shutdown.
+    for h in handles {
+        let _ = h.join();
+    }
+}
+
+/// One detection worker: serially services the cameras it owns (list position
+/// `i` where `i % num_workers == worker_idx`). With `num_workers == 1` this is
+/// the whole camera list on the caller's thread — the original single-threaded
+/// pipeline verbatim. Each worker owns its own detector sessions + per-camera
+/// state maps below; a camera keeps the same shard for a given (list,
+/// num_workers), so its state is stable until the camera list changes.
+#[allow(clippy::too_many_arguments)]
+fn run_worker(
+    worker_idx: usize,
+    num_workers: usize,
     db: Db,
     go2rtc: Arc<Go2Rtc>,
     snapshots_dir: PathBuf,
@@ -258,11 +355,17 @@ pub fn run(
             });
         }
         // Gait (#64): load enrolled profiles once per tick (not per camera/frame)
-        // when any camera uses gait, parsed to fixed-length signatures for matching.
+        // when any camera THIS WORKER OWNS uses gait, parsed to fixed-length
+        // signatures for matching.
         let gait_profiles: Vec<(String, crate::gait::GaitSignature)> = if cameras
             .iter()
-            .any(|c| c.enabled && c.detect && c.detect_config.gait_identify)
-        {
+            .enumerate()
+            .any(|(i, c)| {
+                owns(worker_idx, num_workers, i)
+                    && c.enabled
+                    && c.detect
+                    && c.detect_config.gait_identify
+            }) {
             db.gait_profile_sigs()
                 .unwrap_or_default()
                 .into_iter()
@@ -280,8 +383,10 @@ pub fn run(
         // Faces (#14): load enrolled embeddings once per tick (not once per frame
         // that has a visible face, which re-queried + BLOB-decoded them every
         // time under this single-threaded loop) — mirrors gait_profiles above.
-        let enrolled_faces: Vec<crate::db::FaceRow> = if cameras.iter().any(|c| {
-            c.enabled
+        // Gated on THIS WORKER'S shard.
+        let enrolled_faces: Vec<crate::db::FaceRow> = if cameras.iter().enumerate().any(|(i, c)| {
+            owns(worker_idx, num_workers, i)
+                && c.enabled
                 && c.detect
                 && c.detect_config
                     .face_recognize
@@ -307,7 +412,12 @@ pub fn run(
         } else {
             HashMap::new()
         };
-        for cam in cameras.iter().filter(|c| c.enabled && c.detect) {
+        for cam in cameras
+            .iter()
+            .enumerate()
+            .filter(|(i, c)| c.enabled && c.detect && owns(worker_idx, num_workers, *i))
+            .map(|(_, c)| c)
+        {
             if shutdown.load(Ordering::Relaxed) {
                 break;
             }
@@ -2372,7 +2482,7 @@ fn draw_rect(
 #[cfg(test)]
 mod tests {
     use super::{
-        moved_enough, passes_zones_and_size, stationary_keep, stationary_should_fire,
+        moved_enough, owns, passes_zones_and_size, stationary_keep, stationary_should_fire,
         STATIONARY_MOVE_FRAC, STATIONARY_REACQUIRE_GAP,
     };
     use crate::db::{DetectConfig, PolyZone, ZoneKind};
@@ -2459,6 +2569,34 @@ mod tests {
             fired[0],
             "a new arrival in a just-vacated spot must fire (re-acquisition guard)"
         );
+    }
+
+    #[test]
+    fn sharding_partitions_every_camera_exactly_once() {
+        // P3.6: for any worker count 1..=8 and any camera-list length, each
+        // camera index is owned by EXACTLY one worker (no camera dropped, none
+        // double-serviced across workers).
+        for num_workers in 1..=8usize {
+            for cameras in 0..40usize {
+                for i in 0..cameras {
+                    let owners = (0..num_workers).filter(|w| owns(*w, num_workers, i)).count();
+                    assert_eq!(
+                        owners, 1,
+                        "camera {i} owned by {owners} workers (num_workers={num_workers})"
+                    );
+                }
+            }
+        }
+        // The single-worker default owns every camera — byte-for-byte the old
+        // whole-list loop (`i % 1 == 0` for all i).
+        for i in 0..1000usize {
+            assert!(owns(0, 1, i), "worker 0 of 1 must own camera {i}");
+        }
+        // Sanity on a specific split: 3 workers over 7 cameras.
+        let assigned: Vec<usize> = (0..7)
+            .map(|i| (0..3).find(|w| owns(*w, 3, i)).unwrap())
+            .collect();
+        assert_eq!(assigned, vec![0, 1, 2, 0, 1, 2, 0]);
     }
 
     #[test]

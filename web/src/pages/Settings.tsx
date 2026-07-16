@@ -1963,6 +1963,21 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 Use this if GPU detection causes problems. Slower but more compatible.
               </span>
             </label>
+            <label className="field">
+              detection worker threads (advanced)
+              <input
+                type="number" min="1" max="8" step="1"
+                value={s.detect_workers ?? 1}
+                onChange={(e) =>
+                  set({ detect_workers: Math.min(8, Math.max(1, Math.round(num(e.target.value, s.detect_workers ?? 1)))) })
+                }
+              />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Parallel detection pipelines — raise on a many-camera box so one slow camera can't
+                stall the others. Each worker uses its own detector session (more RAM/VRAM). Takes
+                effect after a restart.
+              </span>
+            </label>
             <label className="toggle field">
               face recognition
               <input
