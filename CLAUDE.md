@@ -16,6 +16,70 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: roadmap-finish Wave 1 — notify/arm spine (P2.10 + P2.11 + P2.9), 2026-07-16
+
+First wave of the autonomous "finish the docs/08 roadmap" run (orchestrator +
+per-feature design→impl→3-lens adversarial review→fix→live-validate→commit;
+recon maps for all 18 remaining items in `docs/roadmap-recon-2026-07-16.json` +
+plan in `docs/agent-task-phase2-3-remainder.md`). Three notify/arm-adjacent
+features shipped one validated commit each on `main` (`9008d55`, `f905e63`,
+`3f76c04`, `bbc3046`), then batched: release rebuilt + NVR restarted (~30s
+downtime, 5/5 cams back online+recording) and **every feature live-validated in
+Chrome + curl on :8080**. clippy -D warnings clean, **188 core tests**, web
+tsc+build green.
+
+- **P2.10 presence/geofence arm** (`9008d55`): new `occupants` table +
+  `POST /api/arm {occupant,home}` first-in/last-out (any occupant home ⇒ "home",
+  last leaves ⇒ "away"; presence never disarms) via a shared `apply_arm_mode`
+  helper refactored out of the manual PUT; `GET/DELETE /api/presence`; Settings →
+  Modes card with the webhook curl example. LIVE: occupant home→"home",
+  last-out→"away", empty occupant→400, restored + cleaned up.
+- **P2.11 per-user notification matrix** (`f905e63`): `notify_prefs(user_id,
+  rule_id[0=default],channel,enabled)` opt-out model + `users.email` +
+  `push_subscriptions.user_id` + `notifications.rule_id/camera_id/severity`;
+  `fire()` writes one alarm-notification row (tagged) — the async `push.rs`
+  worker is the single per-user PUSH+EMAIL delivery point (off the hot thread),
+  gated by severity(notify_min_severity) + pref + `user_can_see_camera` (#66
+  RBAC). Endpoints GET/PUT `/api/users/{id}/notify-prefs`, `POST /api/me/email`.
+  **A 3-lens review found + fixed real leaks**: email restricted to alarm-tagged
+  rows (no system-event storm); a one-time-guarded migration wipes stale
+  unowned push subs + the web re-stamps them (closed a camera-scope PII leak to
+  legacy anonymous subs); the severity gate now actually quiets per-user
+  push/email; the alarm Test button no longer bell/push/emails everyone;
+  camera_id resolved from the camera name (no get_event fail-open); email
+  validation rejects comma/whitespace (SMTP-relay-abuse). Follow-up fix
+  `bbc3046`: system pushes aren't muted by the per-user Default toggle. LIVE:
+  notify-prefs round-trip, email set/appears, comma→400, matrix UI (grid +
+  Default row + SMTP caveat). KNOWN v0 LIMIT: system-notification *push* stays
+  camera-global (pre-existing all→all; source camera_id tagging is a follow-up).
+- **P2.9 deterrence actions** (`3f76c04`, relay-only v0, DEFENSIVE): new
+  `deterrence.rs` — ONVIF DeviceIO relay probe/`SetRelayOutputState`/retrying
+  release (reuses the ptz.rs SOAP client, XML-escaped, panic-free, 9 unit
+  tests), `Action.kind="deterrence"` fired from `fire_action` (db threaded, NO
+  AlarmEvent change) gated by `Settings.deterrence_enabled` (default OFF);
+  `GET/POST /api/cameras/{id}/deter` probe + manual Test, RBAC like PTZ; Alarms
+  builder offers REAL probed relay tokens (or honest "no relay/no creds"
+  callout, never a blind box). A 2-lens security review fixed SOAP-token
+  injection, `validate_alarm_rule` rejecting the kind (+ restore re-validation),
+  the ON call blocking the detection thread, and a stuck-siren OFF-retry gap.
+  **LIVE: the DeviceIO probe found a REAL relay on the front-door cam
+  (`token 00000, Bistable`) and honestly reported "no relay outputs" on the
+  other 4** — the Alarms builder surfaced `00000 (Bistable)` + a Test button +
+  the master-off warning. Deliberately did NOT fire the physical relay (live
+  front-door cam, unknown wiring — owner's to verify).
+  **DEFERRED (honest cut):** WAV-over-two-way-audio-backchannel (no server-side
+  audio-push path exists). **NEEDS OWNER HW CHECK:** actually pulsing a wired
+  siren/strobe on cam 3's relay `00000`.
+
+**Next waves (docs/agent-task-phase2-3-remainder.md):** W2 CLIP/pipeline (P2.5
+attr facets, P2.8b feedback learning, P2.16 lifecycle, P3.5 zone-state); W3
+forensic/web (P3.1 journey fusion, P2.18 hotspots, P3.8 detection-triggered
+rec); W4 recording/perf core (P3.7 dual-stream, P3.6 worker pool, P2.14
+selective offsite); W5 ecosystem (P3.3 HA, P3.2 ask-your-cameras, P3.4 HomeKit
+v0, P3.9 archive, P3.10 import). GOTCHA confirmed: release rebuild needs the NVR
+stopped (exe file-locked) — pre-warm `cargo build --release --lib` while it runs,
+then stop→link (~9s)→`Start-Process` detached from repo root cuts downtime to ~30s.
+
 ### Latest: UniFi-benchmark round 2 — the four structural patterns, 2026-07-15
 
 Same session, second commit: the research's remaining "top transferable
