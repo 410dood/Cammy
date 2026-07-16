@@ -332,6 +332,15 @@ export interface AppConfig {
 export type ArmMode = "home" | "away" | "disarmed";
 export type ActionKind = "webhook" | "mqtt" | "ntfy" | "email";
 
+/** One tracked occupant for presence/geofence arming (P2.10). */
+export interface Occupant {
+  id: number;
+  name: string;
+  home: boolean;
+  updated_ts: number;
+  created_ts: number;
+}
+
 /// One action a rule fires. A rule can fire several at once (a "scene").
 export interface Action {
   kind: ActionKind;
@@ -705,6 +714,14 @@ export const api = {
   armMode: () => req<{ arm_mode: ArmMode }>("/api/arm"),
   arm: (mode: ArmMode) =>
     req<{ arm_mode: ArmMode }>("/api/arm", { method: "PUT", body: JSON.stringify({ mode }) }),
+  presence: () => req<Occupant[]>("/api/presence"),
+  armPresence: (occupant: string, home: boolean) =>
+    req<{ arm_mode: ArmMode; occupants_home: number }>("/api/arm", {
+      method: "POST",
+      body: JSON.stringify({ occupant, home }),
+    }),
+  deletePresence: (id: number) =>
+    req<{ deleted: boolean }>(`/api/presence/${id}`, { method: "DELETE" }),
   alarms: () => req<AlarmRule[]>("/api/alarms"),
   addAlarm: (r: Omit<AlarmRule, "id" | "created_ts">) =>
     req<{ id: number }>("/api/alarms", { method: "POST", body: JSON.stringify(r) }),

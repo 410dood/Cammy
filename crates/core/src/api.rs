@@ -156,7 +156,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/analytics/timeseries", get(analytics_timeseries))
         .route("/api/analytics/occupancy", get(analytics_occupancy))
         .route("/api/analytics/heatmap", get(analytics_heatmap))
-        .route("/api/arm", get(get_arm_mode).put(set_arm_mode))
+        .route(
+            "/api/arm",
+            get(get_arm_mode).put(set_arm_mode).post(arm_presence),
+        )
+        .route("/api/presence", get(list_presence))
+        .route(
+            "/api/presence/{id}",
+            axum::routing::delete(delete_presence),
+        )
         .route("/api/notifications", get(list_notifications_api))
         .route(
             "/api/notifications/read-all",
@@ -4753,34 +4761,119 @@ async fn set_arm_mode(
     if st.db.settings().arm_mode == mode {
         return Ok(Json(serde_json::json!({ "arm_mode": mode })));
     }
-    // Single-key write (no read-modify-write of the settings blob), so a
-    // concurrent Settings-page save can't clobber it.
-    st.db.set_kv("arm_mode", &mode)?;
-
     let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
         .0
         .to_string();
     let now = chrono::Local::now().timestamp();
-    st.db
-        .add_audit(now, Some(&ip), "arm_mode_changed", Some(&mode));
+    apply_arm_mode(
+        &st,
+        &mode,
+        Some(&ip),
+        now,
+        &format!("Security mode set to {mode}."),
+    )?;
+    Ok(Json(serde_json::json!({ "arm_mode": mode })))
+}
+
+/// Apply an arm-mode change: authoritative single-key write, then best-effort
+/// audit + in-app notification + MQTT state publish. Shared by the manual
+/// `PUT /api/arm` and the presence-driven `POST /api/arm` so both paths audit,
+/// notify and publish identically. The `set_kv` write propagates its error (a
+/// failed write is reported, not swallowed); the rest stay best-effort.
+fn apply_arm_mode(
+    st: &AppState,
+    mode: &str,
+    ip: Option<&str>,
+    now: i64,
+    detail: &str,
+) -> anyhow::Result<()> {
+    // Single-key write (no read-modify-write of the settings blob), so a
+    // concurrent Settings-page save can't clobber it.
+    st.db.set_kv("arm_mode", mode)?;
+    st.db.add_audit(now, ip, "arm_mode_changed", Some(mode));
     let _ = st.db.add_notification(
         now,
         "mode",
-        &format!("System {}", mode_phrase(&mode)),
-        Some(&format!("Security mode set to {mode}.")),
+        &format!("System {}", mode_phrase(mode)),
+        Some(detail),
         None,
     );
     // Publish to MQTT (retained-style state topic) for inbound automations.
     let _ = st.mqtt_tx.send(crate::mqtt::EventMsg {
         event_id: 0,
         camera: String::new(),
-        label: mode.clone(),
+        label: mode.to_string(),
         score: 0.0,
         ts: now,
         snapshot: String::new(),
         topic: Some("mode".to_string()),
     });
-    Ok(Json(serde_json::json!({ "arm_mode": mode })))
+    Ok(())
+}
+
+/// A phone/automation reporting an occupant's arrival (`home: true`) or
+/// departure (`home: false`). First-in/last-out then derives the system arm
+/// mode: any occupant home ⇒ "home", nobody ⇒ "away" (never "disarmed").
+#[derive(Deserialize)]
+struct PresenceReq {
+    occupant: String,
+    home: bool,
+}
+
+/// `POST /api/arm` — presence webhook (Operator). Records the occupant's state
+/// and flips the arm mode first-in/last-out when the derived mode changes.
+async fn arm_presence(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<PresenceReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let name = req.occupant.trim();
+    if name.is_empty() || name.len() > 64 || !no_control(name) {
+        return Err(bad_request("occupant must be 1-64 chars with no control characters"));
+    }
+    let now = chrono::Local::now().timestamp();
+    st.db.upsert_occupant(name, req.home, now)?;
+
+    let home_count = st.db.count_home_occupants()?;
+    let mode = crate::db::derive_arm_mode(home_count);
+    let current = st.db.settings().arm_mode;
+    if current != mode {
+        let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+            .0
+            .to_string();
+        apply_arm_mode(
+            &st,
+            mode,
+            Some(&ip),
+            now,
+            &format!(
+                "Presence: {name} {} — {home_count} home",
+                if req.home { "arrived" } else { "left" }
+            ),
+        )?;
+    }
+    Ok(Json(
+        serde_json::json!({ "arm_mode": mode, "occupants_home": home_count }),
+    ))
+}
+
+/// `GET /api/presence` — list tracked occupants (Viewer-readable; occupants
+/// aren't cameras, so no per-camera scoping applies).
+async fn list_presence(State(st): State<AppState>) -> ApiResult<Json<Vec<crate::db::Occupant>>> {
+    Ok(Json(st.db.list_occupants()?))
+}
+
+/// `DELETE /api/presence/{id}` — forget a tracked occupant (Operator).
+async fn delete_presence(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if st.db.delete_occupant(id)? {
+        Ok(Json(serde_json::json!({ "deleted": true })))
+    } else {
+        Err(not_found())
+    }
 }
 
 fn mode_phrase(mode: &str) -> &'static str {

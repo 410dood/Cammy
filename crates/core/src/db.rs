@@ -376,6 +376,29 @@ pub struct GaitProfileRow {
     pub updated_ts: i64,
 }
 
+/// One tracked occupant for presence/geofence arming (P2.10). A phone/automation
+/// reports arrival/departure by flipping `home`; the arm mode is then derived
+/// first-in/last-out from the count of occupants home.
+#[derive(Clone, Debug, Serialize)]
+pub struct Occupant {
+    pub id: i64,
+    pub name: String,
+    pub home: bool,
+    pub updated_ts: i64,
+    pub created_ts: i64,
+}
+
+/// First-in/last-out arm mode from the count of occupants home: any occupant
+/// home ⇒ "home", nobody home ⇒ "away". Presence never sets "disarmed" (that's
+/// an explicit manual/scheduled choice).
+pub fn derive_arm_mode(home_count: i64) -> &'static str {
+    if home_count > 0 {
+        "home"
+    } else {
+        "away"
+    }
+}
+
 /// One row of the smart-search corpus: an event's id, its searchable text
 /// (transcript + caption) and its optional CLIP snapshot embedding.
 pub struct SearchRow {
@@ -1600,6 +1623,18 @@ impl Db {
                  PRIMARY KEY (user_id, camera_id)
              );",
         )?;
+        // Presence/geofence arming (P2.10): one row per tracked occupant. A phone
+        // or automation flips `home` via the presence API; first-in/last-out then
+        // derives the system arm mode (any occupant home ⇒ "home", nobody ⇒ "away").
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS occupants (
+                 id         INTEGER PRIMARY KEY,
+                 name       TEXT NOT NULL UNIQUE,
+                 home       INTEGER NOT NULL DEFAULT 0,
+                 updated_ts INTEGER NOT NULL,
+                 created_ts INTEGER NOT NULL
+             );",
+        )?;
         Ok(Self(Arc::new(Mutex::new(conn))))
     }
 
@@ -1932,6 +1967,55 @@ impl Db {
         self.conn()
             .execute("DELETE FROM gait_profiles WHERE id = ?1", [id])?;
         Ok(())
+    }
+
+    // --- presence / geofence arming (P2.10) --------------------------------
+
+    /// Record an occupant's home/away state, creating the row on first sighting.
+    pub fn upsert_occupant(&self, name: &str, home: bool, now: i64) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO occupants (name, home, updated_ts, created_ts) VALUES (?1, ?2, ?3, ?3)
+             ON CONFLICT(name) DO UPDATE SET home = ?2, updated_ts = ?3",
+            params![name, home as i64, now],
+        )?;
+        Ok(())
+    }
+
+    /// How many occupants are currently home (drives the derived arm mode).
+    pub fn count_home_occupants(&self) -> Result<i64> {
+        let n = self.conn().query_row(
+            "SELECT COUNT(*) FROM occupants WHERE home = 1",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n)
+    }
+
+    pub fn list_occupants(&self) -> Result<Vec<Occupant>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, home, updated_ts, created_ts FROM occupants ORDER BY name",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Occupant {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    home: r.get::<_, i64>(2)? != 0,
+                    updated_ts: r.get(3)?,
+                    created_ts: r.get(4)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Remove a tracked occupant. Returns whether a row was deleted.
+    pub fn delete_occupant(&self, id: i64) -> Result<bool> {
+        let n = self
+            .conn()
+            .execute("DELETE FROM occupants WHERE id = ?1", [id])?;
+        Ok(n > 0)
     }
 
     /// Tracker-analytics roll-up over `crossing`/`loiter` events in a time range
@@ -4037,6 +4121,39 @@ mod tests {
             3,
             "crossing + audio + pixel row excluded"
         );
+    }
+
+    #[test]
+    fn occupants_presence_and_derived_mode() {
+        let db = mem_db();
+        // Two occupants: Alice home, Bob away.
+        db.upsert_occupant("Alice", true, 100).unwrap();
+        db.upsert_occupant("Bob", false, 100).unwrap();
+        assert_eq!(db.count_home_occupants().unwrap(), 1);
+        assert_eq!(db.list_occupants().unwrap().len(), 2);
+
+        // Bob arrives ⇒ both home (upsert on the existing name, no duplicate row).
+        db.upsert_occupant("Bob", true, 200).unwrap();
+        assert_eq!(db.list_occupants().unwrap().len(), 2, "upsert, not insert");
+        assert_eq!(db.count_home_occupants().unwrap(), 2);
+
+        // Delete Alice ⇒ one occupant left, still home.
+        let alice = db
+            .list_occupants()
+            .unwrap()
+            .into_iter()
+            .find(|o| o.name == "Alice")
+            .unwrap();
+        assert!(db.delete_occupant(alice.id).unwrap());
+        assert!(!db.delete_occupant(alice.id).unwrap(), "already gone");
+        let rows = db.list_occupants().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "Bob");
+        assert_eq!(db.count_home_occupants().unwrap(), 1);
+
+        // First-in/last-out derivation.
+        assert_eq!(derive_arm_mode(0), "away");
+        assert_eq!(derive_arm_mode(2), "home");
     }
 
     #[test]

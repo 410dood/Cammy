@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, Me, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { api, ApiToken, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, Me, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout } from "../ui";
 import { LicensePane } from "../License";
 import { prettyGesture } from "../labels";
@@ -1244,6 +1244,113 @@ function DesktopCard() {
   );
 }
 
+// Presence / geofence arming (P2.10): a phone or automation reports who's home
+// via POST /api/arm; first-in/last-out then arms Away when everyone leaves and
+// drops back to Home when anyone returns. No PWA geolocation — pure webhook/API.
+function PresenceCard({ onError }: { onError: (e: string) => void }) {
+  const dialog = useDialog();
+  const toast = useToast();
+  const [occupants, setOccupants] = useState<Occupant[] | null>(null);
+
+  const load = () => {
+    api.presence().then(setOccupants).catch((e) => onError(errMsg(e)));
+  };
+  useEffect(load, []);
+
+  const remove = async (o: Occupant) => {
+    const ok = await dialog.confirm({
+      title: `Forget ${o.name}?`,
+      body: "Removes them from presence tracking. Their phone or automation can re-add them by reporting home again.",
+      confirmLabel: "Forget",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.deletePresence(o.id);
+      toast.success(`Forgot ${o.name}`);
+      load();
+    } catch (e) {
+      onError(errMsg(e));
+    }
+  };
+
+  return (
+    <div className="card" data-settings-group="modes">
+      <h2>Presence &amp; geofence arming</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Let a phone or automation (Home Assistant, Tasker, Apple Shortcuts) tell Cammy who’s home,
+        so it arms <b>Away</b> when everyone leaves and drops back to <b>Home</b> when someone
+        returns. First-in / last-out: while anyone is home the system stays <b>Home</b>; when the
+        last person leaves it goes <b>Away</b>. Presence never disarms the system — that stays a
+        deliberate choice.
+      </p>
+      {occupants === null ? (
+        <p className="muted">Loading…</p>
+      ) : occupants.length === 0 ? (
+        <Callout tone="info">
+          No one is being tracked yet. Wire up the webhook below from a phone or automation — the
+          first “home” report adds the person automatically.
+        </Callout>
+      ) : (
+        <div className="table-scroll">
+          <table style={{ marginTop: 4, width: "100%", borderCollapse: "collapse" }}>
+            <tbody>
+              {occupants.map((o) => (
+                <tr key={o.id}>
+                  <td>
+                    <b>{o.name}</b>
+                  </td>
+                  <td>
+                    <span className={`badge ${o.home ? "ok" : ""}`}>{o.home ? "Home" : "Away"}</span>
+                  </td>
+                  <td className="muted">
+                    <RelTime ts={o.updated_ts} prefix="updated " />
+                  </td>
+                  <td style={{ textAlign: "right" }}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      aria-label={`Forget ${o.name}`}
+                      title={`Forget ${o.name}`}
+                      onClick={() => remove(o)}
+                    >
+                      <IconTrash />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="muted" style={{ marginTop: 12, marginBottom: 4 }}>
+        Report arrivals and departures with a POST to <code>/api/arm</code>:
+      </p>
+      <pre
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: "var(--text-sm)",
+          background: "var(--bg)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-sm)",
+          padding: "10px 12px",
+          overflowX: "auto",
+          margin: 0,
+        }}
+      >
+        <code>{`curl -X POST http://<cammy-host>:8080/api/arm \\
+  -H "Authorization: Bearer <token>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"occupant":"Alice","home":true}'`}</code>
+      </pre>
+      <small className="muted" style={{ display: "block", marginTop: 6 }}>
+        Create a Bearer token under <b>Access &amp; security → API tokens</b> (operator role). Send{" "}
+        <code>{`"home":false`}</code> when the phone leaves the geofence.
+      </small>
+    </div>
+  );
+}
+
 function SettingsTabs({ active, onSelect }: { active: GroupKey; onSelect: (g: GroupKey) => void }) {
   // Apply on every switch, and re-apply when a card mounts later (Users appears
   // once admin loads, 2FA/Account/Audit after their fetches) so an async card
@@ -1973,6 +2080,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             No days selected = every day. The change applies at the start of the matching minute.
           </small>
         </div>
+
+        <PresenceCard onError={onError} />
 
         <div className="card" data-settings-group="detection">
           <h2>AI insights</h2>
