@@ -1,8 +1,8 @@
-﻿import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { api, CamEvent, Camera, capacityTone, fmtBytes, fmtDaysLeft, fmtTime, MotionHit, Segment, Stats } from "../api";
 import Timeline from "../Timeline";
 import CrossTimeline, { ActivityStrip } from "../CrossTimeline";
-import { IconPlay, IconFilm, IconAlert, IconChevronDown, IconChevronRight } from "../icons";
+import { IconPlay, IconFilm, IconAlert, IconChevronDown, IconChevronRight, IconChevronLeft, IconX } from "../icons";
 import { Callout, EmptyState, ErrorState, Modal, useToast } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -14,6 +14,32 @@ const WINDOWS = [
   { label: "6h", secs: 6 * 3600 },
   { label: "24h", secs: 24 * 3600 },
 ];
+
+// How the clip table folds: one row per camera × bucket. 0 = flat list.
+const GROUPINGS = [
+  { label: "15 min", secs: 900 },
+  { label: "hour", secs: 3600 },
+  { label: "3 hours", secs: 3 * 3600 },
+  { label: "day", secs: 86400 },
+  { label: "no grouping", secs: 0 },
+];
+const GROUP_KEY = "cammy-rec-group";
+
+// Buckets anchor at local midnight, so "3 hours" and "day" line up with the
+// user's clock instead of UTC epoch boundaries.
+function bucketOf(ts: number, secs: number): number {
+  const dayStart = new Date(ts * 1000).setHours(0, 0, 0, 0) / 1000;
+  return dayStart + Math.floor((ts - dayStart) / secs) * secs;
+}
+
+function groupLabel(ts: number, secs: number): string {
+  if (secs >= 86400)
+    return new Date(ts * 1000).toLocaleDateString([], { weekday: "short", month: "numeric", day: "numeric" });
+  const minute = secs < 3600 ? ("2-digit" as const) : undefined;
+  const from = new Date(ts * 1000).toLocaleString([], { month: "numeric", day: "numeric", hour: "numeric", minute });
+  const to = new Date((ts + secs) * 1000).toLocaleTimeString([], { hour: "numeric", minute });
+  return `${from} – ${to}`;
+}
 
 // P2.3 retroactive region motion search: draw a rectangle on the camera's
 // frame, get every archived minute with motion inside it (from the persisted
@@ -227,7 +253,10 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [events, setEvents] = useState<CamEvent[]>([]);
   const [cameraId, setCameraId] = useState<number | "">("");
-  const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
+  // Playback is a queue, not a single file: starting anywhere keeps playing
+  // through the camera's following clips so a moment never cuts off at a
+  // minute boundary.
+  const [playing, setPlaying] = useState<{ queue: Segment[]; index: number; offset: number } | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
@@ -235,8 +264,17 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   const [loaded, setLoaded] = useState(false);
 
   // The raw segment list is minute-granularity — hundreds of near-identical
-  // rows. Fold it into one row per camera-hour, expandable to the segments.
+  // rows. Fold it into one row per camera-bucket, expandable to the clips;
+  // the bucket size is the user's choice (persisted).
   const [openHours, setOpenHours] = useState<Set<string>>(new Set());
+  const [groupSecs, setGroupSecsRaw] = useState(() => {
+    const v = Number(localStorage.getItem(GROUP_KEY) ?? 3600);
+    return GROUPINGS.some((g) => g.secs === v) ? v : 3600;
+  });
+  const setGroupSecs = (v: number) => {
+    setGroupSecsRaw(v);
+    localStorage.setItem(GROUP_KEY, String(v));
+  };
 
   // Day picker: "" = live (anchored at now); a date scrubs that day's history.
   const [day, setDay] = useState("");
@@ -316,6 +354,21 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraId, day]);
 
+  // Open the player on `seg` with the camera's whole loaded window queued
+  // after it, so playback rolls clip-to-clip instead of stopping each minute.
+  const openSeq = (seg: Segment, offset: number) => {
+    const queue = segments
+      .filter((x) => x.camera === seg.camera)
+      .sort((a, b) => a.start_ts - b.start_ts);
+    const index = queue.findIndex((x) => x.id === seg.id);
+    if (index < 0) {
+      // e.g. a motion-search hit older than the loaded window — play it alone.
+      setPlaying({ queue: [seg], index: 0, offset });
+      return;
+    }
+    setPlaying({ queue, index, offset });
+  };
+
   const seekTo = async (ts: number) => {
     if (cameraId === "") return;
     seekCamera(cameraId, ts);
@@ -323,7 +376,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   const seekCamera = async (camId: number, ts: number) => {
     try {
       const r = await api.recordingAt(camId, ts);
-      setPlaying({ segment: r.segment, offset: r.offset_secs });
+      openSeq(r.segment, r.offset_secs);
     } catch {
       /* clicked a gap — nothing recorded there */
     }
@@ -332,8 +385,8 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   const hourGroups = useMemo<HourGroup[]>(() => {
     const map = new Map<string, HourGroup>();
     for (const s of segments) {
-      const hourTs = Math.floor(s.start_ts / 3600) * 3600;
-      const key = `${s.camera}|${hourTs}`;
+      const hourTs = groupSecs > 0 ? bucketOf(s.start_ts, groupSecs) : s.start_ts;
+      const key = `${s.camera}|${hourTs}|${groupSecs > 0 ? "" : s.id}`;
       let g = map.get(key);
       if (!g) {
         g = { key, camera: s.camera, hourTs, segs: [], bytes: 0 };
@@ -342,13 +395,13 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       g.segs.push(s);
       g.bytes += s.bytes;
     }
-    // Newest hour first; within an hour, clips run oldest-first (scrub order).
+    // Newest bucket first; within a bucket, clips run oldest-first (playback order).
     const groups = [...map.values()].sort(
       (a, b) => b.hourTs - a.hourTs || a.camera.localeCompare(b.camera)
     );
     for (const g of groups) g.segs.sort((a, b) => a.start_ts - b.start_ts);
     return groups;
-  }, [segments]);
+  }, [segments, groupSecs]);
 
   // Severity keys ONLY on actual disk headroom (days_until_full): <7 days
   // gets a warn callout and <2 a danger one instead of muted text. The
@@ -465,6 +518,20 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             <IconFilm size={14} /> {tlBusy ? "Building…" : "Time-lapse"}
           </button>
         )}
+        <label className="field" title="How the clip list below is folded">
+          group by
+          <select
+            aria-label="Group clips by"
+            value={groupSecs}
+            onChange={(e) => setGroupSecs(Number(e.target.value))}
+          >
+            {GROUPINGS.map((g) => (
+              <option key={g.secs} value={g.secs}>
+                {g.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <span className="muted">
           {segments.length} clips · {fmtBytes(segments.reduce((a, s) => a + s.bytes, 0))} total
         </span>
@@ -497,7 +564,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       )}
 
       {scrub && cameraId !== "" && segments.length > 0 && (
-        <ScrubGrid segments={segments} onPlay={(s) => setPlaying({ segment: s, offset: 0 })} />
+        <ScrubGrid segments={segments} onPlay={(s) => openSeq(s, 0)} />
       )}
 
       {segments.length === 0 ? (
@@ -531,9 +598,6 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             <tbody>
               {hourGroups.map((g) => {
                 const open = openHours.has(g.key);
-                const hourLabel = `${new Date(g.hourTs * 1000).toLocaleString([], {
-                  month: "numeric", day: "numeric", hour: "numeric",
-                })} – ${new Date((g.hourTs + 3600) * 1000).toLocaleTimeString([], { hour: "numeric" })}`;
                 if (g.segs.length === 1) {
                   const s = g.segs[0];
                   return (
@@ -542,7 +606,11 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
                       <td>{fmtTime(s.start_ts)}</td>
                       <td className="muted">{fmtBytes(s.bytes)}</td>
                       <td>
-                        <button className="btn btn-ghost ev-act" onClick={() => setPlaying({ segment: s, offset: 0 })}>
+                        <button
+                          className="btn btn-ghost ev-act"
+                          title="Play, continuing into the clips that follow"
+                          onClick={() => openSeq(s, 0)}
+                        >
                           <IconPlay size={13} /> Play
                         </button>
                       </td>
@@ -554,7 +622,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
                     key={g.key}
                     group={g}
                     open={open}
-                    hourLabel={hourLabel}
+                    hourLabel={groupLabel(g.hourTs, groupSecs)}
                     onToggle={() =>
                       setOpenHours((prev) => {
                         const next = new Set(prev);
@@ -563,7 +631,8 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
                         return next;
                       })
                     }
-                    onPlay={(s) => setPlaying({ segment: s, offset: 0 })}
+                    onPlay={(s) => openSeq(s, 0)}
+                    onPlayAll={() => openSeq(g.segs[0], 0)}
                   />
                 );
               })}
@@ -648,44 +717,195 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             const seg =
               segments.find((s) => s.id === segId) ??
               ({ id: segId, camera_id: cameraId, camera: cam?.name ?? "", start_ts: segStartTs, bytes: 0, path: "" } as Segment);
-            setPlaying({ segment: seg, offset });
+            openSeq(seg, offset);
           }}
         />
       )}
 
       {playing && (
-        <Modal bare onClose={() => setPlaying(null)}>
-          <video
-            src={`/api/recordings/${playing.segment.id}/video`}
-            controls
-            autoPlay
-            onLoadedMetadata={(e) => {
-              const v = e.currentTarget;
-              // Clamp: clicking near "now" can resolve into the last closed
-              // segment with an offset past its end.
-              if (playing.offset > 0)
-                v.currentTime = Math.min(playing.offset, Math.max(0, v.duration - 2));
-            }}
-          />
-        </Modal>
+        <SequencePlayer
+          queue={playing.queue}
+          index={playing.index}
+          offset={playing.offset}
+          onClose={() => setPlaying(null)}
+        />
       )}
     </>
   );
 }
 
-/// One camera-hour of footage: a summary row that expands into its clips.
+// Playback speeds. 16× turns an hour of footage into a ~4-minute skim — a
+// client-side time-lapse with no server render (the ffmpeg day time-lapse
+// stays for shareable files).
+const RATES = [1, 2, 4, 8, 16];
+
+/// Plays a queue of clips as one continuous recording: the next clip preloads
+/// in a hidden <video> while the current one plays, and swaps in on end, so
+/// minute boundaries pass without a stall. Prev/next, a ticking wall clock,
+/// and a speed control ride in a bar under the video.
+function SequencePlayer({
+  queue,
+  index,
+  offset,
+  onClose,
+}: {
+  queue: Segment[];
+  index: number;
+  offset: number;
+  onClose: () => void;
+}) {
+  const [pos, setPos] = useState(index);
+  const [rate, setRate] = useState(1);
+  const [clock, setClock] = useState<number | null>(null);
+  const [atEnd, setAtEnd] = useState(false);
+  // Two persistent <video> slots, addressed by position parity: one is
+  // visible and playing, the other buffers the next clip. Advancing flips
+  // which slot is live — the incoming clip is already loaded.
+  const vids = useRef<(HTMLVideoElement | null)[]>([null, null]);
+  const toast = useToast();
+
+  const seg = queue[pos];
+
+  const go = (next: number) => {
+    if (next < 0 || next >= queue.length) {
+      if (next >= queue.length) setAtEnd(true);
+      return;
+    }
+    vids.current[pos % 2]?.pause(); // never two audio tracks at once
+    setAtEnd(false);
+    setClock(queue[next].start_ts);
+    setPos(next);
+  };
+
+  // Promote the active slot whenever position or speed changes.
+  useEffect(() => {
+    const v = vids.current[pos % 2];
+    if (!v) return;
+    v.playbackRate = rate;
+    v.play().catch(() => {
+      if (v.error) {
+        // Clip vanished (retention pruned it mid-session) — skip ahead.
+        toast.info("That clip isn't available anymore — skipping ahead.");
+        setPos((p) => (p + 1 < queue.length ? p + 1 : p));
+      } else {
+        // Autoplay policy refused audible playback — retry muted.
+        v.muted = true;
+        v.play().catch(() => {});
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pos, rate]);
+
+  return (
+    <Modal bare onClose={onClose}>
+      <div className="seq-player">
+        {[0, 1].map((par) => {
+          const segIdx = pos % 2 === par ? pos : pos + 1;
+          const s = queue[segIdx];
+          if (!s)
+            return (
+              <video key={par} ref={(el) => (vids.current[par] = el)} style={{ display: "none" }} />
+            );
+          const active = segIdx === pos;
+          return (
+            <video
+              key={par}
+              ref={(el) => (vids.current[par] = el)}
+              src={`/api/recordings/${s.id}/video`}
+              controls={active}
+              preload="auto"
+              muted={!active}
+              autoPlay={active}
+              style={{ display: active ? "block" : "none" }}
+              onLoadedMetadata={(e) => {
+                // Clamp: clicking near "now" can resolve into the last closed
+                // clip with an offset past its end.
+                if (active && segIdx === index && offset > 0) {
+                  const v = e.currentTarget;
+                  v.currentTime = Math.min(offset, Math.max(0, v.duration - 2));
+                }
+              }}
+              onTimeUpdate={(e) => {
+                if (active) setClock(Math.floor(s.start_ts + e.currentTarget.currentTime));
+              }}
+              onEnded={active ? () => go(pos + 1) : undefined}
+              onError={
+                active
+                  ? () => {
+                      toast.info("That clip isn't available — skipping ahead.");
+                      go(pos + 1);
+                    }
+                  : undefined
+              }
+            />
+          );
+        })}
+        <div className="seq-bar">
+          <b>{seg.camera}</b>
+          <span className="muted clock">
+            {new Date((clock ?? seg.start_ts) * 1000).toLocaleTimeString()}
+          </span>
+          <span className="muted tnum">
+            clip {pos + 1}/{queue.length}
+          </span>
+          {atEnd && <span className="muted">end of footage</span>}
+          <span style={{ flex: 1 }} />
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={pos === 0}
+            aria-label="Previous clip"
+            onClick={() => go(pos - 1)}
+          >
+            <IconChevronLeft size={14} />
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={pos + 1 >= queue.length}
+            aria-label="Next clip"
+            onClick={() => go(pos + 1)}
+          >
+            <IconChevronRight size={14} />
+          </button>
+          <label className="field" title="Playback speed — high speeds skim like a time-lapse">
+            speed
+            <select
+              aria-label="Playback speed"
+              value={rate}
+              onChange={(e) => setRate(Number(e.target.value))}
+            >
+              {RATES.map((r) => (
+                <option key={r} value={r}>
+                  {r}×
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="btn btn-ghost" aria-label="Close player" onClick={onClose}>
+            <IconX size={14} />
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/// One camera-bucket of footage: a summary row that expands into its clips.
 function HourRows({
   group,
   open,
   hourLabel,
   onToggle,
   onPlay,
+  onPlayAll,
 }: {
   group: HourGroup;
   open: boolean;
   hourLabel: string;
   onToggle: () => void;
   onPlay: (s: Segment) => void;
+  onPlayAll: () => void;
 }) {
   return (
     <>
@@ -704,7 +924,15 @@ function HourRows({
           </button>
         </td>
         <td className="muted">{fmtBytes(group.bytes)}</td>
-        <td></td>
+        <td>
+          <button
+            className="btn btn-ghost ev-act"
+            title="Play these clips back-to-back, like one recording"
+            onClick={onPlayAll}
+          >
+            <IconPlay size={13} /> Play all
+          </button>
+        </td>
       </tr>
       {open &&
         group.segs.map((s) => (

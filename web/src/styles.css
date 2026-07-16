@@ -2356,3 +2356,24 @@ img.identity-thumb { background: var(--n-0); }
   font-size: 12px;
   background: var(--panel-2, var(--panel));
 }
+
+/* Sequence player — multi-clip continuous playback (Recordings). The video
+   pair double-buffers (one visible, one preloading), so only one shows; the
+   control bar docks under the video as part of the same rounded block. */
+.seq-player { display: flex; flex-direction: column; max-width: 92vw; }
+.seq-player video {
+  display: block;
+  max-width: 92vw; max-height: 78vh;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--n-0);
+}
+.seq-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--overlay);
+  border: 1px solid var(--border); border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  box-shadow: var(--shadow-3);
+  font-size: var(--text-sm);
+}
+.seq-bar .field { margin: 0; }
