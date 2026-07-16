@@ -30,6 +30,25 @@ const SAMPLE_RATE: u32 = 16_000;
 const CAPTURE_SECS: u32 = 1;
 /// Per-(camera, class) event cooldown.
 const COOLDOWN_SECS: i64 = 30;
+/// A monitored class only fires when it ranks in the top K of all 521 YAMNet
+/// scores. Ambient sound YAMNet actually recognizes as something else — a
+/// nighttime cricket/frog chorus scores "Cricket"/"Insect" ~0.8 while
+/// "Siren"/"Alarm" ride along at ~0.4-0.6 — no longer clears the bar.
+const TOP_K: usize = 3;
+
+/// True when `scores[idx]` ranks within the top `k` classes overall.
+fn ranks_top_k(scores: &[f32], idx: usize, k: usize) -> bool {
+    let s = scores[idx];
+    scores.iter().filter(|&&v| v > s).count() < k
+}
+
+/// Sirens and alarms ring for many seconds by nature, so they must be heard
+/// on two consecutive sweeps before an event fires; transient sounds (glass,
+/// gunshot, knock, bark) stay single-sweep or they'd be missed entirely.
+fn is_sustained(label: &str) -> bool {
+    let l = label.to_ascii_lowercase();
+    l.contains("alarm") || l.contains("siren")
+}
 
 pub fn models_present() -> bool {
     std::path::Path::new(MODEL).exists() && std::path::Path::new(CLASS_MAP).exists()
@@ -144,8 +163,13 @@ pub fn run(
     };
     let mut engine: Option<Engine> = None;
     let mut last_fire: HashMap<(i64, String), i64> = HashMap::new();
+    // Sustained-sound confirmation: (camera, label) -> sweep number it was
+    // last heard on. Bounded by cameras x monitored labels.
+    let mut pending: HashMap<(i64, String), u64> = HashMap::new();
+    let mut sweep: u64 = 0;
 
     while !shutdown.load(Ordering::Relaxed) {
+        sweep = sweep.wrapping_add(1);
         let settings = db.settings();
         let cameras = db.list_cameras().unwrap_or_default();
         let targets: Vec<_> = cameras
@@ -205,7 +229,32 @@ pub fn run(
                 if score < settings.audio_threshold {
                     continue;
                 }
+                if !ranks_top_k(&scores, idx, TOP_K) {
+                    if let Some((ti, ts)) = scores
+                        .iter()
+                        .enumerate()
+                        .max_by(|a, b| a.1.total_cmp(b.1))
+                    {
+                        tracing::debug!(
+                            camera = %cam.name,
+                            sound = %monitored,
+                            score = format!("{score:.2}"),
+                            top = %engine.classes[ti],
+                            top_score = format!("{ts:.2}"),
+                            "audio: outranked by ambient class, not firing"
+                        );
+                    }
+                    continue;
+                }
                 let label = monitored.to_lowercase();
+                if is_sustained(&label) {
+                    let prev = pending.insert((cam.id, label.clone()), sweep);
+                    if prev != Some(sweep.wrapping_sub(1)) {
+                        // First hearing — a real siren/alarm is still ringing
+                        // next sweep; a one-second fluke isn't.
+                        continue;
+                    }
+                }
                 let key = (cam.id, label.clone());
                 if last_fire
                     .get(&key)
@@ -334,5 +383,41 @@ fn sleep_responsive(total: Duration, shutdown: &AtomicBool) {
     let start = std::time::Instant::now();
     while start.elapsed() < total && !shutdown.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_k_accepts_dominant_class() {
+        // Siren genuinely loudest: fires.
+        let scores = [0.1, 0.9, 0.2, 0.05];
+        assert!(ranks_top_k(&scores, 1, 3));
+    }
+
+    #[test]
+    fn top_k_rejects_outranked_class() {
+        // "Siren" at 0.45 while cricket/insect/animal score higher: rejected.
+        let scores = [0.85, 0.45, 0.7, 0.6, 0.1];
+        assert!(!ranks_top_k(&scores, 1, 3));
+    }
+
+    #[test]
+    fn top_k_ties_count_as_ranked() {
+        // Only strictly-greater scores outrank; a tie doesn't push it out.
+        let scores = [0.5, 0.5, 0.5, 0.5];
+        assert!(ranks_top_k(&scores, 3, 3));
+    }
+
+    #[test]
+    fn sustained_labels() {
+        for l in ["Siren", "Alarm", "Fire alarm", "Car alarm", "Smoke detector, smoke alarm"] {
+            assert!(is_sustained(l), "{l} should require confirmation");
+        }
+        for l in ["Glass", "Gunshot, gunfire", "Bark", "Knock", "Doorbell", "Baby cry, infant cry"] {
+            assert!(!is_sustained(l), "{l} should stay single-sweep");
+        }
     }
 }
