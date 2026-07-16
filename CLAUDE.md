@@ -16,6 +16,52 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: roadmap-finish Wave 3 — forensic/web (P2.18 + P3.1 + P3.8), 2026-07-16
+
+Third wave — hotspots, journey fusion, detection-triggered recording. Three
+validated commits (`4fbc3f3`, `4351a2f`, `3af989f`+grace fix), the two web-only
+ones live in Chrome, P3.8 release-rebuilt. clippy clean, **201 core tests**, web
+green.
+
+- **P2.18 camera hotspots** (`4fbc3f3`, web-only): clickable adjacent-camera chips
+  on the expanded live view, adjacency DERIVED from the FloorPlan pins already in
+  Settings.floorplan (nearest 3, Euclidean in the 0..1 plane), reusing .fp-* CSS +
+  the #/live/<id> route. Neighbors filtered to the RBAC-scoped camera list (no dead
+  links); renders null with no pins/plan. `.hotspot-layer` pointer-events:none at
+  z-2 (below PTZ/playback, above privacy) so it never steals frame clicks.
+- **P3.1 journey fusion capstone v0** (`4351a2f`, web-only): the Events "Similar"
+  modal gains a Grid|Journey toggle — Journey re-sorts the SAME already-fetched
+  cross-camera appearance matches chronologically into a numbered narrative + a new
+  JourneyMap.tsx (SVG path over the floorplan pins) + the unmodified CrossTimeline
+  scoped to the involved cameras, with a persistent "appearance-similarity, not
+  identity" disclaimer. LIVE-validated in Chrome (event 8455 → 25 steps, scoped
+  timeline, click-to-open). RBAC inherited from event_similar. DEFERRED v1: the
+  optional stitched multi-camera "Moments" export (new ffmpeg filter_complex).
+- **P3.8 detection-triggered recording** (`3af989f`): a per-camera "record only
+  around detections" mode. No packet ring buffer exists, so recording stays
+  CONTINUOUS (the pre-roll footage is real) and the mode is a tighter/asymmetric
+  retention layer beside event-only — a segment survives only if it overlaps some
+  event's [ts-pre, ts+post] window. db.eventless_segments widened to margin_before/
+  after (event-only passes (span,span) → byte-for-byte unchanged); settle grace =
+  max(pre,post)+30s so a still-writing / within-post-roll / reachable-by-a-later-
+  detection's-pre-roll segment is never eligible; flagged/bookmarked footage always
+  kept (tested); fail-SAFE (DB error → keep footage). Cameras 3-way arm-bar mode
+  selector. No new endpoint (rides PATCH /api/cameras).
+
+**⚠ LIVE-SYSTEM NOTE (owner action):** during the P3.8 release restart, **camera 6
+(pool2, 192.168.1.139) stopped recording and would not re-establish** — its go2rtc
+PRODUCER stays healthy and the detection pipeline gets fresh frames, but the
+recorder's RTSP CONSUMER on the pool2 restream keeps flapping (attaches, drops
+within seconds). NOT caused by this wave: the P3.8 record.rs diff is purely
+additive (a retention-DELETE loop gated on `trigger_recording`, which NO camera
+uses) and never touches recording-start/reconcile — verified by diff; and the
+sibling pool3 records fine. Multiple full restarts + a go2rtc-only restart + 90s
+waits did NOT restore it, so it's an environmental pool2 camera/restream issue
+(likely an RTSP concurrent-session / codec-timestamp quirk on that specific cam).
+The recorder reconcile loop keeps retrying, so it may recover once the camera/
+network stabilizes; otherwise **power-cycle the pool2 camera / check its RTSP
+feed**. Other 4 enabled cams (front-door, ptz-cam, side, pool3) record normally.
+
 ### Latest: roadmap-finish Wave 2 — CLIP/pipeline (P2.5 + P2.8b + P2.16 + P3.5·2), 2026-07-16
 
 Second wave of the roadmap-finish run — the CLIP/embedding + pipeline cluster,
