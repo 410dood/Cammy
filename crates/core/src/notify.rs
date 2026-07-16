@@ -684,6 +684,7 @@ mod tests {
             vlm_prompt: None,
             describe: false,
             prompt_like: None,
+            attr_like: None,
             min_score: 0.0,
             action: "ntfy".into(),
             target: "t".into(),

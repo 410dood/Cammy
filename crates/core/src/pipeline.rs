@@ -1880,7 +1880,13 @@ fn fire_prompt_alarms(
         {
             continue;
         }
-        let prompt = rule.prompt_like.as_deref().unwrap_or("").trim().to_string();
+        // P2.2 free-text `prompt_like` OR P2.5 `attr_like` catalog key, resolved
+        // to a CLIP prompt. Skip if it resolves to nothing (e.g. an attr key no
+        // longer in the catalog) so a stale rule can't embed the empty string.
+        let prompt = rule.effective_prompt().unwrap_or_default();
+        if prompt.is_empty() {
+            continue;
+        }
         // (Re-)embed the prompt only when its text changed since the cache.
         if prompt_embs
             .get(&rule.id)

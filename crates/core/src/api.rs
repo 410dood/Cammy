@@ -90,6 +90,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/events/{id}/similar", get(event_similar))
         .route("/api/search", get(smart_search))
         .route("/api/search/by-image", axum::routing::post(search_by_image))
+        .route("/api/search/by-attr", get(search_by_attr))
+        .route("/api/attributes", get(attributes_catalog))
         .route("/api/alarms", get(list_alarms_api).post(add_alarm_api))
         .route(
             "/api/alarms/{id}",
@@ -3786,6 +3788,13 @@ fn validate_alarm_rule(rule: &crate::db::AlarmRule) -> ApiResult<()> {
             return Err(bad_request("schedule times must be HH:MM (24h)"));
         }
     }
+    // P2.5: attr_like stores a catalog KEY (not free text) — reject an unknown
+    // one so a typo/stale key can't silently make a rule that never matches.
+    if let Some(key) = rule.attr_like.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        if !crate::attributes::is_known(key) {
+            return Err(bad_request("unknown attribute facet"));
+        }
+    }
     Ok(())
 }
 
@@ -4160,6 +4169,95 @@ async fn search_by_image(
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     // A decode/embed failure is almost always a bad upload — report it as a 400.
     .map_err(|e| bad_request(format!("{e:#}")))?;
+    let mut results = Vec::new();
+    for (score, eid) in scored.into_iter() {
+        if results.len() >= limit {
+            break;
+        }
+        if let Some(ev) = st.db.get_event(eid)? {
+            if !camera_allowed(&allow, ev.camera_id) {
+                continue;
+            }
+            results.push(serde_json::json!({ "similarity": score, "event": ev }));
+        }
+    }
+    Ok(Json(
+        serde_json::json!({ "results": results, "available": true }),
+    ))
+}
+
+/// P2.5 — the CLIP attribute-facet catalog: curated groups of zero-shot object
+/// attributes (vehicle colour/type, person/clothing colour) the UI renders as
+/// Events filter chips and the `attr_like` alarm dropdown. `available` mirrors
+/// the smart-search model presence — the facets rank against crop embeddings, so
+/// none of them can actually match without the CLIP models. Static, camera-free
+/// data → any authenticated caller (Viewer) may read it.
+async fn attributes_catalog() -> Json<serde_json::Value> {
+    let groups: Vec<serde_json::Value> = crate::attributes::catalog()
+        .iter()
+        .map(|g| {
+            let attrs: Vec<serde_json::Value> = g
+                .attrs
+                .iter()
+                .map(|a| serde_json::json!({ "key": a.key, "label": a.label, "prompt": a.prompt }))
+                .collect();
+            serde_json::json!({ "group": g.group, "label": g.label, "attrs": attrs })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "groups": groups,
+        "available": crate::smart::models_present(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct AttrQuery {
+    /// A catalog facet key (e.g. `veh_color_red`) — NOT free text.
+    key: String,
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+}
+
+/// P2.5 — attribute-facet search: CLIP-text-embed the chosen facet's prompt once
+/// and cosine-rank the stored object-crop corpus (the same Re-ID embeddings
+/// `event_similar`/`search_by_image` use — zero new inference). Mirrors those
+/// handlers' spawn_blocking scan + RBAC; `available: false` when the CLIP models
+/// aren't installed. RBAC: `allowed_cameras` scopes a non-Admin caller, and every
+/// result is dropped unless `camera_allowed` — a scoped user never sees another
+/// camera's crops.
+async fn search_by_attr(
+    State(st): State<AppState>,
+    Query(q): Query<AttrQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    // Resolve the key to its CLIP prompt up front — an unknown key is a 400
+    // (a stale/renamed facet), not a silent empty result.
+    let Some(prompt) = crate::attributes::prompt_for(q.key.trim()) else {
+        return Err(bad_request("unknown attribute"));
+    };
+    if !crate::smart::models_present() {
+        return Ok(Json(
+            serde_json::json!({ "results": [], "available": false }),
+        ));
+    }
+    let limit = q.limit.min(100);
+    let allow = allowed_cameras(&st, &p)?;
+    let db = st.db.clone();
+    let prompt = prompt.to_string();
+    // Text embed + whole-corpus cosine scan are CPU-bound — off the async runtime.
+    let scored: Vec<(f32, i64)> = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let qe = crate::smart::embed_text(&prompt)?;
+        let mut scored: Vec<(f32, i64)> = db
+            .crop_embeddings()?
+            .into_iter()
+            .map(|(eid, emb)| (crate::smart::cosine(&qe, &emb).max(0.0), eid))
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     let mut results = Vec::new();
     for (score, eid) in scored.into_iter() {
         if results.len() >= limit {

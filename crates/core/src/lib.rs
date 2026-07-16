@@ -13,6 +13,7 @@ mod absence;
 mod analytics;
 mod anomaly;
 mod api;
+mod attributes;
 mod audio;
 mod auth;
 mod db;

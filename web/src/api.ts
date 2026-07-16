@@ -394,6 +394,10 @@ export interface AlarmRule {
    *  CLIP-matched against each detection's crop. Needs the CLIP models;
    *  best-effort semantic matching — scope with label/zone for precision. */
   prompt_like?: string | null;
+  /** P2.5 attribute facet: a curated catalog KEY (e.g. "veh_color_red"), not
+   *  free text — resolved server-side to a CLIP prompt and matched exactly like
+   *  prompt_like (an "AI watch"-style best-effort gate). null = none. */
+  attr_like?: string | null;
   min_score: number;
   /** Legacy single action; kept in sync with actions[0]. Prefer `actions`. */
   action: string;
@@ -535,6 +539,29 @@ export interface SimilarResult {
   results: SimilarMatch[];
   /** False when the event has no crop embedding (not an object detection, or
    *  smart-search models aren't installed). */
+  available: boolean;
+}
+
+/** One CLIP attribute facet (P2.5): a stable catalog key + display label. */
+export interface AttrFacet {
+  key: string;
+  label: string;
+  /** The underlying CLIP text prompt (shown as a tooltip — honest framing). */
+  prompt: string;
+}
+
+/** A group of related attribute facets (e.g. "Vehicle colour"). */
+export interface AttrGroup {
+  group: string;
+  label: string;
+  attrs: AttrFacet[];
+}
+
+/** The attribute-facet catalog + whether the CLIP models back it. */
+export interface AttributesCatalog {
+  groups: AttrGroup[];
+  /** False when the smart-search (CLIP) models aren't installed — the facets
+   *  can't actually match anything, so the UI should say so. */
   available: boolean;
 }
 
@@ -772,6 +799,12 @@ export const api = {
       // the server sniffs the image format regardless.
       headers: {},
     }),
+  // P2.5 CLIP attribute facets: the curated catalog (Events filter chips +
+  // the attr_like alarm dropdown) and a facet search that ranks the crop corpus
+  // against the facet's prompt (zero new inference — reuses Re-ID embeddings).
+  attributes: () => req<AttributesCatalog>("/api/attributes"),
+  searchByAttr: (key: string, limit = 48) =>
+    req<SimilarResult>(`/api/search/by-attr?key=${encodeURIComponent(key)}&limit=${limit}`),
   faces: () =>
     req<{ enrolled: { id: number; name: string; created_ts: number }[]; unknown: string[] }>(
       "/api/faces"

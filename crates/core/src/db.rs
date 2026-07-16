@@ -650,6 +650,13 @@ pub struct AlarmRule {
     /// with a label/zone scope for precision. Rides `schedule_json`.
     #[serde(default)]
     pub prompt_like: Option<String>,
+    /// P2.5 — CLIP attribute facet (a curated generalisation of `prompt_like`):
+    /// stores a catalog KEY (e.g. `veh_color_red`, see [`crate::attributes`]),
+    /// NOT free text. Resolved to its CLIP text prompt by [`Self::effective_prompt`]
+    /// and fired by the SAME embedding pass as `prompt_like` — so it's an
+    /// "AI watch"-style best-effort gate too. Rides `schedule_json` (no migration).
+    #[serde(default)]
+    pub attr_like: Option<String>,
     #[serde(default)]
     pub min_score: f32,
     /// Legacy single action: "webhook" / "mqtt" / "ntfy". Superseded by
@@ -925,12 +932,33 @@ impl AlarmRule {
         true
     }
 
-    /// Whether this rule carries a non-empty CLIP prompt condition.
+    /// Whether this rule carries a non-empty CLIP prompt condition — a free-text
+    /// `prompt_like` (P2.2) OR an `attr_like` catalog key (P2.5). Both fire ONLY
+    /// via the pipeline's crop-embedding pass, so every plain-`matches` dispatch
+    /// site rejects them (see the tail of [`Self::matches`]).
     pub fn is_prompt_rule(&self) -> bool {
-        self.prompt_like
+        let set = |o: &Option<String>| o.as_deref().map(str::trim).is_some_and(|p| !p.is_empty());
+        set(&self.prompt_like) || set(&self.attr_like)
+    }
+
+    /// The CLIP text prompt this rule matches crops against: the explicit
+    /// `prompt_like` text if set, else the `attr_like` catalog key resolved to
+    /// its prompt (`None` if the key is empty or no longer in the catalog).
+    pub fn effective_prompt(&self) -> Option<String> {
+        if let Some(p) = self
+            .prompt_like
             .as_deref()
             .map(str::trim)
-            .is_some_and(|p| !p.is_empty())
+            .filter(|p| !p.is_empty())
+        {
+            return Some(p.to_string());
+        }
+        self.attr_like
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .and_then(|k| crate::attributes::prompt_for(k))
+            .map(str::to_string)
     }
 
     /// The embedding pass's variant of [`Self::matches`]: the caller has
@@ -949,10 +977,12 @@ impl AlarmRule {
         if !self.is_prompt_rule() {
             return false;
         }
-        // Reuse `matches` by masking the prompt condition: a cloned rule
-        // without the prompt evaluates every other gate identically.
+        // Reuse `matches` by masking the prompt conditions: a cloned rule
+        // without the CLIP prompt/attr gate evaluates every other condition
+        // identically (so `is_prompt_rule()` is false on the clone).
         let mut other = self.clone();
         other.prompt_like = None;
+        other.attr_like = None;
         other.matches(camera_id, label, score, face, plate, None, None)
     }
 }
@@ -2322,7 +2352,8 @@ impl Db {
             "confirm_within": r.confirm_within_secs,
             "vlm_prompt": r.vlm_prompt,
             "describe": r.describe,
-            "prompt_like": r.prompt_like
+            "prompt_like": r.prompt_like,
+            "attr_like": r.attr_like
         })
         .to_string();
         // Persist the full scene, and dual-write the legacy action/target/priority
@@ -2371,7 +2402,8 @@ impl Db {
             "confirm_within": r.confirm_within_secs,
             "vlm_prompt": r.vlm_prompt,
             "describe": r.describe,
-            "prompt_like": r.prompt_like
+            "prompt_like": r.prompt_like,
+            "attr_like": r.attr_like
         })
         .to_string();
         let actions = r.effective_actions();
@@ -2461,6 +2493,7 @@ impl Db {
                     vlm_prompt: sched["vlm_prompt"].as_str().map(str::to_string),
                     describe: sched["describe"].as_bool().unwrap_or(false),
                     prompt_like: sched["prompt_like"].as_str().map(str::to_string),
+                    attr_like: sched["attr_like"].as_str().map(str::to_string),
                     min_score: r.get(7)?,
                     action,
                     target,
@@ -4897,6 +4930,7 @@ mod tests {
             vlm_prompt: None,
             describe: false,
             prompt_like: None,
+            attr_like: None,
             min_score: 0.5,
             action: "webhook".into(),
             target: "http://x".into(),
@@ -4987,6 +5021,46 @@ mod tests {
         );
         assert!(rule.zone_ok(None), "an unscoped rule matches any/no zone");
         assert!(rule.zone_ok(Some("Pool")));
+
+        // P2.5 attr_like: a catalog key makes the rule a prompt rule (fires only
+        // via the embedding pass) and resolves to its CLIP prompt; prompt_like
+        // wins when both are set; an unknown/empty key resolves to nothing.
+        let attr_rule = AlarmRule {
+            label: Some("car".into()),
+            attr_like: Some("veh_color_red".into()),
+            ..rule.clone()
+        };
+        assert!(attr_rule.is_prompt_rule());
+        assert_eq!(attr_rule.effective_prompt().as_deref(), Some("a red car"));
+        // A prompt rule never fires on the plain dispatch path.
+        assert!(!attr_rule.matches(3, "car", 0.9, None, None, None, None));
+        // matches_prompt (embedding pass) checks the OTHER conditions with the
+        // attr gate masked: right label passes, wrong label fails.
+        assert!(attr_rule.matches_prompt(3, "car", 0.9, None, None));
+        assert!(!attr_rule.matches_prompt(3, "person", 0.9, None, None));
+
+        // prompt_like takes precedence over attr_like.
+        let both = AlarmRule {
+            prompt_like: Some("a red pickup truck".into()),
+            attr_like: Some("veh_color_red".into()),
+            ..rule.clone()
+        };
+        assert_eq!(both.effective_prompt().as_deref(), Some("a red pickup truck"));
+
+        // An unknown / empty key: still a prompt rule (so it can't fire on the
+        // plain path), but effective_prompt is None so the pipeline skips it.
+        let stale = AlarmRule {
+            attr_like: Some("veh_color_chartreuse".into()),
+            ..rule.clone()
+        };
+        assert!(stale.is_prompt_rule());
+        assert_eq!(stale.effective_prompt(), None);
+        let empty = AlarmRule {
+            attr_like: Some("   ".into()),
+            ..rule.clone()
+        };
+        assert!(!empty.is_prompt_rule());
+        assert_eq!(empty.effective_prompt(), None);
     }
 
     #[test]
@@ -5010,6 +5084,7 @@ mod tests {
                 vlm_prompt: None,
                 describe: false,
                 prompt_like: None,
+                attr_like: None,
                 min_score: 0.0,
                 action: "webhook".into(),
                 target: "http://t".into(),
@@ -5193,6 +5268,7 @@ mod tests {
             vlm_prompt: None,
             describe: false,
             prompt_like: None,
+            attr_like: None,
             min_score: 0.0,
             action: "webhook".into(),
             target: "http://x".into(),

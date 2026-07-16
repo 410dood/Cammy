@@ -1,5 +1,5 @@
 ﻿import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AlarmRule, Action, ActionKind, ArmMode, CamEvent, Camera, DAY_NAMES, DeterCaps } from "../api";
+import { api, AlarmRule, Action, ActionKind, ArmMode, AttributesCatalog, CamEvent, Camera, DAY_NAMES, DeterCaps } from "../api";
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
 import { prettyGesture } from "../labels";
@@ -11,8 +11,10 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /// Same semantics for the event-shaped conditions (exact label, substring
 /// face/plate/zone/transcript, exact-word gesture, "?" stranger sentinel);
 /// deliberately NOT applied: schedules/arm modes, min-score, cooldowns,
-/// cross-modal confirmation, and the AI gates (vlm_prompt / prompt_like) —
-/// the preview shows candidates before those server-side filters run.
+/// cross-modal confirmation, and the AI gates (vlm_prompt / prompt_like /
+/// attr_like — the CLIP appearance gates need the crop embedding, which lives
+/// server-side) — the preview shows candidates before those server-side filters
+/// run.
 function matchPreview(
   cond: {
     camera_id: number | null;
@@ -128,6 +130,9 @@ export default function Alarms({
   const [vlmPrompt, setVlmPrompt] = useState("");
   const [describeAlert, setDescribeAlert] = useState(false);
   const [promptLike, setPromptLike] = useState("");
+  // P2.5 attribute facet: a curated catalog KEY (or "" for none).
+  const [attrLike, setAttrLike] = useState("");
+  const [attrCatalog, setAttrCatalog] = useState<AttributesCatalog | null>(null);
   const [faceUnknown, setFaceUnknown] = useState(false);
   const [actions, setActions] = useState<Action[]>([{ kind: "webhook", target: "", priority: 0 }]);
   const [modes, setModes] = useState<ArmMode[]>([]);
@@ -268,6 +273,10 @@ export default function Alarms({
     [recent, previewCond],
   );
   useEffect(load, []);
+  // The attribute-facet catalog (static) drives the attr_like dropdown.
+  useEffect(() => {
+    api.attributes().then(setAttrCatalog).catch(() => {});
+  }, []);
 
   // "New rule" can sit below a long rules list — when the builder opens via
   // the button, bring it into view and focus its first input.
@@ -317,6 +326,7 @@ export default function Alarms({
     setVlmPrompt("");
     setDescribeAlert(false);
     setPromptLike("");
+    setAttrLike("");
     setFaceUnknown(false);
     setCooldown(0);
     setDays([]);
@@ -342,6 +352,7 @@ export default function Alarms({
     setVlmPrompt(r.vlm_prompt ?? "");
     setDescribeAlert(!!r.describe);
     setPromptLike(r.prompt_like ?? "");
+    setAttrLike(r.attr_like ?? "");
     setFaceUnknown(!!r.face_unknown);
     setCooldown(r.cooldown_secs ?? 0);
     setDays(r.days ?? []);
@@ -402,6 +413,7 @@ export default function Alarms({
         vlm_prompt: vlmPrompt.trim() || null,
         describe: describeAlert,
         prompt_like: promptLike.trim() || null,
+        attr_like: attrLike || null,
         face_unknown: faceUnknown,
         min_score: 0,
         // Legacy single-action mirror (kept in sync with actions[0] server-side too).
@@ -433,6 +445,16 @@ export default function Alarms({
     }
   };
 
+  // Resolve an attr_like catalog key to its "Group · Label" for the summaries
+  // (falls back to the raw key if the catalog isn't loaded / the key is stale).
+  const attrLabel = (key: string): string => {
+    for (const g of attrCatalog?.groups ?? []) {
+      const a = g.attrs.find((x) => x.key === key);
+      if (a) return `${g.label} · ${a.label}`;
+    }
+    return key;
+  };
+
   const describe = (r: AlarmRule) => {
     const sched =
       (r.days ?? []).length > 0 || r.start_hhmm || r.end_hhmm
@@ -458,6 +480,7 @@ export default function Alarms({
       r.zone_like ? `in zone ~ "${r.zone_like}"` : null,
       r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
       r.prompt_like ? `AI watch: "${r.prompt_like}"` : null,
+      r.attr_like ? `AI watch: ${attrLabel(r.attr_like)}` : null,
       r.vlm_prompt ? `AI-verified: "${r.vlm_prompt}"` : null,
       r.describe ? "AI-described push" : null,
       sched ? `armed ${sched}` : null,
@@ -494,6 +517,7 @@ export default function Alarms({
       r.zone_like ? `zone ~ "${r.zone_like}"` : null,
       r.confirm_label ? `confirmed by ${r.confirm_label} ≤${r.confirm_within_secs ?? 0}s` : null,
       r.prompt_like ? `AI watch: "${r.prompt_like}"` : null,
+      r.attr_like ? `AI watch: ${attrLabel(r.attr_like)}` : null,
       r.vlm_prompt ? `AI-verified: "${r.vlm_prompt}"` : null,
       r.describe ? "AI-described push" : null,
       sched ? `armed ${sched}` : null,
@@ -641,7 +665,9 @@ export default function Alarms({
                       // decides on far fewer than its raw candidates — label
                       // the number honestly instead of implying fired alerts.
                       const aiGated =
-                        !!(r.prompt_like ?? "").trim() || !!(r.vlm_prompt ?? "").trim();
+                        !!(r.prompt_like ?? "").trim() ||
+                        !!(r.attr_like ?? "").trim() ||
+                        !!(r.vlm_prompt ?? "").trim();
                       return (
                         <div
                           style={{ fontSize: "var(--text-sm)" }}
@@ -904,6 +930,35 @@ export default function Alarms({
               <label
                 className="field"
                 style={{ flex: "1 1 100%" }}
+                title="A curated appearance attribute (vehicle colour/type, clothing colour) matched against each detection's image crop via CLIP — the same 'AI watch' mechanism as the free-text field above, but picked from a list. Needs the smart-search (CLIP) models; best-effort semantic matching, so scope it with an object/camera/zone for precision."
+              >
+                AI watch — attribute (optional)
+                <select value={attrLike} onChange={(e) => setAttrLike(e.target.value)}>
+                  <option value="">none</option>
+                  {(attrCatalog?.groups ?? []).map((g) => (
+                    <optgroup key={g.group} label={g.label}>
+                      {g.attrs.map((a) => (
+                        <option key={a.key} value={a.key}>
+                          {a.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <small className="muted">
+                  Adds matches: fires when a detected object looks like this attribute, e.g. a red
+                  car or a person in blue (needs the smart-search models). Best-effort — scope it
+                  with an object/camera/zone for precision.
+                </small>
+                {attrCatalog && !attrCatalog.available && (
+                  <small style={{ color: "var(--warn)" }} role="status">
+                    Smart-search (CLIP) models aren't installed, so this can't fire — see Settings.
+                  </small>
+                )}
+              </label>
+              <label
+                className="field"
+                style={{ flex: "1 1 100%" }}
                 title="Before firing, a local vision model is asked this yes/no question about the snapshot, and the rule fires only if it answers yes — e.g. 'Is a real person at the door?' to filter out shadows, animals and headlights. Needs AI captions + a vision model (Settings); fails open (fires) if the model is unavailable. Detection events only."
               >
                 AI verification — fire only if the vision model confirms (optional)
@@ -950,7 +1005,7 @@ export default function Alarms({
               cond.face_unknown;
             if (!anyCond) return null;
             const hits = previewHits;
-            const aiGated = !!(vlmPrompt.trim() || promptLike.trim());
+            const aiGated = !!(vlmPrompt.trim() || promptLike.trim() || attrLike);
             return (
               <div className="rule-preview" role="status">
                 <span className="muted">
@@ -1144,6 +1199,7 @@ export default function Alarms({
             !gestureLike.trim() &&
             !transcriptLike.trim() &&
             !promptLike.trim() &&
+            !attrLike &&
             !vlmPrompt.trim() &&
             !confirmLabel.trim() &&
             !faceUnknown && (

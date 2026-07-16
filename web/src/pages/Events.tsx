@@ -1,5 +1,5 @@
 ﻿import { useEffect, useRef, useState } from "react";
-import { api, CamEvent, Camera, fmtTime, Segment, SimilarResult } from "../api";
+import { api, AttributesCatalog, CamEvent, Camera, fmtTime, Segment, SimilarResult } from "../api";
 import { useToast, useDialog, Modal, RelTime, EmptyState, ErrorState, TogglePill } from "../ui";
 import Timeline from "../Timeline";
 
@@ -155,6 +155,9 @@ export default function Events({
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<CamEvent[] | null>(null);
   const [searching, setSearching] = useState(false);
+  // P2.5 attribute facets: the catalog (fetched once) + the active facet chip.
+  const [attrCatalog, setAttrCatalog] = useState<AttributesCatalog | null>(null);
+  const [attrKey, setAttrKey] = useState<string | null>(null);
   const [faceFilter, setFaceFilter] = useState("");
   const [plateFilter, setPlateFilter] = useState("");
   const [gestureFilter, setGestureFilter] = useState("");
@@ -182,7 +185,21 @@ export default function Events({
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
+  // Fetch the attribute-facet catalog once (static; drives the filter chips).
+  useEffect(() => {
+    let alive = true;
+    api.attributes().then(
+      (c) => alive && setAttrCatalog(c),
+      () => {}, // non-fatal: the chip row just won't render
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   const runSearch = async () => {
+    // A text search and a facet chip are mutually exclusive result sets.
+    setAttrKey(null);
     const raw = query.trim();
     if (!raw) {
       setSearchResults(null);
@@ -224,6 +241,42 @@ export default function Events({
     setQuery("");
     setSearchResults(null);
     setInterpreted([]);
+    setAttrKey(null);
+  };
+
+  // P2.5: rank the crop corpus against a facet's CLIP prompt (best-effort, like
+  // the "AI watch" alarm gate). Toggling the active chip clears it. Mirrors
+  // runSearch/runImageSearch: null (not []) on failure falls back to the list.
+  const runAttrSearch = async (key: string) => {
+    if (attrKey === key) {
+      setAttrKey(null);
+      setSearchResults(null);
+      return;
+    }
+    if (attrCatalog && !attrCatalog.available) {
+      toast.error("Attribute search needs the smart-search (CLIP) models installed.");
+      return;
+    }
+    setAttrKey(key);
+    setQuery("");
+    setInterpreted([]);
+    setSearching(true);
+    try {
+      const r = await api.searchByAttr(key, 48);
+      if (!r.available) {
+        toast.error("Attribute search needs the smart-search (CLIP) models installed.");
+        setAttrKey(null);
+        setSearchResults(null);
+        return;
+      }
+      setSearchResults(r.results.map((x) => x.event));
+    } catch (e) {
+      toast.error(`Attribute search failed: ${errMsg(e)}`);
+      setAttrKey(null);
+      setSearchResults(null);
+    } finally {
+      setSearching(false);
+    }
   };
   const [open, setOpen] = useState<CamEvent | null>(null);
   const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
@@ -770,7 +823,10 @@ export default function Events({
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
-            if (e.target.value.trim() === "") setSearchResults(null);
+            if (e.target.value.trim() === "") {
+              setSearchResults(null);
+              setAttrKey(null);
+            }
           }}
           onKeyDown={(e) => e.key === "Enter" && runSearch()}
         />
@@ -986,6 +1042,37 @@ export default function Events({
             </TogglePill>
           ))}
         </div>
+      )}
+
+      {/* P2.5 attribute facets: pick "red car" / "person in blue" to CLIP-rank
+          the crop corpus. Best-effort semantic match (same framing as the AI
+          watch alarm gate) — collapsed by default to keep the header calm. */}
+      {attrCatalog && attrCatalog.groups.length > 0 && (
+        <details className="adv" style={{ marginBottom: 12 }}>
+          <summary>Attributes — find by appearance (red car, person in blue…)</summary>
+          <div style={{ marginTop: 8 }}>
+            {!attrCatalog.available && (
+              <div className="muted" style={{ fontSize: "var(--text-sm)", marginBottom: 8 }}>
+                Needs the smart-search (CLIP) models installed to match appearances.
+              </div>
+            )}
+            {attrCatalog.groups.map((g) => (
+              <div key={g.group} className="row" style={{ marginBottom: 6, flexWrap: "wrap" }}>
+                <span className="muted" style={{ minWidth: 150 }}>{g.label}</span>
+                {g.attrs.map((a) => (
+                  <TogglePill
+                    key={a.key}
+                    on={attrKey === a.key}
+                    ariaLabel={`Find ${a.label} (${a.prompt})`}
+                    onClick={() => runAttrSearch(a.key)}
+                  >
+                    {a.label}
+                  </TogglePill>
+                ))}
+              </div>
+            ))}
+          </div>
+        </details>
       )}
 
       {selectMode && (
