@@ -95,8 +95,8 @@ impl PlateEngine {
             .collect();
         anyhow::ensure!(!dict.is_empty(), "empty plate dict");
         Ok(Self {
-            det: detector::build_ort_session(DET_MODEL, true)?,
-            rec: detector::build_ort_session(REC_MODEL, true)?,
+            det: detector::build_ort_session(DET_MODEL, "cpu")?,
+            rec: detector::build_ort_session(REC_MODEL, "cpu")?,
             dict,
         })
     }

@@ -10,7 +10,7 @@ use facerec::{cosine, FaceEngine};
 fn main() -> Result<()> {
     let paths: Vec<String> = std::env::args().skip(1).collect();
     anyhow::ensure!(!paths.is_empty(), "usage: probe <imgA> [imgB]");
-    let mut eng = FaceEngine::new("det_10g.onnx", "w600k_r50.onnx", false)?;
+    let mut eng = FaceEngine::new("det_10g.onnx", "w600k_r50.onnx", "auto")?;
 
     let mut all: Vec<(String, Vec<f32>)> = Vec::new();
     for path in &paths {

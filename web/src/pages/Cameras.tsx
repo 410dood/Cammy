@@ -85,6 +85,7 @@ function TuneModal({
   camera,
   settings,
   poseModelMissing,
+  openvinoAvailable,
   onClose,
   onSaved,
   onError,
@@ -97,6 +98,9 @@ function TuneModal({
   /** True when the pose model isn't downloaded, so an enabled feature doesn't
    *  silently no-op (the gitignored-pose-model case CLAUDE.md flags). */
   poseModelMissing: boolean;
+  /** True when the OpenVINO EP actually runs in this build — the Accelerator
+   *  dropdown enables its OpenVINO option only then (honest gating). */
+  openvinoAvailable: boolean;
   onClose: () => void;
   onSaved: () => void;
   onError: (e: string) => void;
@@ -117,6 +121,7 @@ function TuneModal({
     gesture_detect: camera.detect_config.gesture_detect ?? false,
     model: camera.detect_config.model ?? null,
     force_cpu: camera.detect_config.force_cpu ?? null,
+    accelerator: camera.detect_config.accelerator ?? null,
     poll_ms: camera.detect_config.poll_ms ?? null,
     face_recognize: camera.detect_config.face_recognize ?? null,
     two_way_audio: camera.detect_config.two_way_audio ?? false,
@@ -447,18 +452,45 @@ function TuneModal({
                 onChange={(e) => setDc({ ...dc, model: e.target.value.trim() || null })}
               />
             </label>
-            <label className="field" title="Accelerator assignment for this camera's detector.">
+            <label className="field" title="Which processor runs this camera's detector. Inherit uses the global setting.">
               Accelerator
               <select
-                value={dc.force_cpu === null ? "" : dc.force_cpu ? "cpu" : "gpu"}
-                onChange={(e) =>
-                  setDc({ ...dc, force_cpu: e.target.value === "" ? null : e.target.value === "cpu" })
+                value={
+                  dc.accelerator === "openvino"
+                    ? "openvino"
+                    : dc.accelerator === "cpu"
+                    ? "cpu"
+                    : dc.accelerator === "auto"
+                    ? "gpu"
+                    : dc.force_cpu === null
+                    ? ""
+                    : dc.force_cpu
+                    ? "cpu"
+                    : "gpu"
                 }
+                onChange={(e) => {
+                  const v = e.target.value;
+                  // Keep the legacy force_cpu in lockstep for backward safety; an
+                  // explicit accelerator (auto/cpu/openvino) is what the backend
+                  // resolves on. "" inherits both from the global settings.
+                  if (v === "") setDc({ ...dc, accelerator: null, force_cpu: null });
+                  else if (v === "gpu") setDc({ ...dc, accelerator: "auto", force_cpu: false });
+                  else if (v === "cpu") setDc({ ...dc, accelerator: "cpu", force_cpu: true });
+                  else if (v === "openvino") setDc({ ...dc, accelerator: "openvino", force_cpu: false });
+                }}
               >
                 <option value="">Inherit global</option>
-                <option value="gpu">GPU</option>
+                <option value="gpu">GPU (best for this OS)</option>
                 <option value="cpu">CPU</option>
+                <option value="openvino" disabled={!openvinoAvailable}>
+                  OpenVINO (Intel){openvinoAvailable ? "" : " — not available in this build"}
+                </option>
               </select>
+              {!openvinoAvailable && (
+                <span className="feat-help">
+                  OpenVINO (Intel iGPU/NPU) needs a build with the Intel EP; unavailable here.
+                </span>
+              )}
             </label>
             <label className="field" title="Per-camera sample-interval cap (resource governance). Only slows this camera down.">
               Detection interval (ms)
@@ -946,6 +978,10 @@ export default function Cameras({
   // callout without a refetch on every modal open.
   const [settings, setSettings] = useState<Settings | null>(null);
   const [poseModelMissing, setPoseModelMissing] = useState(false);
+  // Whether OpenVINO (Intel iGPU/NPU) is genuinely runnable in this build, so the
+  // per-camera Accelerator dropdown offers it only when it works (never a silent
+  // no-op) — false out-of-the-box.
+  const [openvinoAvailable, setOpenvinoAvailable] = useState(false);
 
   useEffect(() => {
     const load = () => api.status().then(setStatus).catch(() => {});
@@ -954,7 +990,10 @@ export default function Cameras({
     api.settings().then(setSettings).catch(() => {});
     api
       .capabilities()
-      .then((r) => setPoseModelMissing(!(r.features.find((f) => f.key === "pose")?.present ?? true)))
+      .then((r) => {
+        setPoseModelMissing(!(r.features.find((f) => f.key === "pose")?.present ?? true));
+        setOpenvinoAvailable(!!r.openvino);
+      })
       .catch(() => {});
     return () => clearInterval(t);
   }, []);
@@ -1306,6 +1345,7 @@ export default function Cameras({
           camera={tuning}
           settings={settings}
           poseModelMissing={poseModelMissing}
+          openvinoAvailable={openvinoAvailable}
           onClose={() => setTuning(null)}
           onSaved={onChange}
           onError={onError}

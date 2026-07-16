@@ -8,7 +8,10 @@
 use anyhow::{Context, Result};
 use image::GenericImageView;
 use ort::execution_providers::ExecutionProvider;
-use ort::session::{builder::GraphOptimizationLevel, Session};
+use ort::session::{
+    builder::{GraphOptimizationLevel, SessionBuilder},
+    Session,
+};
 use ort::value::Tensor;
 
 // Re-exported so downstream crates (core's smart-search module) can build
@@ -62,8 +65,10 @@ pub struct PoseEstimator {
 }
 
 impl PoseEstimator {
-    pub fn new(model_path: &str, force_cpu: bool, conf: f32, iou: f32) -> Result<Self> {
-        let session = build_ort_session(model_path, force_cpu)?;
+    /// `accelerator` is the resolved accelerator string (`""`/`"auto"` = best
+    /// per-OS EP, `"cpu"`, `"openvino"`) — see [`build_ort_session`].
+    pub fn new(model_path: &str, accelerator: &str, conf: f32, iou: f32) -> Result<Self> {
+        let session = build_ort_session(model_path, accelerator)?;
         Ok(Self { session, conf, iou })
     }
 
@@ -94,15 +99,34 @@ impl PoseEstimator {
     }
 }
 
-/// Build an ONNX Runtime session with the best execution provider for this OS
-/// (DirectML / CoreML / CUDA) and CPU fallback. Shared by every model we run
-/// (YOLO objects, face detection, face embeddings).
-pub fn build_ort_session(model_path: &str, force_cpu: bool) -> Result<Session> {
+/// Build an ONNX Runtime session for the requested `accelerator`, with CPU as
+/// the automatic fallback. Shared by every model we run (YOLO objects, face
+/// detection, face embeddings, pose).
+///
+/// `accelerator` selects the execution provider:
+/// - `""` or `"auto"` — the best per-OS EP (DirectML on Windows, CoreML on
+///   macOS, CUDA on Linux). This is the historical default behavior.
+/// - `"cpu"` — no GPU/accelerator EP; run on the CPU EP.
+/// - `"openvino"` — the OpenVINO EP (Intel iGPU/NPU), registered before the CPU
+///   fallback. Only actually available in a build with the `openvino` cargo
+///   feature AND an ONNX Runtime that bundles OpenVINO; otherwise ONNX Runtime
+///   silently falls back to CPU (see [`openvino_available`] for honest gating).
+///
+/// Any unrecognized value is treated as `"auto"`. ONNX Runtime registers each
+/// requested EP with `error_on_failure = false`, so a requested EP that can't
+/// load degrades to CPU rather than failing the session build.
+pub fn build_ort_session(model_path: &str, accelerator: &str) -> Result<Session> {
     let mut builder = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?;
 
-    if !force_cpu {
+    let accel = accelerator.trim();
+    if accel.eq_ignore_ascii_case("cpu") {
+        // Explicit CPU: register no GPU/accelerator EP.
+    } else if accel.eq_ignore_ascii_case("openvino") {
+        builder = register_openvino(builder)?;
+    } else {
+        // "" / "auto" / anything else: the best per-OS execution provider.
         #[cfg(target_os = "windows")]
         {
             use ort::execution_providers::DirectMLExecutionProvider;
@@ -131,11 +155,77 @@ pub fn build_ort_session(model_path: &str, force_cpu: bool) -> Result<Session> {
         .with_context(|| format!("loading model {model_path}"))
 }
 
+/// Resolve a stored accelerator `choice` plus the legacy `force_cpu` flag into
+/// the canonical accelerator string [`build_ort_session`] understands.
+///
+/// Precedence (documented contract): an explicit `choice` (`"cpu"` /
+/// `"openvino"`) wins; when `choice` is empty or `"auto"`, `force_cpu` decides
+/// (`"cpu"` when set, else `"auto"`). So the default — `choice == ""` and
+/// `force_cpu == false` — yields `"auto"`, i.e. today's exact per-OS EP
+/// behavior; `force_cpu == true` yields `"cpu"`, unchanged from before.
+pub fn effective_accelerator(choice: &str, force_cpu: bool) -> &str {
+    let c = choice.trim();
+    if c.is_empty() || c.eq_ignore_ascii_case("auto") {
+        if force_cpu {
+            "cpu"
+        } else {
+            "auto"
+        }
+    } else {
+        c
+    }
+}
+
+/// Whether the OpenVINO execution provider is actually usable in this build.
+///
+/// Returns `false` when the `openvino` cargo feature is off (the default), with
+/// no FFI probe at all. When the feature is on, it asks ONNX Runtime whether the
+/// linked runtime advertises the OpenVINO provider — so it reports `true` only
+/// when OpenVINO can genuinely run, never as a silent no-op. The UI keys the
+/// OpenVINO option off this (via `/api/capabilities`), exactly like the optional
+/// model-presence gates.
+pub fn openvino_available() -> bool {
+    #[cfg(feature = "openvino")]
+    {
+        use ort::execution_providers::OpenVINOExecutionProvider;
+        OpenVINOExecutionProvider::default()
+            .is_available()
+            .unwrap_or(false)
+    }
+    #[cfg(not(feature = "openvino"))]
+    {
+        false
+    }
+}
+
+/// Register the OpenVINO EP (built into this crate via the `openvino` feature),
+/// before the CPU fallback.
+#[cfg(feature = "openvino")]
+fn register_openvino(builder: SessionBuilder) -> Result<SessionBuilder> {
+    use ort::execution_providers::OpenVINOExecutionProvider;
+    let ep = OpenVINOExecutionProvider::default();
+    log_ep("OpenVINO", ep.is_available().unwrap_or(false));
+    Ok(builder.with_execution_providers([ep.build()])?)
+}
+
+/// No-op OpenVINO registration for the default build (feature off): there is no
+/// OpenVINO EP compiled in, so the session runs on the per-OS/CPU EPs. We never
+/// pretend otherwise — `openvino_available()` reports false so the UI hides the
+/// option.
+#[cfg(not(feature = "openvino"))]
+fn register_openvino(builder: SessionBuilder) -> Result<SessionBuilder> {
+    tracing::warn!(
+        "OpenVINO accelerator was requested, but this build has no OpenVINO EP; running on CPU"
+    );
+    Ok(builder)
+}
+
 impl Detector {
-    /// Load the model with the best execution provider for this OS (or CPU when
-    /// `force_cpu` is set). `conf` / `iou` are the confidence and NMS thresholds.
-    pub fn new(model_path: &str, force_cpu: bool, conf: f32, iou: f32) -> Result<Self> {
-        let session = build_ort_session(model_path, force_cpu)?;
+    /// Load the model with the requested `accelerator` (`""`/`"auto"` = best
+    /// per-OS EP, `"cpu"`, `"openvino"`; see [`build_ort_session`]). `conf` /
+    /// `iou` are the confidence and NMS thresholds.
+    pub fn new(model_path: &str, accelerator: &str, conf: f32, iou: f32) -> Result<Self> {
+        let session = build_ort_session(model_path, accelerator)?;
         Ok(Self { session, conf, iou })
     }
 

@@ -94,12 +94,11 @@ pub fn run(
             .map(|(p, _)| p != &settings.pose_model)
             .unwrap_or(true)
         {
-            match PoseEstimator::new(
-                &settings.pose_model,
-                settings.force_cpu,
-                POSE_CONF,
-                POSE_IOU,
-            ) {
+            // Pose follows the GLOBAL accelerator (per-camera accelerator
+            // overrides only the object detector).
+            let pose_accel =
+                detector::effective_accelerator(&settings.accelerator, settings.force_cpu);
+            match PoseEstimator::new(&settings.pose_model, pose_accel, POSE_CONF, POSE_IOU) {
                 Ok(e) => {
                     tracing::info!(model = %settings.pose_model, "pose worker ready");
                     estimator = Some((settings.pose_model.clone(), e));

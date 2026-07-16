@@ -73,7 +73,7 @@ impl Engine {
             .collect::<Vec<_>>();
         anyhow::ensure!(classes.len() > 500, "unexpected yamnet class map");
         Ok(Self {
-            session: detector::build_ort_session(MODEL, true)?,
+            session: detector::build_ort_session(MODEL, "cpu")?,
             classes,
         })
     }

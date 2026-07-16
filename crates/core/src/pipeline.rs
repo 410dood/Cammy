@@ -304,8 +304,12 @@ fn run_worker(
         // Drop cached sessions when global model/EP/threshold settings change
         // (per-camera overrides get their own cache keys below).
         let gkey = format!(
-            "{}|{}|{}|{}",
-            settings.model_path, settings.force_cpu, settings.confidence, settings.nms_iou
+            "{}|{}|{}|{}|{}",
+            settings.model_path,
+            settings.force_cpu,
+            settings.accelerator,
+            settings.confidence,
+            settings.nms_iou
         );
         if gkey != global_detect_key {
             detectors.clear();
@@ -440,15 +444,26 @@ fn run_worker(
                 .clone()
                 .filter(|m| !m.is_empty())
                 .unwrap_or_else(|| settings.model_path.clone());
+            // Accelerator resolution (per-camera override else global), collapsed
+            // to a canonical string: an explicit named accelerator wins, else the
+            // legacy force_cpu flag, else "auto" (the best per-OS EP). With no
+            // accelerator configured (the default) this is exactly the prior
+            // force_cpu behavior. The cache key includes it so a change rebuilds
+            // the session.
             let force_cpu = cam.detect_config.force_cpu.unwrap_or(settings.force_cpu);
-            let dkey = format!(
-                "{model}|{force_cpu}|{}|{}",
-                settings.confidence, settings.nms_iou
-            );
+            let accel_choice = cam
+                .detect_config
+                .accelerator
+                .as_deref()
+                .map(|a| a.trim())
+                .filter(|a| !a.is_empty())
+                .unwrap_or(settings.accelerator.as_str());
+            let accel = detector::effective_accelerator(accel_choice, force_cpu);
+            let dkey = format!("{model}|{accel}|{}|{}", settings.confidence, settings.nms_iou);
             if !detectors.contains_key(&dkey) {
-                match Detector::new(&model, force_cpu, settings.confidence, settings.nms_iou) {
+                match Detector::new(&model, accel, settings.confidence, settings.nms_iou) {
                     Ok(d) => {
-                        tracing::info!(camera = %cam.name, model = %model, force_cpu, "detector ready");
+                        tracing::info!(camera = %cam.name, model = %model, accelerator = %accel, "detector ready");
                         detectors.insert(dkey.clone(), d);
                     }
                     Err(e) => {
@@ -457,7 +472,7 @@ fn run_worker(
                     }
                 }
             }
-            let accelerator = accel_label(force_cpu);
+            let accelerator = accel_label(accel);
 
             // Sample the low-res sub-stream when one is configured.
             let stream_key = match cam.detect_source.as_deref().filter(|s| !s.is_empty()) {
@@ -1188,9 +1203,13 @@ fn run_worker(
                 .face_recognize
                 .unwrap_or(settings.face_recognition);
             if face_on && wanted.iter().any(|d| d.label == "person") {
+                // Face recognition follows the GLOBAL accelerator (like pose) —
+                // per-camera accelerator overrides only the object detector.
+                let face_accel =
+                    detector::effective_accelerator(&settings.accelerator, settings.force_cpu);
                 let fkey = format!(
                     "{}|{}|{}",
-                    settings.face_det_model, settings.face_rec_model, settings.force_cpu
+                    settings.face_det_model, settings.face_rec_model, face_accel
                 );
                 if (face_engine.is_none() || fkey != face_key)
                     && std::path::Path::new(&settings.face_det_model).exists()
@@ -1199,7 +1218,7 @@ fn run_worker(
                     match facerec::FaceEngine::new(
                         &settings.face_det_model,
                         &settings.face_rec_model,
-                        settings.force_cpu,
+                        face_accel,
                     ) {
                         Ok(e) => {
                             tracing::info!("face recognition ready");
@@ -2173,9 +2192,14 @@ fn embed_crop(
     embedder.embed(&frame.crop_imm(x, y, w, h)).ok()
 }
 
-fn accel_label(force_cpu: bool) -> &'static str {
-    if force_cpu {
+/// Human-readable name of the accelerator a resolved accelerator string selects,
+/// for the status board. `accel` is the canonical string from
+/// `detector::effective_accelerator` (`"cpu"` / `"openvino"` / `"auto"`).
+fn accel_label(accel: &str) -> &'static str {
+    if accel.eq_ignore_ascii_case("cpu") {
         "CPU"
+    } else if accel.eq_ignore_ascii_case("openvino") {
+        "OpenVINO"
     } else if cfg!(target_os = "windows") {
         "DirectML"
     } else if cfg!(target_os = "macos") {

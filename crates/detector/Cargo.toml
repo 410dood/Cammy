@@ -24,6 +24,17 @@ ort = { version = "=2.0.0-rc.10", default-features = false, features = [
     "copy-dylibs",
 ] }
 
+[features]
+default = []
+# OpenVINO execution provider (Intel iGPU/NPU). OFF by default: the pinned
+# `download-binaries` ONNX Runtime does NOT bundle OpenVINO, so enabling this
+# needs an ONNX Runtime built with OpenVINO (and the Intel OpenVINO toolkit) —
+# an environment/hardware prerequisite, not something CI can satisfy. With the
+# feature off, `openvino_available()` reports false and the runtime silently
+# falls back to CPU if OpenVINO is ever requested (see `register_openvino`), so
+# the default build + CI are completely unaffected.
+openvino = ["ort/openvino"]
+
 # --- Per-OS GPU execution providers (same as spike-detect) -----------------
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["directml"] }

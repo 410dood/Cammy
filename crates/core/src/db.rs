@@ -220,8 +220,17 @@ pub struct DetectConfig {
     pub model: Option<String>,
     /// Per-camera accelerator assignment: force this camera's detector onto CPU
     /// (`Some(true)`) or the GPU (`Some(false)`); `None` inherits the global
-    /// setting. Useful to keep a low-priority camera off a busy GPU.
+    /// setting. Useful to keep a low-priority camera off a busy GPU. Kept for
+    /// backward compatibility — the named `accelerator` field below supersedes
+    /// it; `force_cpu` still applies when `accelerator` is unset.
     pub force_cpu: Option<bool>,
+    /// Per-camera named execution provider: `None`/`""` inherits the global
+    /// `Settings.accelerator`; `"auto"` = the best per-OS EP; `"cpu"`; or
+    /// `"openvino"` (Intel iGPU/NPU, only when the build/runtime supports it).
+    /// An explicit accelerator wins over `force_cpu`; `force_cpu` applies only
+    /// when this is unset. See `detector::effective_accelerator`.
+    #[serde(default)]
+    pub accelerator: Option<String>,
     /// Per-camera sample interval cap in ms (resource governance / FPS cap);
     /// `None` uses the global poll interval. Only ever slows a camera down.
     pub poll_ms: Option<u64>,
@@ -1171,6 +1180,12 @@ pub struct Settings {
     pub recordings_dir: String,
     pub model_path: String,
     pub force_cpu: bool,
+    /// Global named execution provider for detector/face/pose sessions: `""` =
+    /// the best per-OS EP (today's default), `"cpu"`, or `"openvino"` (Intel
+    /// iGPU/NPU, only when the build/runtime supports it — gated in the UI via
+    /// `/api/capabilities`). An explicit accelerator wins over `force_cpu`.
+    #[serde(default)]
+    pub accelerator: String,
     pub go2rtc_api_port: u16,
     /// POSTed a JSON payload for every event when non-empty (Blue Iris
     /// "alarm server" style).
@@ -1421,6 +1436,7 @@ impl Default for Settings {
             recordings_dir: String::new(),
             model_path: "yolov8n.onnx".into(),
             force_cpu: false,
+            accelerator: String::new(),
             go2rtc_api_port: 1984,
             webhook_url: String::new(),
             record_audio: false,
@@ -5504,6 +5520,7 @@ mod tests {
             gesture_detect: true,
             model: Some("yolov8s.onnx".into()),
             force_cpu: Some(true),
+            accelerator: Some("openvino".into()),
             poll_ms: Some(2000),
             face_recognize: Some(true),
             two_way_audio: true,

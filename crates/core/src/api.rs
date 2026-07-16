@@ -367,7 +367,14 @@ async fn capabilities(State(st): State<AppState>) -> Json<serde_json::Value> {
             false,
         ),
     ]);
-    Json(serde_json::json!({ "features": features }))
+    // Honest gate for the OpenVINO accelerator option: true only when this build
+    // + linked ONNX Runtime can genuinely run OpenVINO (false out-of-the-box —
+    // the prebuilt runtime doesn't bundle it), so the UI never offers a silent
+    // no-op. Same pattern as the model-presence flags above.
+    Json(serde_json::json!({
+        "features": features,
+        "openvino": detector::openvino_available(),
+    }))
 }
 
 /// Per-camera health: frame freshness from the detection pipeline + recorder

@@ -1762,6 +1762,10 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
   // Whether a remote-access password is set (null = still loading). Owned here
   // (not in RemoteAccessCard) so the page-level banner sees it on every tab.
   const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);
+  // Whether OpenVINO (Intel iGPU/NPU) genuinely runs in this build, so the global
+  // Accelerator dropdown offers it only when it works (honest gate) — false
+  // out-of-the-box.
+  const [openvinoAvailable, setOpenvinoAvailable] = useState(false);
 
   const load = () => {
     setLoadError(null);
@@ -1772,6 +1776,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
 
   useEffect(() => {
     api.authStatus().then((a) => setAuthEnabled(a.enabled)).catch(() => {});
+    api.capabilities().then((r) => setOpenvinoAvailable(!!r.openvino)).catch(() => {});
   }, []);
 
   // Warn before a refresh/close/navigation-away discards unsaved global edits.
@@ -1956,11 +1961,36 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={() => set({ highlight_motion: !(s.highlight_motion ?? true) })}
               />
             </label>
-            <label className="toggle field">
-              run detection on CPU only
-              <input type="checkbox" checked={s.force_cpu} onChange={() => set({ force_cpu: !s.force_cpu })} />
+            <label className="field" title="Which processor runs AI detection (and face/pose). GPU is fastest; CPU is the most compatible fallback.">
+              detection accelerator
+              <select
+                value={
+                  s.accelerator === "openvino"
+                    ? "openvino"
+                    : s.accelerator === "cpu" || s.force_cpu
+                    ? "cpu"
+                    : "gpu"
+                }
+                onChange={(e) => {
+                  const v = e.target.value;
+                  // Mirror the legacy force_cpu flag so older code paths stay
+                  // consistent; "" is never selectable here (this is the global
+                  // default), so an explicit accelerator is always written.
+                  if (v === "gpu") set({ accelerator: "", force_cpu: false });
+                  else if (v === "cpu") set({ accelerator: "cpu", force_cpu: true });
+                  else if (v === "openvino") set({ accelerator: "openvino", force_cpu: false });
+                }}
+              >
+                <option value="gpu">GPU (best for this OS)</option>
+                <option value="cpu">CPU only</option>
+                <option value="openvino" disabled={!openvinoAvailable}>
+                  OpenVINO (Intel){openvinoAvailable ? "" : " — not available in this build"}
+                </option>
+              </select>
               <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                Use this if GPU detection causes problems. Slower but more compatible.
+                GPU uses this OS's accelerator (DirectML/CoreML/CUDA). Choose CPU if GPU detection
+                causes problems — slower but more compatible.
+                {!openvinoAvailable && " OpenVINO (Intel iGPU/NPU) needs a build with the Intel EP."}
               </span>
             </label>
             <label className="field">

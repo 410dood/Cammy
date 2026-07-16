@@ -42,10 +42,12 @@ pub struct FaceEngine {
 }
 
 impl FaceEngine {
-    pub fn new(det_path: &str, rec_path: &str, force_cpu: bool) -> Result<Self> {
+    /// `accelerator` is the resolved accelerator string (`""`/`"auto"` = best
+    /// per-OS EP, `"cpu"`, `"openvino"`; see [`detector::build_ort_session`]).
+    pub fn new(det_path: &str, rec_path: &str, accelerator: &str) -> Result<Self> {
         Ok(Self {
-            det: detector::build_ort_session(det_path, force_cpu)?,
-            rec: detector::build_ort_session(rec_path, force_cpu)?,
+            det: detector::build_ort_session(det_path, accelerator)?,
+            rec: detector::build_ort_session(rec_path, accelerator)?,
         })
     }
 

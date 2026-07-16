@@ -84,6 +84,10 @@ export interface DetectConfig {
   gesture_detect: boolean;
   model: string | null;
   force_cpu: boolean | null;
+  /** Per-camera named execution provider. null/"" inherits the global
+   *  Settings.accelerator; "auto" = best per-OS EP; "cpu"; "openvino" (Intel,
+   *  only when the build/runtime supports it). Wins over force_cpu when set. */
+  accelerator?: string | null;
   poll_ms: number | null;
   face_recognize: boolean | null;
   two_way_audio: boolean;
@@ -233,6 +237,10 @@ export interface Settings {
   recordings_dir: string;
   model_path: string;
   force_cpu: boolean;
+  /** Global named execution provider: "" = best per-OS EP (default), "cpu",
+   *  "openvino" (Intel, only when the build/runtime supports it). Wins over
+   *  force_cpu when set. */
+  accelerator: string;
   go2rtc_api_port: number;
   webhook_url: string;
   record_audio: boolean;
@@ -716,7 +724,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   config: () => req<AppConfig>("/api/config"),
-  capabilities: () => req<{ features: Capability[] }>("/api/capabilities"),
+  capabilities: () => req<{ features: Capability[]; openvino?: boolean }>("/api/capabilities"),
   /** Current entitlement (trial countdown / licensed / expired). */
   license: () => req<LicenseInfo>("/api/license"),
   /** Install a license key (Admin). Returns the resulting entitlement. */

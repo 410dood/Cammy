@@ -38,7 +38,7 @@ impl ImageEmbedder {
     pub fn try_new() -> Result<Self> {
         Ok(Self {
             // int8-quantized: run on CPU regardless of the GPU settings.
-            session: detector::build_ort_session(VISION_MODEL, true)?,
+            session: detector::build_ort_session(VISION_MODEL, "cpu")?,
         })
     }
 
@@ -88,7 +88,7 @@ pub fn embed_image(img: &DynamicImage) -> Result<Vec<f32>> {
     let cell = VISION.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().expect("clip vision mutex poisoned");
     if guard.is_none() {
-        *guard = Some(detector::build_ort_session(VISION_MODEL, true)?);
+        *guard = Some(detector::build_ort_session(VISION_MODEL, "cpu")?);
     }
     let session = guard.as_mut().expect("initialized above");
     run_vision(session, img)
@@ -101,7 +101,7 @@ pub fn embed_text(query: &str) -> Result<Vec<f32>> {
     let cell = TEXT.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().expect("clip text mutex poisoned");
     if guard.is_none() {
-        let session = detector::build_ort_session(TEXT_MODEL, true)?;
+        let session = detector::build_ort_session(TEXT_MODEL, "cpu")?;
         let tokenizer = tokenizers::Tokenizer::from_file(TOKENIZER)
             .map_err(|e| anyhow::anyhow!("loading {TOKENIZER}: {e}"))?;
         *guard = Some((session, tokenizer));
