@@ -228,10 +228,25 @@ pub fn run(
             tamper_gates.retain(|k, _| live.contains(k));
             gait_states.retain(|k, _| live.contains(k));
             alerted_tracks.retain(|k, _| live.contains(k));
-            // Zone-state maps are keyed by (camera id, zone name) — prune by camera.
-            state_last.retain(|k, _| live.contains(&k.0));
-            state_known.retain(|k, _| live.contains(&k.0));
-            state_pending.retain(|k, _| live.contains(&k.0));
+            // Zone-state maps are keyed by (camera id, zone name). Prune by the
+            // CURRENT set of state-classify zones — not just camera liveness — so
+            // turning a zone's classify off (or renaming the zone) drops its stale
+            // confirmed state; a later re-enable then re-establishes a fresh
+            // baseline silently instead of firing a spurious open/closed transition
+            // for a change that happened while monitoring was off.
+            let state_active: std::collections::HashSet<(i64, String)> = cameras
+                .iter()
+                .flat_map(|c| {
+                    c.detect_config
+                        .zones
+                        .iter()
+                        .filter(|z| z.state_classify)
+                        .map(move |z| (c.id, z.name.clone()))
+                })
+                .collect();
+            state_last.retain(|k, _| state_active.contains(k));
+            state_known.retain(|k, _| state_active.contains(k));
+            state_pending.retain(|k, _| state_active.contains(k));
             // Drop parcel state for cameras that are gone OR have package
             // detection off, so toggling it back on starts from a clean slate
             // (a stale `present` state would otherwise fire a spurious
