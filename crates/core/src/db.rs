@@ -341,6 +341,16 @@ pub struct DetectConfig {
     /// Seconds of footage to keep AFTER each detection (post-roll). `None` = 30s.
     #[serde(default)]
     pub trigger_post_roll_secs: Option<u32>,
+    /// Dual-stream recording (P3.7): ALSO record go2rtc's low-res detect
+    /// sub-stream (`{name}_sub`) to disk alongside the full-res main stream, so
+    /// the UI can scrub the lightweight SD copy and play the HD one. OPT-IN and
+    /// off by default — a camera that leaves this false records EXACTLY as before
+    /// (main stream only). Requires a `detect_source` (there's no sub restream to
+    /// record without one); it's silently a no-op otherwise. Sub segments are a
+    /// local scrub aid — pruned by the same retention as main, but never shipped
+    /// offsite. See `record.rs`.
+    #[serde(default)]
+    pub record_substream: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1086,6 +1096,8 @@ pub struct SegmentRow {
     pub start_ts: i64,
     pub bytes: u64,
     pub path: String,
+    /// P3.7: 'main' (full-res archive) or 'sub' (opt-in low-res scrub aid).
+    pub stream: String,
 }
 
 /// After this many failed offsite-upload attempts a segment is given up on
@@ -1553,6 +1565,14 @@ impl Db {
         let _ = conn.execute("ALTER TABLE events ADD COLUMN path_json TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        // P3.7 dual-stream recording: which restream a segment came from —
+        // 'main' (full-res, the archive + everything's default) or 'sub' (the
+        // opt-in low-res scrub aid). Legacy rows and every existing caller are
+        // 'main', so main-stream behavior is byte-for-byte unchanged.
+        let _ = conn.execute(
+            "ALTER TABLE segments ADD COLUMN stream TEXT NOT NULL DEFAULT 'main'",
             [],
         );
         conn.execute_batch(
@@ -4047,11 +4067,15 @@ impl Db {
         start_ts: i64,
         path: &str,
         bytes: u64,
+        stream: &str,
     ) -> Result<()> {
+        // `stream` is 'main' or 'sub' (P3.7). It's only ever set on INSERT — a
+        // path uniquely identifies one file on one stream, so a conflicting
+        // upsert (re-index of a growing segment) never needs to change it.
         self.conn().execute(
-            "INSERT INTO segments (camera_id, start_ts, path, bytes) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO segments (camera_id, start_ts, path, bytes, stream) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(path) DO UPDATE SET bytes = excluded.bytes",
-            params![camera_id, start_ts, path, bytes as i64],
+            params![camera_id, start_ts, path, bytes as i64, stream],
         )?;
         Ok(())
     }
@@ -4092,22 +4116,30 @@ impl Db {
 
     /// Newest-first segments, optionally only those starting before `before`
     /// (exclusive) — lets the Recordings day picker page into history.
+    ///
+    /// `stream` filters by recording stream (P3.7): `None` defaults to `'main'`
+    /// so every existing caller (Recordings list, day time-lapse, motion search)
+    /// keeps seeing only full-res segments, unchanged. Pass `Some("sub")` to page
+    /// the low-res scrub stream.
     pub fn list_segments(
         &self,
         camera_id: Option<i64>,
         before: Option<i64>,
         limit: u32,
+        stream: Option<&str>,
     ) -> Result<Vec<SegmentRow>> {
+        let stream = stream.unwrap_or("main");
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path
+            "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path, s.stream
              FROM segments s JOIN cameras c ON c.id = s.camera_id
              WHERE (?1 IS NULL OR s.camera_id = ?1)
                AND (?2 IS NULL OR s.start_ts < ?2)
+               AND s.stream = ?4
              ORDER BY s.start_ts DESC LIMIT ?3",
         )?;
         let rows = stmt
-            .query_map(params![camera_id, before, limit], |r| {
+            .query_map(params![camera_id, before, limit, stream], |r| {
                 Ok(SegmentRow {
                     id: r.get(0)?,
                     camera_id: r.get(1)?,
@@ -4115,6 +4147,7 @@ impl Db {
                     start_ts: r.get(3)?,
                     bytes: r.get::<_, i64>(4)? as u64,
                     path: r.get(5)?,
+                    stream: r.get(6)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -4164,7 +4197,7 @@ impl Db {
         let conn = self.conn();
         let row = conn
             .query_row(
-                "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path
+                "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path, s.stream
                  FROM segments s JOIN cameras c ON c.id = s.camera_id
                  WHERE s.id = ?1",
                 params![id],
@@ -4176,6 +4209,7 @@ impl Db {
                         start_ts: r.get(3)?,
                         bytes: r.get::<_, i64>(4)? as u64,
                         path: r.get(5)?,
+                        stream: r.get(6)?,
                     })
                 },
             )
@@ -4183,18 +4217,28 @@ impl Db {
         Ok(row)
     }
 
-    /// The newest segment for a camera that starts at or before `ts` — i.e. the
-    /// recording most likely to contain that instant. The caller checks whether
-    /// `ts` actually falls inside the segment's duration.
-    pub fn find_segment_at(&self, camera_id: i64, ts: i64) -> Result<Option<SegmentRow>> {
+    /// The newest segment for a camera on `stream` that starts at or before `ts`
+    /// — i.e. the recording most likely to contain that instant. The caller
+    /// checks whether `ts` actually falls inside the segment's duration.
+    ///
+    /// The `stream` filter is REQUIRED (P3.7): a main and a sub segment share a
+    /// near-identical `start_ts`, so without it the `ORDER BY start_ts DESC
+    /// LIMIT 1` would pick between the two arbitrarily. Every existing caller
+    /// passes `"main"`, so full-res resolution is unchanged.
+    pub fn find_segment_at(
+        &self,
+        camera_id: i64,
+        ts: i64,
+        stream: &str,
+    ) -> Result<Option<SegmentRow>> {
         let conn = self.conn();
         let row = conn
             .query_row(
-                "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path
+                "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path, s.stream
                  FROM segments s JOIN cameras c ON c.id = s.camera_id
-                 WHERE s.camera_id = ?1 AND s.start_ts <= ?2
+                 WHERE s.camera_id = ?1 AND s.start_ts <= ?2 AND s.stream = ?3
                  ORDER BY s.start_ts DESC LIMIT 1",
-                params![camera_id, ts],
+                params![camera_id, ts, stream],
                 |r| {
                     Ok(SegmentRow {
                         id: r.get(0)?,
@@ -4203,6 +4247,7 @@ impl Db {
                         start_ts: r.get(3)?,
                         bytes: r.get::<_, i64>(4)? as u64,
                         path: r.get(5)?,
+                        stream: r.get(6)?,
                     })
                 },
             )
@@ -4287,12 +4332,16 @@ impl Db {
         } else {
             ""
         };
+        // P3.7: sub-stream segments are a LOCAL scrub aid, never part of the
+        // offsite archive — restrict candidates to 'main'. Mirrored in
+        // `offsite_stats`' backlog so the two never disagree.
         let sql = format!(
             "SELECT s.path, c.name, s.start_ts, s.bytes,
                     COALESCE(o.attempts, 0), COALESCE(o.updated_ts, 0)
              FROM segments s JOIN cameras c ON c.id = s.camera_id
              LEFT JOIN offsite_uploads o ON o.path = s.path
-             WHERE (o.status IS NULL OR o.status = 'failed'){event_filter}
+             WHERE (o.status IS NULL OR o.status = 'failed')
+               AND s.stream = 'main'{event_filter}
              ORDER BY (o.status IS NOT NULL) ASC, s.start_ts ASC LIMIT ?1"
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -4408,11 +4457,14 @@ impl Db {
         // `pending_offsite` applies, so the backlog counts only *actionable*
         // segments — non-event segments (never candidates) don't inflate it into
         // a permanent false "backup stalled" alert.
+        // P3.7: exclude sub-stream segments (local-only scrub aid) from the
+        // backlog, exactly as `pending_offsite` excludes them from candidates.
         let backlog: i64 = match event_span {
             None => conn.query_row(
                 "SELECT COUNT(*) FROM segments s
                  LEFT JOIN offsite_uploads o ON o.path = s.path
-                 WHERE o.status IS NULL OR o.status = 'failed'",
+                 WHERE (o.status IS NULL OR o.status = 'failed')
+                   AND s.stream = 'main'",
                 [],
                 |r| r.get(0),
             )?,
@@ -4420,6 +4472,7 @@ impl Db {
                 "SELECT COUNT(*) FROM segments s
                  LEFT JOIN offsite_uploads o ON o.path = s.path
                  WHERE (o.status IS NULL OR o.status = 'failed')
+                   AND s.stream = 'main'
                    AND EXISTS (SELECT 1 FROM events e
                        WHERE e.camera_id = s.camera_id
                          AND e.ts BETWEEN s.start_ts - ?1 AND s.start_ts + ?1 + ?1)",
@@ -4789,8 +4842,8 @@ mod tests {
         let db = mem_db();
         let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
         // Two 60s segments back to back; span slack = 60 + 15.
-        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100).unwrap();
-        db.upsert_segment(cam.id, 1060, "/rec/gate/b.mp4", 100).unwrap();
+        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100, "main").unwrap();
+        db.upsert_segment(cam.id, 1060, "/rec/gate/b.mp4", 100, "main").unwrap();
         let span = 60 + 15;
 
         // An UNflagged event inside segment a; a FLAGGED event squarely inside b
@@ -4814,6 +4867,64 @@ mod tests {
         assert!(db.flagged_segment_paths(span).unwrap().is_empty());
     }
 
+    /// P3.7: a segment is stored + read back with its stream tag, and
+    /// `list_segments` filters by stream (defaulting to 'main' so existing
+    /// callers only ever see full-res segments).
+    #[test]
+    fn segment_stream_tag_round_trip_and_filter() {
+        let db = mem_db();
+        let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
+        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100, "main")
+            .unwrap();
+        db.upsert_segment(cam.id, 1001, "/rec/gate__sub/a.mp4", 20, "sub")
+            .unwrap();
+
+        // Default (None) → main only, unchanged behavior for every existing caller.
+        let main = db.list_segments(Some(cam.id), None, 100, None).unwrap();
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0].path, "/rec/gate/a.mp4");
+        assert_eq!(main[0].stream, "main");
+
+        // Explicit 'sub' pages the low-res copy.
+        let sub = db.list_segments(Some(cam.id), None, 100, Some("sub")).unwrap();
+        assert_eq!(sub.len(), 1);
+        assert_eq!(sub[0].path, "/rec/gate__sub/a.mp4");
+        assert_eq!(sub[0].stream, "sub");
+
+        // get_segment carries the tag through too.
+        assert_eq!(db.get_segment(sub[0].id).unwrap().unwrap().stream, "sub");
+    }
+
+    /// P3.7: `find_segment_at` disambiguates by stream. A main and a sub segment
+    /// share a near-identical start_ts, so the stream filter is what keeps a
+    /// stream-scoped lookup from arbitrarily picking the other stream's file.
+    #[test]
+    fn find_segment_at_disambiguates_by_stream() {
+        let db = mem_db();
+        let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
+        // Sub starts one second AFTER main, so a naive "newest start_ts <= ts"
+        // (no stream filter) would prefer the sub file for a main lookup.
+        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100, "main")
+            .unwrap();
+        db.upsert_segment(cam.id, 1001, "/rec/gate__sub/a.mp4", 20, "sub")
+            .unwrap();
+
+        let m = db.find_segment_at(cam.id, 1030, "main").unwrap().unwrap();
+        assert_eq!(m.path, "/rec/gate/a.mp4");
+        assert_eq!(m.stream, "main");
+
+        let s = db.find_segment_at(cam.id, 1030, "sub").unwrap().unwrap();
+        assert_eq!(s.path, "/rec/gate__sub/a.mp4");
+        assert_eq!(s.stream, "sub");
+
+        // A stream with no segment for that camera resolves to nothing, even
+        // though the other stream has coverage.
+        let cam2 = db.add_camera("yard", "rtsp://y", None, true, true).unwrap();
+        db.upsert_segment(cam2.id, 2000, "/rec/yard/a.mp4", 100, "main")
+            .unwrap();
+        assert!(db.find_segment_at(cam2.id, 2030, "sub").unwrap().is_none());
+    }
+
     /// P2.14 Part 2: with `offsite_events_only`, `pending_offsite` returns only
     /// segments overlapping an event — and a bookmarked segment is always among
     /// them, so saved footage is never dropped from the backup.
@@ -4822,9 +4933,9 @@ mod tests {
         let db = mem_db();
         let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
         // Three widely-spaced segments so event windows don't overlap neighbours.
-        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100).unwrap();
-        db.upsert_segment(cam.id, 5000, "/rec/gate/b.mp4", 100).unwrap();
-        db.upsert_segment(cam.id, 9000, "/rec/gate/c.mp4", 100).unwrap();
+        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100, "main").unwrap();
+        db.upsert_segment(cam.id, 5000, "/rec/gate/b.mp4", 100, "main").unwrap();
+        db.upsert_segment(cam.id, 9000, "/rec/gate/c.mp4", 100, "main").unwrap();
         // An ordinary (unflagged) event squarely inside segment b.
         db.add_event(cam.id, 5030, "person", 0.9, [0.0; 4], None, None, None, None, None)
             .unwrap();
@@ -5403,6 +5514,7 @@ mod tests {
             trigger_recording: true,
             trigger_pre_roll_secs: Some(15),
             trigger_post_roll_secs: Some(45),
+            record_substream: true,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();
@@ -5865,7 +5977,7 @@ mod tests {
         // Three 60s segments: t=1000, 2000, 3000. One event at t=2030
         // (inside segment 2; within margin of nothing else at margin=15).
         for ts in [1000, 2000, 3000] {
-            db.upsert_segment(cam.id, ts, &format!("p{ts}.mp4"), 10)
+            db.upsert_segment(cam.id, ts, &format!("p{ts}.mp4"), 10, "main")
                 .unwrap();
         }
         db.add_event(
@@ -5898,7 +6010,7 @@ mod tests {
         // Three 60s segments at t=1000/2000/3000; one detection early in the
         // middle segment (t=2010).
         for ts in [1000, 2000, 3000] {
-            db.upsert_segment(cam.id, ts, &format!("p{ts}.mp4"), 10)
+            db.upsert_segment(cam.id, ts, &format!("p{ts}.mp4"), 10, "main")
                 .unwrap();
         }
         db.add_event(
@@ -5930,7 +6042,7 @@ mod tests {
             .add_camera("porch", "rtsp://x", None, true, true)
             .unwrap();
         for ts in [1000, 2000, 3000] {
-            db.upsert_segment(cam.id, ts, &format!("p{ts}.mp4"), 10)
+            db.upsert_segment(cam.id, ts, &format!("p{ts}.mp4"), 10, "main")
                 .unwrap();
         }
         // An un-flagged detection in seg1; a BOOKMARKED detection in seg2.

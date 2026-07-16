@@ -134,6 +134,10 @@ export interface DetectConfig {
   trigger_pre_roll_secs?: number | null;
   /** Seconds of footage kept AFTER each detection (post-roll); null = 30s. */
   trigger_post_roll_secs?: number | null;
+  /** Dual-stream recording (P3.7): also record the low-res detect sub-stream to
+   *  disk alongside the main stream, so the UI can scrub SD and play HD. Opt-in,
+   *  off by default; requires a detect sub-stream (detect_source) to exist. */
+  record_substream?: boolean;
 }
 
 export interface Camera {
@@ -200,6 +204,8 @@ export interface Segment {
   start_ts: number;
   bytes: number;
   path: string;
+  /** P3.7: 'main' (full-res) or 'sub' (opt-in low-res scrub copy). */
+  stream?: string;
 }
 
 /** One region-motion hit range (P2.3): consecutive minutes with motion in the region. */
@@ -810,9 +816,11 @@ export const api = {
     if (q.limit) p.set("limit", String(q.limit));
     return req<Segment[]>(`/api/recordings?${p}`);
   },
-  recordingAt: (camera_id: number, ts: number) =>
+  /** Resolve the segment covering `ts`. `stream` picks the recording stream
+   *  (P3.7): omit or "main" for full-res HD, "sub" for the low-res scrub copy. */
+  recordingAt: (camera_id: number, ts: number, stream?: "main" | "sub") =>
     req<{ segment: Segment; offset_secs: number }>(
-      `/api/recordings/at?camera_id=${camera_id}&ts=${ts}`
+      `/api/recordings/at?camera_id=${camera_id}&ts=${ts}${stream ? `&stream=${stream}` : ""}`
     ),
   /** P2.3: minutes with motion inside a 0..1 frame rectangle, as playable ranges. */
   motionSearch: (q: { camera_id: number; x1: number; y1: number; x2: number; y2: number; from: number; to: number }) =>

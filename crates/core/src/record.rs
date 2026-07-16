@@ -37,9 +37,14 @@ pub fn run(
         }
     };
 
-    // Value carries the audio flag + output dir the recording was started
-    // with, so flipping either setting restarts recorders accordingly.
-    let mut running: HashMap<i64, (bool, PathBuf, Recording)> = HashMap::new();
+    // Keyed by (camera_id, stream) so a camera can run TWO recorders — the
+    // full-res "main" stream (always, for every recordable camera) and, when it
+    // opts into P3.7 dual-stream, the low-res "sub" stream. A camera that does
+    // NOT opt in has exactly one ("main") entry, so its running-set, segments and
+    // retention are byte-for-byte identical to before this feature. The value
+    // carries the audio flag + output dir the recording was started with, so
+    // flipping either setting restarts the affected recorder(s).
+    let mut running: HashMap<(i64, &'static str), (bool, PathBuf, Recording)> = HashMap::new();
     let mut last_retention = Instant::now() - RETENTION_EVERY;
 
     while !shutdown.load(Ordering::Relaxed) {
@@ -58,70 +63,111 @@ pub fn run(
         // day/time: outside its window the camera drops out of `desired`, so the
         // stop logic below finalizes its current segment and parks the recorder
         // until the window reopens. `None` = always record.
-        let desired: HashMap<i64, String> = cameras
-            .iter()
-            .filter(|c| c.enabled && c.record)
-            .filter(|c| {
-                c.detect_config
+        //
+        // The value is (go2rtc stream name, output dir): for "main" that's the
+        // camera name + `<rec>/<name>`; for "sub" (P3.7) the `{name}_sub`
+        // restream + `<rec>/<name>__sub`. The DOUBLE underscore is deliberate —
+        // a real camera literally named "front_sub" records to `<rec>/front_sub`
+        // (single underscore), so `<rec>/front__sub` can never collide with it.
+        let mut desired: HashMap<(i64, &'static str), (String, PathBuf)> = HashMap::new();
+        for c in cameras.iter().filter(|c| {
+            c.enabled
+                && c.record
+                && c.detect_config
                     .record_schedule
                     .as_ref()
                     .map(|s| s.active_now())
                     .unwrap_or(true)
-            })
-            .map(|c| (c.id, c.name.clone()))
-            .collect();
+        }) {
+            // Main stream: always, exactly as before — one entry per camera.
+            desired.insert((c.id, "main"), (c.name.clone(), recordings_dir.join(&c.name)));
+            // Sub stream: only when opted in AND a detect sub-stream exists to
+            // record (no `detect_source` = no `{name}_sub` restream). Fail-safe:
+            // a missing sub source just means no sub recorder — logged, no crash.
+            if c.detect_config.record_substream {
+                if c.detect_source.as_deref().is_some_and(|s| !s.is_empty()) {
+                    desired.insert(
+                        (c.id, "sub"),
+                        (
+                            format!("{}_sub", c.name),
+                            recordings_dir.join(format!("{}__sub", c.name)),
+                        ),
+                    );
+                } else {
+                    tracing::debug!(
+                        camera = %c.name,
+                        "record_substream is on but the camera has no detect sub-stream; \
+                         not recording a sub copy"
+                    );
+                }
+            }
+        }
 
-        let stop_ids: Vec<i64> = running
+        let stop_keys: Vec<(i64, &'static str)> = running
             .keys()
-            .filter(|id| !desired.contains_key(id))
+            .filter(|k| !desired.contains_key(k))
             .copied()
             .collect();
-        for id in stop_ids {
-            if let Some((_, _, rec)) = running.remove(&id) {
+        for key in stop_keys {
+            if let Some((_, _, rec)) = running.remove(&key) {
                 rec.stop();
             }
         }
 
-        for (id, name) in &desired {
-            let dir = recordings_dir.join(name);
+        for (key, (stream_name, dir)) in &desired {
             let healthy = running
-                .get_mut(id)
-                .map(|(audio, d, r)| r.is_alive() && *audio == settings.record_audio && *d == dir)
+                .get_mut(key)
+                .map(|(audio, d, r)| r.is_alive() && *audio == settings.record_audio && d == dir)
                 .unwrap_or(false);
             if !healthy {
-                if let Some((_, _, dead)) = running.remove(id) {
+                if let Some((_, _, dead)) = running.remove(key) {
                     dead.stop();
                 }
                 match Recording::start(
                     &ffmpeg,
-                    name,
-                    &go2rtc.rtsp_url(name),
-                    &dir,
+                    stream_name,
+                    &go2rtc.rtsp_url(stream_name),
+                    dir,
                     settings.segment_seconds,
                     settings.record_audio,
                 ) {
                     Ok(rec) => {
-                        running.insert(*id, (settings.record_audio, dir.clone(), rec));
+                        running.insert(*key, (settings.record_audio, dir.clone(), rec));
                     }
-                    Err(e) => tracing::warn!(camera = %name, "failed to start recording: {e:#}"),
+                    Err(e) => {
+                        tracing::warn!(camera = %stream_name, "failed to start recording: {e:#}")
+                    }
                 }
             }
         }
 
-        // Publish recorder liveness + drop status for deleted cameras.
+        // Publish recorder liveness (the MAIN recorder drives the camera's
+        // "recording" indicator — the sub copy is a background scrub aid) + drop
+        // status for deleted cameras.
         for cam in &cameras {
-            status.set_recording(cam.id, running.contains_key(&cam.id));
+            status.set_recording(cam.id, running.contains_key(&(cam.id, "main")));
         }
         status.retain(&cameras.iter().map(|c| c.id).collect::<Vec<_>>());
 
         // --- index completed segments ------------------------------------
+        // Index the main dir (always) and the sub dir (P3.7), tagging each with
+        // its stream. The sub dir is scanned UNCONDITIONALLY — even for a camera
+        // that has since turned dual-stream off — so any leftover sub segments
+        // stay indexed and therefore stay subject to retention. `scan_segments`
+        // returns empty for a dir that doesn't exist, so this is a cheap no-op
+        // for the common (main-only) camera.
         for cam in cameras.iter().filter(|c| c.record) {
-            let dir = recordings_dir.join(&cam.name);
-            if let Ok(segments) = recorder::scan_segments(&dir, SEGMENT_QUIET_SECS) {
-                for seg in segments {
-                    let path = seg.path.to_string_lossy().to_string();
-                    if let Err(e) = db.upsert_segment(cam.id, seg.start_ts, &path, seg.bytes) {
-                        tracing::warn!("segment index failed: {e:#}");
+            for (dir, stream) in [
+                (recordings_dir.join(&cam.name), "main"),
+                (recordings_dir.join(format!("{}__sub", cam.name)), "sub"),
+            ] {
+                if let Ok(segments) = recorder::scan_segments(&dir, SEGMENT_QUIET_SECS) {
+                    for seg in segments {
+                        let path = seg.path.to_string_lossy().to_string();
+                        if let Err(e) = db.upsert_segment(cam.id, seg.start_ts, &path, seg.bytes, stream)
+                        {
+                            tracing::warn!("segment index failed: {e:#}");
+                        }
                     }
                 }
             }
@@ -130,9 +176,18 @@ pub fn run(
         // --- retention ----------------------------------------------------
         if last_retention.elapsed() >= RETENTION_EVERY {
             last_retention = Instant::now();
+            // The global byte-cap pool spans BOTH streams' dirs of every camera,
+            // so sub-stream bytes count toward the disk cap and get pruned too.
+            // A non-existent sub dir scans empty, so this is harmless for
+            // main-only cameras.
             let dirs: Vec<PathBuf> = cameras
                 .iter()
-                .map(|c| recordings_dir.join(&c.name))
+                .flat_map(|c| {
+                    [
+                        recordings_dir.join(&c.name),
+                        recordings_dir.join(format!("{}__sub", c.name)),
+                    ]
+                })
                 .collect();
             // Enhanced retention (UniFi-style) runs BEFORE deletion-based
             // pruning: shrinking old footage is the alternative to losing it
@@ -285,8 +340,14 @@ pub fn run(
                         if days == 0 {
                             continue; // 0 = keep indefinitely (byte cap still applies below)
                         }
-                        let dir = recordings_dir.join(&cam.name);
-                        match recorder::prune(&[dir], Some(days), None, &protected) {
+                        // Age out BOTH streams of this camera together (a sub
+                        // segment ages on the same clock as its main). The sub
+                        // dir scans empty for a main-only camera → no-op.
+                        let cam_dirs = [
+                            recordings_dir.join(&cam.name),
+                            recordings_dir.join(format!("{}__sub", cam.name)),
+                        ];
+                        match recorder::prune(&cam_dirs, Some(days), None, &protected) {
                             Ok(deleted) => pruned.extend(deleted),
                             Err(e) => {
                                 tracing::warn!(camera = %cam.name, "age retention failed: {e:#}")

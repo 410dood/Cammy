@@ -137,6 +137,7 @@ function TuneModal({
     trigger_recording: camera.detect_config.trigger_recording ?? false,
     trigger_pre_roll_secs: camera.detect_config.trigger_pre_roll_secs ?? null,
     trigger_post_roll_secs: camera.detect_config.trigger_post_roll_secs ?? null,
+    record_substream: camera.detect_config.record_substream ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
   const [saving, setSaving] = useState(false);
@@ -602,6 +603,17 @@ function TuneModal({
               help="Record continuously only on chosen days/times (off = always record)."
               title="Record continuously only during these days/times (Blue Iris-style schedule). Off = always record. Detection and event clips are unaffected."
             />
+            {/* Dual-stream (P3.7): only meaningful when a detect sub-stream
+                exists to record — hidden otherwise. */}
+            {subSource.trim() !== "" && (
+              <Feature
+                on={dc.record_substream ?? false}
+                onToggle={() => setDc({ ...dc, record_substream: !dc.record_substream })}
+                label="Also record the low-res sub-stream"
+                help="Lets you scrub fast in SD and play back in HD. Uses more disk."
+                title="Record the detection sub-stream to disk alongside the main stream, so the camera view can scrub the lightweight SD copy and play the full-res HD one. Sub footage is kept by the same retention as the main stream, but never uploaded offsite."
+              />
+            )}
           </div>
           <div className="tune-grid" style={{ marginTop: 12 }}>
             <label

@@ -39,6 +39,16 @@ export default function CameraDetail({
   playbackRef.current = playback;
   // Coarse playhead position (whole seconds) for the timeline marker.
   const [posTs, setPosTs] = useState<number | null>(null);
+  // P3.7 dual-stream playback quality: "hd" plays the full-res main recording,
+  // "sd" the opt-in low-res sub copy (lighter, for fast scrubbing). Only offered
+  // when the camera records a sub stream; defaults to HD, so a non-dual-stream
+  // camera behaves exactly as before. A ref keeps async seeks on the live value.
+  // v0 wires ONLY this camera-detail player; DEFERRED to v1: the Recordings-page
+  // SequencePlayer quality toggle and the Events viewer.
+  const hasSub = !!camera.detect_config.record_substream;
+  const [quality, setQuality] = useState<"hd" | "sd">("hd");
+  const qualityRef = useRef(quality);
+  qualityRef.current = quality;
   const [findOpen, setFindOpen] = useState(false);
   const findOpenRef = useRef(false);
   findOpenRef.current = findOpen;
@@ -155,31 +165,47 @@ export default function CameraDetail({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camera.id]);
 
-  const seekTo = async (ts: number) => {
+  const seekTo = async (ts: number, opts?: { stream?: "hd" | "sd"; silent?: boolean }) => {
+    const q = opts?.stream ?? qualityRef.current;
     try {
-      const r = await api.recordingAt(camera.id, ts);
+      const r = await api.recordingAt(camera.id, ts, q === "sd" ? "sub" : "main");
       setPlayback({ segment: r.segment, offset: r.offset_secs });
       setPosTs(Math.floor(r.segment.start_ts + r.offset_secs));
     } catch {
+      if (opts?.silent) return;
       // No segment covers this instant (retention-pruned or a recording gap) —
       // tell the user instead of a silent dead-click.
-      toast.error("No recording covers this moment");
+      toast.error(
+        q === "sd" ? "No SD recording covers this moment" : "No recording covers this moment"
+      );
     }
   };
 
   // Played past the end of a segment: continue seamlessly into the next one,
-  // or return to live once we've caught up with now.
+  // or return to live once we've caught up with now. Uses the (main) segment
+  // list purely as the timeline of boundaries and re-resolves each in the
+  // current quality — so SD playback auto-advances in SD too.
   const advancePlayback = () => {
     const cur = playbackRef.current;
     if (!cur) return;
     const sorted = [...segments].sort((a, b) => a.start_ts - b.start_ts);
     const next = sorted.find((s) => s.start_ts > cur.segment.start_ts);
     if (next) {
-      setPlayback({ segment: next, offset: 0 });
-      setPosTs(next.start_ts);
+      // Advance silently: a lone SD gap shouldn't pop an error toast mid-play.
+      seekTo(next.start_ts, { silent: true });
     } else {
       setPlayback(null);
     }
+  };
+
+  // Switch playback quality (HD↔SD) and re-resolve the current moment in the new
+  // stream so the picture swaps in place. Honest fallback: if the chosen stream
+  // has no footage at this instant, seekTo surfaces it (non-silent).
+  const changeQuality = (q: "hd" | "sd") => {
+    setQuality(q);
+    qualityRef.current = q;
+    const cur = playbackRef.current;
+    if (cur) seekTo(posTs ?? Math.floor(cur.segment.start_ts + cur.offset), { stream: q });
   };
 
   return (
@@ -263,6 +289,33 @@ export default function CameraDetail({
                       second: "2-digit",
                     })}
                   </span>
+                  {hasSub && (
+                    <div
+                      className="arm-bar"
+                      role="group"
+                      aria-label="Playback quality"
+                      style={{ marginRight: 4 }}
+                    >
+                      <button
+                        type="button"
+                        className={`arm-opt ${quality === "hd" ? "active" : ""}`}
+                        aria-pressed={quality === "hd"}
+                        onClick={() => changeQuality("hd")}
+                        title="Play the full-resolution recording"
+                      >
+                        HD
+                      </button>
+                      <button
+                        type="button"
+                        className={`arm-opt ${quality === "sd" ? "active" : ""}`}
+                        aria-pressed={quality === "sd"}
+                        onClick={() => changeQuality("sd")}
+                        title="Play the low-res sub-stream — lighter, for fast scrubbing"
+                      >
+                        SD
+                      </button>
+                    </div>
+                  )}
                   <a
                     className="btn btn-ghost ev-act"
                     href={`/api/recordings/${playback.segment.id}/video`}

@@ -3109,7 +3109,7 @@ async fn event_clip(
     );
     let seg = st
         .db
-        .find_segment_at(ev.camera_id, ev.ts)?
+        .find_segment_at(ev.camera_id, ev.ts, "main")?
         .ok_or_else(not_found)?;
 
     let pre = i64::from(q.pre.unwrap_or(5).min(30));
@@ -3220,7 +3220,7 @@ async fn serve_share(
     let ev = st.db.get_event(target.event_id)?.ok_or_else(not_found)?;
     let seg = st
         .db
-        .find_segment_at(ev.camera_id, ev.ts)?
+        .find_segment_at(ev.camera_id, ev.ts, "main")?
         .ok_or_else(not_found)?;
     let clip_path = extract_event_clip(
         &st.clips_dir,
@@ -3328,7 +3328,7 @@ async fn create_timelapse(
     // Gather the day's segments (ascending) so the spawned task owns them.
     let mut segs: Vec<crate::db::SegmentRow> = st
         .db
-        .list_segments(Some(id), Some(day_end), 200_000)?
+        .list_segments(Some(id), Some(day_end), 200_000, None)?
         .into_iter()
         .filter(|s| s.start_ts >= day_start && s.start_ts < day_end)
         .collect();
@@ -3561,7 +3561,7 @@ async fn event_evidence(
     require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
     let seg = st
         .db
-        .find_segment_at(ev.camera_id, ev.ts)?
+        .find_segment_at(ev.camera_id, ev.ts, "main")?
         .ok_or_else(not_found)?;
     let clip =
         extract_event_clip(&st.clips_dir, st.ffmpeg_bin.as_deref(), ev.id, &seg, ev.ts, 5, 10)
@@ -3613,7 +3613,7 @@ async fn event_evidence_zip(
     require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
     let seg = st
         .db
-        .find_segment_at(ev.camera_id, ev.ts)?
+        .find_segment_at(ev.camera_id, ev.ts, "main")?
         .ok_or_else(not_found)?;
     let clip =
         extract_event_clip(&st.clips_dir, st.ffmpeg_bin.as_deref(), ev.id, &seg, ev.ts, 5, 10)
@@ -4581,7 +4581,7 @@ async fn list_recordings(
     if let Some(cid) = q.camera_id {
         require_camera(&allow, cid)?;
     }
-    let mut segs = st.db.list_segments(q.camera_id, q.before, q.limit.min(1000))?;
+    let mut segs = st.db.list_segments(q.camera_id, q.before, q.limit.min(1000), None)?;
     if let Some(set) = &allow {
         segs.retain(|s| set.contains(&s.camera_id));
     }
@@ -4592,6 +4592,11 @@ async fn list_recordings(
 struct AtQuery {
     camera_id: i64,
     ts: i64,
+    /// P3.7 dual-stream: which recording stream to resolve — 'main' (full-res,
+    /// the default) or 'sub' (the opt-in low-res scrub copy). Anything other
+    /// than 'sub' is treated as 'main' so a bad/absent value can never resolve
+    /// the wrong stream.
+    stream: Option<String>,
 }
 
 /// Find the recording segment that contains a moment in time (used to jump
@@ -4602,9 +4607,14 @@ async fn recording_at(
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_camera(&allowed_cameras(&st, &p)?, q.camera_id)?;
+    let stream = if q.stream.as_deref() == Some("sub") {
+        "sub"
+    } else {
+        "main"
+    };
     let seg = st
         .db
-        .find_segment_at(q.camera_id, q.ts)?
+        .find_segment_at(q.camera_id, q.ts, stream)?
         .ok_or_else(not_found)?;
     let offset = q.ts - seg.start_ts;
     // Generous slack: ffmpeg cuts segments on keyframes, so real duration can
@@ -4775,7 +4785,7 @@ async fn motion_search(
 
         // Resolve ranges to recordings with ONE segment-index fetch (not one
         // query per range), sorted ascending for binary search.
-        let mut segs = db.list_segments(Some(camera_id), Some(to + seg_slack), 200_000)?;
+        let mut segs = db.list_segments(Some(camera_id), Some(to + seg_slack), 200_000, None)?;
         segs.sort_by_key(|s| s.start_ts);
         // The newest segment starting at or before `ts`, but only if `ts`
         // actually falls inside it — the recording_at duration guard. Without
