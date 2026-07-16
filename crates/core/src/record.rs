@@ -264,30 +264,50 @@ pub fn run(
             //  2. ONE global pooled BYTE-cap pass — the disk-bound safety net,
             //     deleting oldest-across-all until under the global GB cap. This
             //     keeps total disk bounded even if per-camera overrides sum high.
-            let mut pruned: Vec<PathBuf> = Vec::new();
-            for cam in &cameras {
-                let days = cam
-                    .detect_config
-                    .retention_days
-                    .unwrap_or(settings.retention_days);
-                if days == 0 {
-                    continue; // 0 = keep indefinitely (byte cap still applies below)
+            // P2.14 footage safety: a flagged (bookmarked) event's row + snapshot
+            // already survive event retention, but the underlying recording
+            // segment could still be deleted here — silently losing the footage
+            // the user saved. Build the set of segment files COVERING a flagged
+            // event and skip them in BOTH prune passes. Fail-SAFE: if the lookup
+            // errors, SKIP the entire deletion-based prune this tick (keep footage)
+            // rather than risk deleting a bookmark with an empty protected set —
+            // retention simply retries next cycle. The span slack matches
+            // `recording_at`'s coverage guard.
+            let seg_span = i64::from(settings.segment_seconds) + 15;
+            match db.flagged_segment_paths(seg_span) {
+                Ok(protected) => {
+                    let mut pruned: Vec<PathBuf> = Vec::new();
+                    for cam in &cameras {
+                        let days = cam
+                            .detect_config
+                            .retention_days
+                            .unwrap_or(settings.retention_days);
+                        if days == 0 {
+                            continue; // 0 = keep indefinitely (byte cap still applies below)
+                        }
+                        let dir = recordings_dir.join(&cam.name);
+                        match recorder::prune(&[dir], Some(days), None, &protected) {
+                            Ok(deleted) => pruned.extend(deleted),
+                            Err(e) => {
+                                tracing::warn!(camera = %cam.name, "age retention failed: {e:#}")
+                            }
+                        }
+                    }
+                    let max_bytes = u64::from(settings.retention_gb) * 1_000_000_000;
+                    if max_bytes > 0 {
+                        match recorder::prune(&dirs, None, Some(max_bytes), &protected) {
+                            Ok(deleted) => pruned.extend(deleted),
+                            Err(e) => tracing::warn!("byte-cap retention failed: {e:#}"),
+                        }
+                    }
+                    for path in pruned {
+                        let _ = db.delete_segment_by_path(&path.to_string_lossy());
+                    }
                 }
-                let dir = recordings_dir.join(&cam.name);
-                match recorder::prune(&[dir], Some(days), None) {
-                    Ok(deleted) => pruned.extend(deleted),
-                    Err(e) => tracing::warn!(camera = %cam.name, "age retention failed: {e:#}"),
-                }
-            }
-            let max_bytes = u64::from(settings.retention_gb) * 1_000_000_000;
-            if max_bytes > 0 {
-                match recorder::prune(&dirs, None, Some(max_bytes)) {
-                    Ok(deleted) => pruned.extend(deleted),
-                    Err(e) => tracing::warn!("byte-cap retention failed: {e:#}"),
-                }
-            }
-            for path in pruned {
-                let _ = db.delete_segment_by_path(&path.to_string_lossy());
+                Err(e) => tracing::warn!(
+                    "bookmark-protection lookup failed; skipping deletion-based \
+                     retention this tick (keeping footage): {e:#}"
+                ),
             }
 
             // Event retention: expire old events and their snapshot files

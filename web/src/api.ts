@@ -298,6 +298,10 @@ export interface Settings {
   offsite_prefix: string;
   offsite_access_key: string;
   offsite_secret_key: string;
+  /** P2.14 — back up only segments around events (far less upload/remote
+   *  storage than a full continuous mirror). Bookmarked footage is still
+   *  covered. Off by default = mirror every sealed segment. */
+  offsite_events_only: boolean;
   /** Burn an amber outline of the motion region(s) that tripped the gate onto
    *  detection snapshots, so you can see what actually triggered an event. */
   highlight_motion: boolean;

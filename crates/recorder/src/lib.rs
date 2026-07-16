@@ -248,10 +248,20 @@ pub fn reencode_segment(ffmpeg: &Path, path: &Path, hwaccel: &str) -> Result<u64
 
 /// Delete the oldest completed segments until the directory tree fits both
 /// limits. Returns the deleted paths so the caller can drop their index rows.
+///
+/// `protected` is a set of segment file paths (string form, exactly as the
+/// index stores them, i.e. `Segment::path.to_string_lossy()`) that must NEVER
+/// be deleted — the recording segments covering a flagged/bookmarked event
+/// (P2.14). They are skipped in BOTH the age pass AND the byte-cap pass: even
+/// under byte-cap pressure a bookmarked segment is kept (its bytes still count
+/// toward the total, so other, unprotected segments are deleted instead). A
+/// pathological disk full of bookmarks can therefore exceed the byte cap — that
+/// is the correct tradeoff: a bookmark is explicit user intent to keep footage.
 pub fn prune(
     dirs: &[PathBuf],
     max_age_days: Option<u32>,
     max_total_bytes: Option<u64>,
+    protected: &std::collections::HashSet<String>,
 ) -> Result<Vec<PathBuf>> {
     let mut all: Vec<Segment> = Vec::new();
     for dir in dirs {
@@ -261,15 +271,25 @@ pub fn prune(
 
     let mut deleted = Vec::new();
     let now = Local::now().timestamp();
+    let is_protected = |seg: &Segment| protected.contains(seg.path.to_string_lossy().as_ref());
 
     if let Some(days) = max_age_days {
         let cutoff = now - i64::from(days) * 86_400;
-        for seg in all.iter().filter(|s| s.start_ts < cutoff) {
+        // Delete aged-out, UNprotected segments; keep protected ones in `all` so
+        // their bytes still count toward the byte-cap total below (accurate disk
+        // accounting) even though they are never deleted.
+        all.retain(|seg| {
+            if seg.start_ts >= cutoff {
+                return true; // inside the age window
+            }
+            if is_protected(seg) {
+                return true; // bookmarked: keep, still counts toward the byte total
+            }
             if std::fs::remove_file(&seg.path).is_ok() {
                 deleted.push(seg.path.clone());
             }
-        }
-        all.retain(|s| s.start_ts >= cutoff);
+            false // aged out (deleted, or delete failed) -> drop from consideration
+        });
     }
 
     if let Some(max_bytes) = max_total_bytes {
@@ -277,6 +297,12 @@ pub fn prune(
         for seg in &all {
             if total <= max_bytes {
                 break;
+            }
+            if is_protected(seg) {
+                // Never delete a bookmarked segment. Its bytes stay in `total`,
+                // so the loop keeps deleting other (unprotected) segments to get
+                // under the cap; if only bookmarks remain, the cap is exceeded.
+                continue;
             }
             if std::fs::remove_file(&seg.path).is_ok() {
                 total -= seg.bytes;
@@ -328,9 +354,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("20260101-000100.mp4"), vec![0u8; 100]).unwrap();
         std::fs::write(dir.join("20260101-000200.mp4"), vec![0u8; 100]).unwrap();
+        let none = std::collections::HashSet::new();
         // scan inside prune uses min_quiet_secs=10; backdate mtimes via wait is
         // overkill — instead prune with no limits is a no-op, then by size 150.
-        let untouched = prune(std::slice::from_ref(&dir), None, None).unwrap();
+        let untouched = prune(std::slice::from_ref(&dir), None, None, &none).unwrap();
         assert!(untouched.is_empty());
 
         // Backdate both files so the quiet-window filter sees them.
@@ -341,10 +368,57 @@ mod tests {
             file.set_modified(old).unwrap();
         }
 
-        let deleted = prune(std::slice::from_ref(&dir), None, Some(150)).unwrap();
+        let deleted = prune(std::slice::from_ref(&dir), None, Some(150), &none).unwrap();
         assert_eq!(deleted.len(), 1);
         assert!(deleted[0].ends_with("20260101-000100.mp4"));
         assert!(dir.join("20260101-000200.mp4").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// P2.14: a protected (bookmarked) segment survives BOTH the age pass and the
+    /// byte-cap pass, even when it is the oldest / the cap is exceeded, while its
+    /// unprotected neighbours are pruned.
+    #[test]
+    fn prune_never_deletes_protected_segments() {
+        let dir = std::env::temp_dir().join(format!("prune-prot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Three parts, oldest first. The OLDEST is the bookmarked one.
+        let old_name = "20200101-000000.mp4"; // ancient -> beyond any age window
+        let mid_name = "20200101-000100.mp4";
+        let new_name = "20200101-000200.mp4";
+        std::fs::write(dir.join(old_name), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.join(mid_name), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.join(new_name), vec![0u8; 100]).unwrap();
+        let backdate = std::time::SystemTime::now() - Duration::from_secs(120);
+        for f in [old_name, mid_name, new_name] {
+            let p = dir.join(f);
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(backdate)
+                .unwrap();
+        }
+
+        // Protect the oldest by its exact indexed path string.
+        let protected_path = dir.join(old_name).to_string_lossy().to_string();
+        let mut protected = std::collections::HashSet::new();
+        protected.insert(protected_path.clone());
+
+        // Age pass: everything is decades old, so ALL unprotected parts age out;
+        // the bookmarked one must survive.
+        let deleted = prune(std::slice::from_ref(&dir), Some(1), None, &protected).unwrap();
+        assert_eq!(deleted.len(), 2, "both unprotected parts pruned by age");
+        assert!(dir.join(old_name).exists(), "bookmarked segment kept by age pass");
+        assert!(!dir.join(mid_name).exists());
+        assert!(!dir.join(new_name).exists());
+
+        // Byte-cap pass on a dir that now holds ONLY the bookmarked segment, with
+        // a cap of 0 bytes: it must still not be deleted (explicit user intent).
+        let deleted = prune(std::slice::from_ref(&dir), None, Some(0), &protected).unwrap();
+        assert!(deleted.is_empty(), "byte cap never deletes a bookmarked segment");
+        assert!(dir.join(old_name).exists(), "bookmarked segment kept under byte cap");
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1331,6 +1331,14 @@ pub struct Settings {
     pub offsite_access_key: String,
     #[serde(default)]
     pub offsite_secret_key: String,
+    /// P2.14 — selective offsite. When set, the backup worker only mirrors
+    /// segments that OVERLAP an event window (far less upload/remote storage
+    /// than a full continuous mirror). Bookmarked footage is still covered: a
+    /// flagged event is an ordinary event row, so its segment always overlaps
+    /// an event and is included. Off by default = today's behavior (mirror
+    /// every sealed segment). JSON-blob field — no migration.
+    #[serde(default)]
+    pub offsite_events_only: bool,
     /// Burn an amber outline of the motion region(s) that tripped the gate onto
     /// each detection snapshot (alongside the red object boxes), so a viewer can
     /// see *what actually triggered* an event — wind in the trees vs. the object.
@@ -1463,6 +1471,7 @@ impl Default for Settings {
             offsite_prefix: String::new(),
             offsite_access_key: String::new(),
             offsite_secret_key: String::new(),
+            offsite_events_only: false,
             highlight_motion: true,
         }
     }
@@ -4201,36 +4210,110 @@ impl Db {
         Ok(row)
     }
 
+    /// The set of recording-segment file paths that COVER a flagged (bookmarked)
+    /// event — i.e. a segment whose span `[start_ts, start_ts + span_secs]`
+    /// contains the event's `ts`, mirroring [`find_segment_at`](Self::find_segment_at)/
+    /// `recording_at`'s "newest segment starting at or before the instant, if the
+    /// instant falls inside it" resolution. `span_secs` should be
+    /// `segment_seconds + slack` (ffmpeg cuts on keyframes, so a real segment can
+    /// run a GOP past its configured length).
+    ///
+    /// P2.14 footage-safety fix: a flagged event's row + snapshot already survive
+    /// event retention ([`prune_events_before`](Self::prune_events_before)), but
+    /// the underlying MP4 could still be deleted by the recorder's age / byte-cap
+    /// sweep — silently losing the very footage the user asked to keep. The caller
+    /// threads this protected set into [`recorder::prune`] so those paths are
+    /// never deleted. An event on the slack boundary can match two adjacent
+    /// segments and protect both — the safe (over-keep) direction for explicit
+    /// user bookmarks.
+    pub fn flagged_segment_paths(
+        &self,
+        span_secs: i64,
+    ) -> Result<std::collections::HashSet<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT s.path FROM segments s
+             JOIN events e ON e.camera_id = s.camera_id
+             WHERE e.flagged = 1
+               AND e.ts >= s.start_ts
+               AND e.ts <= s.start_ts + ?1",
+        )?;
+        let paths = stmt
+            .query_map(params![span_secs], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<String>>>()?;
+        Ok(paths)
+    }
+
     // --- offsite backup (matrix #70) -------------------------------------
+
+    /// P2.14 selective offsite: when `offsite_events_only` is set, returns the
+    /// symmetric overlap window (`segment_seconds + slack`) used to restrict the
+    /// backup to event-adjacent segments; `None` = full mirror (every segment).
+    /// Shared by [`pending_offsite`](Self::pending_offsite) (upload candidates)
+    /// and [`offsite_stats`](Self::offsite_stats) (actionable backlog) so the two
+    /// never disagree about which segments are in scope. MUST be called before
+    /// acquiring a `conn()` guard — it reads `settings()` (which locks the same
+    /// Mutex), so calling it under the guard would deadlock.
+    fn offsite_event_span(&self) -> Option<i64> {
+        let s = self.settings();
+        s.offsite_events_only
+            .then(|| i64::from(s.segment_seconds) + 15)
+    }
 
     /// Sealed segments still awaiting offsite backup (no terminal `done`/
     /// `skipped`/`gaveup` row — only never-attempted or retryable `failed`).
     /// Returns more than the worker sends per tick so rows still inside their
     /// backoff window don't head-of-line-block fresh ones — and orders
     /// **never-attempted segments ahead of previously-failed ones** so a backlog
-    /// of failing rows can't starve brand-new segments out of the window.
+    /// of failing rows can't starve brand-new segments out of the window. Under
+    /// `offsite_events_only` (P2.14) only event-adjacent segments are candidates
+    /// (see [`offsite_event_span`](Self::offsite_event_span)).
     pub fn pending_offsite(&self, limit: u32) -> Result<Vec<PendingUpload>> {
+        // Resolve the events-only filter BEFORE taking the conn guard (it reads
+        // settings, which locks the same Mutex — reentrant lock would deadlock).
+        let event_span = self.offsite_event_span();
         let conn = self.conn();
-        let mut stmt = conn.prepare(
+        // When events-only backup is on, restrict candidates to segments whose
+        // span overlaps at least one event — the inverse of `eventless_segments`'
+        // NOT-EXISTS/BETWEEN idiom. A symmetric one-span margin also pulls in the
+        // segments immediately around each event (pre/post-roll context). Because
+        // a flagged (bookmarked) event is an ordinary event row, a bookmarked
+        // segment always satisfies this EXISTS, so bookmarked footage is never
+        // dropped from the backup under events-only. `None` = mirror everything.
+        let event_filter = if event_span.is_some() {
+            " AND EXISTS (SELECT 1 FROM events e
+                 WHERE e.camera_id = s.camera_id
+                   AND e.ts BETWEEN s.start_ts - ?2 AND s.start_ts + ?2 + ?2)"
+        } else {
+            ""
+        };
+        let sql = format!(
             "SELECT s.path, c.name, s.start_ts, s.bytes,
                     COALESCE(o.attempts, 0), COALESCE(o.updated_ts, 0)
              FROM segments s JOIN cameras c ON c.id = s.camera_id
              LEFT JOIN offsite_uploads o ON o.path = s.path
-             WHERE o.status IS NULL OR o.status = 'failed'
-             ORDER BY (o.status IS NOT NULL) ASC, s.start_ts ASC LIMIT ?1",
-        )?;
-        let rows = stmt
-            .query_map(params![limit], |r| {
-                Ok(PendingUpload {
-                    path: r.get(0)?,
-                    camera: r.get(1)?,
-                    start_ts: r.get(2)?,
-                    bytes: r.get::<_, i64>(3)? as u64,
-                    attempts: r.get(4)?,
-                    last_ts: r.get(5)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+             WHERE (o.status IS NULL OR o.status = 'failed'){event_filter}
+             ORDER BY (o.status IS NOT NULL) ASC, s.start_ts ASC LIMIT ?1"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mapper = |r: &rusqlite::Row| -> rusqlite::Result<PendingUpload> {
+            Ok(PendingUpload {
+                path: r.get(0)?,
+                camera: r.get(1)?,
+                start_ts: r.get(2)?,
+                bytes: r.get::<_, i64>(3)? as u64,
+                attempts: r.get(4)?,
+                last_ts: r.get(5)?,
+            })
+        };
+        let rows = match event_span {
+            Some(span) => stmt
+                .query_map(params![limit, span], mapper)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+            None => stmt
+                .query_map(params![limit], mapper)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        };
         Ok(rows)
     }
 
@@ -4315,16 +4398,35 @@ impl Db {
     }
 
     pub fn offsite_stats(&self) -> Result<OffsiteStats> {
+        // Resolve the events-only filter before the conn guard (settings() locks).
+        let event_span = self.offsite_event_span();
         let conn = self.conn();
         // Backlog = sealed segments with no terminal row yet (never-attempted or
         // retryable 'failed'). Needs the segments join, so it stays its own query;
         // note it deliberately does NOT subtract done/skipped/gaveup arithmetic.
-        let backlog: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM segments s LEFT JOIN offsite_uploads o ON o.path = s.path
-             WHERE o.status IS NULL OR o.status = 'failed'",
-            [],
-            |r| r.get(0),
-        )?;
+        // Under events-only backup (P2.14) the same EXISTS filter as
+        // `pending_offsite` applies, so the backlog counts only *actionable*
+        // segments — non-event segments (never candidates) don't inflate it into
+        // a permanent false "backup stalled" alert.
+        let backlog: i64 = match event_span {
+            None => conn.query_row(
+                "SELECT COUNT(*) FROM segments s
+                 LEFT JOIN offsite_uploads o ON o.path = s.path
+                 WHERE o.status IS NULL OR o.status = 'failed'",
+                [],
+                |r| r.get(0),
+            )?,
+            Some(span) => conn.query_row(
+                "SELECT COUNT(*) FROM segments s
+                 LEFT JOIN offsite_uploads o ON o.path = s.path
+                 WHERE (o.status IS NULL OR o.status = 'failed')
+                   AND EXISTS (SELECT 1 FROM events e
+                       WHERE e.camera_id = s.camera_id
+                         AND e.ts BETWEEN s.start_ts - ?1 AND s.start_ts + ?1 + ?1)",
+                [span],
+                |r| r.get(0),
+            )?,
+        };
         // One pass over offsite_uploads for every per-status aggregate. `done`
         // carries bytes_total + last_success_ts (its MAX(updated_ts)); the
         // terminal losses `skipped` (local file pruned before backup) and
@@ -4678,6 +4780,94 @@ mod tests {
 
         // An id nobody used → empty.
         assert!(db.track_lifecycle(cam.id, 999, 1000).unwrap().is_empty());
+    }
+
+    /// P2.14 Part 1: `flagged_segment_paths` returns exactly the segment(s) that
+    /// COVER a flagged (bookmarked) event, and the flag drives membership.
+    #[test]
+    fn flagged_segment_paths_resolves_covering_segment() {
+        let db = mem_db();
+        let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
+        // Two 60s segments back to back; span slack = 60 + 15.
+        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100).unwrap();
+        db.upsert_segment(cam.id, 1060, "/rec/gate/b.mp4", 100).unwrap();
+        let span = 60 + 15;
+
+        // An UNflagged event inside segment a; a FLAGGED event squarely inside b
+        // (ts 1100 > 1075 so it can't also match a's boundary).
+        db.add_event(cam.id, 1010, "person", 0.9, [0.0; 4], None, None, None, None, None)
+            .unwrap();
+        let flagged = db
+            .add_event(cam.id, 1100, "person", 0.9, [0.0; 4], None, None, None, None, None)
+            .unwrap();
+        db.set_event_flag(flagged, true).unwrap();
+
+        let prot = db.flagged_segment_paths(span).unwrap();
+        assert!(prot.contains("/rec/gate/b.mp4"), "segment covering the flagged event is protected");
+        assert!(
+            !prot.contains("/rec/gate/a.mp4"),
+            "a segment with only an unflagged event is not protected"
+        );
+
+        // Un-flagging drops it: the flag, not the event's mere existence, drives it.
+        db.set_event_flag(flagged, false).unwrap();
+        assert!(db.flagged_segment_paths(span).unwrap().is_empty());
+    }
+
+    /// P2.14 Part 2: with `offsite_events_only`, `pending_offsite` returns only
+    /// segments overlapping an event — and a bookmarked segment is always among
+    /// them, so saved footage is never dropped from the backup.
+    #[test]
+    fn pending_offsite_events_only_filter() {
+        let db = mem_db();
+        let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
+        // Three widely-spaced segments so event windows don't overlap neighbours.
+        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100).unwrap();
+        db.upsert_segment(cam.id, 5000, "/rec/gate/b.mp4", 100).unwrap();
+        db.upsert_segment(cam.id, 9000, "/rec/gate/c.mp4", 100).unwrap();
+        // An ordinary (unflagged) event squarely inside segment b.
+        db.add_event(cam.id, 5030, "person", 0.9, [0.0; 4], None, None, None, None, None)
+            .unwrap();
+
+        // Full-mirror default: every sealed segment is a candidate.
+        assert_eq!(db.pending_offsite(100).unwrap().len(), 3);
+
+        // Turn events-only on.
+        let mut s = db.settings();
+        s.offsite_events_only = true;
+        s.segment_seconds = 60;
+        db.save_settings(&s).unwrap();
+
+        let only: std::collections::HashSet<String> = db
+            .pending_offsite(100)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.path)
+            .collect();
+        assert_eq!(only.len(), 1, "only the event-adjacent segment is a candidate");
+        assert!(only.contains("/rec/gate/b.mp4"));
+
+        // Bookmark a moment inside segment a: events-only must now also back it up
+        // (a flagged event is an ordinary event row -> its segment overlaps one).
+        let flagged = db
+            .add_event(cam.id, 1030, "person", 0.9, [0.0; 4], None, None, None, None, None)
+            .unwrap();
+        db.set_event_flag(flagged, true).unwrap();
+        let with_bookmark: std::collections::HashSet<String> = db
+            .pending_offsite(100)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.path)
+            .collect();
+        assert!(
+            with_bookmark.contains("/rec/gate/a.mp4"),
+            "bookmarked footage is backed up under events-only"
+        );
+        assert!(with_bookmark.contains("/rec/gate/b.mp4"));
+        assert!(
+            !with_bookmark.contains("/rec/gate/c.mp4"),
+            "an event-less segment stays excluded"
+        );
     }
 
     #[test]

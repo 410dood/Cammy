@@ -2399,6 +2399,18 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             />
             Enable offsite backup
           </label>
+          <label className="row" style={{ alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={s.offsite_events_only}
+              onChange={() => set({ offsite_events_only: !s.offsite_events_only })}
+            />
+            Back up only clips around events (saves upload/storage)
+          </label>
+          <p className="muted" style={{ margin: "0 0 8px 26px", fontSize: 13 }}>
+            Only mirror the recordings that cover a detection — not 24/7 footage. Saved (bookmarked)
+            clips are always backed up.
+          </p>
           <div className="row">
             <label className="field" style={{ flex: 1, minWidth: 300 }}>
               endpoint URL
