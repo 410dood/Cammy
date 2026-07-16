@@ -229,18 +229,40 @@ pub fn run(
                 }
             }
 
+            // P2.14 bookmark protection covers EVERY deletion pass below, not just
+            // age/byte-cap: the event-only and detection-triggered passes use a
+            // window down to `pre_roll` (default 10s) — TIGHTER than the flagged
+            // coverage slack (segment_seconds + 15s) — so a bookmarked segment in
+            // that tail could otherwise be deleted here before the age/byte-cap
+            // pass's protected check ran. Build the covering-segment set ONCE and
+            // honor it in all passes. Fail-SAFE: on lookup error, skip every
+            // deletion pass this tick (keep footage) — retention retries next cycle.
+            let seg_span = i64::from(settings.segment_seconds) + 15;
+            let (protected, do_deletes) = match db.flagged_segment_paths(seg_span) {
+                Ok(p) => (p, true),
+                Err(e) => {
+                    tracing::warn!(
+                        "bookmark-protection lookup failed; skipping deletion-based \
+                         retention this tick (keeping footage): {e:#}"
+                    );
+                    (std::collections::HashSet::new(), false)
+                }
+            };
+
             // Event-only recording (Frigate retain mode): for cameras with
             // the flag, drop segments that have no event within one segment
             // span of them once they age past a 15-minute review grace.
             for cam in cameras
                 .iter()
-                .filter(|c| c.record && c.detect_config.event_only_recording)
+                .filter(|c| do_deletes && c.record && c.detect_config.event_only_recording)
             {
                 let older_than = chrono::Local::now().timestamp() - 15 * 60;
                 let span = i64::from(settings.segment_seconds);
                 // (span, span) reproduces the original symmetric window exactly.
                 match db.eventless_segments(cam.id, older_than, span, span, span) {
-                    Ok(paths) if !paths.is_empty() => {
+                    Ok(mut paths) if !paths.is_empty() => {
+                        // Never drop a bookmarked event's covering segment.
+                        paths.retain(|p| !protected.contains(p));
                         let mut dropped = 0u32;
                         for path in paths {
                             let p = PathBuf::from(&path);
@@ -271,7 +293,7 @@ pub fn run(
             // skips pruning this tick — on doubt, footage is kept.
             for cam in cameras
                 .iter()
-                .filter(|c| c.record && c.detect_config.trigger_recording)
+                .filter(|c| do_deletes && c.record && c.detect_config.trigger_recording)
             {
                 let span = i64::from(settings.segment_seconds);
                 let pre = i64::from(cam.detect_config.trigger_pre_roll_secs.unwrap_or(10));
@@ -288,7 +310,11 @@ pub fn run(
                 let grace = post.max(pre) + 30;
                 let older_than = chrono::Local::now().timestamp() - span - grace;
                 match db.eventless_segments(cam.id, older_than, span, pre, post) {
-                    Ok(paths) if !paths.is_empty() => {
+                    Ok(mut paths) if !paths.is_empty() => {
+                        // Never drop a bookmarked event's covering segment — this
+                        // pass's window (down to pre_roll) is tighter than the
+                        // flagged slack, so the protected check is load-bearing here.
+                        paths.retain(|p| !protected.contains(p));
                         let mut dropped = 0u32;
                         for path in paths {
                             let p = PathBuf::from(&path);
@@ -322,53 +348,43 @@ pub fn run(
             // P2.14 footage safety: a flagged (bookmarked) event's row + snapshot
             // already survive event retention, but the underlying recording
             // segment could still be deleted here — silently losing the footage
-            // the user saved. Build the set of segment files COVERING a flagged
-            // event and skip them in BOTH prune passes. Fail-SAFE: if the lookup
-            // errors, SKIP the entire deletion-based prune this tick (keep footage)
-            // rather than risk deleting a bookmark with an empty protected set —
-            // retention simply retries next cycle. The span slack matches
-            // `recording_at`'s coverage guard.
-            let seg_span = i64::from(settings.segment_seconds) + 15;
-            match db.flagged_segment_paths(seg_span) {
-                Ok(protected) => {
-                    let mut pruned: Vec<PathBuf> = Vec::new();
-                    for cam in &cameras {
-                        let days = cam
-                            .detect_config
-                            .retention_days
-                            .unwrap_or(settings.retention_days);
-                        if days == 0 {
-                            continue; // 0 = keep indefinitely (byte cap still applies below)
-                        }
-                        // Age out BOTH streams of this camera together (a sub
-                        // segment ages on the same clock as its main). The sub
-                        // dir scans empty for a main-only camera → no-op.
-                        let cam_dirs = [
-                            recordings_dir.join(&cam.name),
-                            recordings_dir.join(format!("{}__sub", cam.name)),
-                        ];
-                        match recorder::prune(&cam_dirs, Some(days), None, &protected) {
-                            Ok(deleted) => pruned.extend(deleted),
-                            Err(e) => {
-                                tracing::warn!(camera = %cam.name, "age retention failed: {e:#}")
-                            }
-                        }
+            // the user saved. `protected` (built once at the top of the retention
+            // block) is honored in BOTH prune passes; `do_deletes` is false when
+            // that lookup failed, so the whole deletion prune is skipped this tick.
+            if do_deletes {
+                let mut pruned: Vec<PathBuf> = Vec::new();
+                for cam in &cameras {
+                    let days = cam
+                        .detect_config
+                        .retention_days
+                        .unwrap_or(settings.retention_days);
+                    if days == 0 {
+                        continue; // 0 = keep indefinitely (byte cap still applies below)
                     }
-                    let max_bytes = u64::from(settings.retention_gb) * 1_000_000_000;
-                    if max_bytes > 0 {
-                        match recorder::prune(&dirs, None, Some(max_bytes), &protected) {
-                            Ok(deleted) => pruned.extend(deleted),
-                            Err(e) => tracing::warn!("byte-cap retention failed: {e:#}"),
+                    // Age out BOTH streams of this camera together (a sub
+                    // segment ages on the same clock as its main). The sub
+                    // dir scans empty for a main-only camera → no-op.
+                    let cam_dirs = [
+                        recordings_dir.join(&cam.name),
+                        recordings_dir.join(format!("{}__sub", cam.name)),
+                    ];
+                    match recorder::prune(&cam_dirs, Some(days), None, &protected) {
+                        Ok(deleted) => pruned.extend(deleted),
+                        Err(e) => {
+                            tracing::warn!(camera = %cam.name, "age retention failed: {e:#}")
                         }
-                    }
-                    for path in pruned {
-                        let _ = db.delete_segment_by_path(&path.to_string_lossy());
                     }
                 }
-                Err(e) => tracing::warn!(
-                    "bookmark-protection lookup failed; skipping deletion-based \
-                     retention this tick (keeping footage): {e:#}"
-                ),
+                let max_bytes = u64::from(settings.retention_gb) * 1_000_000_000;
+                if max_bytes > 0 {
+                    match recorder::prune(&dirs, None, Some(max_bytes), &protected) {
+                        Ok(deleted) => pruned.extend(deleted),
+                        Err(e) => tracing::warn!("byte-cap retention failed: {e:#}"),
+                    }
+                }
+                for path in pruned {
+                    let _ = db.delete_segment_by_path(&path.to_string_lossy());
+                }
             }
 
             // Event retention: expire old events and their snapshot files
