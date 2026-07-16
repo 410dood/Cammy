@@ -57,6 +57,9 @@ const LABELS = [
   "child", "child_alone", "fall", "still_water",
   // Server-side pose events (enable "body pose monitoring" on the camera).
   "standing", "covered_face",
+  // P3.5 zero-shot zone-state classifier (experimental; enable per-zone in the
+  // ZoneEditor). Scope to a specific instance with "zone contains" (zone_like).
+  "zone_open", "zone_closed",
 ];
 // Friendly names for the non-obvious analytics / residential event labels, shown
 // in the dropdowns. The raw token is kept in parentheses (and as the option
@@ -77,6 +80,8 @@ const LABEL_PRETTY: Record<string, string> = {
   still_water: "Motionless in water*",
   standing: "Standing — crib climb-out*",
   covered_face: "Covered face*",
+  zone_open: "Zone became open*",
+  zone_closed: "Zone became closed*",
 };
 const labelText = (l: string) => (LABEL_PRETTY[l] ? `${LABEL_PRETTY[l]} (${l})` : l);
 const GESTURES = ["open_palm", "fist", "victory", "point", "thumb_up", "thumb_down", "love", "ok", "call_me"];

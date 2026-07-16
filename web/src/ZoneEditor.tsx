@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Camera, CrossDir, GroundCalib, PolyZone, Tripwire, ZoneKind } from "./api";
 import { IconRefresh } from "./icons";
+import { TogglePill } from "./ui";
 
 type Mask = [number, number][];
 type Draw =
@@ -514,6 +515,53 @@ export default function ZoneEditor({
                   </div>
                 </div>
               )}
+
+              {/* P3.5 zero-shot zone-state classifier (experimental). Independent
+                  of the zone kind — it just reads the region's picture. */}
+              <div style={{ marginTop: 10 }}>
+                <TogglePill
+                  on={!!z.state_classify}
+                  ariaLabel={`Classify open/closed state for zone ${z.name}`}
+                  onClick={() => upd({ state_classify: !z.state_classify })}
+                >
+                  classify open/closed state (experimental)
+                </TogglePill>
+                {z.state_classify && (
+                  <>
+                    <div className="row" style={{ marginTop: 8, gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+                      <label className="field">
+                        "open" looks like
+                        <input
+                          type="text"
+                          aria-label="Open-state prompt"
+                          placeholder="an open garage door"
+                          style={{ width: 200 }}
+                          value={z.open_prompt ?? ""}
+                          onChange={(e) => upd({ open_prompt: e.target.value })}
+                        />
+                      </label>
+                      <label className="field">
+                        "closed" looks like
+                        <input
+                          type="text"
+                          aria-label="Closed-state prompt"
+                          placeholder="a closed garage door"
+                          style={{ width: 200 }}
+                          value={z.closed_prompt ?? ""}
+                          onChange={(e) => upd({ closed_prompt: e.target.value })}
+                        />
+                      </label>
+                    </div>
+                    <p className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 4 }}>
+                      Needs the smart-search (CLIP) models — without them this does nothing (no
+                      event). Best-effort scene reading, re-checked about every 15&nbsp;s; not a
+                      security sensor, and the camera's detection must be on. A confirmed change
+                      fires a <code>zone_open</code> / <code>zone_closed</code> event — match this
+                      zone's name in an alarm rule's "zone contains" to alert on it.
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
             );
           })}

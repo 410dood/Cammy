@@ -47,6 +47,19 @@ const STATIONARY_MOVE_FRAC: f32 = 0.05;
 /// continuously-present object stays below this, so it doesn't re-fire.
 const STATIONARY_REACQUIRE_GAP: u32 = 2;
 
+/// P3.5 zone-state classifier: minimum wall-clock gap between two classifications
+/// of the same (camera, zone). A garage/gate/pool-cover state changes on the
+/// order of seconds-to-minutes, so ~once every 15 s is plenty and keeps the extra
+/// CLIP image run rare (it shares the single detection-thread session). Combined
+/// with `STATE_DEBOUNCE`, a real change registers in roughly two intervals.
+const STATE_CLASSIFY_INTERVAL: Duration = Duration::from_secs(15);
+/// Consecutive same readings (that disagree with the confirmed state) required
+/// before the zone's known state flips — anti-flap on a borderline frame.
+const STATE_DEBOUNCE: u32 = 2;
+/// Minimum zone-crop edge (px) worth embedding — below this CLIP has nothing to
+/// look at (mirrors the Re-ID crop minimum in `embed_crop`).
+const STATE_MIN_CROP: u32 = 24;
+
 /// Has an alerted object's anchor moved at least `thresh` (frame fractions) from
 /// where it last fired? `None` (never alerted) always counts as moved, so a
 /// newly-matched track fires once. Pure so it can be unit-tested.
@@ -175,6 +188,17 @@ pub fn run(
     // event. A track already in here that hasn't moved past `STATIONARY_MOVE_FRAC`
     // is suppressed (a parked car re-tripping the gate via ambient motion).
     let mut alerted_tracks: HashMap<i64, HashMap<u64, (f32, f32)>> = HashMap::new();
+    // P3.5 zero-shot zone-state classifier (garage/gate open-vs-closed). Keyed by
+    // (camera id, zone name): `state_last` throttles a zone to ~one classification
+    // per `STATE_CLASSIFY_INTERVAL`; `state_known` holds the last CONFIRMED binary
+    // state (open = true); `state_pending` counts consecutive same readings that
+    // differ from the confirmed state (debounce — `STATE_DEBOUNCE` in a row flips
+    // it). Prompt text embeddings are cached by prompt string in
+    // `state_prompt_embs` so a standing zone costs one CLIP text run per prompt.
+    let mut state_last: HashMap<(i64, String), Instant> = HashMap::new();
+    let mut state_known: HashMap<(i64, String), bool> = HashMap::new();
+    let mut state_pending: HashMap<(i64, String), (bool, u32)> = HashMap::new();
+    let mut state_prompt_embs: HashMap<String, Vec<f32>> = HashMap::new();
 
     while !shutdown.load(Ordering::Relaxed) {
         let tick = Instant::now();
@@ -204,6 +228,10 @@ pub fn run(
             tamper_gates.retain(|k, _| live.contains(k));
             gait_states.retain(|k, _| live.contains(k));
             alerted_tracks.retain(|k, _| live.contains(k));
+            // Zone-state maps are keyed by (camera id, zone name) — prune by camera.
+            state_last.retain(|k, _| live.contains(&k.0));
+            state_known.retain(|k, _| live.contains(&k.0));
+            state_pending.retain(|k, _| live.contains(&k.0));
             // Drop parcel state for cameras that are gone OR have package
             // detection off, so toggling it back on starts from a clean slate
             // (a stale `present` state would otherwise fire a spurious
@@ -391,6 +419,131 @@ pub fn run(
             // frame — motion gate, detector and snapshot all see the masked view.
             if !cam.detect_config.privacy_masks.is_empty() {
                 apply_privacy_masks(&mut frame, &cam.detect_config.privacy_masks);
+            }
+
+            // P3.5 zero-shot zone-state classifier (EXPERIMENTAL): for each zone
+            // opted into `state_classify` with two non-empty prompts, at most once
+            // per `STATE_CLASSIFY_INTERVAL`, embed the zone crop with the SHARED
+            // CLIP session and read open-vs-closed from the prompts. A CONFIRMED
+            // flip (debounced) emits a `zone_open` / `zone_closed` event scoped by
+            // the zone name (fire an alarm rule with `zone_like=<zone>`). Whole
+            // block is gated so a camera with no state-classify zone (the common
+            // case) pays ZERO cost, and every step fails open — any embed/crop/DB
+            // hiccup just skips the tick, never crashes or fabricates an event. It
+            // silently no-ops entirely when the CLIP models are absent.
+            if crate::smart::models_present()
+                && cam
+                    .detect_config
+                    .zones
+                    .iter()
+                    .any(|z| z.state_classify && zone_prompts(z).is_some())
+            {
+                let (fw, fh) = (frame.width() as f32, frame.height() as f32);
+                for zone in cam.detect_config.zones.iter().filter(|z| z.state_classify) {
+                    let Some((open_prompt, closed_prompt)) = zone_prompts(zone) else {
+                        continue;
+                    };
+                    let key = (cam.id, zone.name.clone());
+                    // Cadence: skip until this zone's classify interval elapses.
+                    if state_last
+                        .get(&key)
+                        .is_some_and(|t| t.elapsed() < STATE_CLASSIFY_INTERVAL)
+                    {
+                        continue;
+                    }
+                    state_last.insert(key.clone(), Instant::now());
+
+                    let Some((zx, zy, zw, zh)) =
+                        crate::zonestate::zone_pixel_bbox(&zone.points, fw, fh)
+                    else {
+                        continue;
+                    };
+                    if zw < STATE_MIN_CROP || zh < STATE_MIN_CROP {
+                        continue; // too small for CLIP to read anything useful
+                    }
+                    // Lazily bring up the SHARED CLIP image session (the same
+                    // `clip` the Re-ID crop pass uses — never a second session).
+                    if clip.is_none() {
+                        match crate::smart::ImageEmbedder::try_new() {
+                            Ok(e) => {
+                                tracing::info!("zone-state (CLIP) ready");
+                                clip = Some(e);
+                            }
+                            Err(e) => {
+                                tracing::warn!("zone-state: CLIP unavailable: {e:#}");
+                                break; // no session this tick; try again next time
+                            }
+                        }
+                    }
+                    let Some(embedder) = clip.as_mut() else { break };
+                    let crop = frame.crop_imm(zx, zy, zw, zh);
+                    let Ok(crop_emb) = embedder.embed(&crop) else {
+                        continue; // embed failed → skip, no event
+                    };
+                    let (Some(open_emb), Some(closed_emb)) = (
+                        ensure_prompt_emb(&mut state_prompt_embs, open_prompt),
+                        ensure_prompt_emb(&mut state_prompt_embs, closed_prompt),
+                    ) else {
+                        continue; // text embed failed → skip, no event
+                    };
+                    let Some(is_open) =
+                        crate::zonestate::classify_state(&crop_emb, &open_emb, &closed_emb)
+                    else {
+                        continue; // ambiguous frame → don't guess, keep prior state
+                    };
+
+                    // Debounce: require `STATE_DEBOUNCE` consecutive readings that
+                    // disagree with the confirmed state before flipping it.
+                    let known = state_known.get(&key).copied();
+                    if known == Some(is_open) {
+                        state_pending.remove(&key);
+                        continue;
+                    }
+                    let count = match state_pending.get(&key) {
+                        Some((c, n)) if *c == is_open => n + 1,
+                        _ => 1,
+                    };
+                    if count < STATE_DEBOUNCE {
+                        state_pending.insert(key.clone(), (is_open, count));
+                        continue;
+                    }
+                    state_pending.remove(&key);
+                    let prev = known;
+                    state_known.insert(key.clone(), is_open);
+                    // Establishing the baseline (no prior known state) is not a
+                    // "change" — record it silently. Only a real transition fires.
+                    if prev.is_some() {
+                        let label = if is_open { "zone_open" } else { "zone_closed" };
+                        // Marker anchor = the zone's pixel-box centre, in fractions.
+                        let anchor = (
+                            ((zx as f32 + zw as f32 / 2.0) / fw).clamp(0.0, 1.0),
+                            ((zy as f32 + zh as f32 / 2.0) / fh).clamp(0.0, 1.0),
+                        );
+                        let now_ts = chrono::Local::now().timestamp();
+                        tracing::info!(
+                            camera = %cam.name, zone = %zone.name, state = label,
+                            "zone-state change"
+                        );
+                        emit_analytics_event(
+                            &db,
+                            &settings,
+                            &alarms,
+                            &throttle,
+                            &mqtt_tx,
+                            &snapshots_dir,
+                            &frame,
+                            cam,
+                            label,
+                            anchor,
+                            Some(&zone.name),
+                            None,
+                            None,
+                            None,
+                            None,
+                            now_ts,
+                        );
+                    }
+                }
             }
 
             let threshold = cam
@@ -1837,6 +1990,44 @@ fn passes_size(d: &detector::Detection, cfg: &crate::db::DetectConfig, fw: f32, 
 /// `b` is a pixel box `[x1, y1, x2, y2]`. Returns `None` when the box is too
 /// small to carry meaningful appearance (a few pixels upscaled to CLIP's 224 is
 /// just noise) or falls outside the frame.
+/// P3.5: this zone's `(open_prompt, closed_prompt)` if it is state-classify-ready
+/// (both prompts present and non-blank), else `None`. Trims so a whitespace-only
+/// prompt reads as unset. Cheap gate the pipeline uses before spending any CLIP run.
+fn zone_prompts(z: &crate::db::PolyZone) -> Option<(&str, &str)> {
+    let open = z.open_prompt.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    let closed = z
+        .closed_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    Some((open, closed))
+}
+
+/// P3.5: CLIP text embedding for `prompt`, cached by prompt string so a standing
+/// zone re-embeds its prompts only once (the text is stable config). Returns a
+/// clone (the caller needs both prompt embeddings at once; ~512 floats is cheap).
+/// `None` on an embed error → the caller skips the tick (fail open, no event).
+fn ensure_prompt_emb(cache: &mut HashMap<String, Vec<f32>>, prompt: &str) -> Option<Vec<f32>> {
+    if let Some(e) = cache.get(prompt) {
+        return Some(e.clone());
+    }
+    match crate::smart::embed_text(prompt) {
+        Ok(e) => {
+            // Prompts are stable config, but defensively bound the cache against a
+            // pathological edit loop rather than let it grow unbounded.
+            if cache.len() > 512 {
+                cache.clear();
+            }
+            cache.insert(prompt.to_string(), e.clone());
+            Some(e)
+        }
+        Err(err) => {
+            tracing::debug!("zone-state prompt embed failed: {err:#}");
+            None
+        }
+    }
+}
+
 fn embed_crop(
     embedder: &mut crate::smart::ImageEmbedder,
     frame: &DynamicImage,

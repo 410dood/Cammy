@@ -99,6 +99,22 @@ pub struct PolyZone {
     /// detection — an above-water camera cannot see a submerged body. Off by default.
     #[serde(default)]
     pub water: bool,
+    /// P3.5 zero-shot zone-state classifier (EXPERIMENTAL, best-effort): watch
+    /// this zone and classify a binary open/closed state from the two CLIP text
+    /// prompts below, emitting a `zone_open` / `zone_closed` state-change event
+    /// scoped by the zone name (match it on an alarm rule's `zone_like`). Only
+    /// active when this is on, BOTH prompts are non-empty, AND the CLIP
+    /// smart-search models are present — otherwise it silently no-ops (never a
+    /// fake event). Reuses the shared CLIP session; a state-classify zone needs
+    /// its camera's detection on. See `zonestate.rs`. Off by default.
+    #[serde(default)]
+    pub state_classify: bool,
+    /// CLIP prompt describing the zone's OPEN state, e.g. "an open garage door".
+    #[serde(default)]
+    pub open_prompt: Option<String>,
+    /// CLIP prompt describing the zone's CLOSED state, e.g. "a closed garage door".
+    #[serde(default)]
+    pub closed_prompt: Option<String>,
 }
 
 impl PolyZone {
@@ -5113,6 +5129,11 @@ mod tests {
                 child_watch: true,
                 supervise: true,
                 water: false,
+                // P3.5 zone-state classifier rides detect_json (no migration) —
+                // set here so the full round-trip below covers its persistence.
+                state_classify: true,
+                open_prompt: Some("an open garage door".into()),
+                closed_prompt: Some("a closed garage door".into()),
             }],
             tripwires: vec![crate::analytics::Tripwire {
                 name: "gate".into(),

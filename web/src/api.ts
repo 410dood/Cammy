@@ -25,6 +25,15 @@ export interface PolyZone {
   /** Residential: this zone is water (a pool); a motionless person fires an
    *  EXPERIMENTAL `still_water` hint. NOT drowning detection. */
   water?: boolean;
+  /** P3.5 zero-shot zone-state classifier (EXPERIMENTAL): classify a binary
+   *  open/closed state from the two CLIP prompts below and emit a `zone_open` /
+   *  `zone_closed` event scoped by the zone name. Needs the smart-search (CLIP)
+   *  models; silently no-ops without them. Best-effort, not a security sensor. */
+  state_classify?: boolean;
+  /** CLIP prompt for the OPEN state, e.g. "an open garage door". */
+  open_prompt?: string | null;
+  /** CLIP prompt for the CLOSED state, e.g. "a closed garage door". */
+  closed_prompt?: string | null;
 }
 
 export type CrossDir = "both" | "a_to_b" | "b_to_a";

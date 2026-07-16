@@ -49,6 +49,7 @@ mod totp;
 mod transcribe;
 mod util;
 mod webpush;
+mod zonestate;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

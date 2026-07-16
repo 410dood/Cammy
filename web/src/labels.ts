@@ -9,6 +9,8 @@ const PRETTY: Record<string, string> = {
   loiter: "loitering",
   occupancy: "occupancy limit",
   still_water: "motionless in water",
+  zone_open: "zone opened",
+  zone_closed: "zone closed",
 };
 
 export const prettyLabel = (l: string) => PRETTY[l] ?? l.replace(/_/g, " ");
