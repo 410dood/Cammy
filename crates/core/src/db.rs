@@ -1513,6 +1513,22 @@ impl Db {
                  event_id  INTEGER PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
                  embedding BLOB NOT NULL
              );
+             -- P2.8b per-camera feedback learning: a thumbs-down on an alert
+             -- stores that object crop's CLIP embedding so future CLIP-similar
+             -- alerts on the SAME camera + SAME label can be quieted. `label` is
+             -- stored so a person false-positive never gates a car rule. Self-
+             -- trimmed per (camera_id,label); `event_id` is only provenance (the
+             -- source event may be pruned, so nullable, no FK cascade).
+             CREATE TABLE IF NOT EXISTS alert_feedback (
+                 id         INTEGER PRIMARY KEY,
+                 camera_id  INTEGER NOT NULL,
+                 event_id   INTEGER,
+                 label      TEXT NOT NULL,
+                 embedding  BLOB NOT NULL,
+                 created_ts INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_alert_feedback_cam_label
+                 ON alert_feedback(camera_id, label);
              CREATE TABLE IF NOT EXISTS plates (
                  id         INTEGER PRIMARY KEY,
                  plate      TEXT NOT NULL UNIQUE,
@@ -3662,6 +3678,79 @@ impl Db {
         Ok(rows)
     }
 
+    // --- alert feedback (P2.8b per-camera feedback learning) ---------------
+
+    /// Kept crops per (camera, label) — a generous window of recent thumbs-downs
+    /// so old, no-longer-relevant false-positives age out and the per-camera scan
+    /// stays cheap.
+    const FEEDBACK_KEEP_PER_CAM_LABEL: i64 = 200;
+
+    /// Record a thumbs-down: store this object crop's CLIP embedding so future
+    /// CLIP-similar alerts on the same camera + same label are quieted. Self-trims
+    /// to the most recent [`FEEDBACK_KEEP_PER_CAM_LABEL`] rows for that
+    /// (camera_id,label) so the table stays bounded (mirrors `add_notification`).
+    /// `embedding` uses the same little-endian f32 BLOB convention as the CLIP
+    /// event embeddings.
+    pub fn add_alert_feedback(
+        &self,
+        camera_id: i64,
+        event_id: Option<i64>,
+        label: &str,
+        embedding: &[f32],
+        now: i64,
+    ) -> Result<i64> {
+        let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO alert_feedback (camera_id, event_id, label, embedding, created_ts)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![camera_id, event_id, label, bytes, now],
+        )?;
+        let id = conn.last_insert_rowid();
+        // Trim older rows for this exact (camera_id,label) beyond the keep window.
+        let _ = conn.execute(
+            "DELETE FROM alert_feedback WHERE camera_id = ?1 AND label = ?2 AND id <= \
+             (SELECT MAX(id) FROM alert_feedback WHERE camera_id = ?1 AND label = ?2) - ?3",
+            params![camera_id, label, Self::FEEDBACK_KEEP_PER_CAM_LABEL],
+        );
+        Ok(id)
+    }
+
+    /// Suppression corpus for one camera + label (the genai worker's per-fire
+    /// lookup). Empty vec = nothing learned → caller fails OPEN (fires normally).
+    pub fn feedback_embeddings_for_camera(
+        &self,
+        camera_id: i64,
+        label: &str,
+    ) -> Result<Vec<Vec<f32>>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT embedding FROM alert_feedback WHERE camera_id = ?1 AND label = ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![camera_id, label], |r| {
+                let b: Vec<u8> = r.get(0)?;
+                Ok(bytes_to_f32(b))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// All feedback crops as `(camera_id, label, embedding)` — the bulk load the
+    /// detection pipeline caches once per tick into a per-(camera,label) map.
+    pub fn feedback_embeddings(&self) -> Result<Vec<(i64, String, Vec<f32>)>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT camera_id, label, embedding FROM alert_feedback")?;
+        let rows = stmt
+            .query_map([], |r| {
+                let b: Vec<u8> = r.get(2)?;
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, bytes_to_f32(b)))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// The most-recent `limit` events with their searchable text + (when
     /// `with_embeddings`) their CLIP snapshot embedding, newest first, for hybrid
     /// smart search (visual similarity + speech/caption text). Bounded to `limit`
@@ -4564,6 +4653,42 @@ mod tests {
         let ids: Vec<i64> = corpus.iter().map(|(id, _)| *id).collect();
         assert_eq!(corpus.len(), 2);
         assert!(ids.contains(&e1) && ids.contains(&e2) && !ids.contains(&e3));
+    }
+
+    #[test]
+    fn alert_feedback_roundtrip_and_scoping() {
+        let db = mem_db();
+        let cam = db.add_camera("yard", "rtsp://x", None, true, true).unwrap();
+        // Two thumbs-downs on person, one on car (different label scope).
+        db.add_alert_feedback(cam.id, Some(1), "person", &[1.0, 0.0, 0.0], 100)
+            .unwrap();
+        db.add_alert_feedback(cam.id, Some(2), "person", &[0.0, 1.0, 0.0], 110)
+            .unwrap();
+        db.add_alert_feedback(cam.id, None, "car", &[0.0, 0.0, 1.0], 120)
+            .unwrap();
+
+        // Per-(camera,label) lookup returns only same-label crops, decoded intact.
+        let person = db.feedback_embeddings_for_camera(cam.id, "person").unwrap();
+        assert_eq!(person.len(), 2);
+        assert!(person.contains(&vec![1.0, 0.0, 0.0]) && person.contains(&vec![0.0, 1.0, 0.0]));
+        let car = db.feedback_embeddings_for_camera(cam.id, "car").unwrap();
+        assert_eq!(car, vec![vec![0.0, 0.0, 1.0]]);
+        // A camera/label with nothing learned → empty (caller fails open).
+        assert!(db
+            .feedback_embeddings_for_camera(cam.id, "dog")
+            .unwrap()
+            .is_empty());
+        assert!(db
+            .feedback_embeddings_for_camera(9999, "person")
+            .unwrap()
+            .is_empty());
+
+        // Bulk load carries camera_id + label for the pipeline's per-tick cache.
+        let all = db.feedback_embeddings().unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().any(|(c, l, e)| *c == cam.id
+            && l == "person"
+            && *e == vec![1.0, 0.0, 0.0]));
     }
 
     #[test]

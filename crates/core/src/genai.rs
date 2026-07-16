@@ -37,6 +37,8 @@ pub struct VlmGateJob {
     pub rule: crate::db::AlarmRule,
     pub event_id: i64,
     pub camera: String,
+    /// Camera id (P2.8b: the per-camera feedback-suppression lookup key).
+    pub camera_id: i64,
     pub label: String,
     pub score: f32,
     pub ts: i64,
@@ -227,6 +229,23 @@ fn vlm_gate(db: &Db, j: &VlmGateJob, mqtt_tx: &std::sync::mpsc::Sender<crate::mq
     if verdict == Some(false) {
         tracing::info!(rule = %j.rule.name, event = j.event_id, "vlm gate: suppressed (model said no)");
         return;
+    }
+    // P2.8b feedback learning: quiet this AI-verified fire if the event's object
+    // crop looks like one the user thumbs-downed on this camera + label. The crop
+    // embedding was produced by the detection pipeline's second pass and has
+    // usually landed in the DB by now. **Fails OPEN** on any error / missing
+    // embedding: a lookup failure or an event with no crop never suppresses.
+    if let Ok(Some(crop)) = db.crop_embedding_for(j.event_id) {
+        let sup = db
+            .feedback_embeddings_for_camera(j.camera_id, &j.label)
+            .unwrap_or_default();
+        if crate::smart::any_similar(&crop, &sup, crate::smart::FEEDBACK_SUPPRESS_COSINE) {
+            tracing::debug!(
+                rule = %j.rule.name, event = j.event_id,
+                "vlm gate: suppressed by feedback (crop matches a thumbs-down)"
+            );
+            return;
+        }
     }
     // Describe-in-notification: reuse the caption the Caption job may have
     // already written, else generate one now (fail open — a model error just

@@ -17,7 +17,7 @@ import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil, IconLink, IconShield,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
   IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX, IconVideo,
-  IconChevronLeft, IconChevronRight,
+  IconChevronLeft, IconChevronRight, IconThumbDown,
 } from "../icons";
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
 // uses it too) — see eventGroups.ts.
@@ -590,6 +590,26 @@ export default function Events({
       toast.success(flagged ? "Event saved" : "Bookmark removed");
     } catch (e) {
       toast.error(`Couldn't update bookmark: ${e}`);
+    }
+  };
+  // P2.8b feedback learning: thumbs-down an alert. The server stores this
+  // object's crop embedding so CLIP-similar FUTURE alerts on the same camera are
+  // quieted — honest v0: only AI-watch (prompt/attribute) and AI-verified (VLM)
+  // rules are filtered, not plain object rules.
+  const suppressAlert = async (ev: CamEvent) => {
+    try {
+      const r = await api.eventFeedback(ev.id);
+      if (r.ok) {
+        toast.success(
+          `Similar AI-watch/AI-verified alerts on ${ev.camera} will be quieted`
+        );
+      } else {
+        toast.error(
+          "Can't learn from this one — it has no object crop to compare (needs the smart-search models)"
+        );
+      }
+    } catch (e) {
+      toast.error(`Couldn't send feedback: ${e}`);
     }
   };
   const toggleSelect = (id: number) =>
@@ -1431,6 +1451,13 @@ export default function Events({
                 <IconUser size={14} /> Similar
               </button>
             )}
+            <button
+              className="btn btn-ghost ev-act"
+              title="Not a real alert? Quiet future look-alikes on this camera. Note: this only quiets AI-watch and AI-verified rules — plain object rules aren't filtered yet."
+              onClick={() => suppressAlert(open)}
+            >
+              <IconThumbDown size={14} /> Not this
+            </button>
             <span className="lightbox-sep" aria-hidden="true" />
             <button
               className="btn btn-ghost ev-act"

@@ -739,6 +739,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ flagged, note: note ?? null }),
     }),
+  // P2.8b feedback learning: thumbs-down an alert. On success the server stores
+  // the event's object-crop embedding so CLIP-similar FUTURE alerts on the same
+  // camera are quieted (AI-watch / AI-verified rules only in v0). An event with
+  // no object crop returns {ok:false, reason:"no_crop"}.
+  eventFeedback: (id: number) =>
+    req<{ ok: boolean; suppressed?: boolean; reason?: string }>(
+      `/api/events/${id}/feedback`,
+      { method: "POST" }
+    ),
   recordGesture: (body: { camera?: string; gesture: string; score?: number }) =>
     req<{ recorded: boolean; event_id?: number; gesture?: string; reason?: string; duress?: boolean }>(
       "/api/gesture",

@@ -248,6 +248,22 @@ pub fn run(
         } else {
             Vec::new()
         };
+        // P2.8b feedback learning: load thumbs-downed crops once per tick into a
+        // per-(camera,label) suppression corpus (mirrors gait/faces above). Only
+        // the prompt path (`fire_prompt_alarms`) reads this cache, and it needs
+        // CLIP anyway, so skip the load entirely when no prompt rule can fire.
+        // Empty map → `any_similar` returns false → every alert fires (fail open).
+        let feedback_by_cam: HashMap<(i64, String), Vec<Vec<f32>>> = if crate::smart::models_present()
+            && alarms.iter().any(|r| r.is_prompt_rule())
+        {
+            let mut m: HashMap<(i64, String), Vec<Vec<f32>>> = HashMap::new();
+            for (cid, label, emb) in db.feedback_embeddings().unwrap_or_default() {
+                m.entry((cid, label)).or_default().push(emb);
+            }
+            m
+        } else {
+            HashMap::new()
+        };
         for cam in cameras.iter().filter(|c| c.enabled && c.detect) {
             if shutdown.load(Ordering::Relaxed) {
                 break;
@@ -1112,6 +1128,7 @@ pub fn run(
                                         rule: rule.clone(),
                                         event_id: id,
                                         camera: cam.name.clone(),
+                                        camera_id: cam.id,
                                         label: d.label.to_string(),
                                         score: d.score,
                                         ts: now,
@@ -1295,6 +1312,12 @@ pub fn run(
                                 // P2.2 prompt-based standing rules: does this
                                 // object *look like* any rule's description?
                                 if let Some(emb) = &crop_emb {
+                                    // P2.8b: the thumbs-down corpus for this
+                                    // exact (camera,label); empty ⇒ fail open.
+                                    let sup_embs = feedback_by_cam
+                                        .get(&(cam.id, job.label.clone()))
+                                        .map(Vec::as_slice)
+                                        .unwrap_or(&[]);
                                     fire_prompt_alarms(
                                         &db,
                                         &settings,
@@ -1306,6 +1329,7 @@ pub fn run(
                                         cam,
                                         job,
                                         emb,
+                                        sup_embs,
                                         &snap_rel,
                                         &snap_abs,
                                         now,
@@ -1859,6 +1883,8 @@ fn fire_prompt_alarms(
     cam: &crate::db::Camera,
     job: &CropJob,
     crop_emb: &[f32],
+    // P2.8b: this (camera,label)'s thumbs-downed crops. Empty = nothing learned.
+    sup_embs: &[Vec<f32>],
     snap_rel: &str,
     snap_abs: &std::path::Path,
     now: i64,
@@ -1917,6 +1943,18 @@ fn fire_prompt_alarms(
             continue;
         }
         if !rule.confirm_ok(db, cam.id, now) || !crate::notify::ready(rule, throttle, now) {
+            continue;
+        }
+        // P2.8b feedback learning: quiet this AI-watch fire if THIS crop looks
+        // like a thumbs-downed one on this camera+label. Fails OPEN — an empty
+        // corpus (nothing learned) or a mismatched-length embedding never
+        // suppresses. Deliberately does NOT mark the rule handled for the frame:
+        // a different, non-thumbs-downed crop that also matches must still fire.
+        if crate::smart::any_similar(crop_emb, sup_embs, crate::smart::FEEDBACK_SUPPRESS_COSINE) {
+            tracing::debug!(
+                rule = %rule.name, event = job.event_id,
+                "prompt rule suppressed by feedback (crop matches a thumbs-down)"
+            );
             continue;
         }
         fired_this_frame.insert(rule.id);

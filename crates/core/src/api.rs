@@ -78,6 +78,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(bookmark_event),
         )
         .route("/api/events/{id}/tags", axum::routing::post(set_event_tags))
+        .route(
+            "/api/events/{id}/feedback",
+            axum::routing::post(event_feedback),
+        )
         .route("/api/gesture", axum::routing::post(record_gesture))
         .route(
             "/api/cameras/{id}/trigger",
@@ -2502,6 +2506,39 @@ async fn bookmark_event(
     Ok(Json(
         serde_json::json!({ "id": id, "flagged": req.flagged }),
     ))
+}
+
+/// P2.8b feedback learning — thumbs-down an alert to quiet CLIP-similar FUTURE
+/// alerts on the SAME camera. **Honest v0 scope:** the stored crop only gates the
+/// AI-watch (prompt / attribute) and AI-verified (VLM) rule paths — plain
+/// object-label rules are NOT filtered yet (the immediate label-match alarms fire
+/// before the crop embedding is computed). RBAC mirrors [`bookmark_event`]: load
+/// the event first so a camera-scoped user can't learn from a camera they can't
+/// see (404 for missing OR forbidden; POST is already Operator+ via
+/// `min_role_for`). Needs the event's object-crop CLIP embedding (an object
+/// detection with the smart-search models present); a non-object / model-absent
+/// event has none and returns an honest `{ok:false, reason:"no_crop"}` rather
+/// than silently no-op'ing.
+async fn event_feedback(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    match st.db.crop_embedding_for(id)? {
+        Some(emb) => {
+            let now = chrono::Local::now().timestamp();
+            st.db
+                .add_alert_feedback(ev.camera_id, Some(id), &ev.label, &emb, now)?;
+            Ok(Json(
+                serde_json::json!({ "ok": true, "suppressed": true }),
+            ))
+        }
+        None => Ok(Json(
+            serde_json::json!({ "ok": false, "reason": "no_crop" }),
+        )),
+    }
 }
 
 #[derive(Deserialize)]

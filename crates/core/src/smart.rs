@@ -131,6 +131,24 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+/// Cosine at/above which a firing object crop is judged "the same thing" as a
+/// thumbs-downed one and its alert is quieted (P2.8b feedback learning).
+/// Deliberately conservative: the #61 Re-ID data put true same-object crop pairs
+/// at 0.91–0.97 and unrelated pairs at 0.11–0.22, so 0.90 suppresses only a near-
+/// identical re-detection and never a merely similar object. May need live tuning.
+pub const FEEDBACK_SUPPRESS_COSINE: f32 = 0.90;
+
+/// True if any vector in `corpus` is cosine-similar to `query` at/above
+/// `threshold`. **Fails OPEN**: an empty query or empty corpus returns `false`
+/// (nothing to suppress), so a missing/mismatched embedding can never swallow a
+/// real alert. Length mismatches score 0 (via `cosine`) and so never suppress.
+pub fn any_similar(query: &[f32], corpus: &[Vec<f32>], threshold: f32) -> bool {
+    if query.is_empty() || corpus.is_empty() {
+        return false;
+    }
+    corpus.iter().any(|c| cosine(query, c) >= threshold)
+}
+
 /// How well `query` matches free text (an event's transcript + caption), in
 /// `[0, 1]`, case-insensitive: `1.0` if the whole query is a substring, else
 /// the fraction of query words (≥2 chars) found in the text. `0` if no overlap.
@@ -167,7 +185,26 @@ fn l2(v: &[f32]) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::text_match_score;
+    use super::{any_similar, text_match_score};
+
+    #[test]
+    fn any_similar_fails_open_and_matches() {
+        // Empty corpus / empty query → false (fail open, never suppresses).
+        assert!(!any_similar(&[1.0, 0.0], &[], 0.9));
+        assert!(!any_similar(&[], &[vec![1.0, 0.0]], 0.9));
+        // A near-identical (normalized) vector clears a high threshold.
+        assert!(any_similar(&[1.0, 0.0], &[vec![0.99, 0.01]], 0.9));
+        // An orthogonal vector never matches.
+        assert!(!any_similar(&[1.0, 0.0], &[vec![0.0, 1.0]], 0.9));
+        // Any one matching corpus vector is enough.
+        assert!(any_similar(
+            &[1.0, 0.0],
+            &[vec![0.0, 1.0], vec![0.98, 0.0]],
+            0.9
+        ));
+        // Length mismatch scores 0 → never suppresses (fail open).
+        assert!(!any_similar(&[1.0, 0.0], &[vec![1.0, 0.0, 0.0]], 0.9));
+    }
 
     #[test]
     fn text_match_scoring() {
