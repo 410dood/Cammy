@@ -212,7 +212,7 @@ pub fn fire(
 ) {
     tracing::info!(rule = %rule.name, event = ev.event_id, suppressed, "alarm triggered");
     for action in rule.effective_actions() {
-        fire_action(&action, &rule.name, ev, mqtt_tx, suppressed);
+        fire_action(&action, &rule.name, ev, mqtt_tx, suppressed, db);
     }
     // A synthetic/test fire (event_id 0) exercises ONLY the rule's own configured
     // actions above — it must not create a per-user notification (no bell entry /
@@ -276,9 +276,12 @@ fn fire_action(
     ev: &AlarmEvent,
     mqtt_tx: &std::sync::mpsc::Sender<EventMsg>,
     suppressed: u32,
+    db: &Db,
 ) {
     // One-knob fatigue gate: quiet the human channels below the configured
-    // severity; automations still see everything.
+    // severity; automations still see everything. (Deterrence is a physical
+    // automation, never a human-facing push, so it is intentionally NOT gated
+    // here — its own master switch governs it below.)
     if matches!(action.kind.as_str(), "ntfy" | "email")
         && !push_allowed(ev.severity, ev.min_push_severity, ev.duress)
     {
@@ -304,8 +307,51 @@ fn fire_action(
         }
         "ntfy" => ntfy(&action.target, rule_name, action.priority, ev, suppressed),
         "email" => email(&action.target, rule_name, ev, suppressed),
+        "deterrence" => deterrence(&action.target, rule_name, ev, db),
         other => tracing::warn!("unknown alarm action {other:?}"),
     }
+}
+
+/// P2.9 deterrence action: pulse a camera's ONVIF relay output (siren / strobe /
+/// light). Master-switch gated and fail-soft — arm-mode gating already happened
+/// upstream (every dispatch site ANDs `armed_in_mode`), so there is no new
+/// gating here beyond the honesty kill-switch.
+fn deterrence(target_token: &str, rule_name: &str, ev: &AlarmEvent, db: &Db) {
+    // Honesty kill-switch: with the master toggle off a "deterrence" action does
+    // NOTHING physical — no SOAP is sent, no siren fires.
+    if !db.settings().deterrence_enabled {
+        tracing::info!(
+            rule = rule_name, event = ev.event_id,
+            "deterrence action skipped: master switch off"
+        );
+        return;
+    }
+    let token = target_token.trim();
+    if token.is_empty() {
+        tracing::warn!(rule = rule_name, "deterrence action has no relay token — skipping");
+        return;
+    }
+    // Resolve the firing camera → its ONVIF host+creds. Fail-soft at each hop.
+    let cam = match db.camera_by_name(ev.camera) {
+        Ok(Some(cid)) => db.get_camera(cid).ok().flatten(),
+        _ => None,
+    };
+    let Some(cam) = cam else {
+        tracing::warn!(
+            rule = rule_name, camera = %ev.camera,
+            "deterrence action: camera not found — skipping"
+        );
+        return;
+    };
+    let Some(camtarget) = crate::ptz::parse_source(&cam.source) else {
+        tracing::warn!(
+            rule = rule_name, camera = %ev.camera,
+            "deterrence action: camera source has no ONVIF credentials — skipping"
+        );
+        return;
+    };
+    // Fixed, capped hold for v0 — no escalation ladder.
+    crate::deterrence::pulse_relay_async(camtarget, token.to_string(), Duration::from_secs(5));
 }
 
 /// Email (SMTP) action: send the alarm detail with the snapshot attached.

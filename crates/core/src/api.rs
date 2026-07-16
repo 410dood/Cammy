@@ -66,6 +66,7 @@ pub fn router(state: AppState) -> Router {
             get(get_camera).patch(patch_camera).delete(delete_camera),
         )
         .route("/api/cameras/{id}/ptz", get(ptz_caps).post(ptz_command))
+        .route("/api/cameras/{id}/deter", get(deter_probe).post(deter_test))
         .route("/api/cameras/{id}/frame.jpg", get(camera_frame))
         .route("/api/cameras/{id}/timelapse", axum::routing::post(create_timelapse))
         .route("/api/cameras/{id}/timelapse.mp4", get(serve_timelapse))
@@ -1827,6 +1828,13 @@ async fn restore(
                 .and_then(|name| name_to_id.get(name))
                 .copied();
         }
+        // A backup is unvalidated input and a deterrence action can arm a real
+        // siren, so validate each imported rule the same as a POSTed one — SKIP
+        // (and log) a bad rule rather than abort the whole restore.
+        if let Err(e) = validate_alarm_rule(&rule) {
+            tracing::warn!(rule = %rule.name, "restore: skipping invalid alarm rule: {}", e.1);
+            continue;
+        }
         st.db.add_alarm(&rule)?;
         alarms_added += 1;
     }
@@ -2102,6 +2110,92 @@ async fn ptz_command(
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     result.map_err(|e| bad_request(format!("{e:#}")))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// --- P2.9 deterrence (ONVIF relay siren/strobe/light) ----------------------
+
+/// Probe a camera's ONVIF relay-output capability (the "trigger siren/light"
+/// deterrence action). Scope-checked first (propagated as 404, like `ptz_caps`)
+/// so an out-of-scope camera can't leak its capability. A camera with no ONVIF
+/// credentials in its source returns caps with a clear `error` (not a 4xx), so
+/// the rule builder can explain what's missing rather than silently offer
+/// nothing.
+async fn deter_probe(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<crate::deterrence::DeterCaps>> {
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
+    let cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    let Some(target) = crate::ptz::parse_source(&cam.source) else {
+        return Ok(Json(crate::deterrence::DeterCaps {
+            relays: Vec::new(),
+            error: Some(
+                "No ONVIF credentials for this camera — add user:pass to its source URL".into(),
+            ),
+        }));
+    };
+    let caps = tokio::task::spawn_blocking(move || crate::deterrence::probe(&target))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(caps))
+}
+
+#[derive(Deserialize)]
+struct DeterReq {
+    token: String,
+    /// How long to hold the relay closed, seconds (default 2, capped 30).
+    active_secs: Option<u64>,
+}
+
+/// Manually pulse a relay once — the "Test siren/light" button used to VERIFY a
+/// camera's relay hardware before arming a rule against it. Same RBAC + blocking
+/// pattern as `ptz_command` (Operator via `min_role_for`'s POST default).
+///
+/// Deliberately NOT gated on the `deterrence_enabled` master switch: the test is
+/// the tool a user reaches for to confirm the wiring is real BEFORE flipping the
+/// master switch on. It is already an authenticated, in-scope, manual action
+/// (exactly like PTZ), so keeping it live while the switch is off is safe and is
+/// what makes probe-before-arm honest. Automated rule-fired deterrence stays
+/// master-switch gated in `notify::fire_action`.
+async fn deter_test(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<DeterReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
+    let token = req.token.trim().to_string();
+    if token.is_empty() || !no_control(&token) || token.contains(['<', '>', '&', '"']) {
+        return Err(bad_request("a valid relay output token is required"));
+    }
+    // Cap the hold at MAX_HOLD (10s) — never bypass the module's siren ceiling.
+    let hold = req
+        .active_secs
+        .unwrap_or(2)
+        .clamp(1, crate::deterrence::MAX_HOLD.as_secs());
+    let cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    let target = crate::ptz::parse_source(&cam.source)
+        .ok_or_else(|| bad_request("camera source has no host/credentials for ONVIF"))?;
+    tracing::info!(camera = %cam.name, relay = %token, "deterrence manual test");
+    // Do the ON synchronously so the caller learns whether the camera ACCEPTED
+    // the command (the honest toast), then detach the release — so we never sleep
+    // for `hold` on a blocking-pool thread, and the OFF retries. Return the
+    // target out of the closure to hand it to the release thread.
+    let on_token = token.clone();
+    let target = tokio::task::spawn_blocking(move || {
+        crate::deterrence::trigger_relay(&target, &on_token, true).map(|()| target)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| bad_request(format!("{e:#}")))?;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(hold));
+        crate::deterrence::release_relay(&target, &token);
+    });
+    // NB: a 200 means the camera ACCEPTED the SetRelayOutputState command, not
+    // that a siren is physically wired to that relay — never claim more.
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -3643,9 +3737,12 @@ fn validate_alarm_rule(rule: &crate::db::AlarmRule) -> ApiResult<()> {
     // the legacy single action for older clients, so this covers both shapes.
     let actions = rule.effective_actions();
     for a in &actions {
-        if !matches!(a.kind.as_str(), "webhook" | "mqtt" | "ntfy" | "email") {
+        if !matches!(
+            a.kind.as_str(),
+            "webhook" | "mqtt" | "ntfy" | "email" | "deterrence"
+        ) {
             return Err(bad_request(
-                "each action must be webhook, mqtt, ntfy or email",
+                "each action must be webhook, mqtt, ntfy, email or deterrence",
             ));
         }
         // An email action may leave target blank (uses the default smtp_to);
@@ -3654,6 +3751,17 @@ fn validate_alarm_rule(rule: &crate::db::AlarmRule) -> ApiResult<()> {
             return Err(bad_request(
                 "each action needs a target (URL or MQTT topic)",
             ));
+        }
+        // A deterrence action's target is an ONVIF relay token interpolated into
+        // a SOAP body — reject control chars and XML metacharacters so a rule (or
+        // an imported backup) can't smuggle markup into the envelope.
+        if a.kind == "deterrence" {
+            let t = a.target.trim();
+            if !no_control(t) || t.contains(['<', '>', '&', '"']) {
+                return Err(bad_request(
+                    "a siren/light action's relay token must be a plain identifier (no control characters or < > & \")",
+                ));
+            }
         }
         if a.priority > 5 {
             return Err(bad_request("action priority must be 0 (default) through 5"));

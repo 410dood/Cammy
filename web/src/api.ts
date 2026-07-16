@@ -232,6 +232,8 @@ export interface Settings {
   genai_api_key: string;
   transcription_enabled: boolean;
   transcription_model: string;
+  /** P2.9 master kill-switch for deterrence (ONVIF relay siren/light) actions. */
+  deterrence_enabled: boolean;
   anomaly_detection: boolean;
   digest_enabled: boolean;
   liveviews: Liveview[];
@@ -330,7 +332,19 @@ export interface AppConfig {
 }
 
 export type ArmMode = "home" | "away" | "disarmed";
-export type ActionKind = "webhook" | "mqtt" | "ntfy" | "email";
+export type ActionKind = "webhook" | "mqtt" | "ntfy" | "email" | "deterrence";
+
+/** One ONVIF relay output a camera advertises (P2.9 deterrence). */
+export interface RelayOutput {
+  token: string;
+  mode: string | null;
+}
+
+/** Result of probing a camera's relay-output (siren/light) capability. */
+export interface DeterCaps {
+  relays: RelayOutput[];
+  error: string | null;
+}
 
 /** One tracked occupant for presence/geofence arming (P2.10). */
 export interface Occupant {
@@ -789,6 +803,12 @@ export const api = {
   ptzCaps: (id: number) => req<{ supported: boolean }>(`/api/cameras/${id}/ptz`),
   ptz: (id: number, cmd: { action: "move" | "stop"; pan?: number; tilt?: number; zoom?: number }) =>
     req<{ ok: boolean }>(`/api/cameras/${id}/ptz`, { method: "POST", body: JSON.stringify(cmd) }),
+  deterProbe: (id: number) => req<DeterCaps>(`/api/cameras/${id}/deter`),
+  deterTest: (id: number, token: string, activeSecs?: number) =>
+    req<{ ok: boolean }>(`/api/cameras/${id}/deter`, {
+      method: "POST",
+      body: JSON.stringify({ token, active_secs: activeSecs }),
+    }),
   tokens: () => req<ApiToken[]>("/api/tokens"),
   createToken: (name: string, role: Role = "operator") =>
     req<{ id: number; name: string; role: Role; token: string }>("/api/tokens", {

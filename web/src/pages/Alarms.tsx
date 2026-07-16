@@ -1,5 +1,5 @@
 ﻿import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, AlarmRule, Action, ActionKind, ArmMode, CamEvent, Camera, DAY_NAMES } from "../api";
+import { api, AlarmRule, Action, ActionKind, ArmMode, CamEvent, Camera, DAY_NAMES, DeterCaps } from "../api";
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
 import { prettyGesture } from "../labels";
@@ -88,6 +88,7 @@ const ACTION_KINDS: { id: ActionKind; label: string }[] = [
   { id: "mqtt", label: "publish MQTT" },
   { id: "ntfy", label: "push to phone (ntfy app)" },
   { id: "email", label: "send email" },
+  { id: "deterrence", label: "trigger siren/light (ONVIF relay)" },
 ];
 const targetHint = (kind: ActionKind) =>
   kind === "webhook"
@@ -145,6 +146,55 @@ export default function Alarms({
   const removeAction = (i: number) =>
     setActions((p) => (p.length > 1 ? p.filter((_, j) => j !== i) : p));
 
+  // P2.9 deterrence: when a "trigger siren/light" action is present on a
+  // camera-scoped rule, probe that camera's ONVIF relay outputs so we can offer
+  // the REAL relay tokens (never a blind text box), or be honest about why there
+  // are none.
+  const hasDeter = actions.some((a) => a.kind === "deterrence");
+  const [deterCaps, setDeterCaps] = useState<DeterCaps | null>(null);
+  const [deterLoading, setDeterLoading] = useState(false);
+  useEffect(() => {
+    if (!hasDeter || cameraId === "") {
+      setDeterCaps(null);
+      setDeterLoading(false);
+      return;
+    }
+    const cid = cameraId as number;
+    let cancelled = false;
+    setDeterLoading(true);
+    setDeterCaps(null);
+    api
+      .deterProbe(cid)
+      .then((c) => {
+        if (cancelled) return;
+        setDeterCaps(c);
+        // Drop a stale relay token this camera doesn't actually expose, so we
+        // never save camera A's token against camera B.
+        const valid = new Set(c.relays.map((r) => r.token));
+        setActions((prev) =>
+          prev.map((a) =>
+            a.kind === "deterrence" && a.target && !valid.has(a.target) ? { ...a, target: "" } : a,
+          ),
+        );
+      })
+      .catch((e) => !cancelled && setDeterCaps({ relays: [], error: errMsg(e) }))
+      .finally(() => !cancelled && setDeterLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [hasDeter, cameraId]);
+  const testRelay = async (token: string) => {
+    if (cameraId === "") return;
+    try {
+      await api.deterTest(cameraId as number, token, 2);
+      toast.success(
+        "Relay command accepted by the camera — confirm a siren/light is actually wired to this relay",
+      );
+    } catch (e) {
+      onError(errMsg(e));
+    }
+  };
+
   // First-run gate for auto-opening the builder: only the FIRST successful
   // load may open it (never a fetch error, never a later refetch — e.g. after
   // deleting the last rule the list should lead, not the builder).
@@ -156,8 +206,18 @@ export default function Alarms({
   // Whether speech transcription is on globally — a spoken-phrase rule can
   // never fire without it, so the builder warns instead of arming a dead rule.
   const [transcriptionOn, setTranscriptionOn] = useState<boolean | null>(null);
+  // Whether deterrence actions are enabled globally — a rule can carry a
+  // siren/light action while the master switch is OFF, so the builder warns
+  // that it won't actually fire until enabled in Settings.
+  const [deterEnabled, setDeterEnabled] = useState<boolean | null>(null);
   const load = () => {
-    api.settings().then((s) => setTranscriptionOn(s.transcription_enabled)).catch(() => {});
+    api
+      .settings()
+      .then((s) => {
+        setTranscriptionOn(s.transcription_enabled);
+        setDeterEnabled(s.deterrence_enabled);
+      })
+      .catch(() => {});
     api
       .alarms()
       .then((r) => {
@@ -299,7 +359,15 @@ export default function Alarms({
   const add = async (e: FormEvent) => {
     e.preventDefault();
     const acts = actions.map((a) => ({ ...a, target: a.target.trim() }));
-    if (acts.some((a) => a.kind !== "email" && !a.target)) {
+    if (acts.some((a) => a.kind === "deterrence") && cameraId === "") {
+      onError("a siren/light action needs the rule scoped to a specific camera (the “on camera” selector)");
+      return;
+    }
+    if (acts.some((a) => a.kind === "deterrence" && !a.target)) {
+      onError("pick a relay output for the siren/light action");
+      return;
+    }
+    if (acts.some((a) => a.kind !== "email" && a.kind !== "deterrence" && !a.target)) {
       onError("every action needs a target (URL or MQTT topic)");
       return;
     }
@@ -452,7 +520,9 @@ export default function Alarms({
         ? `MQTT → alarms/${a.target}`
         : a.kind === "email"
           ? `Email → ${a.target || "default recipient"}`
-          : `Push (ntfy)${a.priority ? ` · priority ${a.priority}` : ""}`;
+          : a.kind === "deterrence"
+            ? `Siren/light → relay ${a.target}`
+            : `Push (ntfy)${a.priority ? ` · priority ${a.priority}` : ""}`;
 
   const ruleActions = (r: AlarmRule): Action[] =>
     r.actions && r.actions.length > 0
@@ -952,7 +1022,12 @@ export default function Alarms({
               <div className="row action-row" key={i}>
                 <select
                   value={a.kind}
-                  onChange={(e) => updateAction(i, { kind: e.target.value as ActionKind })}
+                  onChange={(e) => {
+                    const kind = e.target.value as ActionKind;
+                    // Switching to deterrence clears the old URL/topic target —
+                    // its target is a relay token chosen from the probe below.
+                    updateAction(i, kind === "deterrence" ? { kind, target: "", priority: 0 } : { kind });
+                  }}
                 >
                   {ACTION_KINDS.map((k) => (
                     <option key={k.id} value={k.id}>
@@ -960,14 +1035,57 @@ export default function Alarms({
                     </option>
                   ))}
                 </select>
-                <input
-                  type="text"
-                  inputMode={a.kind === "email" ? "email" : a.kind === "webhook" || a.kind === "ntfy" ? "url" : undefined}
-                  style={{ flex: 1, minWidth: 240 }}
-                  value={a.target}
-                  onChange={(e) => updateAction(i, { target: e.target.value })}
-                  placeholder={targetHint(a.kind)}
-                />
+                {a.kind === "deterrence" ? (
+                  <div style={{ flex: 1, minWidth: 240, display: "flex", flexDirection: "column", gap: 6 }}>
+                    {cameraId === "" ? (
+                      <div className="callout callout-info" role="status">
+                        Pick a specific camera for this rule (the “on camera” selector above) so its relay
+                        output can be triggered.
+                      </div>
+                    ) : deterLoading ? (
+                      <span className="muted">Checking this camera’s relay outputs…</span>
+                    ) : deterCaps && deterCaps.relays.length > 0 ? (
+                      <div className="row" style={{ gap: 8 }}>
+                        <select
+                          value={a.target}
+                          style={{ flex: 1, minWidth: 180 }}
+                          onChange={(e) => updateAction(i, { target: e.target.value })}
+                        >
+                          <option value="">choose a relay output…</option>
+                          {deterCaps.relays.map((r) => (
+                            <option key={r.token} value={r.token}>
+                              {r.token}
+                              {r.mode ? ` (${r.mode})` : ""}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="ghost"
+                          disabled={!a.target}
+                          title="Pulse this relay now to confirm the siren/light is wired (the camera must accept the command)"
+                          onClick={() => testRelay(a.target)}
+                        >
+                          Test
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="callout callout-warn" role="status">
+                        {deterCaps?.error ??
+                          "This camera reports no ONVIF relay output for a siren or light."}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    inputMode={a.kind === "email" ? "email" : a.kind === "webhook" || a.kind === "ntfy" ? "url" : undefined}
+                    style={{ flex: 1, minWidth: 240 }}
+                    value={a.target}
+                    onChange={(e) => updateAction(i, { target: e.target.value })}
+                    placeholder={targetHint(a.kind)}
+                  />
+                )}
                 {a.kind === "ntfy" && (
                   <select
                     value={a.priority}
@@ -996,6 +1114,12 @@ export default function Alarms({
             <button type="button" className="ghost" onClick={addAction} style={{ marginTop: 2 }}>
               <IconPlus size={14} /> Add action
             </button>
+            {hasDeter && deterEnabled === false && (
+              <div className="callout callout-warn" role="status" style={{ marginTop: 8 }}>
+                Deterrence actions are turned off globally — this won’t trigger anything until you
+                enable them in Settings → Modes &amp; alerts.
+              </div>
+            )}
           </div>
           <div className="row" style={{ marginTop: 12 }}>
             <span className="muted">…anti-fatigue:</span>

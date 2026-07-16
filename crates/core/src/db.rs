@@ -1167,6 +1167,12 @@ pub struct Settings {
     /// Path to the whisper GGML model (downloaded, not committed), e.g.
     /// `ggml-tiny.en.bin` (~75 MB) or `ggml-base.en.bin`.
     pub transcription_model: String,
+    /// P2.9: global master kill-switch for deterrence actions (ONVIF relay
+    /// siren/strobe/light). OFF by default — an alarm's "deterrence" action does
+    /// NOTHING physical until this is on (see `notify::fire_action`), so a rule
+    /// can't trip a real-world siren without an explicit, deliberate opt-in.
+    #[serde(default)]
+    pub deterrence_enabled: bool,
     /// B3: master switch for the anomaly-detection worker (opt-in).
     #[serde(default)]
     pub anomaly_detection: bool,
@@ -1355,6 +1361,7 @@ impl Default for Settings {
             genai_api_key: String::new(),
             transcription_enabled: false,
             transcription_model: "ggml-tiny.en.bin".into(),
+            deterrence_enabled: false,
             anomaly_detection: false,
             digest_enabled: false,
             liveviews: Vec::new(),

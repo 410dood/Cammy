@@ -16,6 +16,7 @@ mod api;
 mod audio;
 mod auth;
 mod db;
+mod deterrence;
 mod digest;
 pub mod evidence;
 mod gait;

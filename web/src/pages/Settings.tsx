@@ -2295,6 +2295,28 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </small>
         </div>
 
+        <div className="card" data-settings-group="modes">
+          <h2>Deterrence actions</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Let alarm rules switch on a real siren, strobe, or light wired to a camera’s alarm
+            output. Set it up per rule under Alarms (“trigger siren/light”).
+          </p>
+          <label className="toggle field" style={{ marginTop: 4 }}>
+            allow deterrence actions
+            <input
+              type="checkbox"
+              checked={!!s.deterrence_enabled}
+              onChange={() => set({ deterrence_enabled: !s.deterrence_enabled })}
+            />
+          </label>
+          <Callout tone="warn" style={{ marginTop: 10 }}>
+            Until this is on, a “trigger siren/light” action does nothing physical — it is a safety
+            default. When on, these actions turn on real-world sirens and lights. They only fire while
+            the system is armed for that rule’s mode, and never escalate on their own. Test the relay
+            from the Alarms page first to confirm it is actually wired.
+          </Callout>
+        </div>
+
         <PresenceCard onError={onError} />
 
         <div className="card" data-settings-group="detection">
