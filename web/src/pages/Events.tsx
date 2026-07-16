@@ -17,8 +17,9 @@ import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil, IconLink, IconShield,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
   IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX, IconVideo,
-  IconChevronLeft, IconChevronRight, IconThumbDown,
+  IconChevronLeft, IconChevronRight, IconThumbDown, IconRadar,
 } from "../icons";
+import LifecycleModal from "../LifecycleModal";
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
 // uses it too) — see eventGroups.ts.
 import { Cluster, groupEvents } from "../eventGroups";
@@ -281,6 +282,8 @@ export default function Events({
   const [open, setOpen] = useState<CamEvent | null>(null);
   const [playing, setPlaying] = useState<{ segment: Segment; offset: number } | null>(null);
   const [similar, setSimilar] = useState<{ ev: CamEvent; res: SimilarResult | null } | null>(null);
+  // Object-lifecycle ("Track story") view: the seed event whose track is being told.
+  const [lifecycleFor, setLifecycleFor] = useState<CamEvent | null>(null);
   // Upload-a-photo appearance search: query is a local object-URL preview.
   const [imgSearch, setImgSearch] = useState<{ url: string; res: SimilarResult | null } | null>(null);
   const imgReq = useRef(0);
@@ -763,7 +766,7 @@ export default function Events({
   // out from under an open dialog. (A filter change still forces an immediate
   // reload via this effect's deps.)
   const pollBusy = useRef(false);
-  pollBusy.current = !!open || !!playing || !!similar || !!imgSearch || selectMode;
+  pollBusy.current = !!open || !!playing || !!similar || !!imgSearch || !!lifecycleFor || selectMode;
   useEffect(() => {
     load();
     const t = setInterval(() => {
@@ -809,7 +812,7 @@ export default function Events({
   useEffect(() => {
     // Only while the detail viewer is the top surface — the clip-playback modal
     // keeps its own arrow-seek shortcuts, and search modals keep their focus.
-    if (!open || playing || similar || imgSearch) return;
+    if (!open || playing || similar || imgSearch || lifecycleFor) return;
     const onKey = (e: KeyboardEvent) => {
       // Don't double-act: a focused <video> uses arrows to seek, and the
       // mini-timeline's own arrow scrubbing calls preventDefault().
@@ -821,7 +824,7 @@ export default function Events({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, playing, similar, imgSearch, openPrev, openNext]);
+  }, [open, playing, similar, imgSearch, lifecycleFor, openPrev, openNext]);
 
   // Explore: object-type counts across the loaded window (pre object-filter).
   const exploreBase = searchResults ?? events;
@@ -1451,6 +1454,15 @@ export default function Events({
                 <IconUser size={14} /> Similar
               </button>
             )}
+            {open.track_id != null && (
+              <button
+                className="btn btn-ghost ev-act"
+                title="Follow this object's path — entered a zone, loitered, crossed a line"
+                onClick={() => setLifecycleFor(open)}
+              >
+                <IconRadar size={14} /> Track
+              </button>
+            )}
             <button
               className="btn btn-ghost ev-act"
               title="Not a real alert? Quiet future look-alikes on this camera. Note: this only quiets AI-watch and AI-verified rules — plain object rules aren't filtered yet."
@@ -1588,6 +1600,17 @@ export default function Events({
             </div>
           </div>
         </Modal>
+      )}
+
+      {lifecycleFor && (
+        <LifecycleModal
+          seed={lifecycleFor}
+          onClose={() => setLifecycleFor(null)}
+          onOpenEvent={(ev) => {
+            setLifecycleFor(null);
+            setOpen(ev);
+          }}
+        />
       )}
 
       {imgSearch && (

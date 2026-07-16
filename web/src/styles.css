@@ -2377,3 +2377,28 @@ img.identity-thumb { background: var(--n-0); }
   font-size: var(--text-sm);
 }
 .seq-bar .field { margin: 0; }
+
+/* Object-lifecycle ("Track story") step list (P2.16): the ordered narrative of
+   one tracked object — each row is a clickable step that seeks the event viewer. */
+.lc-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.lc-step {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%;
+  text-align: left; appearance: none; font: inherit; color: inherit; cursor: pointer;
+  padding: 8px 10px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.lc-step:hover { background: var(--surface-hover); border-color: var(--border-hover); }
+.lc-step-current { border-color: var(--accent-border); background: var(--accent-soft); }
+.lc-step-num {
+  flex: 0 0 auto; width: 22px; height: 22px; margin-top: 1px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-pill);
+  background: var(--bg-sunken); color: var(--text-muted);
+  font-size: var(--text-sm); font-variant-numeric: tabular-nums;
+}
+.lc-step-current .lc-step-num { background: var(--accent); color: #fff; }
+.lc-step-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.lc-step-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lc-step-label { text-transform: capitalize; font-weight: 600; }
+.lc-step-time { font-size: var(--text-sm); font-variant-numeric: tabular-nums; }

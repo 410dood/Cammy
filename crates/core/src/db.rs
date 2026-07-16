@@ -364,6 +364,20 @@ pub struct Event {
     /// beyond flag+note. Stored as a JSON array.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Tracker track id for a tracker-driven *narrative* event (line-crossing /
+    /// wrong-way / loiter / zone-enter / child / fall / still-water); `None` for
+    /// ordinary detections, occupancy, package and camera_* events. Powers the
+    /// object-lifecycle view (P2.16). NB: per-camera track ids reset on every
+    /// service restart, so it's only meaningful within a contiguous run — see
+    /// [`Db::track_lifecycle`].
+    #[serde(default)]
+    pub track_id: Option<i64>,
+    /// The object's serialized trajectory (`[[ts_ms, x, y], …]`, the track's
+    /// bounded history) captured at emit time (docs/08 P1.5). Server-internal —
+    /// never sent to clients (it's aggregated by the lifecycle endpoint instead
+    /// of shipped on every event row).
+    #[serde(skip)]
+    pub path_json: Option<String>,
 }
 
 /// One enrolled gait identity (its averaged signature stays server-side).
@@ -1488,6 +1502,11 @@ impl Db {
         let _ = conn.execute("ALTER TABLE events ADD COLUMN severity INTEGER", []);
         // User-applied tags (ZoneMinder 1.38-style): a JSON array of strings.
         let _ = conn.execute("ALTER TABLE events ADD COLUMN tags TEXT", []);
+        // P2.16 object lifecycle + docs/08 P1.5: tracker track id and the
+        // object's serialized trajectory on tracker-driven narrative events
+        // (NULL for ordinary detections / occupancy / package / camera_* events).
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN track_id INTEGER", []);
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN path_json TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE segments ADD COLUMN reduced INTEGER NOT NULL DEFAULT 0",
             [],
@@ -1871,12 +1890,14 @@ impl Db {
     ) -> Result<i64> {
         self.add_event_dir(
             camera_id, ts, label, score, bbox, snapshot, face, plate, gesture, zone, None, None,
+            None, None,
         )
     }
 
     /// Like [`add_event`](Self::add_event) but also records a line-crossing
-    /// `direction` and an estimated `speed` (km/h) — used by the tracker-driven
-    /// analytics for `crossing` / `wrong_way` events.
+    /// `direction`, an estimated `speed` (km/h), and — for tracker-driven
+    /// narrative events — the object's `track_id` and serialized trajectory
+    /// (`path_json`), which power the object-lifecycle view (P2.16 / docs/08 P1.5).
     #[allow(clippy::too_many_arguments)]
     pub fn add_event_dir(
         &self,
@@ -1892,15 +1913,17 @@ impl Db {
         zone: Option<&str>,
         direction: Option<&str>,
         speed: Option<f32>,
+        track_id: Option<i64>,
+        path_json: Option<&str>,
     ) -> Result<i64> {
         let severity = crate::severity::severity_for(label, face, gesture) as i64;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face, plate, gesture, zone, direction, speed, severity)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO events (camera_id, ts, label, score, x1, y1, x2, y2, snapshot, face, plate, gesture, zone, direction, speed, severity, track_id, path_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 camera_id, ts, label, score, bbox[0], bbox[1], bbox[2], bbox[3], snapshot, face,
-                plate, gesture, zone, direction, speed, severity
+                plate, gesture, zone, direction, speed, severity, track_id, path_json
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -1922,7 +1945,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -1957,13 +1980,57 @@ impl Db {
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                         e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags
+                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
             )
             .optional()?;
         Ok(ev)
+    }
+
+    /// The ordered life-story (oldest→newest) of one physical object: every
+    /// tracker-driven narrative event carrying `track_id` on this camera, bounded
+    /// to the contiguous run around `around_ts`. Powers the object-lifecycle view.
+    ///
+    /// CORRECTNESS: per-camera track ids reset to 1 on every service restart (the
+    /// in-memory [`tracker::Tracker`] map is rebuilt), so two entirely different
+    /// physical objects can reuse the same id hours or days apart. A naive
+    /// `WHERE camera_id=? AND track_id=?` would merge them into one bogus story.
+    /// We therefore fetch all candidate rows for the id, then keep only the
+    /// cluster whose consecutive gaps are `<= LIFECYCLE_GAP_SECS`, walking outward
+    /// from the seed event nearest `around_ts` (see [`cluster_bounds`]).
+    pub fn track_lifecycle(
+        &self,
+        camera_id: i64,
+        track_id: i64,
+        around_ts: i64,
+    ) -> Result<Vec<Event>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
+                    e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json
+             FROM events e JOIN cameras c ON c.id = e.camera_id
+             WHERE e.camera_id = ?1 AND e.track_id = ?2
+             ORDER BY e.ts ASC, e.id ASC",
+        )?;
+        let rows: Vec<Event> = stmt
+            .query_map(params![camera_id, track_id], row_to_event)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if rows.is_empty() {
+            return Ok(rows);
+        }
+        // Seed = the candidate nearest `around_ts` (the event the user opened).
+        let ts: Vec<i64> = rows.iter().map(|e| e.ts).collect();
+        let seed = ts
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, &t)| (t - around_ts).abs())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let (lo, hi) = cluster_bounds(&ts, seed, LIFECYCLE_GAP_SECS);
+        Ok(rows[lo..=hi].to_vec())
     }
 
     // --- gait identification (#64) --------------------------------------------
@@ -2001,7 +2068,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE e.gait = ?1 AND e.gait_sig IS NOT NULL
              ORDER BY e.ts DESC, e.id DESC LIMIT ?2",
@@ -4440,7 +4507,29 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
             .get::<_, Option<String>>(24)?
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default(),
+        track_id: r.get(25)?,
+        path_json: r.get(26)?,
     })
+}
+
+/// Seconds of allowed gap between consecutive events of the same physical object
+/// before they're treated as two different objects (see [`Db::track_lifecycle`]).
+const LIFECYCLE_GAP_SECS: i64 = 600;
+
+/// Given ascending timestamps and the index of the seed event, return the
+/// inclusive `[lo, hi]` bounds of the *contiguous* cluster around it — walking
+/// outward while each consecutive gap is `<= gap`. Pure so it can be unit-tested
+/// against the track-id-reuse-after-restart hazard. `ts` must be sorted ascending.
+fn cluster_bounds(ts: &[i64], seed: usize, gap: i64) -> (usize, usize) {
+    let mut lo = seed;
+    while lo > 0 && ts[lo] - ts[lo - 1] <= gap {
+        lo -= 1;
+    }
+    let mut hi = seed;
+    while hi + 1 < ts.len() && ts[hi + 1] - ts[hi] <= gap {
+        hi += 1;
+    }
+    (lo, hi)
 }
 
 fn row_to_camera(r: &rusqlite::Row<'_>) -> rusqlite::Result<Camera> {
@@ -4469,6 +4558,78 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("zoomy-db-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Db::open(&dir.join(format!("t-{:?}.db", std::time::Instant::now()))).unwrap()
+    }
+
+    #[test]
+    fn cluster_bounds_isolates_the_seed_cluster() {
+        // Two runs of the SAME (reused) track id, separated by a big gap.
+        let ts = [1000, 1030, 1060, 90_000, 90_030];
+        // Seed inside the first run → only the first run.
+        assert_eq!(cluster_bounds(&ts, 1, LIFECYCLE_GAP_SECS), (0, 2));
+        // Seed inside the second run → only the second run.
+        assert_eq!(cluster_bounds(&ts, 3, LIFECYCLE_GAP_SECS), (3, 4));
+        // A single-element series is its own cluster.
+        assert_eq!(cluster_bounds(&[42], 0, LIFECYCLE_GAP_SECS), (0, 0));
+        // A gap exactly at the threshold is still contiguous (<=).
+        let edge = [0, LIFECYCLE_GAP_SECS, LIFECYCLE_GAP_SECS * 2 + 1];
+        assert_eq!(cluster_bounds(&edge, 0, LIFECYCLE_GAP_SECS), (0, 1));
+    }
+
+    #[test]
+    fn track_lifecycle_gap_bounds_reused_track_ids() {
+        let db = mem_db();
+        let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
+        // Helper: a tracker-driven narrative event for a given track id.
+        let add = |ts: i64, label: &str, track: i64, path: Option<&str>| {
+            db.add_event_dir(
+                cam.id,
+                ts,
+                label,
+                1.0,
+                [0.4, 0.5, 0.6, 0.7],
+                None,
+                None,
+                None,
+                None,
+                Some("yard"),
+                None,
+                None,
+                Some(track),
+                path,
+            )
+            .unwrap()
+        };
+        // Cluster A: three steps of object #5 over a minute.
+        add(1000, "crossing", 5, Some("[[1000,0.1,0.9]]"));
+        add(1030, "loiter", 5, Some("[[1000,0.1,0.9],[1030,0.2,0.8]]"));
+        add(1060, "zone_enter", 5, None);
+        // Cluster B: a DIFFERENT physical object that reused id #5 a day later.
+        add(90_000, "crossing", 5, Some("[[90000,0.5,0.5]]"));
+        add(90_030, "loiter", 5, None);
+        // A non-track event on the same camera must never leak in (track_id NULL).
+        db.add_event(cam.id, 1045, "person", 0.9, [0.0; 4], None, None, None, None, None)
+            .unwrap();
+
+        // Seed in cluster A → exactly A's three steps, oldest-first.
+        let a = db.track_lifecycle(cam.id, 5, 1030).unwrap();
+        assert_eq!(a.len(), 3, "only the seed's contiguous cluster");
+        assert_eq!(
+            a.iter().map(|e| e.ts).collect::<Vec<_>>(),
+            vec![1000, 1030, 1060]
+        );
+        assert_eq!(a[0].label, "crossing");
+        assert_eq!(a[0].track_id, Some(5));
+
+        // Seed in cluster B → exactly B's two steps (the reused id did NOT merge).
+        let b = db.track_lifecycle(cam.id, 5, 90_000).unwrap();
+        assert_eq!(b.len(), 2);
+        assert_eq!(
+            b.iter().map(|e| e.ts).collect::<Vec<_>>(),
+            vec![90_000, 90_030]
+        );
+
+        // An id nobody used → empty.
+        assert!(db.track_lifecycle(cam.id, 999, 1000).unwrap().is_empty());
     }
 
     #[test]

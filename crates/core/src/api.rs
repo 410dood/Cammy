@@ -92,6 +92,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/events/{id}/evidence.zip", get(event_evidence_zip))
         .route("/api/events/{id}/share", axum::routing::post(create_clip_share))
         .route("/api/events/{id}/similar", get(event_similar))
+        .route("/api/events/{id}/lifecycle", get(event_lifecycle))
         .route("/api/search", get(smart_search))
         .route("/api/search/by-image", axum::routing::post(search_by_image))
         .route("/api/search/by-attr", get(search_by_attr))
@@ -2299,6 +2300,41 @@ async fn get_event_api(
     let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
     require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
     Ok(Json(ev))
+}
+
+/// Object-lifecycle view (P2.16): the ordered story of the physical object behind
+/// a tracker-driven event — "entered zone → loitered → crossed line". Returns
+/// `{available:false}` for an event with no `track_id` (ordinary detection /
+/// occupancy / package / camera_*), otherwise the object's contiguous run of
+/// narrative steps (oldest-first) plus its richest recorded trajectory. RBAC:
+/// the seed event must be visible to the caller (mirrors `get_event_api`); all
+/// steps share its camera, so no per-step re-check is needed.
+async fn event_lifecycle(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    let Some(track_id) = ev.track_id else {
+        return Ok(Json(serde_json::json!({ "available": false })));
+    };
+    let steps = st.db.track_lifecycle(ev.camera_id, track_id, ev.ts)?;
+    // The object's path: the longest non-empty trajectory recorded across the
+    // steps (later steps carry more history, but any step may have been NULL).
+    let path: Vec<[f64; 3]> = steps
+        .iter()
+        .filter_map(|e| e.path_json.as_deref())
+        .filter_map(|s| serde_json::from_str::<Vec<[f64; 3]>>(s).ok())
+        .filter(|v| !v.is_empty())
+        .max_by_key(|v| v.len())
+        .unwrap_or_default();
+    Ok(Json(serde_json::json!({
+        "available": true,
+        "track_id": track_id,
+        "steps": steps,
+        "path": path,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -6008,6 +6044,8 @@ mod tests {
             gait: None,
             severity: 2,
             tags: vec![],
+            track_id: None,
+            path_json: None,
         };
         let csv = events_to_csv(std::slice::from_ref(&ev));
         let mut lines = csv.lines();

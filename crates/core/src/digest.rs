@@ -209,6 +209,8 @@ mod tests {
             gait: None,
             severity,
             tags: vec![],
+            track_id: None,
+            path_json: None,
         }
     }
 

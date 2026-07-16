@@ -664,8 +664,18 @@ pub fn run(
                         homography.as_ref(),
                         now,
                     );
+                    // Serialized trajectory of a confirmed track, for the
+                    // object-lifecycle view (P2.16). The track that produced each
+                    // analytic is in `confirmed`, so look it up by id.
+                    let track_path = |tid: u64| -> Option<String> {
+                        confirmed
+                            .iter()
+                            .find(|t| t.id == tid)
+                            .and_then(|t| serde_json::to_string(&t.history).ok())
+                    };
                     for c in &crossings {
                         let label = if c.wrong_way { "wrong_way" } else { "crossing" };
+                        let path = track_path(c.track_id);
                         emit_analytics_event(
                             &db,
                             &settings,
@@ -680,10 +690,13 @@ pub fn run(
                             Some(&c.tripwire),
                             Some(c.dir.as_str()),
                             c.speed_kmh,
+                            Some(c.track_id as i64),
+                            path.as_deref(),
                             now,
                         );
                     }
                     for l in &loiters {
+                        let path = track_path(l.track_id);
                         emit_analytics_event(
                             &db,
                             &settings,
@@ -698,6 +711,8 @@ pub fn run(
                             Some(&l.zone),
                             None,
                             None,
+                            Some(l.track_id as i64),
+                            path.as_deref(),
                             now,
                         );
                     }
@@ -741,6 +756,10 @@ pub fn run(
                                 Some(&zo.zone),
                                 None,
                                 None,
+                                // Occupancy is a per-zone count, not one object —
+                                // no single track owns it, so no lifecycle.
+                                None,
+                                None,
                                 now,
                             );
                         }
@@ -758,6 +777,13 @@ pub fn run(
                         cam.detect_config.fall_detect,
                         now,
                     ) {
+                        // Enter/child/fall/still-water own a real track; child_alone
+                        // is a per-zone tally (track_id 0) → no lifecycle for it.
+                        let (tid, path) = if ev.track_id != 0 {
+                            (Some(ev.track_id as i64), track_path(ev.track_id))
+                        } else {
+                            (None, None)
+                        };
                         emit_analytics_event(
                             &db,
                             &settings,
@@ -772,6 +798,8 @@ pub fn run(
                             ev.zone.as_deref(),
                             None,
                             None,
+                            tid,
+                            path.as_deref(),
                             now,
                         );
                     }
@@ -827,6 +855,10 @@ pub fn run(
                         cam,
                         label,
                         mark,
+                        None,
+                        None,
+                        // Parcel state is a zone-level machine, not a tracked
+                        // object identity → no lifecycle.
                         None,
                         None,
                         None,
@@ -1493,6 +1525,11 @@ fn emit_analytics_event(
     zone: Option<&str>,
     direction: Option<&str>,
     speed: Option<f32>,
+    // For a tracker-driven narrative event: the object's track id and serialized
+    // trajectory, persisted so the object-lifecycle view (P2.16) can retell its
+    // story. `None`/`None` for non-track events (occupancy, package, tamper).
+    track_id: Option<i64>,
+    path_json: Option<&str>,
     now: i64,
 ) -> Option<i64> {
     let (ax, ay) = anchor;
@@ -1531,6 +1568,8 @@ fn emit_analytics_event(
         zone,
         direction,
         speed,
+        track_id,
+        path_json,
     ) {
         Ok(id) => id,
         Err(e) => {
@@ -1645,6 +1684,9 @@ fn handle_tamper_event(
             "tamper",
             (0.5, 0.5),
             Some(kind),
+            None,
+            None,
+            // Tamper is a whole-frame condition, not a tracked object → no lifecycle.
             None,
             None,
             now,

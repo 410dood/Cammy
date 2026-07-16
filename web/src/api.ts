@@ -156,6 +156,14 @@ export interface CamEvent {
   anomaly_score?: number | null;
   /** User-applied tags (multi-tag taxonomy beyond flag+note). */
   tags?: string[];
+  /** Line-crossing direction ("a_to_b"/"b_to_a") on a tracker crossing event. */
+  direction?: string | null;
+  /** Estimated ground speed (km/h) on a calibrated crossing event. */
+  speed?: number | null;
+  /** Tracker track id on a tracker-driven narrative event (line-crossing,
+   *  loiter, zone-enter, child, fall, still-water); null otherwise. Presence
+   *  gates the object-lifecycle ("Track") view. */
+  track_id?: number | null;
 }
 
 export interface GaitProfile {
@@ -540,6 +548,25 @@ export interface SimilarResult {
   /** False when the event has no crop embedding (not an object detection, or
    *  smart-search models aren't installed). */
   available: boolean;
+}
+
+/** One step in a tracked object's life-story — a tracker-driven narrative event
+ *  (same shape as any event). */
+export type LifecycleStep = CamEvent;
+
+/** The object-lifecycle ("Track") view (P2.16): the ordered story of the physical
+ *  object behind a tracker-driven event, plus its recorded trajectory. */
+export interface Lifecycle {
+  /** False when the event has no track id (ordinary detection / occupancy /
+   *  package / camera_* event) — there's no object story to tell. */
+  available: boolean;
+  track_id?: number;
+  /** The object's narrative events, oldest-first, bounded to the contiguous run
+   *  around the seed event. */
+  steps?: LifecycleStep[];
+  /** The object's trajectory as `[ts_ms, x, y]` frame-fraction points (the
+   *  richest path recorded across the steps); empty if none was captured. */
+  path?: [number, number, number][];
 }
 
 /** One CLIP attribute facet (P2.5): a stable catalog key + display label. */
@@ -958,6 +985,7 @@ export const api = {
     const qs = p.toString();
     return req<SimilarResult>(`/api/events/${id}/similar${qs ? `?${qs}` : ""}`);
   },
+  eventLifecycle: (id: number) => req<Lifecycle>(`/api/events/${id}/lifecycle`),
   analyticsHeatmap: (camera: number, from?: number, to?: number, grid?: number) => {
     const p = new URLSearchParams({ camera: String(camera) });
     if (from != null) p.set("from", String(from));
