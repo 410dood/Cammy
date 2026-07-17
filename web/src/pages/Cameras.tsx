@@ -143,6 +143,7 @@ function TuneModal({
     trigger_pre_roll_secs: camera.detect_config.trigger_pre_roll_secs ?? null,
     trigger_post_roll_secs: camera.detect_config.trigger_post_roll_secs ?? null,
     record_substream: camera.detect_config.record_substream ?? false,
+    homekit_expose: camera.detect_config.homekit_expose ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
   const [saving, setSaving] = useState(false);
@@ -644,6 +645,18 @@ function TuneModal({
                 label="Also record the low-res sub-stream"
                 help="Lets you scrub fast in SD and play back in HD. Uses more disk."
                 title="Record the detection sub-stream to disk alongside the main stream, so the camera view can scrub the lightweight SD copy and play the full-res HD one. Sub footage is kept by the same retention as the main stream, but never uploaded offsite."
+              />
+            )}
+            {/* P3.4 HomeKit: only offered when the global bridge is on
+                (Settings → Apple HomeKit). Off by default — a sensitive camera
+                stays off HomeKit unless explicitly exposed here. */}
+            {settings?.homekit_enabled && (
+              <Feature
+                on={dc.homekit_expose ?? false}
+                onToggle={() => setDc({ ...dc, homekit_expose: !dc.homekit_expose })}
+                label="Expose to HomeKit"
+                help="Show this camera in the Apple Home app (live view). Pair with the code in Settings → Apple HomeKit."
+                title="Expose this camera as a HomeKit camera (live view) via the HomeKit bridge. Requires the bridge to be enabled in Settings. v0 is live-view only; pair on a real Apple device."
               />
             )}
           </div>

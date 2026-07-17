@@ -307,6 +307,47 @@ repository).
 
 ---
 
+## 5c. Apple HomeKit bridge (P3.4, v0 — live view only)
+
+Cammy can expose selected cameras to Apple **Home** as HomeKit cameras, so you
+can view live feeds in the Home app and on Apple TV. Cammy's already-supervised
+go2rtc streamer runs the HomeKit (HAP) accessory server — **no extra software**.
+
+**It is a v0: live view only.** There is no motion / event → HomeKit
+characteristic glue yet (that's future work), and **pairing must be done on a
+real Apple device — it cannot be verified from the server side.** Default is OFF,
+and when off the generated `go2rtc.yaml` is byte-for-byte unchanged.
+
+**Network requirement.** HomeKit discovers accessories over **mDNS/Bonjour** on
+the local network, so the NVR host and your Apple hub (HomePod / Apple TV / an
+iPad kept at home) **must be on the same LAN / broadcast domain**. It does not
+traverse subnets, VLANs, or a VPN without an mDNS reflector, and it is not
+reachable remotely (use the Home hub for that). The HAP server binds a port on
+all interfaces; keep the NVR on a trusted LAN.
+
+**Enable + pair:**
+
+1. **Settings → Access & security → Apple HomeKit → "Run the HomeKit bridge"**,
+   then **Save** (this restarts the streamer once, briefly blipping live views).
+   Enabling the bridge and reading the pairing code are **Admin-only** — the code
+   is a pairing secret.
+2. For each camera you want in Home, open **Cameras → Detection tuning → Stream &
+   recording → "Expose to HomeKit"** and save. A sensitive / no-clip camera stays
+   **off** HomeKit unless you explicitly expose it here.
+3. Back on the Settings HomeKit card, note the **pairing code** (shown as
+   `XXX-XX-XXX`).
+4. On your iPhone/iPad on the same Wi-Fi: **Home app → + → Add Accessory → More
+   options…**, pick the Cammy camera, and enter the code.
+
+**Identity / pairing persistence.** Cammy generates and persists the pairing PIN
+and a stable per-camera HomeKit identity (device id + private key) in its
+settings store, so a paired controller keeps trusting the accessory across
+restarts. Controller pairing records that go2rtc writes are carried forward
+best-effort when the config is regenerated; if Home ever shows an accessory as
+"No Response" after a reconfiguration, remove and re-add it.
+
+---
+
 ## 6. Releasing (maintainers): auto-update artifacts + code signing
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`: it fetches go2rtc/

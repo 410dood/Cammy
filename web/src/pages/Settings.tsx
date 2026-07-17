@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout } from "../ui";
 import { LicensePane } from "../License";
 import { prettyGesture } from "../labels";
@@ -964,6 +964,58 @@ function ArchiveStatusReadout() {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+function HomekitReadout({ enabled }: { enabled: boolean }) {
+  const [hk, setHk] = useState<HomekitInfo | null>(null);
+  useEffect(() => {
+    let live = true;
+    // Re-fetch whenever the bridge is toggled+saved (the PIN + exposed list only
+    // exist once the bridge is on and go2rtc has been regenerated).
+    api.homekit().then((h) => live && setHk(h)).catch(() => live && setHk(null));
+    return () => {
+      live = false;
+    };
+  }, [enabled]);
+  if (!hk || !hk.enabled) return null;
+  return (
+    <div style={{ marginTop: 8, fontSize: 14 }}>
+      <div className="row" style={{ alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span className="muted">Pairing code</span>
+        <code
+          style={{
+            fontSize: "var(--text-lg)",
+            fontWeight: 700,
+            letterSpacing: "0.06em",
+            padding: "4px 10px",
+            background: "var(--bg)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+          }}
+        >
+          {hk.pin || "—"}
+        </code>
+      </div>
+      <ol className="muted" style={{ margin: "8px 0 0", paddingLeft: 20 }}>
+        <li>
+          On your iPhone/iPad, open <b>Home</b> &rarr; <b>+</b> &rarr; <b>Add Accessory</b>.
+        </li>
+        <li>
+          Tap <b>More options…</b> and pick your Cammy camera, then enter the code above.
+        </li>
+      </ol>
+      <div className="muted" style={{ marginTop: 6 }}>
+        {hk.exposed_cameras.length > 0 ? (
+          <>Exposed to HomeKit: <b>{hk.exposed_cameras.join(", ")}</b></>
+        ) : (
+          <b style={{ color: "var(--warn)" }}>
+            No camera is exposed yet — turn on “Expose to HomeKit” per camera (Cameras &rarr;
+            Detection tuning).
+          </b>
+        )}
+      </div>
     </div>
   );
 }
@@ -2689,6 +2741,34 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             token can see.
           </p>
           <ArchiveStatusReadout />
+        </div>
+
+        <div className="card" data-settings-group="security">
+          <h2>Apple HomeKit (live view)</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Expose selected cameras to Apple <b>Home</b> as HomeKit cameras, so you can view them in
+            the Home app and on Apple TV. Cammy&rsquo;s built-in streamer runs the HomeKit bridge —
+            no extra software. It&rsquo;s off by default; the camera and your Apple hub (HomePod /
+            Apple TV / iPad) must be on the <b>same local network</b> for pairing to work.
+          </p>
+          <Callout tone="info">
+            This is a <b>v0: live view only</b> (no motion or event notifications into HomeKit yet),
+            and pairing must be done on a real Apple device — we can&rsquo;t verify it from here.
+          </Callout>
+          <label className="row" style={{ alignItems: "center", gap: 8, marginTop: 8 }}>
+            <input
+              type="checkbox"
+              checked={s.homekit_enabled}
+              onChange={() => set({ homekit_enabled: !s.homekit_enabled })}
+            />
+            Run the HomeKit bridge
+          </label>
+          <p className="muted" style={{ margin: "0 0 4px", fontSize: 13 }}>
+            After you <b>Save</b>, choose which cameras appear in Home with the “Expose to HomeKit”
+            switch under each camera&rsquo;s <b>Detection tuning</b> (Cameras page). A sensitive /
+            no-clip camera stays off HomeKit unless you explicitly expose it.
+          </p>
+          <HomekitReadout enabled={s.homekit_enabled} />
         </div>
 
         <div className="card" data-settings-group="modes">

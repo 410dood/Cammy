@@ -162,6 +162,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/recordings/{id}/thumb.jpg", get(segment_thumb))
         .route("/api/motion/search", get(motion_search))
         .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/homekit", get(get_homekit))
         .route(
             "/api/license",
             get(license_status)
@@ -1733,6 +1734,7 @@ async fn patch_camera(
     cam.enabled = patch.enabled.unwrap_or(cam.enabled);
     cam.detect = patch.detect.unwrap_or(cam.detect);
     cam.record = patch.record.unwrap_or(cam.record);
+    let old_homekit_expose = cam.detect_config.homekit_expose;
     if let Some(dc) = patch.detect_config {
         let in_unit = |p: &[f32; 2]| (0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]);
         for z in &dc.zones {
@@ -1763,6 +1765,13 @@ async fn patch_camera(
         cam.group = (!g.is_empty()).then(|| g.to_string());
     }
     st.db.update_camera(&cam)?;
+    // P3.4: a HomeKit exposure change alters the generated go2rtc.yaml's
+    // `homekit:` section, which is config-only (not reconcilable over go2rtc's
+    // REST API), so it needs a full restart — but only when the bridge is on.
+    if cam.detect_config.homekit_expose != old_homekit_expose && st.db.settings().homekit_enabled {
+        st.go2rtc.restart_with(&st.db)?;
+        return Ok(Json(cam));
+    }
     if needs_go2rtc {
         // A same-name edit of a live source string (main or sub) can't be
         // reconciled by name alone — the stream stays but its producer would
@@ -6063,6 +6072,41 @@ async fn get_settings(State(st): State<AppState>) -> Json<Settings> {
     Json(s)
 }
 
+/// GET /api/homekit — P3.4 bridge status + the pairing PIN for manual entry.
+/// Admin-only: the PIN is a pairing secret (anyone with it can add the cameras
+/// to their Apple Home). Returns the display-formatted PIN only while the bridge
+/// is enabled, plus the list of currently-exposed cameras.
+async fn get_homekit(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if p.role < crate::auth::Role::Admin {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "the HomeKit pairing code is admin-only".into(),
+        ));
+    }
+    let s = st.db.settings();
+    let exposed: Vec<String> = st
+        .db
+        .list_cameras()?
+        .into_iter()
+        .filter(|c| c.enabled && c.detect_config.homekit_expose)
+        .map(|c| c.name)
+        .collect();
+    // Only generate/reveal the PIN once the bridge is actually on.
+    let pin = if s.homekit_enabled {
+        crate::go2rtc::format_homekit_pin(&crate::go2rtc::homekit_pin(&st.db))
+    } else {
+        String::new()
+    };
+    Ok(Json(serde_json::json!({
+        "enabled": s.homekit_enabled,
+        "pin": pin,
+        "exposed_cameras": exposed,
+    })))
+}
+
 async fn put_settings(
     State(st): State<AppState>,
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
@@ -6108,10 +6152,13 @@ async fn put_settings(
             || s.archive_primary_url != cur.archive_primary_url
             || s.archive_cameras != cur.archive_cameras
             || archive_token_changed
+            // P3.4: the HomeKit bridge exposes cameras on the LAN over HAP and
+            // holds the pairing PIN — Admin-only, like the other network exposures.
+            || s.homekit_enabled != cur.homekit_enabled
         {
             return Err(ApiError(
                 StatusCode::FORBIDDEN,
-                "changing SSO forward-auth, offsite-backup, Ask, or archive settings requires an admin"
+                "changing SSO forward-auth, offsite-backup, Ask, archive, or HomeKit settings requires an admin"
                     .into(),
             ));
         }
@@ -6188,7 +6235,16 @@ async fn put_settings(
     if s.archive_token.is_empty() {
         s.archive_token = st.db.settings().archive_token;
     }
+    // P3.4: toggling the HomeKit bridge changes the generated go2rtc.yaml
+    // (adds/removes the `homekit:` HAP section), so go2rtc must be restarted to
+    // pick it up. Only restart on an actual change (it briefly blips live views).
+    let homekit_toggled = st.db.settings().homekit_enabled != s.homekit_enabled;
     st.db.save_settings(&s)?;
+    if homekit_toggled {
+        if let Err(e) = st.go2rtc.restart_with(&st.db) {
+            tracing::warn!("go2rtc restart after HomeKit toggle failed: {e:#}");
+        }
+    }
     let mut out = st.db.settings();
     out.smtp_pass = String::new(); // never echo the secret back
     out.offsite_secret_key = String::new();

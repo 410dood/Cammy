@@ -360,6 +360,14 @@ pub struct DetectConfig {
     /// offsite. See `record.rs`.
     #[serde(default)]
     pub record_substream: bool,
+    /// P3.4 HomeKit exposure: when the global `Settings.homekit_enabled` bridge is
+    /// on, expose THIS camera as a HomeKit camera accessory (live view) through
+    /// go2rtc's HAP server. Off by default and INDEPENDENT of `no_clip`/privacy —
+    /// a sensitive camera stays off HomeKit unless explicitly exposed here (a
+    /// deliberate privacy default). v0 is live-view only; pairing must be done on
+    /// a real Apple Home device. See `go2rtc.rs`.
+    #[serde(default)]
+    pub homekit_expose: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1425,6 +1433,15 @@ pub struct Settings {
     /// token is allowed to see on the primary.
     #[serde(default)]
     pub archive_cameras: String,
+    /// P3.4 HomeKit (HAP) bridge master switch. When true, the supervised go2rtc
+    /// child ALSO runs a local HomeKit accessory server exposing each camera whose
+    /// `DetectConfig.homekit_expose` is set as a HomeKit camera (live view).
+    /// Admin-gated. Default OFF — and when off (or with no camera exposed) the
+    /// generated go2rtc.yaml carries NO `homekit:` section, so it is byte-for-byte
+    /// identical to today. v0 = live-view only; pairing requires a real Apple Home
+    /// device. See `go2rtc.rs`.
+    #[serde(default)]
+    pub homekit_enabled: bool,
 }
 
 fn default_detect_workers() -> u32 {
@@ -1572,6 +1589,7 @@ impl Default for Settings {
             archive_primary_url: String::new(),
             archive_token: String::new(),
             archive_cameras: String::new(),
+            homekit_enabled: false,
         }
     }
 }
@@ -5727,6 +5745,7 @@ mod tests {
             trigger_pre_roll_secs: Some(15),
             trigger_post_roll_secs: Some(45),
             record_substream: true,
+            homekit_expose: true,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();

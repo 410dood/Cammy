@@ -75,7 +75,7 @@ impl Go2Rtc {
     /// (Re)generate config from the registry and (re)start the child.
     pub fn restart_with(&self, db: &Db) -> Result<()> {
         let cameras = db.list_cameras()?;
-        self.write_config(&cameras)?;
+        self.write_config(db, &cameras)?;
 
         let mut guard = self.child.lock().expect("go2rtc mutex poisoned");
         if let Some(mut old) = guard.take() {
@@ -111,7 +111,7 @@ impl Go2Rtc {
     /// happened, which the name-only reconcile can't propagate).
     pub fn sync_streams(&self, db: &Db, force_restart: bool) -> Result<bool> {
         let cameras = db.list_cameras()?;
-        self.write_config(&cameras)?;
+        self.write_config(db, &cameras)?;
 
         if force_restart {
             self.restart_with(db)?;
@@ -228,7 +228,7 @@ impl Go2Rtc {
         }
     }
 
-    fn write_config(&self, cameras: &[Camera]) -> Result<()> {
+    fn write_config(&self, db: &Db, cameras: &[Camera]) -> Result<()> {
         if let Some(parent) = self.config_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -254,6 +254,38 @@ impl Go2Rtc {
         // the pipeline decodes those instead of the full-res main stream.
         for (name, src) in desired_streams(cameras) {
             yaml.push_str(&format!("  {name}:\n    - {src}\n"));
+        }
+        // P3.4 HomeKit (HAP) bridge. Emit a `homekit:` section ONLY when the
+        // bridge is on AND at least one enabled camera opts in — so the default
+        // (off, or on-but-nothing-exposed) leaves the config byte-for-byte
+        // unchanged from before this feature. go2rtc's HAP config schema (v1.9.14)
+        // is a top-level map of stream-name -> { pin, name, device_id,
+        // device_private, pairings }; the accessory category (17 = IP Camera) is
+        // auto-derived by go2rtc. See `write_homekit`.
+        let settings = db.settings();
+        if settings.homekit_enabled {
+            let exposed: Vec<&Camera> = cameras
+                .iter()
+                .filter(|c| c.enabled && c.detect_config.homekit_expose)
+                .collect();
+            if !exposed.is_empty() {
+                // Preserve any controller pairing records go2rtc wrote into the
+                // existing config so pairings survive a Cammy-driven regeneration.
+                let existing = std::fs::read_to_string(&self.config_path).unwrap_or_default();
+                let pairings = parse_homekit_pairings(&existing);
+                let pin = homekit_pin(db);
+                yaml.push_str("homekit:\n");
+                for cam in exposed {
+                    let name = clean(&cam.name);
+                    let (dev_id, dev_priv) = homekit_identity(db, &name);
+                    let saved = pairings.get(&name).map(String::as_str).unwrap_or("[]");
+                    yaml.push_str(&format!(
+                        "  {name}:\n    pin: \"{pin}\"\n    name: \"Cammy {name}\"\n    \
+                         device_id: \"{dev_id}\"\n    device_private: \"{dev_priv}\"\n    \
+                         pairings: {saved}\n"
+                    ));
+                }
+            }
         }
         let mut f = std::fs::File::create(&self.config_path)
             .with_context(|| format!("creating {}", self.config_path.display()))?;
@@ -292,6 +324,168 @@ fn locate(explicit: Option<&Path>) -> Result<PathBuf> {
         "go2rtc not found. Download it from https://github.com/AlexxIT/go2rtc/releases \
          and put it at ./bin/{exe}, on PATH, or set GO2RTC_BIN."
     )
+}
+
+// --- P3.4 HomeKit (HAP) identity helpers -----------------------------------
+//
+// go2rtc owns the live HAP pairing; Cammy owns a STABLE accessory identity so a
+// paired Apple Home controller keeps trusting the accessory across restarts.
+// The PIN + per-stream device_id/device_private are generated once and persisted
+// in the settings KV table (regenerating them would unpair Apple Home), then
+// emitted into every generated go2rtc.yaml.
+
+/// Fill `n` random bytes via ring's system CSPRNG, with a time-seeded fallback so
+/// config generation never fails on the vanishingly rare RNG error.
+fn rand_bytes(n: usize) -> Vec<u8> {
+    use ring::rand::SecureRandom;
+    let mut buf = vec![0u8; n];
+    if ring::rand::SystemRandom::new().fill(&mut buf).is_err() {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = ((t >> ((i % 16) * 8)) as u8) ^ (i as u8);
+        }
+    }
+    buf
+}
+
+/// Generate an 8-digit HAP setup code, avoiding the HAP-invalid trivial codes
+/// (all-same-digit and the reserved sequentials) so a real device can pair.
+fn gen_pin() -> String {
+    const INVALID: [&str; 12] = [
+        "00000000", "11111111", "22222222", "33333333", "44444444", "55555555",
+        "66666666", "77777777", "88888888", "99999999", "12345678", "87654321",
+    ];
+    loop {
+        let s: String = rand_bytes(8)
+            .iter()
+            .map(|x| char::from(b'0' + (x % 10)))
+            .collect();
+        if !INVALID.contains(&s.as_str()) {
+            return s;
+        }
+    }
+}
+
+/// Get-or-create the persisted 8-digit HAP PIN (KV `homekit.pin`).
+pub fn homekit_pin(db: &Db) -> String {
+    if let Some(p) = db.get_kv("homekit.pin") {
+        if p.len() == 8 && p.bytes().all(|c| c.is_ascii_digit()) {
+            return p;
+        }
+    }
+    let p = gen_pin();
+    let _ = db.set_kv("homekit.pin", &p);
+    p
+}
+
+/// Format an 8-digit HAP setup code as `XXX-XX-XXX` for manual entry in the
+/// Apple Home app (which accepts either form).
+pub fn format_homekit_pin(pin: &str) -> String {
+    if pin.len() == 8 && pin.bytes().all(|c| c.is_ascii_digit()) {
+        format!("{}-{}-{}", &pin[0..3], &pin[3..5], &pin[5..8])
+    } else {
+        pin.to_string()
+    }
+}
+
+/// Get-or-create a stream's stable HAP identity: `(device_id, device_private)`.
+/// `device_id` is a MAC-style id (`AA:BB:CC:DD:EE:FF`); `device_private` is a
+/// 32-byte ed25519 seed hex. Persisted per-stream in the settings KV so pairings
+/// survive restarts (go2rtc accepts both verbatim — validated live).
+fn homekit_identity(db: &Db, stream: &str) -> (String, String) {
+    let id_key = format!("homekit.device_id.{stream}");
+    let pk_key = format!("homekit.device_private.{stream}");
+    let dev_id = db
+        .get_kv(&id_key)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let id = rand_bytes(6)
+                .iter()
+                .map(|x| format!("{x:02X}"))
+                .collect::<Vec<_>>()
+                .join(":");
+            let _ = db.set_kv(&id_key, &id);
+            id
+        });
+    let dev_priv = db
+        .get_kv(&pk_key)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let pk = crate::util::hex(&rand_bytes(32));
+            let _ = db.set_kv(&pk_key, &pk);
+            pk
+        });
+    (dev_id, dev_priv)
+}
+
+/// Best-effort extraction of each stream's `pairings` list from an existing
+/// go2rtc.yaml so controller pairing records survive a Cammy config
+/// regeneration. Returns stream-name -> the YAML list text to re-emit (e.g.
+/// `[abc, def]`). Handles both inline flow lists and `- item` block lists (the
+/// form go2rtc's yaml.v3 marshaller writes). v0: best-effort — an unrecognized
+/// layout simply yields no pairings (the owner re-pairs), never an error.
+fn parse_homekit_pairings(yaml: &str) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    fn commit(out: &mut HashMap<String, String>, cur: &Option<String>, block: &mut Vec<String>) {
+        if let Some(s) = cur {
+            if !block.is_empty() {
+                out.insert(s.clone(), format!("[{}]", block.join(", ")));
+            }
+        }
+        block.clear();
+    }
+    let mut out: HashMap<String, String> = HashMap::new();
+    let mut in_hk = false;
+    let mut cur: Option<String> = None;
+    let mut block: Vec<String> = Vec::new();
+    let mut in_block = false;
+    for line in yaml.lines() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+        // A non-indented, non-blank line starts a new top-level section.
+        if !line.starts_with(' ') && !trimmed.is_empty() {
+            if in_block {
+                commit(&mut out, &cur, &mut block);
+                in_block = false;
+            }
+            cur = None;
+            in_hk = trimmed.starts_with("homekit:");
+            continue;
+        }
+        if !in_hk {
+            continue;
+        }
+        if in_block {
+            if let Some(item) = trimmed.strip_prefix("- ") {
+                block.push(item.trim().trim_matches('"').to_string());
+                continue;
+            }
+            commit(&mut out, &cur, &mut block);
+            in_block = false;
+        }
+        // A new stream key at 2-space indent (`front:`).
+        if indent == 2 && trimmed.ends_with(':') && !trimmed.starts_with('-') {
+            cur = Some(trimmed.trim_end_matches(':').trim().trim_matches('"').to_string());
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("pairings:") {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                in_block = true; // a block list follows
+            } else if rest != "[]" {
+                if let Some(s) = &cur {
+                    out.insert(s.clone(), rest.to_string());
+                }
+            }
+        }
+    }
+    if in_block {
+        commit(&mut out, &cur, &mut block);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -342,6 +536,22 @@ mod tests {
         assert!(!api_addable("exec:ffmpeg -i x -f rtsp {output}"));
         assert!(!api_addable("ffmpeg:device?video=0"));
         assert!(!api_addable("  exec:foo")); // leading whitespace tolerated
+    }
+
+    #[test]
+    fn homekit_pin_formats_and_gen_is_valid() {
+        // Display form is XXX-XX-XXX; non-8-digit input passes through untouched.
+        assert_eq!(format_homekit_pin("19550224"), "195-50-224");
+        assert_eq!(format_homekit_pin("195-50-224"), "195-50-224");
+        // A generated PIN is exactly 8 digits and never a trivial/invalid code.
+        let p = gen_pin();
+        assert_eq!(p.len(), 8);
+        assert!(p.bytes().all(|c| c.is_ascii_digit()));
+        assert_ne!(p, "12345678");
+        // Block-list pairings round-trip into an inline list re-emission.
+        let y = "homekit:\n  front:\n    pin: \"1\"\n    pairings:\n      - abc\n      - def\n";
+        let got = parse_homekit_pairings(y);
+        assert_eq!(got.get("front").map(String::as_str), Some("[abc, def]"));
     }
 
     #[test]

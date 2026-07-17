@@ -142,6 +142,9 @@ export interface DetectConfig {
    *  disk alongside the main stream, so the UI can scrub SD and play HD. Opt-in,
    *  off by default; requires a detect sub-stream (detect_source) to exist. */
   record_substream?: boolean;
+  /** P3.4 HomeKit: expose this camera as a HomeKit camera (live view) when the
+   *  global bridge is on. Off by default and independent of privacy/no_clip. */
+  homekit_expose?: boolean;
 }
 
 export interface Camera {
@@ -353,6 +356,18 @@ export interface Settings {
   archive_token: string;
   /** Comma-separated remote camera names to mirror; empty = all offered. */
   archive_cameras: string;
+  /** P3.4 HomeKit (HAP) bridge master switch (Admin-gated, default off). When on,
+   *  go2rtc runs a local HomeKit accessory server exposing each camera whose
+   *  detect_config.homekit_expose is set as a HomeKit camera (live view). */
+  homekit_enabled: boolean;
+}
+
+/** GET /api/homekit — bridge status + pairing PIN (Admin only). */
+export interface HomekitInfo {
+  enabled: boolean;
+  /** Display-formatted setup code (XXX-XX-XXX); empty while the bridge is off. */
+  pin: string;
+  exposed_cameras: string[];
 }
 
 /** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every
@@ -1077,6 +1092,7 @@ export const api = {
   settings: () => req<Settings>("/api/settings"),
   saveSettings: (s: Settings) =>
     req<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
+  homekit: () => req<HomekitInfo>("/api/homekit"),
   offsiteStatus: () => req<OffsiteStatus>("/api/offsite/status"),
   archiveStatus: () => req<ArchiveStatus>("/api/archive/status"),
   overview: () => req<Overview>("/api/overview"),
