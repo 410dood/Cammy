@@ -636,8 +636,8 @@ export default function Events({
   };
   // P2.8b feedback learning: thumbs-down an alert. The server stores this
   // object's crop embedding so CLIP-similar FUTURE alerts on the same camera are
-  // quieted — honest v0: only AI-watch (prompt/attribute) and AI-verified (VLM)
-  // rules are filtered, not plain object rules.
+  // quieted — since the v1 hoist this covers plain object rules too, not just
+  // AI-watch (prompt/attribute) and AI-verified (VLM) rules.
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const suppressAlert = async (ev: CamEvent) => {
     if (feedbackBusy) return;
@@ -646,7 +646,7 @@ export default function Events({
       const r = await api.eventFeedback(ev.id);
       if (r.ok) {
         toast.success(
-          `Similar AI-watch/AI-verified alerts on ${ev.camera} will be quieted`
+          `Similar alerts on ${ev.camera} will be quieted`
         );
       } else {
         toast.error(

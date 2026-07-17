@@ -411,12 +411,13 @@ fn run_worker(
             Vec::new()
         };
         // P2.8b feedback learning: load thumbs-downed crops once per tick into a
-        // per-(camera,label) suppression corpus (mirrors gait/faces above). Only
-        // the prompt path (`fire_prompt_alarms`) reads this cache, and it needs
-        // CLIP anyway, so skip the load entirely when no prompt rule can fire.
+        // per-(camera,label) suppression corpus (mirrors gait/faces above). Read
+        // by the prompt path (`fire_prompt_alarms`) AND, since the v1 hoist, the
+        // plain label-match dispatch — both need CLIP, so skip the load entirely
+        // when the CLIP models are absent or no rule exists at all.
         // Empty map → `any_similar` returns false → every alert fires (fail open).
         let feedback_by_cam: HashMap<(i64, String), Vec<Vec<f32>>> =
-            if crate::smart::models_present() && alarms.iter().any(|r| r.is_prompt_rule()) {
+            if crate::smart::models_present() && !alarms.is_empty() {
                 let mut m: HashMap<(i64, String), Vec<Vec<f32>>> = HashMap::new();
                 for (cid, label, emb) in db.feedback_embeddings().unwrap_or_default() {
                     m.entry((cid, label)).or_default().push(emb);
@@ -1358,6 +1359,10 @@ fn run_worker(
             // cross-camera Re-ID) + the event context the prompt-rule pass
             // (P2.2) needs to gate/fire on the same crop embedding.
             let mut crop_jobs: Vec<CropJob> = Vec::new();
+            // P2.8b v1 hoist: crop embeddings computed early (at plain-rule
+            // dispatch, for feedback gating) are stashed here by event id so the
+            // Re-ID pass below reuses them instead of a second CLIP run.
+            let mut early_crop_embs: HashMap<i64, Vec<f32>> = HashMap::new();
             for (i, d) in wanted.iter().enumerate() {
                 last_event.insert((cam.id, d.label), now);
                 // The (required) zone this detection sits in, computed once and
@@ -1432,16 +1437,83 @@ fn run_worker(
                             min_push_severity: settings.notify_min_severity,
                             caption: None,
                         };
+                        // P2.8b v1 (hoisted from the prompt path): plain
+                        // label-match rules are feedback-gated too. When this
+                        // (camera,label) has a thumbs-down corpus AND some rule
+                        // passes the cheap gates, embed the object crop NOW and
+                        // quiet every rule fire if it looks like a thumbs-downed
+                        // one. Runs BEFORE `ready` so a suppressed match never
+                        // consumes a rule's cooldown, and the embedding is
+                        // stashed for the Re-ID pass (no extra CLIP run for the
+                        // top crops). Fails OPEN at every step: no corpus, no
+                        // CLIP, or a failed embed → every rule fires as before.
+                        let fb_suppressed = {
+                            let sup = feedback_by_cam
+                                .get(&(cam.id, d.label.to_string()))
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]);
+                            if !sup.is_empty()
+                                && alarms.iter().any(|r| {
+                                    r.matches(
+                                        cam.id,
+                                        d.label,
+                                        d.score,
+                                        face_names[i].as_deref(),
+                                        plates[i].as_deref(),
+                                        None,
+                                        None,
+                                    ) && r.zone_ok(ev_zone.as_deref())
+                                        && crate::notify::armed_in_mode(
+                                            &r.modes,
+                                            &settings.arm_mode,
+                                        )
+                                })
+                            {
+                                if clip.is_none() {
+                                    match crate::smart::ImageEmbedder::try_new() {
+                                        Ok(e) => {
+                                            tracing::info!("smart search (CLIP) ready");
+                                            clip = Some(e);
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("smart search unavailable: {e:#}")
+                                        }
+                                    }
+                                }
+                                clip.as_mut()
+                                    .and_then(|e| embed_crop(e, &frame, &[d.x1, d.y1, d.x2, d.y2]))
+                                    .map(|emb| {
+                                        let s = crate::smart::any_similar(
+                                            &emb,
+                                            sup,
+                                            crate::smart::FEEDBACK_SUPPRESS_COSINE,
+                                        );
+                                        early_crop_embs.insert(id, emb);
+                                        s
+                                    })
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            }
+                        };
+                        if fb_suppressed {
+                            tracing::debug!(
+                                camera = %cam.name, label = d.label, event = id,
+                                "alarm fires suppressed by feedback (crop matches a thumbs-down)"
+                            );
+                        }
                         for rule in alarms.iter().filter(|r| {
-                            r.matches(
-                                cam.id,
-                                d.label,
-                                d.score,
-                                face_names[i].as_deref(),
-                                plates[i].as_deref(),
-                                None,
-                                None,
-                            ) && r.zone_ok(ev_zone.as_deref())
+                            !fb_suppressed
+                                && r.matches(
+                                    cam.id,
+                                    d.label,
+                                    d.score,
+                                    face_names[i].as_deref(),
+                                    plates[i].as_deref(),
+                                    None,
+                                    None,
+                                )
+                                && r.zone_ok(ev_zone.as_deref())
                                 && r.confirm_ok(&db, cam.id, now)
                                 && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
                                 && crate::notify::ready(r, &throttle, now)
@@ -1637,11 +1709,16 @@ fn run_worker(
                             let mut fired_prompt_rules: std::collections::HashSet<i64> =
                                 std::collections::HashSet::new();
                             for (i, job) in crop_jobs.iter().enumerate() {
-                                let crop_emb = if i < MAX_CROPS_PER_FRAME {
-                                    embed_crop(embedder, &frame, &job.bbox_px)
-                                } else {
-                                    None
-                                };
+                                // Reuse a feedback-gate embedding computed at
+                                // dispatch time; otherwise embed here (capped).
+                                let crop_emb =
+                                    early_crop_embs.remove(&job.event_id).or_else(|| {
+                                        if i < MAX_CROPS_PER_FRAME {
+                                            embed_crop(embedder, &frame, &job.bbox_px)
+                                        } else {
+                                            None
+                                        }
+                                    });
                                 let _ = db.set_event_embeddings(
                                     job.event_id,
                                     &frame_emb,

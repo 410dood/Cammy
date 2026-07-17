@@ -2766,10 +2766,10 @@ async fn bookmark_event(
 }
 
 /// P2.8b feedback learning — thumbs-down an alert to quiet CLIP-similar FUTURE
-/// alerts on the SAME camera. **Honest v0 scope:** the stored crop only gates the
-/// AI-watch (prompt / attribute) and AI-verified (VLM) rule paths — plain
-/// object-label rules are NOT filtered yet (the immediate label-match alarms fire
-/// before the crop embedding is computed). RBAC mirrors [`bookmark_event`]: load
+/// alerts on the SAME camera. Since the v1 hoist the stored crop gates ALL three
+/// rule paths — plain object-label rules (the crop is embedded at dispatch time
+/// when a feedback corpus exists for the camera+label), AI-watch
+/// (prompt / attribute), and AI-verified (VLM). RBAC mirrors [`bookmark_event`]: load
 /// the event first so a camera-scoped user can't learn from a camera they can't
 /// see (404 for missing OR forbidden; POST is already Operator+ via
 /// `min_role_for`). Needs the event's object-crop CLIP embedding (an object
