@@ -70,3 +70,9 @@ __pycache__/
 
 # License signing seed — THE root of trust. Never commit. Move offline.
 /SECRET-license-seed.txt
+
+# Local Claude Code session settings (machine-specific permission allowlists).
+/.claude/
+
+# Scratch NSIS artwork previews (the real .bmp assets are committed).
+/crates/desktop/installer/*-preview.png
