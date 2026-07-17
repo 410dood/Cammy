@@ -46,6 +46,18 @@ fn desired_streams(cameras: &[Camera]) -> Vec<(String, String)> {
     out
 }
 
+/// Which HomeKit controller pairings to DROP (instead of carry forward) when
+/// regenerating the go2rtc config — see [`Go2Rtc::restart_dropping`].
+#[derive(Clone, Copy)]
+pub enum DropPairings<'a> {
+    /// Preserve all saved pairings (the normal path).
+    None,
+    /// Drop pairings for one stream (per-camera "Unpair").
+    Stream(&'a str),
+    /// Drop every stream's pairings ("Reset HomeKit").
+    All,
+}
+
 pub struct Go2Rtc {
     binary: PathBuf,
     config_path: PathBuf,
@@ -74,8 +86,15 @@ impl Go2Rtc {
 
     /// (Re)generate config from the registry and (re)start the child.
     pub fn restart_with(&self, db: &Db) -> Result<()> {
+        self.restart_dropping(db, DropPairings::None)
+    }
+
+    /// P3.4 v1c: like [`restart_with`], but drops HomeKit controller pairing
+    /// records for one stream (or all of them) instead of carrying them
+    /// forward — the "Unpair" / "Reset HomeKit" management actions.
+    pub fn restart_dropping(&self, db: &Db, drop: DropPairings<'_>) -> Result<()> {
         let cameras = db.list_cameras()?;
-        self.write_config(db, &cameras)?;
+        self.write_config(db, &cameras, drop)?;
 
         let mut guard = self.child.lock().expect("go2rtc mutex poisoned");
         if let Some(mut old) = guard.take() {
@@ -111,7 +130,7 @@ impl Go2Rtc {
     /// happened, which the name-only reconcile can't propagate).
     pub fn sync_streams(&self, db: &Db, force_restart: bool) -> Result<bool> {
         let cameras = db.list_cameras()?;
-        self.write_config(db, &cameras)?;
+        self.write_config(db, &cameras, DropPairings::None)?;
 
         if force_restart {
             self.restart_with(db)?;
@@ -228,7 +247,25 @@ impl Go2Rtc {
         }
     }
 
-    fn write_config(&self, db: &Db, cameras: &[Camera]) -> Result<()> {
+    /// Per-camera HomeKit controller-pairing counts, parsed from the current
+    /// generated config (stream name -> number of paired controllers).
+    pub fn homekit_pairing_counts(&self) -> std::collections::HashMap<String, usize> {
+        let existing = std::fs::read_to_string(&self.config_path).unwrap_or_default();
+        parse_homekit_pairings(&existing)
+            .into_iter()
+            .map(|(name, list)| {
+                let inner = list.trim().trim_start_matches('[').trim_end_matches(']').trim();
+                let n = if inner.is_empty() {
+                    0
+                } else {
+                    inner.split(',').count()
+                };
+                (name, n)
+            })
+            .collect()
+    }
+
+    fn write_config(&self, db: &Db, cameras: &[Camera], drop: DropPairings<'_>) -> Result<()> {
         if let Some(parent) = self.config_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -278,7 +315,11 @@ impl Go2Rtc {
                 for cam in exposed {
                     let name = clean(&cam.name);
                     let (dev_id, dev_priv) = homekit_identity(db, &name);
-                    let saved = pairings.get(&name).map(String::as_str).unwrap_or("[]");
+                    let saved = match drop {
+                        DropPairings::All => "[]",
+                        DropPairings::Stream(s) if s == name => "[]",
+                        _ => pairings.get(&name).map(String::as_str).unwrap_or("[]"),
+                    };
                     yaml.push_str(&format!(
                         "  {name}:\n    pin: \"{pin}\"\n    name: \"Cammy {name}\"\n    \
                          device_id: \"{dev_id}\"\n    device_private: \"{dev_priv}\"\n    \

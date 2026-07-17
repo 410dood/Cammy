@@ -163,6 +163,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/motion/search", get(motion_search))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/homekit", get(get_homekit))
+        .route("/api/homekit/unpair", axum::routing::post(homekit_unpair))
+        .route("/api/homekit/reset", axum::routing::post(homekit_reset))
         .route(
             "/api/license",
             get(license_status)
@@ -6120,7 +6122,110 @@ async fn get_homekit(
             })
             .map(|c| c.name)
             .collect::<Vec<_>>(),
+        // v1c pairing management: per-camera controller-pairing counts (from
+        // the generated go2rtc config) + the sensor bridge's own count.
+        "camera_pairings": st.go2rtc.homekit_pairing_counts(),
+        "bridge_paired": crate::homekit::bridge_pairing_count(&st.data_dir),
     })))
+}
+
+/// POST /api/homekit/unpair {camera} — drop one camera's HomeKit controller
+/// pairing records and restart go2rtc; the Home app shows it unpaired and it
+/// can be re-added with the same code. Admin-only (pairing management).
+async fn homekit_unpair(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<serde_json::Value>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if p.role < crate::auth::Role::Admin {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "HomeKit pairing management is admin-only".into(),
+        ));
+    }
+    let camera = req
+        .get("camera")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if camera.is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "camera is required".into()));
+    }
+    if !st.db.list_cameras()?.iter().any(|c| c.name == camera) {
+        return Err(ApiError(StatusCode::NOT_FOUND, "no such camera".into()));
+    }
+    let (db, go2rtc, cam) = (st.db.clone(), st.go2rtc.clone(), camera.clone());
+    tokio::task::spawn_blocking(move || {
+        go2rtc.restart_dropping(&db, crate::go2rtc::DropPairings::Stream(&cam))
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("unpair task: {e}")))?
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("unpair: {e:#}")))?;
+    st.db.add_audit(
+        chrono::Utc::now().timestamp(),
+        None,
+        "homekit_unpair",
+        Some(&camera),
+    );
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// POST /api/homekit/reset {target: "cameras" | "sensors"} — factory-reset a
+/// HomeKit pairing surface. "cameras" rotates the shared camera PIN + every
+/// per-stream device identity and drops all pairings (go2rtc restart);
+/// "sensors" asks the bridge worker to wipe its identity/pairings/PIN (takes
+/// effect within a few seconds). BOTH unpair every paired Apple device for
+/// that surface — the owner must re-pair. Admin-only.
+async fn homekit_reset(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<serde_json::Value>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if p.role < crate::auth::Role::Admin {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "HomeKit pairing management is admin-only".into(),
+        ));
+    }
+    let target = req.get("target").and_then(|v| v.as_str()).unwrap_or("");
+    match target {
+        "cameras" => {
+            // Rotating the identities (not just the PIN) is what actually
+            // invalidates existing pairings; new ones generate lazily on the
+            // next config write.
+            let _ = st.db.delete_kv("homekit.pin");
+            for c in st.db.list_cameras()? {
+                let _ = st.db.delete_kv(&format!("homekit.device_id.{}", c.name));
+                let _ = st
+                    .db
+                    .delete_kv(&format!("homekit.device_private.{}", c.name));
+            }
+            let (db, go2rtc) = (st.db.clone(), st.go2rtc.clone());
+            tokio::task::spawn_blocking(move || {
+                go2rtc.restart_dropping(&db, crate::go2rtc::DropPairings::All)
+            })
+            .await
+            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("reset task: {e}")))?
+            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("reset: {e:#}")))?;
+        }
+        "sensors" => {
+            st.db.set_kv(crate::homekit::BRIDGE_RESET_KEY, "pending")?;
+        }
+        _ => {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                "target must be \"cameras\" or \"sensors\"".into(),
+            ));
+        }
+    }
+    st.db.add_audit(
+        chrono::Utc::now().timestamp(),
+        None,
+        "homekit_reset",
+        Some(target),
+    );
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn put_settings(

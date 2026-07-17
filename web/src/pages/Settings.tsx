@@ -970,6 +970,9 @@ function ArchiveStatusReadout() {
 
 function HomekitReadout({ enabled }: { enabled: boolean }) {
   const [hk, setHk] = useState<HomekitInfo | null>(null);
+  const [gen, setGen] = useState(0);
+  const toast = useToast();
+  const dialog = useDialog();
   useEffect(() => {
     let live = true;
     // Re-fetch whenever the bridge is toggled+saved (the PIN + exposed list only
@@ -978,7 +981,8 @@ function HomekitReadout({ enabled }: { enabled: boolean }) {
     return () => {
       live = false;
     };
-  }, [enabled]);
+  }, [enabled, gen]);
+  const refresh = () => setGen((g) => g + 1);
   if (!hk || !hk.enabled) return null;
   return (
     <div style={{ marginTop: 8, fontSize: 14 }}>
@@ -1032,13 +1036,102 @@ function HomekitReadout({ enabled }: { enabled: boolean }) {
       </ol>
       <div className="muted" style={{ marginTop: 6 }}>
         {hk.exposed_cameras.length > 0 ? (
-          <>Exposed to HomeKit: <b>{hk.exposed_cameras.join(", ")}</b></>
+          <div>
+            Exposed to HomeKit:
+            <ul style={{ margin: "4px 0 0", paddingLeft: 20 }}>
+              {hk.exposed_cameras.map((c) => {
+                const n = hk.camera_pairings?.[c] ?? 0;
+                return (
+                  <li key={c} style={{ marginBottom: 2 }}>
+                    <b>{c}</b>
+                    {hk.doorbell_cameras?.includes(c) ? " · doorbell button" : ""} ·{" "}
+                    {n === 0 ? "not paired" : `${n} paired device${n === 1 ? "" : "s"}`}
+                    {n > 0 && (
+                      <button
+                        className="pill"
+                        style={{ marginLeft: 8 }}
+                        onClick={async () => {
+                          const ok = await dialog.confirm({
+                            title: `Unpair “${c}” from Apple Home?`,
+                            body: "The camera disappears from the Home app until you add it again with the camera code. (Briefly blips live views.)",
+                            confirmLabel: "Unpair",
+                            danger: true,
+                          });
+                          if (!ok) return;
+                          try {
+                            await api.homekitUnpair(c);
+                            toast.success(`“${c}” unpaired from HomeKit`);
+                            refresh();
+                          } catch (e) {
+                            toast.error(`Couldn't unpair: ${e}`);
+                          }
+                        }}
+                      >
+                        Unpair
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+              <li>
+                <b>Cammy Sensors</b> (motion{hk.doorbell_cameras?.length ? " + doorbell" : ""}
+                {" "}bridge) ·{" "}
+                {(hk.bridge_paired ?? 0) === 0
+                  ? "not paired"
+                  : `${hk.bridge_paired} paired device${hk.bridge_paired === 1 ? "" : "s"}`}
+              </li>
+            </ul>
+          </div>
         ) : (
           <b style={{ color: "var(--warn)" }}>
             No camera is exposed yet — turn on “Expose to HomeKit” per camera (Cameras &rarr;
             Detection tuning).
           </b>
         )}
+      </div>
+      <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <button
+          className="pill"
+          onClick={async () => {
+            const ok = await dialog.confirm({
+              title: "Reset ALL camera pairings?",
+              body: "This rotates the camera pairing code and identities — every Apple device loses every Cammy camera and you must re-add each one with the new code. (Restarts the streamer.)",
+              confirmLabel: "Reset cameras",
+              danger: true,
+            });
+            if (!ok) return;
+            try {
+              await api.homekitReset("cameras");
+              toast.success("Camera pairings reset — new code generated");
+              refresh();
+            } catch (e) {
+              toast.error(`Reset failed: ${e}`);
+            }
+          }}
+        >
+          Reset camera pairings
+        </button>
+        <button
+          className="pill"
+          onClick={async () => {
+            const ok = await dialog.confirm({
+              title: "Reset the Cammy Sensors bridge?",
+              body: "All motion sensors / doorbell buttons drop out of Apple Home and a new sensor code is generated — you must pair Cammy Sensors again. Takes effect within a few seconds.",
+              confirmLabel: "Reset sensors",
+              danger: true,
+            });
+            if (!ok) return;
+            try {
+              await api.homekitReset("sensors");
+              toast.success("Sensor bridge reset — re-pair with the new code");
+              setTimeout(refresh, 3000);
+            } catch (e) {
+              toast.error(`Reset failed: ${e}`);
+            }
+          }}
+        >
+          Reset sensor bridge
+        </button>
       </div>
     </div>
   );

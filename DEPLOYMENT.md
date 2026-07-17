@@ -376,6 +376,14 @@ manually via **More options… → My accessory isn't shown here**.
 5. Add **Cammy Sensors** the same way with its own code — one pairing brings the
    motion sensor for every exposed camera.
 
+**Pairing management (v1c).** The Settings HomeKit card lists each exposed
+camera with its paired-device count and an **Unpair** button (drops that
+camera's pairing records and restarts the streamer), plus the Cammy Sensors
+bridge's own count. **Reset camera pairings** rotates the camera code and every
+per-camera identity — all Apple devices lose all Cammy cameras until re-added.
+**Reset sensor bridge** wipes the sensor bridge's identity/pairings and mints a
+new sensor code. Both resets are deliberately loud in the UI; there is no undo.
+
 **Identity / pairing persistence.** Cammy generates and persists the pairing PIN
 and a stable per-camera HomeKit identity (device id + private key) in its
 settings store, so a paired controller keeps trusting the accessory across

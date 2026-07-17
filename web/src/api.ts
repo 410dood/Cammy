@@ -377,6 +377,12 @@ export interface HomekitInfo {
   /** TCP port the sensor bridge serves HAP on (for firewall rules). */
   bridge_port?: number;
   exposed_cameras: string[];
+  /** v1b: exposed cameras that also publish a doorbell button. */
+  doorbell_cameras?: string[];
+  /** v1c: per-camera HomeKit controller-pairing counts (go2rtc side). */
+  camera_pairings?: Record<string, number>;
+  /** v1c: controllers paired to the Cammy Sensors bridge. */
+  bridge_paired?: number;
 }
 
 /** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every
@@ -1102,6 +1108,16 @@ export const api = {
   saveSettings: (s: Settings) =>
     req<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
   homekit: () => req<HomekitInfo>("/api/homekit"),
+  homekitUnpair: (camera: string) =>
+    req<{ ok: boolean }>("/api/homekit/unpair", {
+      method: "POST",
+      body: JSON.stringify({ camera }),
+    }),
+  homekitReset: (target: "cameras" | "sensors") =>
+    req<{ ok: boolean }>("/api/homekit/reset", {
+      method: "POST",
+      body: JSON.stringify({ target }),
+    }),
   offsiteStatus: () => req<OffsiteStatus>("/api/offsite/status"),
   archiveStatus: () => req<ArchiveStatus>("/api/archive/status"),
   overview: () => req<Overview>("/api/overview"),

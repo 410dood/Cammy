@@ -124,7 +124,7 @@ fn hap_pin(digits: &str) -> Option<Pin> {
 
 /// The (enabled, sorted exposed cameras) signature; the server is rebuilt when
 /// it changes and torn down when it goes inactive.
-fn config_sig(db: &Db) -> (bool, Vec<(i64, String, bool)>) {
+fn config_sig(db: &Db) -> (bool, String, Vec<(i64, String, bool)>) {
     let s = db.settings();
     let mut cams: Vec<(i64, String, bool)> = db
         .list_cameras()
@@ -134,8 +134,17 @@ fn config_sig(db: &Db) -> (bool, Vec<(i64, String, bool)>) {
         .map(|c| (c.id, c.name, c.detect_config.homekit_doorbell))
         .collect();
     cams.sort();
-    (s.homekit_enabled && !cams.is_empty(), cams)
+    // v1c: the reset marker rides the signature so a serving generation tears
+    // down promptly when a reset is requested (the worker loop then wipes).
+    let reset = db.get_kv(BRIDGE_RESET_KEY).unwrap_or_default();
+    (s.homekit_enabled && !cams.is_empty(), reset, cams)
 }
+
+/// KV marker an Admin sets to "pending" (POST /api/homekit/reset) to ask this
+/// worker to factory-reset the sensor bridge. The WORKER performs the wipe —
+/// it owns the storage directory's lifecycle, so there is no race with a
+/// still-serving generation.
+pub const BRIDGE_RESET_KEY: &str = "homekit.bridge_reset";
 
 /// Worker entry point (own thread). Each configuration generation runs on its
 /// OWN throwaway current-thread tokio runtime: hap-rs `tokio::spawn`s a task
@@ -151,7 +160,16 @@ pub fn run(
     shutdown: Arc<AtomicBool>,
 ) {
     while !shutdown.load(Ordering::Relaxed) {
-        let (active, cams) = config_sig(&db);
+        // Requested reset: wipe the bridge's identity, pairings, and PIN. Runs
+        // here — between generations — so no HAP server holds the files.
+        if db.get_kv(BRIDGE_RESET_KEY).as_deref() == Some("pending") {
+            let _ = std::fs::remove_dir_all(data_dir.join("homekit-bridge"));
+            let _ = db.delete_kv("homekit.bridge_pin");
+            let _ = db.delete_kv(BRIDGE_RESET_KEY);
+            tracing::info!("homekit sensor bridge reset: identity, pairings and PIN wiped");
+        }
+        let sig = config_sig(&db);
+        let (active, cams) = (sig.0, sig.2.clone());
         if !active {
             crate::util::sleep_interruptible(Duration::from_secs(5), &shutdown);
             continue;
@@ -170,7 +188,7 @@ pub fn run(
         // so a transient UDP-5353 bind error degrades into the backoff below
         // instead of silently killing this worker thread for good.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rt.block_on(serve(&db, &data_dir, &events_tx, &shutdown, cams))
+            rt.block_on(serve(&db, &data_dir, &events_tx, &shutdown, sig, cams))
         }));
         // Dropping the runtime aborts every task hap spawned (accept loop,
         // per-connection sessions, mDNS) — a full teardown per generation.
@@ -198,6 +216,7 @@ async fn serve(
     data_dir: &std::path::Path,
     events_tx: &broadcast::Sender<EventMsg>,
     shutdown: &Arc<AtomicBool>,
+    sig: (bool, String, Vec<(i64, String, bool)>),
     cams: Vec<(i64, String, bool)>,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
@@ -353,7 +372,6 @@ async fn serve(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Camera name -> last motion-ish event (drives the auto-clear).
     let mut last_motion: HashMap<String, tokio::time::Instant> = HashMap::new();
-    let sig = (true, cams);
 
     let result = loop {
         tokio::select! {
@@ -431,6 +449,14 @@ async fn set_motion(ptr: &AccessoryPtr, on: bool) {
             tracing::warn!("homekit set MotionDetected={on}: {e}");
         }
     }
+}
+
+/// How many controllers are paired to the sensor bridge (files in hap-rs's
+/// pairings/ store; 0 when the bridge has never run or was reset).
+pub fn bridge_pairing_count(data_dir: &std::path::Path) -> usize {
+    std::fs::read_dir(data_dir.join("homekit-bridge").join("pairings"))
+        .map(|d| d.filter_map(|e| e.ok()).count())
+        .unwrap_or(0)
 }
 
 /// Emit a "single press" (value 0) on a doorbell button accessory.
