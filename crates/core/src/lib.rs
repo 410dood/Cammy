@@ -13,6 +13,7 @@ mod absence;
 mod analytics;
 mod anomaly;
 mod api;
+mod archive_pull;
 mod ask;
 mod attributes;
 mod audio;
@@ -287,6 +288,13 @@ pub async fn run(
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || offsite::run(db, stop)
     })?;
+    // P3.9: pull-based two-box archive. Opt-in (gated on
+    // Settings.archive_pull_enabled); this box pulls selected cameras' segments
+    // FROM another Cammy for disaster recovery. Re-reads live config each tick.
+    let archive_thread = std::thread::Builder::new().name("archive".into()).spawn({
+        let (db, dir, stop) = (db.clone(), recordings_dir.clone(), workers_stop.clone());
+        move || archive_pull::run(db, dir, stop)
+    })?;
     let audio_thread = std::thread::Builder::new().name("audio".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -445,6 +453,7 @@ pub async fn run(
         let _ = pose_thread.join();
         let _ = push_thread.join();
         let _ = offsite_thread.join();
+        let _ = archive_thread.join();
     })
     .await;
     go2rtc.stop();

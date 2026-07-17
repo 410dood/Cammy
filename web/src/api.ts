@@ -343,6 +343,16 @@ export interface Settings {
   ask_api_key: string;
   /** Model name for the ask endpoint (e.g. "llama3.1"). */
   ask_model: string;
+  /** P3.9 — pull-based two-box archive (disaster recovery). This box pulls
+   *  selected cameras' recording segments FROM another Cammy (the primary) over
+   *  its HTTP API, using an api token created on the primary. Admin-gated;
+   *  archive_token is write-only (blank on read; blank on save keeps it).
+   *  v0 mirrors SEGMENTS only (events/faces are not mirrored yet). */
+  archive_pull_enabled: boolean;
+  archive_primary_url: string;
+  archive_token: string;
+  /** Comma-separated remote camera names to mirror; empty = all offered. */
+  archive_cameras: string;
 }
 
 /** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every
@@ -364,6 +374,16 @@ export interface OffsiteStatus {
   gaveup: number;
   last_error: string | null;
   per_camera: { camera: string; bytes: number }[];
+}
+
+/** P3.9 — two-box archive pull status (segments-only in v0). */
+export interface ArchiveStatus {
+  enabled: boolean;
+  configured: boolean;
+  primary_url: string;
+  last_pull_ts: number | null;
+  last_error: string | null;
+  per_camera: { camera: string; segments: number; cursor_ts: number | null }[];
 }
 
 export interface CamStorage {
@@ -1058,6 +1078,7 @@ export const api = {
   saveSettings: (s: Settings) =>
     req<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),
   offsiteStatus: () => req<OffsiteStatus>("/api/offsite/status"),
+  archiveStatus: () => req<ArchiveStatus>("/api/archive/status"),
   overview: () => req<Overview>("/api/overview"),
   analyticsCounts: (from?: number, to?: number) => {
     const p = new URLSearchParams();

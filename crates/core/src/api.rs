@@ -206,6 +206,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/restore", axum::routing::post(restore))
         .route("/api/import", axum::routing::post(import_footage))
         .route("/api/offsite/status", get(offsite_status))
+        .route("/api/archive/status", get(archive_status))
         .route("/api/player/{file}", get(go2rtc_player))
         .route("/api/ws", get(stream_ws))
         .with_state(state)
@@ -1964,6 +1965,40 @@ async fn offsite_status(State(st): State<AppState>) -> ApiResult<Json<serde_json
             .iter()
             .map(|(c, b)| serde_json::json!({ "camera": c, "bytes": b }))
             .collect::<Vec<_>>(),
+    })))
+}
+
+/// P3.9 — pull-based two-box archive status. Per placeholder ("archive"-group)
+/// camera: how many segments have been pulled, and its forward cursor; plus the
+/// global last-pull time + last error. v0 is SEGMENTS-ONLY (events/faces are not
+/// mirrored yet) — the UI states that.
+async fn archive_status(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let s = st.db.settings();
+    let cameras = st.db.list_cameras()?;
+    let mut per_camera = Vec::new();
+    for c in cameras.iter().filter(|c| c.group.as_deref() == Some("archive")) {
+        let cursor = st
+            .db
+            .get_kv(&format!("archive_cursor_{}", c.id))
+            .and_then(|v| v.parse::<i64>().ok());
+        per_camera.push(serde_json::json!({
+            "camera": c.name,
+            "segments": st.db.count_segments(c.id).unwrap_or(0),
+            "cursor_ts": cursor,
+        }));
+    }
+    let last_error = st
+        .db
+        .get_kv("archive_last_error")
+        .filter(|e| !e.is_empty());
+    Ok(Json(serde_json::json!({
+        "enabled": s.archive_pull_enabled,
+        "configured": !s.archive_primary_url.trim().is_empty()
+            && !s.archive_token.trim().is_empty(),
+        "primary_url": s.archive_primary_url,
+        "last_pull_ts": st.db.get_kv("archive_last_pull_ts").and_then(|v| v.parse::<i64>().ok()),
+        "last_error": last_error,
+        "per_camera": per_camera,
     })))
 }
 
@@ -4688,6 +4723,10 @@ struct RecordingQuery {
     camera_id: Option<i64>,
     /// Only segments starting before this unix ts (exclusive) — day-picker paging.
     before: Option<i64>,
+    /// P3.9 — only segments starting at/after this unix ts, returned ASCENDING.
+    /// Mutually exclusive with `before` (takes precedence); drives the two-box
+    /// archive puller's forward cursor scan. Absent = existing newest-first shape.
+    since: Option<i64>,
     #[serde(default = "default_limit")]
     limit: u32,
 }
@@ -4701,7 +4740,12 @@ async fn list_recordings(
     if let Some(cid) = q.camera_id {
         require_camera(&allow, cid)?;
     }
-    let mut segs = st.db.list_segments(q.camera_id, q.before, q.limit.min(1000), None)?;
+    let mut segs = if let Some(since) = q.since {
+        st.db
+            .list_segments_since(q.camera_id, since, q.limit.min(1000))?
+    } else {
+        st.db.list_segments(q.camera_id, q.before, q.limit.min(1000), None)?
+    };
     if let Some(set) = &allow {
         segs.retain(|s| set.contains(&s.camera_id));
     }
@@ -6012,6 +6056,10 @@ async fn get_settings(State(st): State<AppState>) -> Json<Settings> {
     if !s.ask_api_key.is_empty() {
         s.ask_api_key = String::new();
     }
+    // P3.9 archive-pull Bearer token — write-only like the other secrets.
+    if !s.archive_token.is_empty() {
+        s.archive_token = String::new();
+    }
     Json(s)
 }
 
@@ -6034,6 +6082,10 @@ async fn put_settings(
         // The ask API key is write-only (blanked on read); a non-blank incoming
         // value that differs counts as a change.
         let ask_key_changed = !s.ask_api_key.is_empty() && s.ask_api_key != cur.ask_api_key;
+        // P3.9 archive token is write-only (blanked on read); a non-blank
+        // incoming value that differs counts as a change.
+        let archive_token_changed =
+            !s.archive_token.is_empty() && s.archive_token != cur.archive_token;
         if s.auth_proxy_header != cur.auth_proxy_header
             || s.auth_proxy_role_header != cur.auth_proxy_role_header
             || s.auth_proxy_default_role != cur.auth_proxy_default_role
@@ -6050,10 +6102,16 @@ async fn put_settings(
             || s.ask_endpoint != cur.ask_endpoint
             || s.ask_model != cur.ask_model
             || ask_key_changed
+            // P3.9: the archive-pull config points this box at another Cammy and
+            // holds a token — Admin-only, like the offsite destination/creds.
+            || s.archive_pull_enabled != cur.archive_pull_enabled
+            || s.archive_primary_url != cur.archive_primary_url
+            || s.archive_cameras != cur.archive_cameras
+            || archive_token_changed
         {
             return Err(ApiError(
                 StatusCode::FORBIDDEN,
-                "changing SSO forward-auth, offsite-backup, or Ask settings requires an admin"
+                "changing SSO forward-auth, offsite-backup, Ask, or archive settings requires an admin"
                     .into(),
             ));
         }
@@ -6099,6 +6157,21 @@ async fn put_settings(
     {
         return Err(bad_request("offsite settings contain invalid characters"));
     }
+    // P3.9 — validate the archive-pull primary URL (Admin-configured, trusted,
+    // but reject junk / control chars; a private/LAN primary is intentionally
+    // allowed, like the offsite endpoint).
+    let ap = s.archive_primary_url.trim();
+    if !(ap.is_empty() || ap.starts_with("http://") || ap.starts_with("https://")) {
+        return Err(bad_request(
+            "archive primary URL must be an http:// or https:// URL",
+        ));
+    }
+    if !no_control(&s.archive_primary_url)
+        || !no_control(&s.archive_token)
+        || !no_control(&s.archive_cameras)
+    {
+        return Err(bad_request("archive settings contain invalid characters"));
+    }
     // SMTP password and the S3 secret key are write-only (get_settings blanks
     // them): a blank incoming value means "unchanged", so restore the stored one
     // rather than wipe it.
@@ -6112,11 +6185,15 @@ async fn put_settings(
     if s.ask_api_key.is_empty() {
         s.ask_api_key = st.db.settings().ask_api_key;
     }
+    if s.archive_token.is_empty() {
+        s.archive_token = st.db.settings().archive_token;
+    }
     st.db.save_settings(&s)?;
     let mut out = st.db.settings();
     out.smtp_pass = String::new(); // never echo the secret back
     out.offsite_secret_key = String::new();
     out.ask_api_key = String::new();
+    out.archive_token = String::new();
     Ok(Json(out))
 }
 

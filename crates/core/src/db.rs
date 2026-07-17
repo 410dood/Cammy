@@ -1405,6 +1405,26 @@ pub struct Settings {
     /// Model name for the ask endpoint (e.g. "llama3.1").
     #[serde(default = "default_ask_model")]
     pub ask_model: String,
+    /// P3.9 — pull-based two-box archive (disaster recovery). When enabled, a
+    /// background worker on THIS (secondary) box PULLS selected cameras'
+    /// recording segments FROM another Cammy (the primary) over its HTTP API,
+    /// authenticated with an api_tokens Bearer token created on the primary. Off
+    /// by default; idle unless enabled AND a primary URL + token are set.
+    #[serde(default)]
+    pub archive_pull_enabled: bool,
+    /// Origin of the primary Cammy to pull from, e.g. "https://nvr.example:8080".
+    /// Admin-configured (trusted); validated to be an http(s):// URL.
+    #[serde(default)]
+    pub archive_primary_url: String,
+    /// api_tokens Bearer token minted on the primary (`zoomy_<hex>`). TREATED AS
+    /// A SECRET: write-only (blanked in GET /api/settings, preserved on a blank
+    /// save) like `offsite_secret_key`.
+    #[serde(default)]
+    pub archive_token: String,
+    /// Comma-separated remote camera names to mirror; empty = every camera the
+    /// token is allowed to see on the primary.
+    #[serde(default)]
+    pub archive_cameras: String,
 }
 
 fn default_detect_workers() -> u32 {
@@ -1548,6 +1568,10 @@ impl Default for Settings {
             ask_endpoint: String::new(),
             ask_api_key: String::new(),
             ask_model: default_ask_model(),
+            archive_pull_enabled: false,
+            archive_primary_url: String::new(),
+            archive_token: String::new(),
+            archive_cameras: String::new(),
         }
     }
 }
@@ -4256,6 +4280,51 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// P3.9 — segments whose start_ts >= `since`, ASCENDING, for the archive
+    /// puller's forward cursor scan. Main-stream only (v0 mirrors the full-res
+    /// archive). The ascending order + `>=` lets the secondary page a big
+    /// backlog forward a bounded chunk per tick, advancing a cursor as it goes.
+    pub fn list_segments_since(
+        &self,
+        camera_id: Option<i64>,
+        since_ts: i64,
+        limit: u32,
+    ) -> Result<Vec<SegmentRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path, s.stream
+             FROM segments s JOIN cameras c ON c.id = s.camera_id
+             WHERE (?1 IS NULL OR s.camera_id = ?1)
+               AND s.start_ts >= ?2
+               AND s.stream = 'main'
+             ORDER BY s.start_ts ASC LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(params![camera_id, since_ts, limit], |r| {
+                Ok(SegmentRow {
+                    id: r.get(0)?,
+                    camera_id: r.get(1)?,
+                    camera: r.get(2)?,
+                    start_ts: r.get(3)?,
+                    bytes: r.get::<_, i64>(4)? as u64,
+                    path: r.get(5)?,
+                    stream: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Count of recording segments for one camera (P3.9 archive status readout).
+    pub fn count_segments(&self, camera_id: i64) -> Result<i64> {
+        let n = self.conn().query_row(
+            "SELECT COUNT(*) FROM segments WHERE camera_id = ?1",
+            [camera_id],
+            |r| r.get(0),
+        )?;
+        Ok(n)
     }
 
     /// Flush one minute's OR'd motion mask (P2.3). REPLACE semantics: the

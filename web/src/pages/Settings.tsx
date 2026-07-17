@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { AlarmRule, api, ApiToken, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout } from "../ui";
 import { LicensePane } from "../License";
 import { prettyGesture } from "../labels";
@@ -909,6 +909,60 @@ function OffsiteStatusReadout() {
         <span style={{ color: "var(--danger)" }} title={st.last_error}>
           last error: {st.last_error.slice(0, 80)}
         </span>
+      )}
+    </div>
+  );
+}
+
+/// Live two-box archive-pull readout (P3.9). Polls every 5s; read-only.
+function ArchiveStatusReadout() {
+  const [st, setSt] = useState<ArchiveStatus | null>(null);
+  useEffect(() => {
+    let live = true;
+    const poll = () => api.archiveStatus().then((s) => live && setSt(s)).catch(() => {});
+    poll();
+    const t = setInterval(() => { if (!document.hidden) poll(); }, 5000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, []);
+  if (!st || !st.enabled) return null;
+  const totalSegs = st.per_camera.reduce((a, c) => a + c.segments, 0);
+  return (
+    <div style={{ marginTop: 4, fontSize: 13 }}>
+      <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
+        <span className="muted">
+          Status:{" "}
+          {!st.configured ? (
+            <b style={{ color: "var(--warn)" }}>not fully configured</b>
+          ) : st.per_camera.length === 0 ? (
+            <span>waiting for the first pull…</span>
+          ) : (
+            <b style={{ color: "var(--ok)" }}>mirroring {st.per_camera.length} camera(s)</b>
+          )}
+        </span>
+        <span className="muted">{totalSegs} segment(s) archived</span>
+        {st.last_pull_ts && (
+          <span className="muted">
+            last pull <RelTime ts={st.last_pull_ts} />
+          </span>
+        )}
+        {st.last_error && (
+          <span style={{ color: "var(--danger)" }} title={st.last_error}>
+            last error: {st.last_error.slice(0, 80)}
+          </span>
+        )}
+      </div>
+      {st.per_camera.length > 0 && (
+        <ul className="muted" style={{ margin: "6px 0 0", paddingLeft: 20 }}>
+          {st.per_camera.map((c) => (
+            <li key={c.camera}>
+              {c.camera}: {c.segments} segment(s)
+              {c.cursor_ts ? <> · up to <RelTime ts={c.cursor_ts} /></> : null}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
@@ -2576,6 +2630,65 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             </label>
           </div>
           <OffsiteStatusReadout />
+        </div>
+
+        <div className="card" data-settings-group="recording">
+          <h2>Archive from another Cammy</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            This box pulls recordings <b>from</b> another Cammy you run (the primary), for
+            disaster recovery — a second copy in another building. On the primary, create a
+            read-only API token (Settings &rarr; API tokens) and paste it below. The token is
+            write-only here (never sent back; leave blank to keep it). A private/LAN primary URL
+            is fine.
+          </p>
+          <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
+            v0 mirrors <b>recording segments only</b> — events, faces and plates are not copied
+            yet. Pulled cameras appear disabled, in an <code>archive</code> group, and are never
+            recorded/detected on locally.
+          </p>
+          <label className="row" style={{ alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={s.archive_pull_enabled}
+              onChange={() => set({ archive_pull_enabled: !s.archive_pull_enabled })}
+            />
+            Pull recordings from a primary Cammy
+          </label>
+          <div className="row">
+            <label className="field" style={{ flex: 1, minWidth: 300 }}>
+              primary URL
+              <input
+                type="text"
+                placeholder="https://nvr.example:8080"
+                value={s.archive_primary_url}
+                onChange={(e) => set({ archive_primary_url: e.target.value })}
+              />
+            </label>
+            <label className="field" style={{ flex: 1, minWidth: 200 }}>
+              API token
+              <input
+                type="password"
+                autoComplete="new-password"
+                placeholder={s.archive_primary_url ? "•••••• (unchanged)" : "zoomy_…"}
+                value={s.archive_token}
+                onChange={(e) => set({ archive_token: e.target.value })}
+              />
+            </label>
+          </div>
+          <label className="field">
+            cameras (optional)
+            <input
+              type="text"
+              placeholder="front, driveway  (blank = all offered)"
+              value={s.archive_cameras}
+              onChange={(e) => set({ archive_cameras: e.target.value })}
+            />
+          </label>
+          <p className="muted" style={{ margin: "0 0 8px", fontSize: 13 }}>
+            Comma-separated remote camera names to mirror. Leave blank to pull every camera the
+            token can see.
+          </p>
+          <ArchiveStatusReadout />
         </div>
 
         <div className="card" data-settings-group="modes">
