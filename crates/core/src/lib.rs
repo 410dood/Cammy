@@ -241,11 +241,8 @@ pub async fn run(
             snapshots_dir.clone(),
             workers_stop.clone(),
         );
-        let (cmd_tx, bcast_tx, throttle) = (
-            mqtt_tx_cmd,
-            events_bcast_tx.clone(),
-            alarm_throttle.clone(),
-        );
+        let (cmd_tx, bcast_tx, throttle) =
+            (mqtt_tx_cmd, events_bcast_tx.clone(), alarm_throttle.clone());
         move || mqtt::run(db, go2rtc, snaps, mqtt_rx, cmd_tx, bcast_tx, throttle, stop)
     })?;
     let health_thread = std::thread::Builder::new().name("health".into()).spawn({
@@ -322,13 +319,15 @@ pub async fn run(
     // P2.1 camera-side analytics ingestion (ONVIF PullPoint). Idles unless a
     // camera opts in via detect_config.onvif_events; re-reads config each tick.
     let onvif_inspector: onvif_events::InspectorBoard = Default::default();
-    let onvif_thread = std::thread::Builder::new().name("onvif-events".into()).spawn({
-        let (db, dir, stop) = (db.clone(), snapshots_dir.clone(), workers_stop.clone());
-        let api_base = go2rtc.api_base();
-        let inspector = onvif_inspector.clone();
-        let (tx, throttle) = (mqtt_tx_onvif, alarm_throttle.clone());
-        move || onvif_events::run(db, api_base, dir, inspector, throttle, tx, stop)
-    })?;
+    let onvif_thread = std::thread::Builder::new()
+        .name("onvif-events".into())
+        .spawn({
+            let (db, dir, stop) = (db.clone(), snapshots_dir.clone(), workers_stop.clone());
+            let api_base = go2rtc.api_base();
+            let inspector = onvif_inspector.clone();
+            let (tx, throttle) = (mqtt_tx_onvif, alarm_throttle.clone());
+            move || onvif_events::run(db, api_base, dir, inspector, throttle, tx, stop)
+        })?;
     // Server-side body-pose worker (residential safety tier: fall / crib standing
     // / covered-face). Idles unless a camera has pose_detect on AND the pose model
     // exists; re-reads config each tick.

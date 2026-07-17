@@ -90,7 +90,10 @@ mod tests {
 
     #[test]
     fn stranger_and_gesture_are_high() {
-        assert_eq!(severity_for("person", Some(crate::db::UNKNOWN_FACE), None), 3);
+        assert_eq!(
+            severity_for("person", Some(crate::db::UNKNOWN_FACE), None),
+            3
+        );
         assert_eq!(severity_for("person", None, Some("open_palm")), 3);
         // A *recognized* face stays a normal person event.
         assert_eq!(severity_for("person", Some("alice"), None), 2);

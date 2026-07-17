@@ -208,8 +208,8 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             let url = format!("http://127.0.0.1:{PORT}/api/status");
             loop {
                 std::thread::sleep(Duration::from_secs(60));
-                let tip = status_tooltip(&url)
-                    .unwrap_or_else(|| "Cammy — engine not responding".into());
+                let tip =
+                    status_tooltip(&url).unwrap_or_else(|| "Cammy — engine not responding".into());
                 let _ = tray_icon.set_tooltip(Some(&tip));
             }
         })?;
@@ -244,11 +244,7 @@ struct PendingUpdate(Mutex<Option<tauri_plugin_updater::Update>>);
 
 /// Query the release feed off-thread; on success the tray item flips to an
 /// explicit "Install update vX" action.
-fn spawn_update_check(
-    app: tauri::AppHandle,
-    item: MenuItem<tauri::Wry>,
-    interactive: bool,
-) {
+fn spawn_update_check(app: tauri::AppHandle, item: MenuItem<tauri::Wry>, interactive: bool) {
     use tauri_plugin_updater::UpdaterExt as _;
     if interactive {
         let _ = item.set_text("Checking for updates…");
@@ -266,7 +262,10 @@ fn spawn_update_check(
                     "Install update v{} (restarts Cammy)",
                     update.version
                 ));
-                *app.state::<PendingUpdate>().0.lock().expect("pending update") = Some(update);
+                *app.state::<PendingUpdate>()
+                    .0
+                    .lock()
+                    .expect("pending update") = Some(update);
             }
             Ok(None) => {
                 let _ = item.set_text(if interactive {
@@ -355,10 +354,7 @@ fn error_page_url(err: &str) -> tauri::Url {
          <p style=\"color:#9aa7b4\">Fix the issue above, then quit (tray icon \
          &rarr; Quit) and start Cammy again.</p></div>"
     );
-    let data = format!(
-        "data:text/html;base64,{}",
-        base64_encode(html.as_bytes())
-    );
+    let data = format!("data:text/html;base64,{}", base64_encode(html.as_bytes()));
     data.parse().expect("valid data url")
 }
 
@@ -367,12 +363,24 @@ fn base64_encode(input: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]);
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }

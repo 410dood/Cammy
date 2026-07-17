@@ -167,7 +167,11 @@ pub fn summarize(events: &[Event]) -> String {
     if !repeat_plates.is_empty() {
         parts.push(format!(
             "Plates seen: {}.",
-            repeat_plates.into_iter().take(6).collect::<Vec<_>>().join(", ")
+            repeat_plates
+                .into_iter()
+                .take(6)
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if let Some((cam, n)) = by_camera.iter().max_by_key(|(_, n)| **n) {
@@ -217,11 +221,11 @@ mod tests {
     #[test]
     fn key_moments_picks_notable_events_and_links() {
         let events = vec![
-            ev(1, "person", 2, None),            // routine — excluded
-            ev(2, "fall", 4, None),              // critical — first
-            ev(3, "loiter", 3, Some(0.9)),       // high — second
-            ev(4, "car", 2, Some(0.7)),          // anomalous routine — included
-            ev(5, "cat", 1, None),               // ambient — excluded
+            ev(1, "person", 2, None),      // routine — excluded
+            ev(2, "fall", 4, None),        // critical — first
+            ev(3, "loiter", 3, Some(0.9)), // high — second
+            ev(4, "car", 2, Some(0.7)),    // anomalous routine — included
+            ev(5, "cat", 1, None),         // ambient — excluded
         ];
         let m = key_moments(&events, "https://nvr.example.com/", 3);
         assert_eq!(m.len(), 3);

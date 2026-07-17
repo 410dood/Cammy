@@ -230,10 +230,8 @@ pub fn run(
                     continue;
                 }
                 if !ranks_top_k(&scores, idx, TOP_K) {
-                    if let Some((ti, ts)) = scores
-                        .iter()
-                        .enumerate()
-                        .max_by(|a, b| a.1.total_cmp(b.1))
+                    if let Some((ti, ts)) =
+                        scores.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1))
                     {
                         tracing::debug!(
                             camera = %cam.name,
@@ -351,8 +349,7 @@ pub fn run(
                                 && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
                                 && crate::notify::ready(r, &throttle, now)
                         }) {
-                            let suppressed =
-                                crate::notify::take_suppressed(&throttle, rule.id);
+                            let suppressed = crate::notify::take_suppressed(&throttle, rule.id);
                             crate::notify::fire(rule, &alarm_ev, &mqtt_tx, suppressed, &db);
                         }
                     }
@@ -413,10 +410,23 @@ mod tests {
 
     #[test]
     fn sustained_labels() {
-        for l in ["Siren", "Alarm", "Fire alarm", "Car alarm", "Smoke detector, smoke alarm"] {
+        for l in [
+            "Siren",
+            "Alarm",
+            "Fire alarm",
+            "Car alarm",
+            "Smoke detector, smoke alarm",
+        ] {
             assert!(is_sustained(l), "{l} should require confirmation");
         }
-        for l in ["Glass", "Gunshot, gunfire", "Bark", "Knock", "Doorbell", "Baby cry, infant cry"] {
+        for l in [
+            "Glass",
+            "Gunshot, gunfire",
+            "Bark",
+            "Knock",
+            "Doorbell",
+            "Baby cry, infant cry",
+        ] {
             assert!(!is_sustained(l), "{l} should stay single-sweep");
         }
     }

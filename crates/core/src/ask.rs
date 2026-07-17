@@ -167,9 +167,8 @@ fn build_chat_request(model: &str, messages: &[Value], tools: &Value) -> Value {
 fn decode_args(arguments: &Value) -> Result<Value, String> {
     let v = match arguments {
         Value::String(s) if s.trim().is_empty() => Value::Object(Default::default()),
-        Value::String(s) => {
-            serde_json::from_str::<Value>(s).map_err(|e| format!("invalid tool arguments JSON: {e}"))?
-        }
+        Value::String(s) => serde_json::from_str::<Value>(s)
+            .map_err(|e| format!("invalid tool arguments JSON: {e}"))?,
         Value::Object(_) => arguments.clone(),
         Value::Null => Value::Object(Default::default()),
         _ => return Err("tool arguments must be a JSON object".into()),
@@ -205,10 +204,16 @@ fn parse_time(v: &Value) -> Option<i64> {
     }
     if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
         let ndt = d.and_hms_opt(0, 0, 0)?;
-        return chrono::Local.from_local_datetime(&ndt).single().map(|d| d.timestamp());
+        return chrono::Local
+            .from_local_datetime(&ndt)
+            .single()
+            .map(|d| d.timestamp());
     }
     if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
-        return chrono::Local.from_local_datetime(&ndt).single().map(|d| d.timestamp());
+        return chrono::Local
+            .from_local_datetime(&ndt)
+            .single()
+            .map(|d| d.timestamp());
     }
     None
 }
@@ -332,7 +337,10 @@ fn execute_tool(
             "search_events" => {
                 let args = decode_args(arguments)?;
                 let camera_arg = args.get("camera").and_then(|v| v.as_str());
-                let label = args.get("label").and_then(|v| v.as_str()).map(str::to_string);
+                let label = args
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
                 let since = args.get("since").and_then(parse_time);
                 let until = args.get("until").and_then(parse_time);
                 let want = args
@@ -350,7 +358,16 @@ fn execute_tool(
                 // the events API). Unrestricted: fetch exactly what's wanted.
                 let fetch = if scope.is_some() { 500 } else { want as u32 };
                 let mut rows = db
-                    .list_events(None, label.as_deref(), None, None, since, until, false, fetch)
+                    .list_events(
+                        None,
+                        label.as_deref(),
+                        None,
+                        None,
+                        since,
+                        until,
+                        false,
+                        fetch,
+                    )
                     .map_err(|e| format!("event query failed: {e}"))?;
                 if let Some(set) = &scope {
                     rows.retain(|e| set.contains(&e.camera_id));
@@ -501,7 +518,14 @@ pub fn answer(
                 let answer = if text.is_empty() {
                     "I don't know.".to_string()
                 } else if text.len() > 4000 {
-                    format!("{}…", &text[..text.char_indices().nth(3999).map(|(i, _)| i).unwrap_or(text.len())])
+                    format!(
+                        "{}…",
+                        &text[..text
+                            .char_indices()
+                            .nth(3999)
+                            .map(|(i, _)| i)
+                            .unwrap_or(text.len())]
+                    )
                 } else {
                     text.to_string()
                 };
@@ -522,10 +546,22 @@ mod tests {
 
     #[test]
     fn chat_url_normalizes_byo_base() {
-        assert_eq!(chat_url("http://localhost:1234"), "http://localhost:1234/v1/chat/completions");
-        assert_eq!(chat_url("http://localhost:1234/"), "http://localhost:1234/v1/chat/completions");
-        assert_eq!(chat_url("http://localhost:1234/v1"), "http://localhost:1234/v1/chat/completions");
-        assert_eq!(chat_url("http://localhost:1234/v1/"), "http://localhost:1234/v1/chat/completions");
+        assert_eq!(
+            chat_url("http://localhost:1234"),
+            "http://localhost:1234/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_url("http://localhost:1234/"),
+            "http://localhost:1234/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_url("http://localhost:1234/v1"),
+            "http://localhost:1234/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_url("http://localhost:1234/v1/"),
+            "http://localhost:1234/v1/chat/completions"
+        );
         assert_eq!(
             chat_url("http://localhost:1234/v1/chat/completions"),
             "http://localhost:1234/v1/chat/completions"
@@ -558,8 +594,16 @@ mod tests {
         let v = decode_args(&json!({ "camera": "front" })).unwrap();
         assert_eq!(v["camera"], "front");
         // Empty string / null → empty object.
-        assert!(decode_args(&json!("")).unwrap().as_object().unwrap().is_empty());
-        assert!(decode_args(&Value::Null).unwrap().as_object().unwrap().is_empty());
+        assert!(decode_args(&json!(""))
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .is_empty());
+        assert!(decode_args(&Value::Null)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .is_empty());
         // Malformed JSON → Err, not a panic.
         assert!(decode_args(&json!("{not json")).is_err());
         // A non-object JSON (array) → Err.
@@ -589,7 +633,10 @@ mod tests {
         // Dedup: a repeated id appears once.
         assert_eq!(extract_cited_ids("event 7, also 7 again", &seen), vec![7]);
         // A hallucinated id (not in seen) is dropped.
-        assert_eq!(extract_cited_ids("see event 9999", &seen), Vec::<i64>::new());
+        assert_eq!(
+            extract_cited_ids("see event 9999", &seen),
+            Vec::<i64>::new()
+        );
     }
 
     #[test]

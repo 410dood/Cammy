@@ -80,7 +80,10 @@ pub fn run(
                     .unwrap_or(true)
         }) {
             // Main stream: always, exactly as before — one entry per camera.
-            desired.insert((c.id, "main"), (c.name.clone(), recordings_dir.join(&c.name)));
+            desired.insert(
+                (c.id, "main"),
+                (c.name.clone(), recordings_dir.join(&c.name)),
+            );
             // Sub stream: only when opted in AND a detect sub-stream exists to
             // record (no `detect_source` = no `{name}_sub` restream). Fail-safe:
             // a missing sub source just means no sub recorder — logged, no crash.
@@ -164,7 +167,8 @@ pub fn run(
                 if let Ok(segments) = recorder::scan_segments(&dir, SEGMENT_QUIET_SECS) {
                     for seg in segments {
                         let path = seg.path.to_string_lossy().to_string();
-                        if let Err(e) = db.upsert_segment(cam.id, seg.start_ts, &path, seg.bytes, stream)
+                        if let Err(e) =
+                            db.upsert_segment(cam.id, seg.start_ts, &path, seg.bytes, stream)
                         {
                             tracing::warn!("segment index failed: {e:#}");
                         }
