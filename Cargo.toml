@@ -86,6 +86,13 @@ ring = "0.17"
 # in-tree shim. See crates/vendor/get_if_addrs.
 [patch.crates-io]
 get_if_addrs = { path = "crates/vendor/get_if_addrs" }
+# Vendored libmdns 0.6.3 (MIT) with ONE patch: CommandSender::send no longer
+# panics when the mDNS FSM task is already dropped. Upstream's .expect() fires
+# inside Responder/Service Drop impls during bridge teardown (the FSM future
+# drops first — it lives in hap's run_handle future, which borrows the server),
+# and two panicking Drops during one unwind abort the whole NVR. Live-repro'd:
+# every "Reset sensor bridge" / config rebuild killed the process.
+libmdns = { path = "crates/vendor/libmdns" }
 
 [workspace.package]
 edition = "2021"
