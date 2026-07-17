@@ -325,6 +325,15 @@ still reference both in the same automation/room. A motion sensor turns on when
 Cammy detects motion-driven events (person/vehicle/animal, tripwire, loitering,
 zone entry) on that camera and clears ~45 s after the last one.
 
+**Doorbell button (v1b).** A camera with **"HomeKit doorbell button"** enabled
+(Cameras → Detection tuning, needs "Expose to HomeKit") also appears on the
+Cammy Sensors bridge as a programmable switch that fires a *single press* when
+the camera's audio detection hears a doorbell chime (YAMNet "Doorbell") or a
+soft trigger labeled `doorbell` arrives. It is deliberately **not** a full
+HomeKit doorbell accessory — the Home app rejects doorbell accessories that
+don't carry their own camera stream, and go2rtc's camera accessory can't carry
+sensor services — so use it as an automation/notification trigger.
+
 **Pairing must be done on a real Apple device — it cannot be verified from the
 server side.** Default is OFF: when off, the generated `go2rtc.yaml` is
 byte-for-byte unchanged AND the sensor bridge never binds a socket or announces

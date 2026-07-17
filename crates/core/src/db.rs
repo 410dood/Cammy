@@ -368,6 +368,14 @@ pub struct DetectConfig {
     /// a real Apple Home device. See `go2rtc.rs`.
     #[serde(default)]
     pub homekit_expose: bool,
+    /// P3.4 v1b: also expose a HomeKit doorbell BUTTON for this camera through
+    /// the "Cammy Sensors" bridge. Rings (single press) on a YAMNet "Doorbell"
+    /// audio event or a soft trigger labeled "doorbell". Ships as a stateless
+    /// programmable switch, not a HomeKit Doorbell service — the Home app
+    /// rejects doorbell accessories that lack a camera stream service, which
+    /// only go2rtc's (sensor-less) HAP accessory has. Needs `homekit_expose`.
+    #[serde(default)]
+    pub homekit_doorbell: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -5746,6 +5754,7 @@ mod tests {
             trigger_post_roll_secs: Some(45),
             record_substream: true,
             homekit_expose: true,
+            homekit_doorbell: true,
         };
         db.update_camera(&cam).unwrap();
         let back = db.get_camera(cam.id).unwrap().unwrap();

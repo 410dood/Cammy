@@ -6111,6 +6111,15 @@ async fn get_homekit(
         "bridge_pin": bridge_pin,
         "bridge_port": crate::homekit::BRIDGE_PORT,
         "exposed_cameras": exposed,
+        "doorbell_cameras": st
+            .db
+            .list_cameras()?
+            .into_iter()
+            .filter(|c| {
+                c.enabled && c.detect_config.homekit_expose && c.detect_config.homekit_doorbell
+            })
+            .map(|c| c.name)
+            .collect::<Vec<_>>(),
     })))
 }
 

@@ -145,6 +145,10 @@ export interface DetectConfig {
   /** P3.4 HomeKit: expose this camera as a HomeKit camera (live view) when the
    *  global bridge is on. Off by default and independent of privacy/no_clip. */
   homekit_expose?: boolean;
+  /** P3.4 v1b: also expose a HomeKit doorbell button (stateless programmable
+   *  switch on the Cammy Sensors bridge); rings on a "Doorbell" audio event or
+   *  a soft trigger labeled "doorbell". Requires homekit_expose. */
+  homekit_doorbell?: boolean;
 }
 
 export interface Camera {

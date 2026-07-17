@@ -144,6 +144,7 @@ function TuneModal({
     trigger_post_roll_secs: camera.detect_config.trigger_post_roll_secs ?? null,
     record_substream: camera.detect_config.record_substream ?? false,
     homekit_expose: camera.detect_config.homekit_expose ?? false,
+    homekit_doorbell: camera.detect_config.homekit_doorbell ?? false,
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
   const [saving, setSaving] = useState(false);
@@ -655,8 +656,17 @@ function TuneModal({
                 on={dc.homekit_expose ?? false}
                 onToggle={() => setDc({ ...dc, homekit_expose: !dc.homekit_expose })}
                 label="Expose to HomeKit"
-                help="Show this camera in the Apple Home app (live view). Pair with the code in Settings → Apple HomeKit."
-                title="Expose this camera as a HomeKit camera (live view) via the HomeKit bridge. Requires the bridge to be enabled in Settings. v0 is live-view only; pair on a real Apple device."
+                help="Show this camera in the Apple Home app: live view, plus a motion sensor (via the separate “Cammy Sensors” pairing) for Home automations."
+                title="Expose this camera as a HomeKit camera (live view) via the HomeKit bridge, and as a motion sensor through the separate Cammy Sensors bridge. Requires the bridge to be enabled in Settings; pair on a real Apple device."
+              />
+            )}
+            {settings?.homekit_enabled && dc.homekit_expose && (
+              <Feature
+                on={dc.homekit_doorbell ?? false}
+                onToggle={() => setDc({ ...dc, homekit_doorbell: !dc.homekit_doorbell })}
+                label="HomeKit doorbell button"
+                help="Adds a doorbell button in Home (via Cammy Sensors) that “presses” when this camera hears a doorbell chime or gets a soft trigger labeled “doorbell”."
+                title="Appears in the Home app as a programmable switch (single press), not a full HomeKit doorbell — Home only accepts doorbell accessories that carry their own camera stream. Use it to trigger Home automations/notifications on a ring."
               />
             )}
           </div>

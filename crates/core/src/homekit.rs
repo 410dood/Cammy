@@ -38,7 +38,8 @@ use std::{
 
 use hap::{
     accessory::{
-        bridge::BridgeAccessory, motion_sensor::MotionSensorAccessory, AccessoryCategory,
+        bridge::BridgeAccessory, motion_sensor::MotionSensorAccessory,
+        stateless_programmable_switch::StatelessProgrammableSwitchAccessory, AccessoryCategory,
         AccessoryInformation, HapAccessory,
     },
     server::{IpServer, Server},
@@ -60,6 +61,17 @@ pub const BRIDGE_PORT: u16 = 32180;
 /// Seconds of quiet after the last motion-ish event before MotionDetected
 /// auto-clears (HomeKit motion sensors are level-, not edge-, based).
 const MOTION_CLEAR_SECS: u64 = 45;
+
+/// aid offset for v1b doorbell-button accessories, so a camera's motion sensor
+/// (aid = id + 1) and its doorbell button never collide across any realistic
+/// camera-id range.
+const DOORBELL_AID_OFFSET: u64 = 1 << 20;
+
+/// Whether an event label means "the doorbell rang": the YAMNet audio class
+/// ("Doorbell") or a soft trigger the owner labels "doorbell".
+pub fn is_ring_label(label: &str) -> bool {
+    label.eq_ignore_ascii_case("doorbell")
+}
 
 /// Labels that mean "something is moving in frame" for a HomeKit motion
 /// sensor. Covers the YOLO moving-object classes plus the tracker/analytics
@@ -112,14 +124,14 @@ fn hap_pin(digits: &str) -> Option<Pin> {
 
 /// The (enabled, sorted exposed cameras) signature; the server is rebuilt when
 /// it changes and torn down when it goes inactive.
-fn config_sig(db: &Db) -> (bool, Vec<(i64, String)>) {
+fn config_sig(db: &Db) -> (bool, Vec<(i64, String, bool)>) {
     let s = db.settings();
-    let mut cams: Vec<(i64, String)> = db
+    let mut cams: Vec<(i64, String, bool)> = db
         .list_cameras()
         .unwrap_or_default()
         .into_iter()
         .filter(|c| c.enabled && c.detect_config.homekit_expose)
-        .map(|c| (c.id, c.name))
+        .map(|c| (c.id, c.name, c.detect_config.homekit_doorbell))
         .collect();
     cams.sort();
     (s.homekit_enabled && !cams.is_empty(), cams)
@@ -186,7 +198,7 @@ async fn serve(
     data_dir: &std::path::Path,
     events_tx: &broadcast::Sender<EventMsg>,
     shutdown: &Arc<AtomicBool>,
-    cams: Vec<(i64, String)>,
+    cams: Vec<(i64, String, bool)>,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
 
@@ -240,7 +252,12 @@ async fn serve(
     // on a c# change), and a reused SQLite camera id would silently inherit
     // the dead accessory's identity/automations. (Adversarial-review finding.)
     let desired_aids: Vec<u64> = std::iter::once(1u64)
-        .chain(cams.iter().map(|(id, _)| *id as u64 + 1))
+        .chain(cams.iter().map(|(id, _, _)| *id as u64 + 1))
+        .chain(
+            cams.iter()
+                .filter(|(_, _, doorbell)| *doorbell)
+                .map(|(id, _, _)| *id as u64 + 1 + DOORBELL_AID_OFFSET),
+        )
         .collect();
     if let Ok(cache) = storage.load_aid_cache().await {
         let pruned: Vec<u64> = cache
@@ -282,7 +299,11 @@ async fn serve(
     // so an accessory keeps its identity (and Home-app room/automations) across
     // restarts and camera renames.
     let mut sensors: HashMap<String, AccessoryPtr> = HashMap::new();
-    for (id, name) in &cams {
+    // v1b: doorbell BUTTON accessories (stateless programmable switch — the
+    // Home app rejects a Doorbell service on an accessory with no camera
+    // stream, and only go2rtc's sensor-less HAP accessory has one).
+    let mut doorbells: HashMap<String, AccessoryPtr> = HashMap::new();
+    for (id, name, doorbell) in &cams {
         let aid = (*id as u64) + 1;
         let acc = MotionSensorAccessory::new(aid, AccessoryInformation {
             name: format!("{name} Motion"),
@@ -297,6 +318,24 @@ async fn serve(
             .await
             .map_err(|e| anyhow::anyhow!("adding sensor {name}: {e}"))?;
         sensors.insert(name.clone(), ptr);
+        if *doorbell {
+            let acc = StatelessProgrammableSwitchAccessory::new(
+                aid + DOORBELL_AID_OFFSET,
+                AccessoryInformation {
+                    name: format!("{name} Doorbell"),
+                    manufacturer: "Cammy".into(),
+                    model: "Cammy doorbell button".into(),
+                    serial_number: format!("cammy-doorbell-{id}"),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("doorbell accessory {name}: {e}"))?;
+            let ptr = server
+                .add_accessory(acc)
+                .await
+                .map_err(|e| anyhow::anyhow!("adding doorbell {name}: {e}"))?;
+            doorbells.insert(name.clone(), ptr);
+        }
     }
 
     // run_handle() borrows the server, so drive it inside the select loop
@@ -333,6 +372,12 @@ async fn serve(
                                 tracing::debug!(camera = ev.camera, label = ev.label,
                                     "homekit motion ON");
                             }
+                        }
+                    }
+                    if ev.topic.is_none() && is_ring_label(&ev.label) {
+                        if let Some(ptr) = doorbells.get(&ev.camera) {
+                            ring_doorbell(ptr).await;
+                            tracing::debug!(camera = ev.camera, "homekit doorbell ring");
                         }
                     }
                 }
@@ -384,6 +429,19 @@ async fn set_motion(ptr: &AccessoryPtr, on: bool) {
     {
         if let Err(e) = ch.set_value(serde_json::json!(on)).await {
             tracing::warn!("homekit set MotionDetected={on}: {e}");
+        }
+    }
+}
+
+/// Emit a "single press" (value 0) on a doorbell button accessory.
+async fn ring_doorbell(ptr: &AccessoryPtr) {
+    let mut acc = ptr.lock().await;
+    if let Some(ch) = acc
+        .get_mut_service(HapType::StatelessProgrammableSwitch)
+        .and_then(|s| s.get_mut_characteristic(HapType::ProgrammableSwitchEvent))
+    {
+        if let Err(e) = ch.set_value(serde_json::json!(0)).await {
+            tracing::warn!("homekit doorbell press: {e}");
         }
     }
 }
