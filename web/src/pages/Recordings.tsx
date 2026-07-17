@@ -257,6 +257,12 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
   // through the camera's following clips so a moment never cuts off at a
   // minute boundary.
   const [playing, setPlaying] = useState<{ queue: Segment[]; index: number; offset: number } | null>(null);
+  // Skip the 10s recordings/events refetch (1000+1500 rows) while the tab is
+  // hidden or a clip is playing — both cases don't want the list churning.
+  const playingRef = useRef(false);
+  useEffect(() => {
+    playingRef.current = playing !== null;
+  }, [playing]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [windowSecs, setWindowSecs] = useState(6 * 3600);
   const [segmentSecs, setSegmentSecs] = useState(60);
@@ -349,7 +355,10 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 10000);
+    const t = setInterval(() => {
+      if (document.hidden || playingRef.current) return;
+      load();
+    }, 10000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraId, day]);

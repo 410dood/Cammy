@@ -133,20 +133,24 @@ export default function JourneyMap({
             style={{ left: `${ws[0].pin.x * 100}%`, top: `${ws[0].pin.y * 100}%` }}
           >
             <span className="journey-nums">
-              {ws.map((w) => (
-                <button
-                  key={w.ev.id}
-                  className="journey-wp"
-                  title={`Step ${w.n} · ${camera} · ${
-                    w.similarity == null
-                      ? "the event you started from"
-                      : `${(w.similarity * 100).toFixed(0)}% match`
-                  } · ${fmtTime(w.ev.ts)}`}
-                  onClick={() => onPick(w.ev)}
-                >
-                  {w.n}
-                </button>
-              ))}
+              {ws.map((w) => {
+                const label = `Step ${w.n} · ${camera} · ${
+                  w.similarity == null
+                    ? "the event you started from"
+                    : `${(w.similarity * 100).toFixed(0)}% match`
+                } · ${fmtTime(w.ev.ts)}`;
+                return (
+                  <button
+                    key={w.ev.id}
+                    className="journey-wp"
+                    title={label}
+                    aria-label={label}
+                    onClick={() => onPick(w.ev)}
+                  >
+                    {w.n}
+                  </button>
+                );
+              })}
             </span>
             <span className="journey-node-label">{camera}</span>
           </div>

@@ -185,10 +185,18 @@ function AskBox({ onOpenEvent }: { onOpenEvent?: (id: number) => void }) {
       )}
       {answer !== null && (
         <div style={{ marginTop: 12 }}>
-          <p style={{ whiteSpace: "pre-wrap", marginTop: 0 }}>{answer}</p>
-          <p className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 4 }}>
-            AI-generated from your event history — check it against the events below.
-          </p>
+          {answer.trim() === "" && cited.length === 0 ? (
+            <p className="muted" role="status" aria-live="polite" style={{ marginTop: 0 }}>
+              No answer for that — try rephrasing your question.
+            </p>
+          ) : (
+            <div role="status" aria-live="polite" aria-atomic="false">
+              <p style={{ whiteSpace: "pre-wrap", marginTop: 0 }}>{answer}</p>
+              <p className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 4 }}>
+                AI-generated from your event history — check it against the events below.
+              </p>
+            </div>
+          )}
           {cited.length > 0 && (
             <div className="recent-feed" style={{ marginTop: 8 }}>
               {cited.map((e) => (

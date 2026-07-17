@@ -212,7 +212,7 @@ function TuneModal({
     },
     {
       label: "Two-way audio",
-      help: "Adds a hold-to-talk button (camera needs a speaker/backchannel).",
+      help: "Adds a hold-to-talk button — only works on cameras that have a built-in speaker.",
       title:
         "Show a hold-to-talk button in this camera's detail view (streams your mic to the camera over WebRTC). Only works on cameras with a speaker / ONVIF backchannel.",
       on: dc.two_way_audio,
@@ -226,7 +226,7 @@ function TuneModal({
     },
     {
       label: "Camera-side detection",
-      help: "Ingest the camera's own AI (ONVIF: motion, tripwire, intrusion, person/vehicle) as camera_* events — no server GPU cost.",
+      help: "Use the camera's own built-in person/vehicle/motion detection instead of the server's — it runs on the camera, so it adds no extra load here.",
       title:
         "Subscribe to this camera's ONVIF events and record what its chip detects as camera_motion / camera_tripwire / camera_intrusion / camera_person / camera_vehicle events (alarm rules match those labels). Needs ONVIF credentials (user:pass@host) in the camera source.",
       on: dc.onvif_events ?? false,
@@ -267,7 +267,7 @@ function TuneModal({
           default. Size filters and child height are simply <b>off</b> when left blank.
         </Callout>
 
-        <div className="arm-bar tune-tabs" role="tablist" aria-label="Tuning sections">
+        <div className="arm-bar tune-tabs" role="group" aria-label="Tuning sections">
           {(
             [
               ["detect", "Detection"],
@@ -278,8 +278,7 @@ function TuneModal({
             <button
               key={k}
               type="button"
-              role="tab"
-              aria-selected={tab === k}
+              aria-pressed={tab === k}
               className={`arm-opt ${tab === k ? "active" : ""}`}
               onClick={() => setTab(k)}
             >
@@ -490,7 +489,7 @@ function TuneModal({
               </select>
               {!openvinoAvailable && (
                 <span className="feat-help">
-                  OpenVINO (Intel iGPU/NPU) needs a build with the Intel EP; unavailable here.
+                  OpenVINO (Intel iGPU/NPU) needs a special build compiled with Intel OpenVINO support; unavailable here.
                 </span>
               )}
             </label>
@@ -500,7 +499,7 @@ function TuneModal({
                 type="number" step="100" min="0"
                 placeholder="Inherit global"
                 value={dc.poll_ms ?? ""}
-                onChange={(e) => setDc({ ...dc, poll_ms: e.target.value === "" ? null : Number(e.target.value) })}
+                onChange={(e) => setDc({ ...dc, poll_ms: e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0) })}
               />
               {dc.poll_ms == null && settings ? (
                 <span className="feat-help">using global: {settings.poll_ms} ms</span>
@@ -533,14 +532,14 @@ function TuneModal({
               Mutually exclusive — selecting one clears the others' flags. The
               recorder never stops segmenting; these modes only prune harder. */}
           <div className="feat" style={{ marginBottom: 10 }}>
-            <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "#aeb4c0" }}>
+            <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-muted)" }}>
               Recording mode
             </span>
             <div
               className="arm-bar"
               role="group"
               aria-label="Recording mode"
-              style={{ margin: "4px 0 6px" }}
+              style={{ margin: "4px 0 6px", flexWrap: "wrap" }}
             >
               {(
                 [

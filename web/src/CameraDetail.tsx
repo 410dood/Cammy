@@ -393,7 +393,7 @@ export default function CameraDetail({
                 <span
                   aria-hidden="true"
                   style={{
-                    width: 84, aspectRatio: "4 / 3", borderRadius: 6, flexShrink: 0,
+                    width: 84, aspectRatio: "4 / 3", borderRadius: "var(--radius-sm)", flexShrink: 0,
                     background: "var(--bg-sunken)", display: "grid", placeItems: "center",
                     color: "var(--text-faint)",
                   }}
@@ -488,9 +488,8 @@ function FrameSearchModal({ cameraId, onClose }: { cameraId: number; onClose: ()
   };
 
   return (
-    <Modal onClose={onClose} className="modal-wide">
-      <h2 style={{ marginTop: 0 }}>Find in frame</h2>
-      <p className="muted" style={{ marginTop: -6 }}>
+    <Modal title="Find in frame" onClose={onClose} className="modal-wide">
+      <p className="muted" style={{ marginTop: 0 }}>
         Drag a box around a person or vehicle in the current view, then search everywhere your
         cameras have seen them.
       </p>
