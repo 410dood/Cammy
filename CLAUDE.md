@@ -16,6 +16,46 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: web UX RE-AUDIT (v0.4 surfaces) — a11y / states / forms / mobile, 2026-07-17
+
+A **second** 8-lens audit (same Workflow: parallel lens-finders → per-finding
+adversarial verify → ranked plan), scoped to the surfaces the first pass never
+saw — the tree grew ~50% since v0.3.2 with new files (`Insights`, `License`,
+`LifecycleModal`, `JourneyMap`, `CameraHotspots`) and heavily-grown ones
+(`Recordings`, `Settings`, the redesigned Cameras `TuneModal`, `Alarms`,
+`Events`, `CameraDetail`). 36 confirmed findings → 8 phases, shipped web-only in
+**PR #38** (`6f4b9a8`, merged `fce2783`); `tsc`+`vite` green, live-validated in
+Chrome. **⚠ Heads-up:** the `web` CI check passed, but `rust` CI is RED on a
+**pre-existing** `cargo fmt` violation in `crates/recorder/src/lib.rs` (unrelated
+to this web-only PR — my merge touched 0 `crates/` files); run `cargo fmt --all`
+to clear it.
+
+- **A11y:** Find-in-frame modal gets a `title` → the standard X-close +
+  accessible dialog name (was Escape/backdrop only); the Cameras `TuneModal` +
+  Events "Similar" switcher drop a **false ARIA tab pattern** (`role=tab` with no
+  tabpanels/arrow-keys) for honest `role=group` + `aria-pressed`; Insights bar
+  charts become focusable `<button>`s with per-bar `aria-label` + a tap/keyboard
+  readout caption; CameraHotspots announce offline (not color-only); License-key
+  input + JourneyMap waypoints get names; Home "ask" answer is `aria-live`.
+- **States/forms:** busy guards on mutating buttons that had none — deterrence
+  relay Test (fires a PHYSICAL siren/light), alarm-rule Test, HomeKit
+  unpair/reset (+ missing `type="button"` so they no longer stray-submit the
+  settings form), Events "Not this"; License removal now confirms; `poll_ms`
+  clamp; `type=url` + conditional `required` on ask/archive endpoints.
+- **Visual/mobile:** light-theme status colors (`--success/--warn/--danger`)
+  darkened for readable colored text on white; field-label + recording-mode greys
+  → `--text-muted` (were invisible in light theme); px/hex literals → tokens;
+  Insights `Stat` reuses `.stat-card`; the playback bar wraps instead of clipping
+  "Back to live" on phones; hotspot chips + journey waypoints get tap targets.
+- **IA:** `#/settings/<group>` deep-links a Settings tab — self-contained
+  (`replaceState` + a `hashchange` listener, **no app-router changes**); the
+  License banner gains an "Already purchased? Activate" shortcut. The identity
+  disclaimer now shows on the default Grid tab too; Evidence vs Signed-`.zip`
+  disambiguated; jargon trimmed (OpenVINO/ONVIF/backchannel).
+- **Perf:** memoized the Events filter derivations, guarded the Recordings poll
+  (skip while hidden or a clip is playing), precomputed CrossTimeline per-lane
+  data.
+
 ### Latest: web UX/UI audit pass — a11y / states / forms / mobile / deep-linking, 2026-07-17
 
 An adversarially-verified **8-lens UX/UI audit** of `web/src` (66 findings → 18
