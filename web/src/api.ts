@@ -332,6 +332,17 @@ export interface Settings {
    *  across the workers so one slow camera can't stall the others. Takes effect
    *  after a restart; each worker uses its own detector session. */
   detect_workers: number;
+  /** P3.2 "Ask your cameras": opt-in natural-language Q&A over event history.
+   *  Off by default. Admin-gated config (points the box at an external LLM). */
+  ask_enabled: boolean;
+  /** BYO OpenAI-compatible /v1/chat/completions base URL (local llama.cpp /
+   *  Ollama OpenAI shim / LM Studio). Empty = none. Use a LOCAL endpoint. */
+  ask_endpoint: string;
+  /** Optional Bearer token for the ask endpoint. Write-only (blank on read;
+   *  blank on save keeps the stored one) like smtp_pass. */
+  ask_api_key: string;
+  /** Model name for the ask endpoint (e.g. "llama3.1"). */
+  ask_model: string;
 }
 
 /** One auto-arm/disarm schedule row: at `hhmm` on `days` (0=Sun; empty=every
@@ -600,6 +611,17 @@ export interface SimilarResult {
   available: boolean;
 }
 
+/** P3.2 "Ask your cameras" answer. `available:false` (with a reason) when the
+ *  feature is off or unconfigured. `answer` is UNTRUSTED model text shown for
+ *  display only; `cited_events` are real event rows the user can open + verify. */
+export interface AskResult {
+  available: boolean;
+  reason?: string;
+  answer?: string;
+  cited_events?: CamEvent[];
+  rounds?: number;
+}
+
 /** One step in a tracked object's life-story — a tracker-driven narrative event
  *  (same shape as any event). */
 export type LifecycleStep = CamEvent;
@@ -733,7 +755,8 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   config: () => req<AppConfig>("/api/config"),
-  capabilities: () => req<{ features: Capability[]; openvino?: boolean }>("/api/capabilities"),
+  capabilities: () =>
+    req<{ features: Capability[]; openvino?: boolean; ask?: boolean }>("/api/capabilities"),
   /** Current entitlement (trial countdown / licensed / expired). */
   license: () => req<LicenseInfo>("/api/license"),
   /** Install a license key (Admin). Returns the resulting entitlement. */
@@ -1025,6 +1048,12 @@ export const api = {
     }),
   scanNetwork: () => req<{ cameras: DiscoveredCam[] }>("/api/discover/scan"),
   stats: () => req<Stats>("/api/stats"),
+  /** P3.2 "Ask your cameras": pose a natural-language question; the server runs
+   *  a bounded, read-only tool loop against the configured local AI endpoint and
+   *  returns a grounded answer + the REAL cited event rows (untrusted display
+   *  text; the events let the user verify). `available:false` when unconfigured. */
+  ask: (question: string) =>
+    req<AskResult>("/api/ask", { method: "POST", body: JSON.stringify({ question }) }),
   settings: () => req<Settings>("/api/settings"),
   saveSettings: (s: Settings) =>
     req<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(s) }),

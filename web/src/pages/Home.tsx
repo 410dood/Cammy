@@ -113,6 +113,120 @@ function SkelValue() {
   );
 }
 
+/** P3.2 "Ask your cameras": a grounded natural-language question box. Hidden
+ *  unless the feature is enabled AND a local AI endpoint is configured
+ *  (capabilities.ask). The answer is UNTRUSTED model text (display only); the
+ *  cited events are REAL rows the user can open to verify. */
+function AskBox({ onOpenEvent }: { onOpenEvent?: (id: number) => void }) {
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [cited, setCited] = useState<CamEvent[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .capabilities()
+      .then((c) => setAvailable(!!c.ask))
+      .catch(() => setAvailable(false));
+  }, []);
+
+  if (!available) return null; // hidden + honest when unconfigured
+
+  const ask = async () => {
+    const question = q.trim();
+    if (!question || busy) return;
+    setBusy(true);
+    setErr(null);
+    setAnswer(null);
+    setCited([]);
+    try {
+      const r = await api.ask(question);
+      if (!r.available) {
+        setErr(r.reason ?? "Ask is not available right now.");
+      } else {
+        setAnswer(r.answer ?? "");
+        setCited(r.cited_events ?? []);
+      }
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 18 }}>
+      <div className="card-head">
+        <span className="eyebrow">
+          <IconSparkles size={13} /> Ask your cameras
+        </span>
+      </div>
+      <div className="row" style={{ gap: 8 }}>
+        <input
+          type="text"
+          value={q}
+          placeholder="e.g. how many people came to the front door today?"
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && ask()}
+          style={{ flex: 1, minWidth: 240 }}
+          aria-label="Ask a question about your cameras"
+        />
+        <button type="button" className="primary" onClick={ask} disabled={busy || !q.trim()}>
+          {busy ? "Thinking…" : "Ask"}
+        </button>
+      </div>
+      {err && (
+        <div className="callout callout-warn" role="alert" style={{ marginTop: 10 }}>
+          <span className="callout-ico"><IconWifiOff size={16} /></span>
+          <div>{err}</div>
+        </div>
+      )}
+      {answer !== null && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ whiteSpace: "pre-wrap", marginTop: 0 }}>{answer}</p>
+          <p className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 4 }}>
+            AI-generated from your event history — check it against the events below.
+          </p>
+          {cited.length > 0 && (
+            <div className="recent-feed" style={{ marginTop: 8 }}>
+              {cited.map((e) => (
+                <button
+                  type="button"
+                  className="feed-item"
+                  key={e.id}
+                  onClick={() => onOpenEvent?.(e.id)}
+                  style={{ textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                  title="Open this event"
+                >
+                  {e.snapshot && (
+                    <span className="feed-thumb">
+                      <img src={`/api/snapshots/${e.snapshot}?w=160`} alt={e.label} loading="lazy" />
+                    </span>
+                  )}
+                  <div>
+                    <b style={{ textTransform: "capitalize" }}>{prettyLabel(e.label)}</b>{" "}
+                    <span className="muted">· {e.camera}</span>
+                    <span className="muted" style={{ marginLeft: 6, fontSize: "var(--text-xs)" }}>
+                      #{e.id}
+                    </span>
+                    <RelTime
+                      ts={e.ts}
+                      className="muted clock"
+                      style={{ display: "block", fontSize: "var(--text-xs)" }}
+                    />
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Home({
   cameras,
   onOpenEvents,
@@ -322,6 +436,8 @@ export default function Home({
           tone={diskTone}
         />
       </div>
+
+      <AskBox onOpenEvent={onOpenEvent} />
 
       <div className="home-cols">
         <div className="card">

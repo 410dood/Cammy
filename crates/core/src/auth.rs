@@ -150,6 +150,12 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
     if path.starts_with("/api/push") {
         return Role::Viewer;
     }
+    // P3.2 "Ask your cameras" is a read-only query (POST carries the question);
+    // its tools are RBAC-scoped to the caller's cameras, so it stays Viewer-
+    // reachable. The CONFIG (endpoint/key/enable) is Admin-gated in put_settings.
+    if path == "/api/ask" {
+        return Role::Viewer;
+    }
     // Managing shareable clip links (list + revoke) is an operator action —
     // minting a share is already POST (Operator by the default below).
     if path.starts_with("/api/shares") {

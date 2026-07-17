@@ -100,6 +100,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/search", get(smart_search))
         .route("/api/search/by-image", axum::routing::post(search_by_image))
         .route("/api/search/by-attr", get(search_by_attr))
+        .route("/api/ask", axum::routing::post(ask_cameras))
         .route("/api/attributes", get(attributes_catalog))
         .route("/api/alarms", get(list_alarms_api).post(add_alarm_api))
         .route(
@@ -379,6 +380,9 @@ async fn capabilities(State(st): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "features": features,
         "openvino": detector::openvino_available(),
+        // P3.2 "Ask your cameras": true only when enabled AND a BYO endpoint is
+        // configured, so the UI never offers a box that would just error.
+        "ask": s.ask_enabled && !s.ask_endpoint.trim().is_empty(),
     }))
 }
 
@@ -4378,6 +4382,92 @@ async fn search_by_attr(
     ))
 }
 
+// --- ask your cameras (P3.2) -------------------------------------------------
+
+#[derive(Deserialize)]
+struct AskReq {
+    question: String,
+}
+
+/// POST /api/ask — natural-language question over the event history via a
+/// bounded, READ-ONLY tool loop against the configured BYO OpenAI-compatible
+/// endpoint (`ask::answer`). Viewer-reachable, but the tools are scoped to the
+/// caller's allowed cameras. Honest `{available:false}` when unconfigured (never
+/// a silent hang). The `answer` is UNTRUSTED model text returned for display
+/// only; `cited_events` are resolved server-side to real rows the user verifies.
+async fn ask_cameras(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<AskReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let s = st.db.settings();
+    if !s.ask_enabled || s.ask_endpoint.trim().is_empty() {
+        return Ok(Json(serde_json::json!({
+            "available": false,
+            "reason": "Ask is off. An admin can enable it and set a local AI endpoint in Settings.",
+        })));
+    }
+    let question = req.question.trim().to_string();
+    if question.is_empty() {
+        return Err(bad_request("question is empty"));
+    }
+    if question.len() > 2000 {
+        return Err(bad_request("question is too long (max 2000 characters)"));
+    }
+    let allow = allowed_cameras(&st, &p)?;
+
+    // Audit the query (the user's own text, truncated). Same client-IP resolution
+    // as the other audited actions.
+    let (ip, _) = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy);
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip.to_string()),
+        "ask_query",
+        Some(&question.chars().take(200).collect::<String>()),
+    );
+
+    let now = chrono::Local::now();
+    let cfg = crate::ask::AskConfig {
+        endpoint: s.ask_endpoint.clone(),
+        api_key: s.ask_api_key.clone(),
+        model: s.ask_model.clone(),
+        now: now.timestamp(),
+        now_local: now.format("%Y-%m-%d %H:%M %:z").to_string(),
+        online_window: crate::status::freshness_window(s.poll_ms),
+        status: st.status.snapshot(),
+    };
+
+    let db = st.db.clone();
+    let ans = tokio::task::spawn_blocking(move || {
+        crate::ask::answer(&db, allow.as_ref(), &question, cfg)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+
+    // Resolve cited ids to REAL event rows the client can render + link to. Each
+    // is re-checked against the caller's camera scope (defense in depth — the
+    // tools already scoped, but never trust the loop's id set for access).
+    let allow2 = allowed_cameras(&st, &p)?;
+    let mut cited_events = Vec::new();
+    for id in &ans.cited_event_ids {
+        if let Some(ev) = st.db.get_event(*id)? {
+            if camera_allowed(&allow2, ev.camera_id) {
+                cited_events.push(ev);
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "available": true,
+        "answer": ans.answer,
+        "cited_events": cited_events,
+        "rounds": ans.rounds,
+    })))
+}
+
 // --- faces -------------------------------------------------------------------
 
 fn safe_file(name: &str) -> bool {
@@ -5918,6 +6008,10 @@ async fn get_settings(State(st): State<AppState>) -> Json<Settings> {
     if !s.offsite_secret_key.is_empty() {
         s.offsite_secret_key = String::new();
     }
+    // P3.2 ask endpoint Bearer token is a secret — write-only like smtp_pass.
+    if !s.ask_api_key.is_empty() {
+        s.ask_api_key = String::new();
+    }
     Json(s)
 }
 
@@ -5937,6 +6031,9 @@ async fn put_settings(
         // incoming value that differs counts as a change.
         let secret_changed =
             !s.offsite_secret_key.is_empty() && s.offsite_secret_key != cur.offsite_secret_key;
+        // The ask API key is write-only (blanked on read); a non-blank incoming
+        // value that differs counts as a change.
+        let ask_key_changed = !s.ask_api_key.is_empty() && s.ask_api_key != cur.ask_api_key;
         if s.auth_proxy_header != cur.auth_proxy_header
             || s.auth_proxy_role_header != cur.auth_proxy_role_header
             || s.auth_proxy_default_role != cur.auth_proxy_default_role
@@ -5947,10 +6044,17 @@ async fn put_settings(
             || s.offsite_prefix != cur.offsite_prefix
             || s.offsite_access_key != cur.offsite_access_key
             || secret_changed
+            // P3.2: the ask config points the box at an external LLM and holds a
+            // key — Admin-only, like the offsite destination/credentials.
+            || s.ask_enabled != cur.ask_enabled
+            || s.ask_endpoint != cur.ask_endpoint
+            || s.ask_model != cur.ask_model
+            || ask_key_changed
         {
             return Err(ApiError(
                 StatusCode::FORBIDDEN,
-                "changing SSO forward-auth or offsite-backup settings requires an admin".into(),
+                "changing SSO forward-auth, offsite-backup, or Ask settings requires an admin"
+                    .into(),
             ));
         }
     }
@@ -6005,10 +6109,14 @@ async fn put_settings(
     if s.offsite_secret_key.is_empty() {
         s.offsite_secret_key = st.db.settings().offsite_secret_key;
     }
+    if s.ask_api_key.is_empty() {
+        s.ask_api_key = st.db.settings().ask_api_key;
+    }
     st.db.save_settings(&s)?;
     let mut out = st.db.settings();
     out.smtp_pass = String::new(); // never echo the secret back
     out.offsite_secret_key = String::new();
+    out.ask_api_key = String::new();
     Ok(Json(out))
 }
 

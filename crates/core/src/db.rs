@@ -1388,10 +1388,31 @@ pub struct Settings {
     /// detector session (more RAM/VRAM).
     #[serde(default = "default_detect_workers")]
     pub detect_workers: u32,
+    /// P3.2 "Ask your cameras" — explicit opt-in for the natural-language
+    /// question/answer tool loop. OFF by default: nothing is ever sent to an LLM
+    /// until this is on AND `ask_endpoint` is set (see `capabilities()`).
+    #[serde(default)]
+    pub ask_enabled: bool,
+    /// BYO OpenAI-compatible chat endpoint (a `/v1/chat/completions` base URL —
+    /// a local llama.cpp / Ollama OpenAI shim / LM Studio). Empty = none. Use a
+    /// LOCAL endpoint to keep questions + event metadata on-prem.
+    #[serde(default)]
+    pub ask_endpoint: String,
+    /// Optional Bearer token for the ask endpoint. TREATED AS A SECRET: write-only
+    /// (blanked in GET /api/settings, preserved on a blank save) like `smtp_pass`.
+    #[serde(default)]
+    pub ask_api_key: String,
+    /// Model name for the ask endpoint (e.g. "llama3.1").
+    #[serde(default = "default_ask_model")]
+    pub ask_model: String,
 }
 
 fn default_detect_workers() -> u32 {
     1
+}
+
+fn default_ask_model() -> String {
+    "llama3.1".into()
 }
 
 fn default_arm_mode() -> String {
@@ -1523,6 +1544,10 @@ impl Default for Settings {
             offsite_events_only: false,
             highlight_motion: true,
             detect_workers: 1,
+            ask_enabled: false,
+            ask_endpoint: String::new(),
+            ask_api_key: String::new(),
+            ask_model: default_ask_model(),
         }
     }
 }
@@ -3722,6 +3747,47 @@ impl Db {
         )?)
     }
 
+    /// Accurate COUNT(*) over events with the same filters the events list uses,
+    /// optionally restricted to a set of camera ids (RBAC scope). `camera_ids`:
+    /// `None` = all cameras; `Some(&[])` = no cameras (returns 0). Ids are our own
+    /// i64s so the IN-list is inlined (injection-safe, like `count_events_in`);
+    /// label/time bind as params. Powers the P3.2 ask `count_events` tool.
+    pub fn count_events_filtered(
+        &self,
+        camera_ids: Option<&[i64]>,
+        label: Option<&str>,
+        after_ts: Option<i64>,
+        before_ts: Option<i64>,
+    ) -> Result<i64> {
+        if matches!(camera_ids, Some(ids) if ids.is_empty()) {
+            return Ok(0);
+        }
+        let mut sql = String::from("SELECT COUNT(*) FROM events WHERE 1=1");
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(l) = label {
+            sql.push_str(" AND label = ?");
+            binds.push(Box::new(l.to_string()));
+        }
+        if let Some(a) = after_ts {
+            sql.push_str(" AND ts >= ?");
+            binds.push(Box::new(a));
+        }
+        if let Some(b) = before_ts {
+            sql.push_str(" AND ts < ?");
+            binds.push(Box::new(b));
+        }
+        if let Some(ids) = camera_ids {
+            let in_list = ids
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND camera_id IN ({in_list})"));
+        }
+        let params = rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref()));
+        Ok(self.conn().query_row(&sql, params, |r| r.get(0))?)
+    }
+
     pub fn delete_alarm(&self, id: i64) -> Result<()> {
         self.conn()
             .execute("DELETE FROM alarms WHERE id=?1", [id])?;
@@ -4871,6 +4937,44 @@ mod tests {
 
         // An id nobody used → empty.
         assert!(db.track_lifecycle(cam.id, 999, 1000).unwrap().is_empty());
+    }
+
+    #[test]
+    fn count_events_filtered_scopes_by_camera_label_and_time() {
+        let db = mem_db();
+        let a = db.add_camera("front", "rtsp://a", None, true, true).unwrap();
+        let b = db.add_camera("back", "rtsp://b", None, true, true).unwrap();
+        let ev = |cam: i64, ts: i64, label: &str| {
+            db.add_event(cam, ts, label, 0.9, [0.0; 4], None, None, None, None, None)
+                .unwrap();
+        };
+        ev(a.id, 1000, "person");
+        ev(a.id, 1100, "person");
+        ev(a.id, 1200, "car");
+        ev(b.id, 1050, "person");
+
+        // No filters, all cameras.
+        assert_eq!(db.count_events_filtered(None, None, None, None).unwrap(), 4);
+        // Label filter across all cameras.
+        assert_eq!(
+            db.count_events_filtered(None, Some("person"), None, None)
+                .unwrap(),
+            3
+        );
+        // Scoped to camera A only (RBAC scope) + label.
+        assert_eq!(
+            db.count_events_filtered(Some(&[a.id]), Some("person"), None, None)
+                .unwrap(),
+            2
+        );
+        // Time window [1050, 1200): person on A@1100 + person on B@1050 = 2.
+        assert_eq!(
+            db.count_events_filtered(None, Some("person"), Some(1050), Some(1200))
+                .unwrap(),
+            2
+        );
+        // Empty scope = 0 (a scoped user with no cameras).
+        assert_eq!(db.count_events_filtered(Some(&[]), None, None, None).unwrap(), 0);
     }
 
     /// P2.14 Part 1: `flagged_segment_paths` returns exactly the segment(s) that

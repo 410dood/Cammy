@@ -2171,6 +2171,64 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <div className="card" data-settings-group="detection">
+          <h2>Ask your cameras (opt-in)</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Ask a plain-language question ("how many people came to the front door today?") and
+            get an answer grounded in your event history, with the matching events linked so you
+            can verify. <b>Off by default.</b> Uses a local AI endpoint you provide.
+          </p>
+          <div className="callout callout-warn" role="note">
+            <span className="callout-ico"><IconAlert size={16} /></span>
+            <div>
+              Your question and the matching event details (camera, label, time) are sent to the AI
+              endpoint you configure below. <b>Use a LOCAL endpoint</b> (llama.cpp, LM Studio, or an
+              Ollama OpenAI-compatible shim) to keep everything on this machine. The answer is the
+              model's own text — always check it against the linked events.
+            </div>
+          </div>
+          <div className="row">
+            <label className="toggle field">
+              enable Ask
+              <input
+                type="checkbox"
+                checked={s.ask_enabled}
+                onChange={() => set({ ask_enabled: !s.ask_enabled })}
+              />
+            </label>
+            <label className="field" style={{ flex: 1, minWidth: 320 }}>
+              AI endpoint (OpenAI-compatible chat URL)
+              <input
+                type="text"
+                placeholder="http://localhost:1234/v1"
+                value={s.ask_endpoint ?? ""}
+                onChange={(e) => set({ ask_endpoint: e.target.value })}
+              />
+              <small className="muted">
+                A /v1/chat/completions base URL — e.g. LM Studio (:1234), llama.cpp server, or an
+                Ollama OpenAI shim. The model needs tool-calling support.
+              </small>
+            </label>
+            <label className="field">
+              model
+              <input
+                type="text"
+                placeholder="llama3.1"
+                value={s.ask_model ?? ""}
+                onChange={(e) => set({ ask_model: e.target.value })}
+              />
+            </label>
+            <label className="field" style={{ minWidth: 220 }}>
+              API key (blank for local)
+              <input
+                type="password"
+                value={s.ask_api_key ?? ""}
+                onChange={(e) => set({ ask_api_key: e.target.value })}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="card" data-settings-group="detection">
           <h2>Speech transcription (what was said)</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Turn spoken words near your cameras into text. When a sound event fires, Cammy
