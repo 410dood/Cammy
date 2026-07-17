@@ -16,6 +16,61 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: roadmap-finish Wave 5 — ecosystem (P3.5·1 + P3.10 + P3.3 + P3.2 + P3.9 + P3.4) — ROADMAP COMPLETE, 2026-07-16
+
+Final wave — **all 18 docs/08 Phase-2-remainder + Phase-3 features are now
+shipped** (six commits `557bcc8`, `d9fe718`, `b6b8b9d`, `732a744`, `640a704`,
+`d71ac96`), release-rebuilt + restarted and batch-validated live on :8080.
+clippy clean, **223 core tests**, web green. Every Wave-5 feature is additive or
+opt-in/default-off, so live recording/detection behavior is unchanged until the
+owner enables things.
+
+- **P3.5·1 OpenVINO EP** (`557bcc8`): Settings/DetectConfig.accelerator (""=auto
+  =today's per-OS EP; force_cpu untouched for compat); the ort `openvino` cargo
+  feature is OFF by default (prebuilt ORT lacks it) so openvino_available()=false
+  and the UI shows the option DISABLED with "not available in this build" —
+  honest, never a silent no-op. Owner: build --features openvino on an Intel box.
+- **P3.10 offline import** (`d9fe718`): POST /api/import (Admin, path-canonical-
+  ized) runs the SAME detector/label/zone filters over a server-local video file
+  at ~1fps, emitting events+snapshots on a `virtual:<slug>` camera (enabled=false
+  → auto-skipped by every live loop, cited). E2E-ran: sample.mp4 → 13 events.
+  v1 defers browser upload + remux-for-playback + crop embeddings.
+- **P3.3 HA integration v0** (`b6b8b9d`): GET /api/events/stream (SSE off a
+  broadcast tap in mqtt::run incl. the MQTT-off path; RBAC-filtered like
+  list_events, fail-closed) + opt-in inbound MQTT commands (<prefix>/cmd/arm|
+  trigger; default OFF, audited, loud broker-trust caveat) + an
+  integrations/homeassistant HACS skeleton explicitly marked untested-on-HA.
+  LIVE: soft-trigger event appeared on the SSE stream in real time.
+- **P3.2 ask-your-cameras v0** (`732a744`): bounded READ-ONLY tool loop (3 tools:
+  list_cameras/search_events/count_events, RBAC-scoped, leak-safe camera clamp)
+  against a BYO OpenAI-compatible endpoint; 5 rounds/12 calls/50 events/30s caps;
+  answers untrusted-display-only with cited ids intersected against real tool
+  results; ask_* config Admin-only, key masked; off by default with an honest
+  {available:false}. LIVE: honest-unavailable verified. Owner: a local
+  tool-calling endpoint (LM Studio/llama.cpp) to exercise the loop.
+- **P3.9 two-box archive v0** (`640a704`): a secondary Cammy pulls a primary's
+  segments via a new ascending `since` cursor on GET /api/recordings + the
+  existing video/cameras endpoints (Bearer token); archive_pull.rs worker
+  (cloned from offsite.rs; cursor advanced only after atomic download+index;
+  bounded/backoff); placeholder cameras enabled=false in group "archive" (live
+  loops skip); GET /api/archive/status. v0 segments-only. Owner: two instances.
+- **P3.4 HomeKit v0** (`d71ac96`): go2rtc (v1.9.14 ships a real HAP server) is
+  config-generated into a HomeKit bridge for per-camera opted-in streams
+  (homekit_expose); Settings.homekit_enabled (Admin) + a persisted KV PIN/device
+  identity so pairings survive restarts. VERIFIED the emitted homekit: schema
+  parses (spawned go2rtc on throwaway ports → "[homekit] new server", live NVR
+  untouched); default-off leaves go2rtc.yaml byte-for-byte unchanged. LIVE-VIEW
+  ONLY; the pairing handshake NEEDS THE OWNER'S Apple device (unverified here).
+
+**Run summary:** 18/18 features across 5 waves, ~30 commits, 172→223 core tests,
+every wave 3-lens/2-lens adversarially reviewed + cross-feature self-reviewed
+(the reviews caught + fixed real camera-scope leaks, an SMTP-relay vector, a SOAP
+injection, a detection-thread stall, two footage-loss windows, and a spurious
+zone-state transition). Still open for the OWNER (also see each wave's notes):
+pool2 camera env-flap (power-cycle it); relay hardware pulse on cam 3 (`00000`);
+HomeKit pairing; ask endpoint; OpenVINO build; two-box archive peer; HACS
+component on a real HA; CLIP zone-state prompts on a real garage.
+
 ### Latest: roadmap-finish Wave 4 — recording/perf core (P2.14 + P3.7 + P3.6), 2026-07-16
 
 Fourth wave — the deepest core changes (footage retention + the detection hot
