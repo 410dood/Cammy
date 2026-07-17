@@ -228,7 +228,11 @@ pub fn fire(
     let camera_id = match db.camera_by_name(ev.camera) {
         Ok(Some(cid)) => Some(cid),
         _ => {
-            let via_event = db.get_event(ev.event_id).ok().flatten().map(|e| e.camera_id);
+            let via_event = db
+                .get_event(ev.event_id)
+                .ok()
+                .flatten()
+                .map(|e| e.camera_id);
             if via_event.is_none() {
                 tracing::warn!(
                     event = ev.event_id, camera = %ev.camera,
@@ -321,14 +325,18 @@ fn deterrence(target_token: &str, rule_name: &str, ev: &AlarmEvent, db: &Db) {
     // NOTHING physical — no SOAP is sent, no siren fires.
     if !db.settings().deterrence_enabled {
         tracing::info!(
-            rule = rule_name, event = ev.event_id,
+            rule = rule_name,
+            event = ev.event_id,
             "deterrence action skipped: master switch off"
         );
         return;
     }
     let token = target_token.trim();
     if token.is_empty() {
-        tracing::warn!(rule = rule_name, "deterrence action has no relay token — skipping");
+        tracing::warn!(
+            rule = rule_name,
+            "deterrence action has no relay token — skipping"
+        );
         return;
     }
     // Resolve the firing camera → its ONVIF host+creds. Fail-soft at each hop.
@@ -824,7 +832,7 @@ mod tests {
         assert!(ready(&r, &throttle, 1061)); // fires again
         assert_eq!(take_suppressed(&throttle, 9), 3); // burst reported once…
         assert_eq!(take_suppressed(&throttle, 9), 0); // …then drained
-        // Snoozed matches count toward the summary too.
+                                                      // Snoozed matches count toward the summary too.
         let s = rule(10, 0, 2000);
         assert!(!ready(&s, &throttle, 1500));
         assert!(ready(&s, &throttle, 2001));

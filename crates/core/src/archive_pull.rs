@@ -161,7 +161,15 @@ fn run_once(
                 continue;
             }
         }
-        if let Err(e) = pull_camera(db, target, remote_id, remote_name, &rec_root, &mut pulled, shutdown) {
+        if let Err(e) = pull_camera(
+            db,
+            target,
+            remote_id,
+            remote_name,
+            &rec_root,
+            &mut pulled,
+            shutdown,
+        ) {
             had_error = true;
             let msg = format!("{remote_name}: {e:#}");
             let _ = db.set_kv(KV_LAST_ERROR, &truncate(&msg, 300));
@@ -197,9 +205,7 @@ fn pull_camera(
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
-    let path = format!(
-        "/api/recordings?camera={remote_id}&since={cursor}&limit={SEGMENTS_FETCH}"
-    );
+    let path = format!("/api/recordings?camera={remote_id}&since={cursor}&limit={SEGMENTS_FETCH}");
     let segs = api_get_json(&target.base, &path, &target.token)?;
     let segs = segs
         .as_array()
@@ -243,7 +249,11 @@ fn pull_camera(
 /// Find-or-create the local placeholder camera that mirrors a remote camera.
 /// Mapping (remote id → local camera id) lives in the KV store so a rename on
 /// the primary doesn't fork a second placeholder.
-fn ensure_placeholder(db: &Db, remote_id: i64, remote_name: &str) -> anyhow::Result<crate::db::Camera> {
+fn ensure_placeholder(
+    db: &Db,
+    remote_id: i64,
+    remote_name: &str,
+) -> anyhow::Result<crate::db::Camera> {
     let key = format!("archive_cam_{remote_id}");
     if let Some(v) = db.get_kv(&key) {
         if let Ok(local_id) = v.parse::<i64>() {
@@ -346,7 +356,9 @@ fn download_segment(base: &str, seg_id: i64, token: &str, dest: &Path) -> anyhow
     let mut reader = resp.into_reader().take(MAX_SEGMENT_BYTES + 1);
     let tmp = dest.with_file_name(format!(
         "{}.part",
-        dest.file_name().and_then(|s| s.to_str()).unwrap_or("segment.mp4")
+        dest.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("segment.mp4")
     ));
     let n = {
         let mut f = std::fs::File::create(&tmp)?;
@@ -354,7 +366,10 @@ fn download_segment(base: &str, seg_id: i64, token: &str, dest: &Path) -> anyhow
     };
     if n > MAX_SEGMENT_BYTES {
         let _ = std::fs::remove_file(&tmp);
-        anyhow::bail!("segment {seg_id} exceeds size cap ({} bytes)", MAX_SEGMENT_BYTES);
+        anyhow::bail!(
+            "segment {seg_id} exceeds size cap ({} bytes)",
+            MAX_SEGMENT_BYTES
+        );
     }
     std::fs::rename(&tmp, dest)?;
     Ok(n)
@@ -383,7 +398,10 @@ mod tests {
 
     #[test]
     fn sanitize_filename_blocks_traversal() {
-        assert_eq!(sanitize_filename("/rec/cam/20260101-000000.mp4"), "20260101-000000.mp4");
+        assert_eq!(
+            sanitize_filename("/rec/cam/20260101-000000.mp4"),
+            "20260101-000000.mp4"
+        );
         assert_eq!(sanitize_filename("../../evil"), "evil");
         assert!(!sanitize_filename("a/b/c").contains('/'));
         assert_eq!(sanitize_filename("/rec/cam/"), "segment.mp4");

@@ -182,7 +182,10 @@ fn verify_key_with(pubkey_b64: &str, key: &str) -> Result<License> {
     let lic: License =
         serde_json::from_slice(&payload).context("license payload is not valid JSON")?;
     if lic.v != 1 {
-        bail!("license schema v{} is newer than this build understands", lic.v);
+        bail!(
+            "license schema v{} is newer than this build understands",
+            lic.v
+        );
     }
     Ok(lic)
 }
@@ -460,9 +463,15 @@ mod tests {
         ensure_trial_started(&db).unwrap();
         let ent = activate_with(&db, &s.pubkey_b64, &s.lifetime_key()).unwrap();
         assert!(matches!(ent, Entitlement::Licensed { .. }));
-        assert!(matches!(status_with(&db, &s.pubkey_b64), Entitlement::Licensed { .. }));
+        assert!(matches!(
+            status_with(&db, &s.pubkey_b64),
+            Entitlement::Licensed { .. }
+        ));
         deactivate(&db).unwrap();
-        assert!(matches!(status_with(&db, &s.pubkey_b64), Entitlement::Trial { .. }));
+        assert!(matches!(
+            status_with(&db, &s.pubkey_b64),
+            Entitlement::Trial { .. }
+        ));
     }
 
     #[test]

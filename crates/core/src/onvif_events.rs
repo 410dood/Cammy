@@ -85,8 +85,8 @@ pub(crate) fn parse_notifications(xml: &str) -> Vec<CamNotify> {
     // Each message: <wsnt:NotificationMessage> … </wsnt:NotificationMessage>
     for chunk in xml.split("NotificationMessage>").skip(1).step_by(2) {
         // Topic element text, e.g. ">tns1:RuleEngine/CellMotionDetector/Motion</".
-        let Some(raw_topic) = extract_between(chunk, "Topic", "</")
-            .and_then(|t| t.split_once('>').map(|(_, v)| v))
+        let Some(raw_topic) =
+            extract_between(chunk, "Topic", "</").and_then(|t| t.split_once('>').map(|(_, v)| v))
         else {
             continue;
         };
@@ -316,8 +316,16 @@ pub fn run(
                 }
                 last_event.insert(key, now);
                 emit(
-                    &db, &settings, &throttle, &mqtt_tx, &api_base, &snapshots_dir, cam, label,
-                    &n.topic, now,
+                    &db,
+                    &settings,
+                    &throttle,
+                    &mqtt_tx,
+                    &api_base,
+                    &snapshots_dir,
+                    cam,
+                    label,
+                    &n.topic,
+                    now,
                 );
             }
         }

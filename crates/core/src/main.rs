@@ -156,12 +156,19 @@ fn main() -> Result<()> {
     }
 
     let cfg = server_config(&args)?;
-    let scheme = if cfg.tls_cert.is_some() { "https" } else { "http" };
+    let scheme = if cfg.tls_cert.is_some() {
+        "https"
+    } else {
+        "http"
+    };
 
     println!();
     println!("  Cammy is starting");
     println!("      Web UI:   {scheme}://localhost:{}/", cfg.port);
-    println!("      API:      {scheme}://localhost:{}/api/health", cfg.port);
+    println!(
+        "      API:      {scheme}://localhost:{}/api/health",
+        cfg.port
+    );
     println!("  Press Ctrl+C to stop.");
     println!();
 

@@ -302,13 +302,16 @@ async fn serve(
         .map_err(|e| anyhow::anyhow!("starting HAP server: {e}"))?;
     server
         .add_accessory(
-            BridgeAccessory::new(1, AccessoryInformation {
-                name: "Cammy Sensors".into(),
-                manufacturer: "Cammy".into(),
-                model: "Cammy NVR sensor bridge".into(),
-                serial_number: "cammy-sensors-1".into(),
-                ..Default::default()
-            })
+            BridgeAccessory::new(
+                1,
+                AccessoryInformation {
+                    name: "Cammy Sensors".into(),
+                    manufacturer: "Cammy".into(),
+                    model: "Cammy NVR sensor bridge".into(),
+                    serial_number: "cammy-sensors-1".into(),
+                    ..Default::default()
+                },
+            )
             .map_err(|e| anyhow::anyhow!("bridge accessory: {e}"))?,
         )
         .await
@@ -324,13 +327,16 @@ async fn serve(
     let mut doorbells: HashMap<String, AccessoryPtr> = HashMap::new();
     for (id, name, doorbell) in &cams {
         let aid = (*id as u64) + 1;
-        let acc = MotionSensorAccessory::new(aid, AccessoryInformation {
-            name: format!("{name} Motion"),
-            manufacturer: "Cammy".into(),
-            model: "Cammy camera motion".into(),
-            serial_number: format!("cammy-motion-{id}"),
-            ..Default::default()
-        })
+        let acc = MotionSensorAccessory::new(
+            aid,
+            AccessoryInformation {
+                name: format!("{name} Motion"),
+                manufacturer: "Cammy".into(),
+                model: "Cammy camera motion".into(),
+                serial_number: format!("cammy-motion-{id}"),
+                ..Default::default()
+            },
+        )
         .map_err(|e| anyhow::anyhow!("sensor accessory {name}: {e}"))?;
         let ptr = server
             .add_accessory(acc)

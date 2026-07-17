@@ -409,15 +409,24 @@ mod tests {
         // the bookmarked one must survive.
         let deleted = prune(std::slice::from_ref(&dir), Some(1), None, &protected).unwrap();
         assert_eq!(deleted.len(), 2, "both unprotected parts pruned by age");
-        assert!(dir.join(old_name).exists(), "bookmarked segment kept by age pass");
+        assert!(
+            dir.join(old_name).exists(),
+            "bookmarked segment kept by age pass"
+        );
         assert!(!dir.join(mid_name).exists());
         assert!(!dir.join(new_name).exists());
 
         // Byte-cap pass on a dir that now holds ONLY the bookmarked segment, with
         // a cap of 0 bytes: it must still not be deleted (explicit user intent).
         let deleted = prune(std::slice::from_ref(&dir), None, Some(0), &protected).unwrap();
-        assert!(deleted.is_empty(), "byte cap never deletes a bookmarked segment");
-        assert!(dir.join(old_name).exists(), "bookmarked segment kept under byte cap");
+        assert!(
+            deleted.is_empty(),
+            "byte cap never deletes a bookmarked segment"
+        );
+        assert!(
+            dir.join(old_name).exists(),
+            "bookmarked segment kept under byte cap"
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

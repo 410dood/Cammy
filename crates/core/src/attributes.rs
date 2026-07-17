@@ -79,14 +79,46 @@ pub fn catalog() -> &'static [FacetGroup] {
                     group: "person-color",
                     label: "Person / clothing colour",
                     attrs: vec![
-                        f("person_color_red", "In red", "a person wearing red clothing"),
-                        f("person_color_blue", "In blue", "a person wearing blue clothing"),
-                        f("person_color_black", "In black", "a person wearing black clothing"),
-                        f("person_color_white", "In white", "a person wearing white clothing"),
-                        f("person_color_green", "In green", "a person wearing green clothing"),
-                        f("person_color_yellow", "In yellow", "a person wearing yellow clothing"),
-                        f("person_color_gray", "In gray", "a person wearing gray clothing"),
-                        f("person_color_orange", "In orange", "a person wearing orange clothing"),
+                        f(
+                            "person_color_red",
+                            "In red",
+                            "a person wearing red clothing",
+                        ),
+                        f(
+                            "person_color_blue",
+                            "In blue",
+                            "a person wearing blue clothing",
+                        ),
+                        f(
+                            "person_color_black",
+                            "In black",
+                            "a person wearing black clothing",
+                        ),
+                        f(
+                            "person_color_white",
+                            "In white",
+                            "a person wearing white clothing",
+                        ),
+                        f(
+                            "person_color_green",
+                            "In green",
+                            "a person wearing green clothing",
+                        ),
+                        f(
+                            "person_color_yellow",
+                            "In yellow",
+                            "a person wearing yellow clothing",
+                        ),
+                        f(
+                            "person_color_gray",
+                            "In gray",
+                            "a person wearing gray clothing",
+                        ),
+                        f(
+                            "person_color_orange",
+                            "In orange",
+                            "a person wearing orange clothing",
+                        ),
                     ],
                 },
             ]

@@ -216,8 +216,8 @@ mod tests {
         assert!(!severity_allows(Some(2), 3));
         assert!(severity_allows(Some(3), 3));
         assert!(severity_allows(Some(4), 3)); // duress rides severity 4
-        // System notifications carry no severity ⇒ always delivered (offline /
-        // anomaly / digest are never quieted by this alarm gate).
+                                              // System notifications carry no severity ⇒ always delivered (offline /
+                                              // anomaly / digest are never quieted by this alarm gate).
         assert!(severity_allows(None, 4));
     }
 }

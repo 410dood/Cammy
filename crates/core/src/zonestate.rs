@@ -107,12 +107,18 @@ mod tests {
     #[test]
     fn bbox_degenerate_returns_none() {
         // Fewer than 3 vertices has no area.
-        assert_eq!(zone_pixel_bbox(&[[0.1, 0.1], [0.2, 0.2]], 100.0, 100.0), None);
+        assert_eq!(
+            zone_pixel_bbox(&[[0.1, 0.1], [0.2, 0.2]], 100.0, 100.0),
+            None
+        );
         // A collapsed polygon (all vertices on one integer-aligned point) → 0px.
         let dot = [[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]];
         assert_eq!(zone_pixel_bbox(&dot, 100.0, 100.0), None);
         // A zero-size frame is rejected too.
-        assert_eq!(zone_pixel_bbox(&[[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]], 0.0, 0.0), None);
+        assert_eq!(
+            zone_pixel_bbox(&[[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]], 0.0, 0.0),
+            None
+        );
     }
 
     #[test]

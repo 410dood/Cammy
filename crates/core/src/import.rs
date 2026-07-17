@@ -129,10 +129,7 @@ pub fn import_file(
     if !valid_slug(&slug) {
         bail!("could not derive a valid camera name from {camera_name:?}");
     }
-    let existing = db
-        .list_cameras()?
-        .into_iter()
-        .find(|c| c.name == slug);
+    let existing = db.list_cameras()?.into_iter().find(|c| c.name == slug);
     if let Some(c) = &existing {
         if !is_virtual_source(&c.source) {
             bail!(
@@ -169,7 +166,16 @@ pub fn import_file(
     std::fs::create_dir_all(&tmp)
         .with_context(|| format!("creating scratch dir {}", tmp.display()))?;
     let run = import_frames(
-        db, &ffmpeg, &full, &tmp, snapshots_dir, &slug, existing, &mut det, &settings, opts,
+        db,
+        &ffmpeg,
+        &full,
+        &tmp,
+        snapshots_dir,
+        &slug,
+        existing,
+        &mut det,
+        &settings,
+        opts,
     );
     let _ = std::fs::remove_dir_all(&tmp);
     run
@@ -398,9 +404,19 @@ mod tests {
         let db = mem_db();
         let snaps = std::env::temp_dir();
         // Control character in the path → rejected up front.
-        let bad = import_file(&db, None, &snaps, "some\nfile.mp4", "clip", &ImportOptions::default());
+        let bad = import_file(
+            &db,
+            None,
+            &snaps,
+            "some\nfile.mp4",
+            "clip",
+            &ImportOptions::default(),
+        );
         assert!(bad.is_err());
-        assert!(bad.unwrap_err().to_string().contains("control-character-free"));
+        assert!(bad
+            .unwrap_err()
+            .to_string()
+            .contains("control-character-free"));
         // Empty path → rejected.
         assert!(import_file(&db, None, &snaps, "   ", "clip", &ImportOptions::default()).is_err());
         // Non-existent path → canonicalize fails ("not found or unreadable").
@@ -436,8 +452,15 @@ mod tests {
         ));
         std::fs::write(&f, b"not a video").unwrap();
         let path = f.to_string_lossy().to_string();
-        let err = import_file(&db, None, &std::env::temp_dir(), &path, "Front Door", &ImportOptions::default())
-            .expect_err("must refuse to overwrite a real camera");
+        let err = import_file(
+            &db,
+            None,
+            &std::env::temp_dir(),
+            &path,
+            "Front Door",
+            &ImportOptions::default(),
+        )
+        .expect_err("must refuse to overwrite a real camera");
         let _ = std::fs::remove_file(&f);
         assert!(err.to_string().contains("already exists"), "got: {err}");
     }

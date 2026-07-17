@@ -254,7 +254,11 @@ impl Go2Rtc {
         parse_homekit_pairings(&existing)
             .into_iter()
             .map(|(name, list)| {
-                let inner = list.trim().trim_start_matches('[').trim_end_matches(']').trim();
+                let inner = list
+                    .trim()
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .trim();
                 let n = if inner.is_empty() {
                     0
                 } else {
@@ -396,8 +400,8 @@ fn rand_bytes(n: usize) -> Vec<u8> {
 /// (all-same-digit and the reserved sequentials) so a real device can pair.
 pub(crate) fn gen_hap_pin() -> String {
     const INVALID: [&str; 12] = [
-        "00000000", "11111111", "22222222", "33333333", "44444444", "55555555",
-        "66666666", "77777777", "88888888", "99999999", "12345678", "87654321",
+        "00000000", "11111111", "22222222", "33333333", "44444444", "55555555", "66666666",
+        "77777777", "88888888", "99999999", "12345678", "87654321",
     ];
     loop {
         let s: String = rand_bytes(8)
@@ -509,7 +513,13 @@ fn parse_homekit_pairings(yaml: &str) -> std::collections::HashMap<String, Strin
         }
         // A new stream key at 2-space indent (`front:`).
         if indent == 2 && trimmed.ends_with(':') && !trimmed.starts_with('-') {
-            cur = Some(trimmed.trim_end_matches(':').trim().trim_matches('"').to_string());
+            cur = Some(
+                trimmed
+                    .trim_end_matches(':')
+                    .trim()
+                    .trim_matches('"')
+                    .to_string(),
+            );
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("pairings:") {

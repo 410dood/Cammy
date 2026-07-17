@@ -40,7 +40,13 @@ const DISPLAY_NAME: &str = "Cammy NVR";
 pub fn install(data_dir: &Path, ui_dir: &Path, port: u16) -> Result<()> {
     let exe = std::env::current_exe().context("locating zoomy.exe")?;
     let cwd = std::env::current_dir().context("current dir")?;
-    let abs = |p: &Path| if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) };
+    let abs = |p: &Path| {
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            cwd.join(p)
+        }
+    };
     let (data_dir, ui_dir) = (abs(data_dir), abs(ui_dir));
 
     let manager = ServiceManager::local_computer(
@@ -89,11 +95,16 @@ pub fn install(data_dir: &Path, ui_dir: &Path, port: u16) -> Result<()> {
         reboot_msg: None,
         command: None,
         actions: Some(vec![
-            ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::from_secs(5) };
+            ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: Duration::from_secs(5)
+            };
             3
         ]),
     })?;
-    service.start::<&std::ffi::OsStr>(&[]).context("starting the service")?;
+    service
+        .start::<&std::ffi::OsStr>(&[])
+        .context("starting the service")?;
 
     println!("Installed and started the '{DISPLAY_NAME}' service ({SERVICE_NAME}).");
     println!("  Data dir : {}", data_dir.display());
@@ -108,9 +119,8 @@ pub fn install(data_dir: &Path, ui_dir: &Path, port: u16) -> Result<()> {
 
 /// Stop (if running) and delete the service.
 pub fn uninstall() -> Result<()> {
-    let manager =
-        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-            .context("opening the service manager (run from an elevated prompt)")?;
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .context("opening the service manager (run from an elevated prompt)")?;
     let service = manager
         .open_service(
             SERVICE_NAME,
@@ -164,17 +174,16 @@ fn service_body(args: crate::Args) -> Result<()> {
     init_service_logging(&args.data_dir);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let status_handle = service_control_handler::register(SERVICE_NAME, move |control| {
-        match control {
+    let status_handle =
+        service_control_handler::register(SERVICE_NAME, move |control| match control {
             ServiceControl::Stop | ServiceControl::Shutdown | ServiceControl::Preshutdown => {
                 let _ = shutdown_tx.send(true);
                 ServiceControlHandlerResult::NoError
             }
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
             _ => ServiceControlHandlerResult::NotImplemented,
-        }
-    })
-    .context("registering the service control handler")?;
+        })
+        .context("registering the service control handler")?;
 
     let set_state = |state: ServiceState, exit: ServiceExitCode| {
         let _ = status_handle.set_service_status(ServiceStatus {
@@ -210,7 +219,11 @@ fn service_body(args: crate::Args) -> Result<()> {
 fn init_service_logging(data_dir: &Path) {
     let _ = std::fs::create_dir_all(data_dir);
     let path: PathBuf = data_dir.join("service.log");
-    if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()

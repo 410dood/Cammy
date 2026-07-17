@@ -1879,7 +1879,10 @@ impl Db {
         // so the push worker can route per user × rule × channel. Every existing
         // add_notification caller leaves rule_id/camera_id NULL.
         let _ = conn.execute("ALTER TABLE users ADD COLUMN email TEXT", []);
-        let _ = conn.execute("ALTER TABLE push_subscriptions ADD COLUMN user_id INTEGER", []);
+        let _ = conn.execute(
+            "ALTER TABLE push_subscriptions ADD COLUMN user_id INTEGER",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE notifications ADD COLUMN rule_id INTEGER", []);
         let _ = conn.execute("ALTER TABLE notifications ADD COLUMN camera_id INTEGER", []);
         // The severity tier (1..4) of an alarm fire, so the push worker can honour
@@ -2355,11 +2358,11 @@ impl Db {
 
     /// How many occupants are currently home (drives the derived arm mode).
     pub fn count_home_occupants(&self) -> Result<i64> {
-        let n = self.conn().query_row(
-            "SELECT COUNT(*) FROM occupants WHERE home = 1",
-            [],
-            |r| r.get(0),
-        )?;
+        let n =
+            self.conn()
+                .query_row("SELECT COUNT(*) FROM occupants WHERE home = 1", [], |r| {
+                    r.get(0)
+                })?;
         Ok(n)
     }
 
@@ -2495,7 +2498,10 @@ impl Db {
         let mut total = 0i64;
         for i in 0..days {
             let d = start_date + CDur::days(i);
-            let count = per_day.get(&d.format("%Y-%m-%d").to_string()).copied().unwrap_or(0);
+            let count = per_day
+                .get(&d.format("%Y-%m-%d").to_string())
+                .copied()
+                .unwrap_or(0);
             total += count;
             day_series.push(serde_json::json!({
                 "day": d.format("%m/%d").to_string(),
@@ -2816,7 +2822,13 @@ impl Db {
         )?;
         let rows = stmt
             .query_map(
-                params![camera_id, older_than, span_secs, margin_before, margin_after],
+                params![
+                    camera_id,
+                    older_than,
+                    span_secs,
+                    margin_before,
+                    margin_after
+                ],
                 |r| r.get(0),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2928,7 +2940,10 @@ impl Db {
         )?;
         let id = conn.last_insert_rowid();
         // Bound the table: drop shares that expired over a day ago.
-        let _ = conn.execute("DELETE FROM clip_shares WHERE expires_ts < ?1", [now - 86400]);
+        let _ = conn.execute(
+            "DELETE FROM clip_shares WHERE expires_ts < ?1",
+            [now - 86400],
+        );
         Ok(id)
     }
 
@@ -3190,15 +3205,22 @@ impl Db {
             "INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_ts, user_id)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(endpoint) DO UPDATE SET p256dh = ?2, auth = ?3, user_id = ?5",
-            params![endpoint, p256dh, auth, chrono::Local::now().timestamp(), user_id],
+            params![
+                endpoint,
+                p256dh,
+                auth,
+                chrono::Local::now().timestamp(),
+                user_id
+            ],
         )?;
         Ok(())
     }
 
     pub fn list_push_subscriptions(&self) -> Result<Vec<crate::webpush::PushSub>> {
         let conn = self.conn();
-        let mut stmt = conn
-            .prepare("SELECT endpoint, p256dh, auth, user_id FROM push_subscriptions ORDER BY id")?;
+        let mut stmt = conn.prepare(
+            "SELECT endpoint, p256dh, auth, user_id FROM push_subscriptions ORDER BY id",
+        )?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(crate::webpush::PushSub {
@@ -3333,9 +3355,8 @@ impl Db {
 
     pub fn list_users(&self) -> Result<Vec<UserRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT id, username, role, created_ts, email FROM users ORDER BY username",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT id, username, role, created_ts, email FROM users ORDER BY username")?;
         let rows = stmt
             .query_map([], |r| {
                 Ok(UserRow {
@@ -3719,7 +3740,9 @@ impl Db {
     pub fn user_can_see_camera(&self, user_id: i64, camera_id: i64) -> bool {
         let conn = self.conn();
         let role: Option<String> = match conn
-            .query_row("SELECT role FROM users WHERE id = ?1", [user_id], |r| r.get(0))
+            .query_row("SELECT role FROM users WHERE id = ?1", [user_id], |r| {
+                r.get(0)
+            })
             .optional()
         {
             Ok(r) => r,
@@ -3827,11 +3850,7 @@ impl Db {
             binds.push(Box::new(b));
         }
         if let Some(ids) = camera_ids {
-            let in_list = ids
-                .iter()
-                .map(i64::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
+            let in_list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
             sql.push_str(&format!(" AND camera_id IN ({in_list})"));
         }
         let params = rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref()));
@@ -4022,9 +4041,8 @@ impl Db {
         label: &str,
     ) -> Result<Vec<Vec<f32>>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT embedding FROM alert_feedback WHERE camera_id = ?1 AND label = ?2",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT embedding FROM alert_feedback WHERE camera_id = ?1 AND label = ?2")?;
         let rows = stmt
             .query_map(params![camera_id, label], |r| {
                 let b: Vec<u8> = r.get(0)?;
@@ -4038,8 +4056,7 @@ impl Db {
     /// detection pipeline caches once per tick into a per-(camera,label) map.
     pub fn feedback_embeddings(&self) -> Result<Vec<(i64, String, Vec<f32>)>> {
         let conn = self.conn();
-        let mut stmt =
-            conn.prepare("SELECT camera_id, label, embedding FROM alert_feedback")?;
+        let mut stmt = conn.prepare("SELECT camera_id, label, embedding FROM alert_feedback")?;
         let rows = stmt
             .query_map([], |r| {
                 let b: Vec<u8> = r.get(2)?;
@@ -5009,8 +5026,10 @@ mod tests {
         add(90_000, "crossing", 5, Some("[[90000,0.5,0.5]]"));
         add(90_030, "loiter", 5, None);
         // A non-track event on the same camera must never leak in (track_id NULL).
-        db.add_event(cam.id, 1045, "person", 0.9, [0.0; 4], None, None, None, None, None)
-            .unwrap();
+        db.add_event(
+            cam.id, 1045, "person", 0.9, [0.0; 4], None, None, None, None, None,
+        )
+        .unwrap();
 
         // Seed in cluster A → exactly A's three steps, oldest-first.
         let a = db.track_lifecycle(cam.id, 5, 1030).unwrap();
@@ -5037,7 +5056,9 @@ mod tests {
     #[test]
     fn count_events_filtered_scopes_by_camera_label_and_time() {
         let db = mem_db();
-        let a = db.add_camera("front", "rtsp://a", None, true, true).unwrap();
+        let a = db
+            .add_camera("front", "rtsp://a", None, true, true)
+            .unwrap();
         let b = db.add_camera("back", "rtsp://b", None, true, true).unwrap();
         let ev = |cam: i64, ts: i64, label: &str| {
             db.add_event(cam, ts, label, 0.9, [0.0; 4], None, None, None, None, None)
@@ -5069,7 +5090,11 @@ mod tests {
             2
         );
         // Empty scope = 0 (a scoped user with no cameras).
-        assert_eq!(db.count_events_filtered(Some(&[]), None, None, None).unwrap(), 0);
+        assert_eq!(
+            db.count_events_filtered(Some(&[]), None, None, None)
+                .unwrap(),
+            0
+        );
     }
 
     /// P2.14 Part 1: `flagged_segment_paths` returns exactly the segment(s) that
@@ -5079,21 +5104,30 @@ mod tests {
         let db = mem_db();
         let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
         // Two 60s segments back to back; span slack = 60 + 15.
-        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100, "main").unwrap();
-        db.upsert_segment(cam.id, 1060, "/rec/gate/b.mp4", 100, "main").unwrap();
+        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100, "main")
+            .unwrap();
+        db.upsert_segment(cam.id, 1060, "/rec/gate/b.mp4", 100, "main")
+            .unwrap();
         let span = 60 + 15;
 
         // An UNflagged event inside segment a; a FLAGGED event squarely inside b
         // (ts 1100 > 1075 so it can't also match a's boundary).
-        db.add_event(cam.id, 1010, "person", 0.9, [0.0; 4], None, None, None, None, None)
-            .unwrap();
+        db.add_event(
+            cam.id, 1010, "person", 0.9, [0.0; 4], None, None, None, None, None,
+        )
+        .unwrap();
         let flagged = db
-            .add_event(cam.id, 1100, "person", 0.9, [0.0; 4], None, None, None, None, None)
+            .add_event(
+                cam.id, 1100, "person", 0.9, [0.0; 4], None, None, None, None, None,
+            )
             .unwrap();
         db.set_event_flag(flagged, true).unwrap();
 
         let prot = db.flagged_segment_paths(span).unwrap();
-        assert!(prot.contains("/rec/gate/b.mp4"), "segment covering the flagged event is protected");
+        assert!(
+            prot.contains("/rec/gate/b.mp4"),
+            "segment covering the flagged event is protected"
+        );
         assert!(
             !prot.contains("/rec/gate/a.mp4"),
             "a segment with only an unflagged event is not protected"
@@ -5123,7 +5157,9 @@ mod tests {
         assert_eq!(main[0].stream, "main");
 
         // Explicit 'sub' pages the low-res copy.
-        let sub = db.list_segments(Some(cam.id), None, 100, Some("sub")).unwrap();
+        let sub = db
+            .list_segments(Some(cam.id), None, 100, Some("sub"))
+            .unwrap();
         assert_eq!(sub.len(), 1);
         assert_eq!(sub[0].path, "/rec/gate__sub/a.mp4");
         assert_eq!(sub[0].stream, "sub");
@@ -5170,12 +5206,17 @@ mod tests {
         let db = mem_db();
         let cam = db.add_camera("gate", "rtsp://x", None, true, true).unwrap();
         // Three widely-spaced segments so event windows don't overlap neighbours.
-        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100, "main").unwrap();
-        db.upsert_segment(cam.id, 5000, "/rec/gate/b.mp4", 100, "main").unwrap();
-        db.upsert_segment(cam.id, 9000, "/rec/gate/c.mp4", 100, "main").unwrap();
-        // An ordinary (unflagged) event squarely inside segment b.
-        db.add_event(cam.id, 5030, "person", 0.9, [0.0; 4], None, None, None, None, None)
+        db.upsert_segment(cam.id, 1000, "/rec/gate/a.mp4", 100, "main")
             .unwrap();
+        db.upsert_segment(cam.id, 5000, "/rec/gate/b.mp4", 100, "main")
+            .unwrap();
+        db.upsert_segment(cam.id, 9000, "/rec/gate/c.mp4", 100, "main")
+            .unwrap();
+        // An ordinary (unflagged) event squarely inside segment b.
+        db.add_event(
+            cam.id, 5030, "person", 0.9, [0.0; 4], None, None, None, None, None,
+        )
+        .unwrap();
 
         // Full-mirror default: every sealed segment is a candidate.
         assert_eq!(db.pending_offsite(100).unwrap().len(), 3);
@@ -5192,13 +5233,19 @@ mod tests {
             .into_iter()
             .map(|p| p.path)
             .collect();
-        assert_eq!(only.len(), 1, "only the event-adjacent segment is a candidate");
+        assert_eq!(
+            only.len(),
+            1,
+            "only the event-adjacent segment is a candidate"
+        );
         assert!(only.contains("/rec/gate/b.mp4"));
 
         // Bookmark a moment inside segment a: events-only must now also back it up
         // (a flagged event is an ordinary event row -> its segment overlaps one).
         let flagged = db
-            .add_event(cam.id, 1030, "person", 0.9, [0.0; 4], None, None, None, None, None)
+            .add_event(
+                cam.id, 1030, "person", 0.9, [0.0; 4], None, None, None, None, None,
+            )
             .unwrap();
         db.set_event_flag(flagged, true).unwrap();
         let with_bookmark: std::collections::HashSet<String> = db
@@ -5433,9 +5480,9 @@ mod tests {
         // Bulk load carries camera_id + label for the pipeline's per-tick cache.
         let all = db.feedback_embeddings().unwrap();
         assert_eq!(all.len(), 3);
-        assert!(all.iter().any(|(c, l, e)| *c == cam.id
-            && l == "person"
-            && *e == vec![1.0, 0.0, 0.0]));
+        assert!(all
+            .iter()
+            .any(|(c, l, e)| *c == cam.id && l == "person" && *e == vec![1.0, 0.0, 0.0]));
     }
 
     #[test]
@@ -5929,7 +5976,10 @@ mod tests {
             attr_like: Some("veh_color_red".into()),
             ..rule.clone()
         };
-        assert_eq!(both.effective_prompt().as_deref(), Some("a red pickup truck"));
+        assert_eq!(
+            both.effective_prompt().as_deref(),
+            Some("a red pickup truck")
+        );
 
         // An unknown / empty key: still a prompt rule (so it can't fire on the
         // plain path), but effective_prompt is None so the pipeline skips it.
@@ -6295,7 +6345,8 @@ mod tests {
                 cam.id, 2010, "person", 0.9, [0.0; 4], None, None, None, None, None,
             )
             .unwrap();
-        db.set_event_bookmark(saved, true, Some("keep this")).unwrap();
+        db.set_event_bookmark(saved, true, Some("keep this"))
+            .unwrap();
 
         // Event retention removes every un-flagged event; the bookmark survives.
         db.prune_events_before(5000).unwrap();
@@ -6341,7 +6392,10 @@ mod tests {
         // A user default (rule 0) OFF for push applies to any rule with no override.
         db.set_notify_prefs(uid, &[pref(uid, 0, "push", false)])
             .unwrap();
-        assert!(!db.pref_enabled(uid, 7, "push"), "falls back to the default");
+        assert!(
+            !db.pref_enabled(uid, 7, "push"),
+            "falls back to the default"
+        );
         assert!(db.pref_enabled(uid, 7, "email"), "email untouched → on");
         // An exact rule row beats the default.
         db.set_notify_prefs(
@@ -6349,8 +6403,14 @@ mod tests {
             &[pref(uid, 0, "push", false), pref(uid, 7, "push", true)],
         )
         .unwrap();
-        assert!(db.pref_enabled(uid, 7, "push"), "exact override beats default");
-        assert!(!db.pref_enabled(uid, 9, "push"), "others still use default-off");
+        assert!(
+            db.pref_enabled(uid, 7, "push"),
+            "exact override beats default"
+        );
+        assert!(
+            !db.pref_enabled(uid, 9, "push"),
+            "others still use default-off"
+        );
         // Replace-with-empty clears everything back to on.
         db.set_notify_prefs(uid, &[]).unwrap();
         assert!(db.pref_enabled(uid, 7, "push"));
@@ -6388,7 +6448,10 @@ mod tests {
         // Restrict the viewer to camera a only.
         assert!(db.set_user_cameras(viewer, &[a.id]).unwrap());
         assert!(db.user_can_see_camera(viewer, a.id), "in the allow-list");
-        assert!(!db.user_can_see_camera(viewer, b.id), "out of the allow-list");
+        assert!(
+            !db.user_can_see_camera(viewer, b.id),
+            "out of the allow-list"
+        );
         // Unknown user → conservative refuse (never leak a camera-scoped alert).
         assert!(!db.user_can_see_camera(999_999, a.id));
     }
@@ -6421,7 +6484,16 @@ mod tests {
         // (event_id NULL here — the column has a FK to events; production passes a
         // real event id.)
         let id = db
-            .add_alarm_notification(100, "alarm", "Front door", Some("person"), None, Some(42), Some(11), Some(3))
+            .add_alarm_notification(
+                100,
+                "alarm",
+                "Front door",
+                Some("person"),
+                None,
+                Some(42),
+                Some(11),
+                Some(3),
+            )
             .unwrap();
         let got = db.notifications_after(id - 1, 10).unwrap();
         let n = got.iter().find(|n| n.id == id).unwrap();
@@ -6429,7 +6501,9 @@ mod tests {
         assert_eq!(n.camera_id, Some(11));
         assert_eq!(n.severity, Some(3));
         // A plain system notification leaves all the P2.11 tags NULL.
-        let sid = db.add_notification(200, "camera_offline", "Cam down", None, None).unwrap();
+        let sid = db
+            .add_notification(200, "camera_offline", "Cam down", None, None)
+            .unwrap();
         let sys = db.notifications_after(sid - 1, 10).unwrap();
         let s = sys.iter().find(|n| n.id == sid).unwrap();
         assert_eq!(s.rule_id, None);

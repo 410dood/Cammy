@@ -309,6 +309,10 @@ mod tests {
         // Cell (0,0) = bit 0 set; a cell in the untouched bottom-right is not.
         assert_eq!(mask[0] & 1, 1, "top-left cell changed");
         let far = (63 * 64 + 63) as usize;
-        assert_eq!(mask[far / 8] & (1 << (far % 8)), 0, "bottom-right untouched");
+        assert_eq!(
+            mask[far / 8] & (1 << (far % 8)),
+            0,
+            "bottom-right untouched"
+        );
     }
 }

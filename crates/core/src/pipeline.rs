@@ -169,11 +169,23 @@ pub fn run(
         // detection loop (one detector-session cache, one set of per-camera
         // state maps, `i % 1 == 0` = every camera).
         run_worker(
-            0, 1, db, go2rtc, snapshots_dir, status, mqtt_tx, throttle, genai_tx, shutdown,
+            0,
+            1,
+            db,
+            go2rtc,
+            snapshots_dir,
+            status,
+            mqtt_tx,
+            throttle,
+            genai_tx,
+            shutdown,
         );
         return;
     }
-    tracing::info!(workers = num_workers, "detection pipeline: multi-worker mode");
+    tracing::info!(
+        workers = num_workers,
+        "detection pipeline: multi-worker mode"
+    );
     let mut handles = Vec::with_capacity(num_workers);
     for idx in 0..num_workers {
         // Everything each worker needs is cheaply cloneable and thread-safe:
@@ -361,27 +373,25 @@ fn run_worker(
         // Gait (#64): load enrolled profiles once per tick (not per camera/frame)
         // when any camera THIS WORKER OWNS uses gait, parsed to fixed-length
         // signatures for matching.
-        let gait_profiles: Vec<(String, crate::gait::GaitSignature)> = if cameras
-            .iter()
-            .enumerate()
-            .any(|(i, c)| {
+        let gait_profiles: Vec<(String, crate::gait::GaitSignature)> =
+            if cameras.iter().enumerate().any(|(i, c)| {
                 owns(worker_idx, num_workers, i)
                     && c.enabled
                     && c.detect
                     && c.detect_config.gait_identify
             }) {
-            db.gait_profile_sigs()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(n, v)| {
-                    <[f32; crate::gait::GAIT_DIMS]>::try_from(v)
-                        .ok()
-                        .map(|s| (n, s))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+                db.gait_profile_sigs()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|(n, v)| {
+                        <[f32; crate::gait::GAIT_DIMS]>::try_from(v)
+                            .ok()
+                            .map(|s| (n, s))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let gait_prof_sigs: Vec<crate::gait::GaitSignature> =
             gait_profiles.iter().map(|(_, s)| *s).collect();
         // Faces (#14): load enrolled embeddings once per tick (not once per frame
@@ -405,17 +415,16 @@ fn run_worker(
         // the prompt path (`fire_prompt_alarms`) reads this cache, and it needs
         // CLIP anyway, so skip the load entirely when no prompt rule can fire.
         // Empty map → `any_similar` returns false → every alert fires (fail open).
-        let feedback_by_cam: HashMap<(i64, String), Vec<Vec<f32>>> = if crate::smart::models_present()
-            && alarms.iter().any(|r| r.is_prompt_rule())
-        {
-            let mut m: HashMap<(i64, String), Vec<Vec<f32>>> = HashMap::new();
-            for (cid, label, emb) in db.feedback_embeddings().unwrap_or_default() {
-                m.entry((cid, label)).or_default().push(emb);
-            }
-            m
-        } else {
-            HashMap::new()
-        };
+        let feedback_by_cam: HashMap<(i64, String), Vec<Vec<f32>>> =
+            if crate::smart::models_present() && alarms.iter().any(|r| r.is_prompt_rule()) {
+                let mut m: HashMap<(i64, String), Vec<Vec<f32>>> = HashMap::new();
+                for (cid, label, emb) in db.feedback_embeddings().unwrap_or_default() {
+                    m.entry((cid, label)).or_default().push(emb);
+                }
+                m
+            } else {
+                HashMap::new()
+            };
         for cam in cameras
             .iter()
             .enumerate()
@@ -459,7 +468,10 @@ fn run_worker(
                 .filter(|a| !a.is_empty())
                 .unwrap_or(settings.accelerator.as_str());
             let accel = detector::effective_accelerator(accel_choice, force_cpu);
-            let dkey = format!("{model}|{accel}|{}|{}", settings.confidence, settings.nms_iou);
+            let dkey = format!(
+                "{model}|{accel}|{}|{}",
+                settings.confidence, settings.nms_iou
+            );
             if !detectors.contains_key(&dkey) {
                 match Detector::new(&model, accel, settings.confidence, settings.nms_iou) {
                     Ok(d) => {
@@ -1397,11 +1409,8 @@ fn run_worker(
                             topic: None,
                         });
                         // Alarm Manager: fire every matching rule's action.
-                        let severity = crate::severity::severity_for(
-                            d.label,
-                            face_names[i].as_deref(),
-                            None,
-                        );
+                        let severity =
+                            crate::severity::severity_for(d.label, face_names[i].as_deref(), None);
                         let alarm_ev = crate::notify::AlarmEvent {
                             event_id: id,
                             camera: &cam.name,
@@ -2138,7 +2147,11 @@ fn passes_size(d: &detector::Detection, cfg: &crate::db::DetectConfig, fw: f32, 
 /// (both prompts present and non-blank), else `None`. Trims so a whitespace-only
 /// prompt reads as unset. Cheap gate the pipeline uses before spending any CLIP run.
 fn zone_prompts(z: &crate::db::PolyZone) -> Option<(&str, &str)> {
-    let open = z.open_prompt.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    let open = z
+        .open_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
     let closed = z
         .closed_prompt
         .as_deref()
@@ -2359,8 +2372,7 @@ fn fire_prompt_alarms(
             webhook_template: &settings.webhook_template,
             smtp: crate::notify::smtp_cfg(settings),
             duress: false,
-            severity: crate::severity::severity_for(&job.label, job.face.as_deref(), None)
-                .max(3),
+            severity: crate::severity::severity_for(&job.label, job.face.as_deref(), None).max(3),
             min_push_severity: settings.notify_min_severity,
             caption: Some(&matched),
         };
@@ -2603,7 +2615,9 @@ mod tests {
         for num_workers in 1..=8usize {
             for cameras in 0..40usize {
                 for i in 0..cameras {
-                    let owners = (0..num_workers).filter(|w| owns(*w, num_workers, i)).count();
+                    let owners = (0..num_workers)
+                        .filter(|w| owns(*w, num_workers, i))
+                        .count();
                     assert_eq!(
                         owners, 1,
                         "camera {i} owned by {owners} workers (num_workers={num_workers})"

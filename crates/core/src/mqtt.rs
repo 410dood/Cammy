@@ -209,7 +209,8 @@ pub fn run(
                     match ev {
                         Ok(Event::Incoming(Packet::Publish(p))) => {
                             if let Some(ctx) = &cmd_ctx {
-                                if let Some(cmd) = parse_command(&ctx.prefix, &p.topic, &p.payload) {
+                                if let Some(cmd) = parse_command(&ctx.prefix, &p.topic, &p.payload)
+                                {
                                     let ctx = ctx.clone();
                                     std::thread::spawn(move || ctx.dispatch(cmd));
                                 }
@@ -235,7 +236,10 @@ pub fn run(
         if commands_on {
             // Subscribe so the broker forwards command publishes to the driver.
             let _ = client.subscribe(format!("{prefix}/cmd/#"), QoS::AtLeastOnce);
-            tracing::info!(prefix, "mqtt inbound commands ENABLED (subscribed to {prefix}/cmd/#)");
+            tracing::info!(
+                prefix,
+                "mqtt inbound commands ENABLED (subscribed to {prefix}/cmd/#)"
+            );
         }
         tracing::info!(broker = format!("{host}:{port}"), prefix, "mqtt connected");
 
@@ -458,7 +462,8 @@ impl CommandCtx {
                 }
                 // Audit (no client IP — the broker is the source), notify, and
                 // re-publish the retained mode state for other HA/keypad clients.
-                self.db.add_audit(now, None, "mqtt_arm_command", Some(&mode));
+                self.db
+                    .add_audit(now, None, "mqtt_arm_command", Some(&mode));
                 let _ = self.db.add_notification(
                     now,
                     "mode",

@@ -71,7 +71,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cameras/{id}/ptz", get(ptz_caps).post(ptz_command))
         .route("/api/cameras/{id}/deter", get(deter_probe).post(deter_test))
         .route("/api/cameras/{id}/frame.jpg", get(camera_frame))
-        .route("/api/cameras/{id}/timelapse", axum::routing::post(create_timelapse))
+        .route(
+            "/api/cameras/{id}/timelapse",
+            axum::routing::post(create_timelapse),
+        )
         .route("/api/cameras/{id}/timelapse.mp4", get(serve_timelapse))
         .route("/api/events", get(list_events))
         .route("/api/events/stream", get(events_stream))
@@ -94,7 +97,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/events/{id}/clip", get(event_clip))
         .route("/api/events/{id}/evidence.mp4", get(event_evidence))
         .route("/api/events/{id}/evidence.zip", get(event_evidence_zip))
-        .route("/api/events/{id}/share", axum::routing::post(create_clip_share))
+        .route(
+            "/api/events/{id}/share",
+            axum::routing::post(create_clip_share),
+        )
         .route("/api/events/{id}/similar", get(event_similar))
         .route("/api/events/{id}/lifecycle", get(event_lifecycle))
         .route("/api/search", get(smart_search))
@@ -182,10 +188,7 @@ pub fn router(state: AppState) -> Router {
             get(get_arm_mode).put(set_arm_mode).post(arm_presence),
         )
         .route("/api/presence", get(list_presence))
-        .route(
-            "/api/presence/{id}",
-            axum::routing::delete(delete_presence),
-        )
+        .route("/api/presence/{id}", axum::routing::delete(delete_presence))
         .route("/api/notifications", get(list_notifications_api))
         .route(
             "/api/notifications/read-all",
@@ -690,7 +693,9 @@ async fn me(
     // distinguishes a real user account from the legacy/loopback/token admin.
     // `email` (P2.11) is the caller's own notification email, for the self-service
     // field — only a named user has one.
-    let email = p.user_id.and_then(|uid| st.db.user_email(uid).ok().flatten());
+    let email = p
+        .user_id
+        .and_then(|uid| st.db.user_email(uid).ok().flatten());
     Json(serde_json::json!({
         "authenticated": true,
         "named": p.user_id.is_some(),
@@ -895,7 +900,10 @@ async fn patch_user_api(
             now,
             Some(&ip),
             "user_email_set",
-            Some(&format!("#{id} -> {}", if email.is_some() { "set" } else { "cleared" })),
+            Some(&format!(
+                "#{id} -> {}",
+                if email.is_some() { "set" } else { "cleared" }
+            )),
         );
         changed = true;
     }
@@ -1656,7 +1664,12 @@ async fn import_footage(
         )
     })
     .await
-    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("import task failed: {e}")))?
+    .map_err(|e| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("import task failed: {e}"),
+        )
+    })?
     .map_err(|e| bad_request(format!("{e:#}")))?;
     Ok(Json(summary))
 }
@@ -1723,7 +1736,11 @@ async fn patch_camera(
     if let Some(ds) = patch.detect_source {
         let ds = ds.trim();
         let masked_noop = p.role < crate::auth::Role::Admin
-            && old_detect_source.as_deref().map(redact_url_creds).as_deref() == Some(ds);
+            && old_detect_source
+                .as_deref()
+                .map(redact_url_creds)
+                .as_deref()
+                == Some(ds);
         if !masked_noop {
             if !no_control(ds) {
                 return Err(bad_request(
@@ -1987,7 +2004,10 @@ async fn archive_status(State(st): State<AppState>) -> ApiResult<Json<serde_json
     let s = st.db.settings();
     let cameras = st.db.list_cameras()?;
     let mut per_camera = Vec::new();
-    for c in cameras.iter().filter(|c| c.group.as_deref() == Some("archive")) {
+    for c in cameras
+        .iter()
+        .filter(|c| c.group.as_deref() == Some("archive"))
+    {
         let cursor = st
             .db
             .get_kv(&format!("archive_cursor_{}", c.id))
@@ -1998,10 +2018,7 @@ async fn archive_status(State(st): State<AppState>) -> ApiResult<Json<serde_json
             "cursor_ts": cursor,
         }));
     }
-    let last_error = st
-        .db
-        .get_kv("archive_last_error")
-        .filter(|e| !e.is_empty());
+    let last_error = st.db.get_kv("archive_last_error").filter(|e| !e.is_empty());
     Ok(Json(serde_json::json!({
         "enabled": s.archive_pull_enabled,
         "configured": !s.archive_primary_url.trim().is_empty()
@@ -2441,9 +2458,7 @@ async fn events_stream(
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<
     axum::response::Sse<
-        impl futures_util::Stream<
-            Item = Result<axum::response::sse::Event, std::convert::Infallible>,
-        >,
+        impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
     >,
 > {
     use axum::response::sse::{Event, KeepAlive, Sse};
@@ -2773,9 +2788,7 @@ async fn event_feedback(
             let now = chrono::Local::now().timestamp();
             st.db
                 .add_alert_feedback(ev.camera_id, Some(id), &ev.label, &emb, now)?;
-            Ok(Json(
-                serde_json::json!({ "ok": true, "suppressed": true }),
-            ))
+            Ok(Json(serde_json::json!({ "ok": true, "suppressed": true })))
         }
         None => Ok(Json(
             serde_json::json!({ "ok": false, "reason": "no_crop" }),
@@ -3099,8 +3112,10 @@ async fn run_ffmpeg_atomic(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("out");
-    let tmp =
-        final_path.with_file_name(format!("{stem}.partial-{}-{uniq}.{ext}", std::process::id()));
+    let tmp = final_path.with_file_name(format!(
+        "{stem}.partial-{}-{uniq}.{ext}",
+        std::process::id()
+    ));
     let ffmpeg = recorder::locate_ffmpeg(ffmpeg_bin)?;
     let tmp_c = tmp.clone();
     let status = tokio::task::spawn_blocking(move || {
@@ -3194,9 +3209,16 @@ async fn event_clip(
 
     let pre = i64::from(q.pre.unwrap_or(5).min(30));
     let post = i64::from(q.post.unwrap_or(10).min(60));
-    let clip_path =
-        extract_event_clip(&st.clips_dir, st.ffmpeg_bin.as_deref(), id, &seg, ev.ts, pre, post)
-            .await?;
+    let clip_path = extract_event_clip(
+        &st.clips_dir,
+        st.ffmpeg_bin.as_deref(),
+        id,
+        &seg,
+        ev.ts,
+        pre,
+        post,
+    )
+    .await?;
 
     let mut resp = ServeFile::new(clip_path).oneshot(req).await.into_response();
     resp.headers_mut().insert(
@@ -3254,7 +3276,10 @@ async fn create_clip_share(
         now,
         Some(&ip),
         "clip_shared",
-        Some(&format!("event {id} ({} on {}) · ttl {ttl}h", ev.label, ev.camera)),
+        Some(&format!(
+            "event {id} ({} on {}) · ttl {ttl}h",
+            ev.label, ev.camera
+        )),
     );
     Ok(Json(serde_json::json!({
         "id": share_id,
@@ -3321,9 +3346,12 @@ async fn serve_share(
     let mut resp = ServeFile::new(clip_path).oneshot(req).await.into_response();
     resp.headers_mut().insert(
         axum::http::header::CONTENT_DISPOSITION,
-        format!("attachment; filename=\"{}-{}-{}.mp4\"", ev.camera, ev.label, ev.ts)
-            .parse()
-            .expect("valid header"),
+        format!(
+            "attachment; filename=\"{}-{}-{}.mp4\"",
+            ev.camera, ev.label, ev.ts
+        )
+        .parse()
+        .expect("valid header"),
     );
     Ok(resp)
 }
@@ -3402,7 +3430,9 @@ async fn create_timelapse(
         .and_then(|t| t.elapsed().ok())
         .is_some_and(|e| e < std::time::Duration::from_secs(1800));
     if building_fresh {
-        return Ok(Json(serde_json::json!({ "status": "building", "url": url })));
+        return Ok(Json(
+            serde_json::json!({ "status": "building", "url": url }),
+        ));
     }
 
     // Gather the day's segments (ascending) so the spawned task owns them.
@@ -3430,7 +3460,16 @@ async fn create_timelapse(
     const SLOW_STRIDE: f64 = 0.15; // source-seconds between kept frames near events
     let events = st
         .db
-        .list_events(Some(id), None, None, None, Some(day_start), Some(day_end), false, 5000)
+        .list_events(
+            Some(id),
+            None,
+            None,
+            None,
+            Some(day_start),
+            Some(day_end),
+            false,
+            5000,
+        )
         .unwrap_or_default();
     let mut windows: Vec<(f64, f64)> = Vec::new();
     for ev in &events {
@@ -3488,7 +3527,11 @@ async fn create_timelapse(
         chrono::Local::now().timestamp(),
         None,
         "timelapse_started",
-        Some(&format!("{} {date} ({} event windows)", cam.name, merged.len())),
+        Some(&format!(
+            "{} {date} ({} event windows)",
+            cam.name,
+            merged.len()
+        )),
     );
 
     let ffmpeg_bin = st.ffmpeg_bin.clone();
@@ -3501,7 +3544,9 @@ async fn create_timelapse(
             tracing::warn!("timelapse build failed: {e:#}");
         }
     });
-    Ok(Json(serde_json::json!({ "status": "building", "url": url })))
+    Ok(Json(
+        serde_json::json!({ "status": "building", "url": url }),
+    ))
 }
 
 /// Concat the day's segments and apply the caller-built video filter `vf`
@@ -3526,12 +3571,23 @@ async fn build_timelapse(
     }
     let list_c = list_path.clone();
     let res = run_ffmpeg_atomic(ffmpeg_bin, out, move |cmd, tmp| {
-        cmd.args(["-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"])
-            .arg(&list_c)
-            .args(["-vf", &vf, "-an", "-r", "24"])
-            .args(["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
-            .args(["-movflags", "+faststart", "-y"])
-            .arg(tmp);
+        cmd.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+        ])
+        .arg(&list_c)
+        .args(["-vf", &vf, "-an", "-r", "24"])
+        .args([
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        ])
+        .args(["-movflags", "+faststart", "-y"])
+        .arg(tmp);
     })
     .await;
     std::fs::remove_file(&list_path).ok();
@@ -3614,7 +3670,9 @@ async fn ensure_evidence_mp4(
     let res = run_ffmpeg_atomic(ffmpeg_bin, &out, move |cmd, tmp| {
         cmd.args(["-hide_banner", "-loglevel", "error", "-i"])
             .arg(&inp)
-            .args(["-vf", &filter, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
+            .args([
+                "-vf", &filter, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            ])
             .args(["-movflags", "+faststart", "-y"])
             .arg(tmp);
     })
@@ -3643,9 +3701,16 @@ async fn event_evidence(
         .db
         .find_segment_at(ev.camera_id, ev.ts, "main")?
         .ok_or_else(not_found)?;
-    let clip =
-        extract_event_clip(&st.clips_dir, st.ffmpeg_bin.as_deref(), ev.id, &seg, ev.ts, 5, 10)
-            .await?;
+    let clip = extract_event_clip(
+        &st.clips_dir,
+        st.ffmpeg_bin.as_deref(),
+        ev.id,
+        &seg,
+        ev.ts,
+        5,
+        10,
+    )
+    .await?;
     let out = ensure_evidence_mp4(&st.clips_dir, st.ffmpeg_bin.as_deref(), &ev, &clip).await?;
 
     // SHA-256 of the exported file, anchored in the append-only audit log.
@@ -3659,15 +3724,21 @@ async fn event_evidence(
         chrono::Local::now().timestamp(),
         Some(&ip),
         "evidence_exported",
-        Some(&format!("event {id} ({} on {}) sha256={sha}", ev.label, ev.camera)),
+        Some(&format!(
+            "event {id} ({} on {}) sha256={sha}",
+            ev.label, ev.camera
+        )),
     );
 
     let mut resp = ServeFile::new(&out).oneshot(req).await.into_response();
     resp.headers_mut().insert(
         axum::http::header::CONTENT_DISPOSITION,
-        format!("attachment; filename=\"evidence-{}-{}-{}.mp4\"", ev.camera, ev.label, ev.ts)
-            .parse()
-            .expect("valid header"),
+        format!(
+            "attachment; filename=\"evidence-{}-{}-{}.mp4\"",
+            ev.camera, ev.label, ev.ts
+        )
+        .parse()
+        .expect("valid header"),
     );
     resp.headers_mut()
         .insert("x-cammy-sha256", sha.parse().expect("hex header"));
@@ -3695,9 +3766,16 @@ async fn event_evidence_zip(
         .db
         .find_segment_at(ev.camera_id, ev.ts, "main")?
         .ok_or_else(not_found)?;
-    let clip =
-        extract_event_clip(&st.clips_dir, st.ffmpeg_bin.as_deref(), ev.id, &seg, ev.ts, 5, 10)
-            .await?;
+    let clip = extract_event_clip(
+        &st.clips_dir,
+        st.ffmpeg_bin.as_deref(),
+        ev.id,
+        &seg,
+        ev.ts,
+        5,
+        10,
+    )
+    .await?;
     let mp4_path = ensure_evidence_mp4(&st.clips_dir, st.ffmpeg_bin.as_deref(), &ev, &clip).await?;
     let mp4 = std::fs::read(&mp4_path)
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -3943,7 +4021,12 @@ fn validate_alarm_rule(rule: &crate::db::AlarmRule) -> ApiResult<()> {
     }
     // P2.5: attr_like stores a catalog KEY (not free text) — reject an unknown
     // one so a typo/stale key can't silently make a rule that never matches.
-    if let Some(key) = rule.attr_like.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+    if let Some(key) = rule
+        .attr_like
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+    {
         if !crate::attributes::is_known(key) {
             return Err(bad_request("unknown attribute facet"));
         }
@@ -4068,10 +4151,7 @@ async fn onvif_inspect(
 ) -> ApiResult<Json<serde_json::Value>> {
     let allow = allowed_cameras(&st, &p)?;
     let want: Option<i64> = q.get("camera_id").and_then(|s| s.parse().ok());
-    let board = st
-        .onvif_inspector
-        .lock()
-        .expect("onvif inspector poisoned");
+    let board = st.onvif_inspector.lock().expect("onvif inspector poisoned");
     let mut out = serde_json::Map::new();
     for (cam_id, ring) in board.iter() {
         if want.is_some_and(|w| w != *cam_id) || !camera_allowed(&allow, *cam_id) {
@@ -4755,7 +4835,8 @@ async fn list_recordings(
         st.db
             .list_segments_since(q.camera_id, since, q.limit.min(1000))?
     } else {
-        st.db.list_segments(q.camera_id, q.before, q.limit.min(1000), None)?
+        st.db
+            .list_segments(q.camera_id, q.before, q.limit.min(1000), None)?
     };
     if let Some(set) = &allow {
         segs.retain(|s| set.contains(&s.camera_id));
@@ -4874,7 +4955,10 @@ async fn segment_thumb(
             )
         })?;
     }
-    let mut resp = ServeFile::new(thumb_path).oneshot(req).await.into_response();
+    let mut resp = ServeFile::new(thumb_path)
+        .oneshot(req)
+        .await
+        .into_response();
     resp.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("private, max-age=604800, immutable"),
@@ -4994,7 +5078,9 @@ async fn motion_search(
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
 
-    Ok(Json(serde_json::json!({ "hits": out, "truncated": truncated })))
+    Ok(Json(
+        serde_json::json!({ "hits": out, "truncated": truncated }),
+    ))
 }
 
 /// Keep the thumb cache bounded: when it grows past ~6000 files (a few hundred
@@ -5002,13 +5088,19 @@ async fn motion_search(
 /// oldest ~1000 by mtime. Called only on a cache MISS (which already pays for
 /// an ffmpeg run), so the directory scan is amortized.
 fn prune_thumbs(dir: &std::path::Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
         .flatten()
         .filter_map(|e| {
             let md = e.metadata().ok()?;
-            md.is_file()
-                .then(|| (md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH), e.path()))
+            md.is_file().then(|| {
+                (
+                    md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                    e.path(),
+                )
+            })
         })
         .collect();
     if files.len() <= 6000 {
@@ -5134,7 +5226,10 @@ async fn analytics_timeseries(
     Query(q): Query<std::collections::HashMap<String, String>>,
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let days = q.get("days").and_then(|s| s.parse::<i64>().ok()).unwrap_or(7);
+    let days = q
+        .get("days")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(7);
     let allow = allowed_cameras(&st, &p)?;
     Ok(Json(st.db.events_timeseries(days, allow.as_ref())?))
 }
@@ -5408,7 +5503,9 @@ async fn arm_presence(
 ) -> ApiResult<Json<serde_json::Value>> {
     let name = req.occupant.trim();
     if name.is_empty() || name.len() > 64 || !no_control(name) {
-        return Err(bad_request("occupant must be 1-64 chars with no control characters"));
+        return Err(bad_request(
+            "occupant must be 1-64 chars with no control characters",
+        ));
     }
     let now = chrono::Local::now().timestamp();
     st.db.upsert_occupant(name, req.home, now)?;
@@ -6150,7 +6247,10 @@ async fn homekit_unpair(
         .trim()
         .to_string();
     if camera.is_empty() {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "camera is required".into()));
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "camera is required".into(),
+        ));
     }
     if !st.db.list_cameras()?.iter().any(|c| c.name == camera) {
         return Err(ApiError(StatusCode::NOT_FOUND, "no such camera".into()));
@@ -6160,7 +6260,12 @@ async fn homekit_unpair(
         go2rtc.restart_dropping(&db, crate::go2rtc::DropPairings::Stream(&cam))
     })
     .await
-    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("unpair task: {e}")))?
+    .map_err(|e| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("unpair task: {e}"),
+        )
+    })?
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("unpair: {e:#}")))?;
     st.db.add_audit(
         chrono::Utc::now().timestamp(),
@@ -6206,7 +6311,12 @@ async fn homekit_reset(
                 go2rtc.restart_dropping(&db, crate::go2rtc::DropPairings::All)
             })
             .await
-            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("reset task: {e}")))?
+            .map_err(|e| {
+                ApiError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("reset task: {e}"),
+                )
+            })?
             .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("reset: {e:#}")))?;
         }
         "sensors" => {
