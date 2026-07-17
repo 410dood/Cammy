@@ -124,8 +124,9 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
                         Some(uid) => {
                             // A system notification (rule_id NULL) isn't governed
                             // by any per-rule/Default pref — the matrix only lists
-                            // rules — so it always pushes (still camera-gated,
-                            // though system rows carry no camera_id). An alarm is
+                            // rules — so it always pushes, camera-RBAC-gated when
+                            // the row names a source camera (offline/tamper/
+                            // absence rows do since the P2.11 follow-up). An alarm is
                             // gated by the user's pref for that rule (or Default).
                             (n.rule_id.is_none() || db.pref_enabled(uid, rule_id, "push"))
                                 && n.camera_id

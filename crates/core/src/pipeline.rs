@@ -2076,7 +2076,7 @@ fn handle_tamper_event(
         );
         let title = "Camera tampering";
         let msg = format!("{}: {kind_label}", cam.name);
-        let _ = db.add_notification(now, "tamper", title, Some(&msg), event_id);
+        let _ = db.add_camera_notification(now, "tamper", title, Some(&msg), event_id, cam.id);
         let url = settings.health_ntfy_url.trim();
         if !url.is_empty() {
             crate::notify::ntfy_text(url, title, &msg, "rotating_light");
@@ -2085,7 +2085,7 @@ fn handle_tamper_event(
         tracing::info!(camera = %cam.name, kind, "camera recovered from tamper");
         let title = "Camera tampering cleared";
         let msg = format!("{} recovered ({kind_label})", cam.name);
-        let _ = db.add_notification(now, "tamper_cleared", title, Some(&msg), None);
+        let _ = db.add_camera_notification(now, "tamper_cleared", title, Some(&msg), None, cam.id);
         let url = settings.health_ntfy_url.trim();
         if !url.is_empty() {
             crate::notify::ntfy_text(url, title, &msg, "white_check_mark");

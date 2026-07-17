@@ -3082,6 +3082,23 @@ impl Db {
         Ok(id)
     }
 
+    /// P2.11 follow-up: a camera-scoped SYSTEM notification (offline/online,
+    /// tamper, absence). Tagging the source camera lets the push worker apply
+    /// the per-user `user_can_see_camera` RBAC gate to system pushes too —
+    /// previously these rows carried no camera_id, so they fanned out
+    /// camera-globally to every push subscriber.
+    pub fn add_camera_notification(
+        &self,
+        ts: i64,
+        kind: &str,
+        title: &str,
+        body: Option<&str>,
+        event_id: Option<i64>,
+        camera_id: i64,
+    ) -> Result<i64> {
+        self.add_alarm_notification(ts, kind, title, body, event_id, None, Some(camera_id), None)
+    }
+
     /// P2.11 alarm-tagged notification, written by `notify::fire` for every rule
     /// fire so the push worker can route it per user × rule × camera. Identical
     /// to [`add_notification`] plus the `rule_id`/`camera_id` tags — kept separate

@@ -65,7 +65,7 @@ fn tick(db: &Db, latched: &mut HashSet<i64>) -> anyhow::Result<()> {
                  Assistive check only — verify directly if this is unexpected.",
                 cam.name, hours
             );
-            let _ = db.add_notification(now, "absence", &title, Some(&body), None);
+            let _ = db.add_camera_notification(now, "absence", &title, Some(&body), None, cam.id);
             let url = settings.health_ntfy_url.trim();
             if !url.is_empty() {
                 crate::notify::ntfy_text(url, &title, &body, "hourglass_flowing_sand");
@@ -73,12 +73,13 @@ fn tick(db: &Db, latched: &mut HashSet<i64>) -> anyhow::Result<()> {
             tracing::info!(camera = %cam.name, hours, "absence watch: quiet spell alerted");
         } else if !quiet && latched.remove(&cam.id) {
             let title = format!("Activity again on {}", cam.name);
-            let _ = db.add_notification(
+            let _ = db.add_camera_notification(
                 now,
                 "absence_cleared",
                 &title,
                 Some("A person or pet was seen — the inactivity alert is cleared."),
                 None,
+                cam.id,
             );
             tracing::info!(camera = %cam.name, "absence watch: cleared");
         }

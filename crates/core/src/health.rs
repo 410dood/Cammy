@@ -61,7 +61,7 @@ pub fn run(db: Db, status: StatusBoard, shutdown: Arc<AtomicBool>) {
                     tracing::info!(camera = %cam.name, online, "camera health changed");
                     // A4: in-app notification on every transition; the ntfy phone
                     // push fires only when a topic URL is configured.
-                    let _ = db.add_notification(
+                    let _ = db.add_camera_notification(
                         now,
                         if online {
                             "camera_online"
@@ -71,6 +71,7 @@ pub fn run(db: Db, status: StatusBoard, shutdown: Arc<AtomicBool>) {
                         title,
                         Some(&msg),
                         None,
+                        cam.id,
                     );
                     if !url.is_empty() {
                         crate::notify::ntfy_text(&url, title, &msg, tags);
