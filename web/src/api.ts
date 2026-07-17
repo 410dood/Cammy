@@ -157,6 +157,14 @@ export interface Camera {
   group: string | null;
 }
 
+/** P3.10 result of importing an offline video file as a virtual camera. */
+export interface ImportSummary {
+  camera_id: number;
+  camera: string;
+  frames_scanned: number;
+  events_created: number;
+}
+
 export interface CamEvent {
   id: number;
   camera_id: number;
@@ -748,6 +756,14 @@ export const api = {
   patchCamera: (id: number, patch: Partial<Camera>) =>
     req<Camera>(`/api/cameras/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteCamera: (id: number) => req<void>(`/api/cameras/${id}`, { method: "DELETE" }),
+  /** P3.10 import offline footage (Admin): run detection over a SERVER-LOCAL
+   *  video file, creating events on a disabled "virtual" camera. Not a browser
+   *  upload — `path` is a file path on the machine running Cammy. */
+  importFootage: (path: string, camera_name: string, base_ts?: number) =>
+    req<ImportSummary>("/api/import", {
+      method: "POST",
+      body: JSON.stringify({ path, camera_name, base_ts: base_ts ?? null }),
+    }),
   /** Replace an event's user tags (≤8, sanitized server-side). */
   setEventTags: (id: number, tags: string[]) =>
     req<{ tags: string[] }>(`/api/events/${id}/tags`, {

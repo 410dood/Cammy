@@ -2074,7 +2074,7 @@ fn post_webhook(
 /// Order: object-size bounds, legacy rectangle ignore zones, then polygon zones
 /// — a polygon `Ignore` zone drops the detection, and if any `Required` zone
 /// applies to its label the anchor must fall inside one of them.
-fn passes_zones_and_size(
+pub(crate) fn passes_zones_and_size(
     d: &detector::Detection,
     cfg: &crate::db::DetectConfig,
     fw: f32,
@@ -2213,7 +2213,7 @@ fn accel_label(accel: &str) -> &'static str {
 
 /// The name of the (required) zone a detection's anchor falls in, for tagging
 /// the event so review can filter by zone. `None` when not in a named zone.
-fn zone_for(
+pub(crate) fn zone_for(
     d: &detector::Detection,
     cfg: &crate::db::DetectConfig,
     fw: f32,
@@ -2437,7 +2437,7 @@ const MOTION_COLOR: Rgb<u8> = Rgb([255, 176, 0]);
 
 /// Save the frame with the motion region(s) that tripped the gate burned in
 /// (amber, drawn first) and the matched detection boxes on top (red).
-fn save_snapshot(
+pub(crate) fn save_snapshot(
     frame: &DynamicImage,
     dets: &[&detector::Detection],
     motion_boxes: &[[f32; 4]],

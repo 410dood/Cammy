@@ -162,6 +162,9 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
         || path == "/api/auth/password"
         || path == "/api/backup"
         || path == "/api/restore"
+        // Importing offline footage creates a camera row AND reads a server-local
+        // filesystem path — both are Admin-only.
+        || path == "/api/import"
         || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
         // Installing/removing a license is a system-config action; a valid GET
         // (the trial countdown) stays Viewer-readable via the default below.
@@ -709,6 +712,8 @@ mod tests {
             Role::Admin
         );
         assert_eq!(min_role_for(&Method::DELETE, "/api/tokens/3"), Role::Admin);
+        // Offline-footage import is Admin-only (creates a camera + reads a path).
+        assert_eq!(min_role_for(&Method::POST, "/api/import"), Role::Admin);
     }
 
     #[test]

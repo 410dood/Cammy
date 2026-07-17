@@ -199,6 +199,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/metrics", get(metrics))
         .route("/api/backup", get(backup))
         .route("/api/restore", axum::routing::post(restore))
+        .route("/api/import", axum::routing::post(import_footage))
         .route("/api/offsite/status", get(offsite_status))
         .route("/api/player/{file}", get(go2rtc_player))
         .route("/api/ws", get(stream_ws))
@@ -1586,6 +1587,66 @@ async fn add_camera(
     // cameras' live views keep playing.
     st.go2rtc.sync_streams(&st.db, false)?;
     Ok((StatusCode::CREATED, Json(cam)))
+}
+
+#[derive(Deserialize)]
+struct ImportReq {
+    /// Server-local path to a video file (NOT a browser upload in v0).
+    path: String,
+    /// Display name for the virtual camera the events land on; slugified server-side.
+    camera_name: String,
+    /// Optional base timestamp (unix secs) for the first sampled frame; defaults
+    /// to now() so the import appears at the top of the timeline.
+    #[serde(default)]
+    base_ts: Option<i64>,
+}
+
+/// POST /api/import — P3.10 offline footage import. Admin-only: it creates a
+/// camera row AND reads a server-local filesystem path. The work (ffmpeg decode +
+/// per-frame YOLO) is CPU-heavy, so it runs in `spawn_blocking`. The virtual
+/// camera it creates is `enabled = false`, so go2rtc / recorder / pipeline / health
+/// / mqtt all skip it — no stream reconcile needed.
+async fn import_footage(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(body): Json<ImportReq>,
+) -> ApiResult<Json<crate::import::ImportSummary>> {
+    // Defence in depth: the middleware already gates /api/import to Admin via
+    // min_role_for, but re-check here so the filesystem read can never run for a
+    // lesser role even if the route table changes.
+    if p.role < crate::auth::Role::Admin {
+        return Err(forbidden("importing footage requires an administrator"));
+    }
+    let path = body.path.trim().to_string();
+    if path.is_empty() || path.chars().any(char::is_control) {
+        return Err(bad_request(
+            "path must be a non-empty, control-character-free server file path",
+        ));
+    }
+    if body.camera_name.trim().is_empty() {
+        return Err(bad_request("a camera name is required"));
+    }
+    let (db, snaps, ffmpeg, camera_name, base_ts) = (
+        st.db.clone(),
+        st.snapshots_dir.clone(),
+        st.ffmpeg_bin.clone(),
+        body.camera_name.clone(),
+        body.base_ts,
+    );
+    let summary = tokio::task::spawn_blocking(move || {
+        crate::import::import_file(
+            &db,
+            ffmpeg.as_deref(),
+            &snaps,
+            &path,
+            &camera_name,
+            &crate::import::ImportOptions { base_ts },
+        )
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("import task failed: {e}")))?
+    .map_err(|e| bad_request(format!("{e:#}")))?;
+    Ok(Json(summary))
 }
 
 #[derive(Deserialize)]

@@ -988,6 +988,7 @@ export default function Cameras({
     load();
     const t = setInterval(() => { if (!document.hidden) load(); }, 5000);
     api.settings().then(setSettings).catch(() => {});
+    api.me().then((m) => setIsAdmin(m.role === "admin")).catch(() => {});
     api
       .capabilities()
       .then((r) => {
@@ -1022,6 +1023,12 @@ export default function Cameras({
   const [found, setFound] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanned, setScanned] = useState<DiscoveredCam[] | null>(null);
+  // P3.10 offline footage import (Admin-only surface; server enforces the gate).
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [importPath, setImportPath] = useState("");
+  const [importName, setImportName] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
 
   const scan = async () => {
     setScanning(true);
@@ -1058,6 +1065,26 @@ export default function Cameras({
     if (e.key === "Enter" && ip.trim() && !busy) {
       e.preventDefault();
       resolve();
+    }
+  };
+
+  const runImport = async (e: FormEvent) => {
+    e.preventDefault();
+    setImportBusy(true);
+    setImportResult(null);
+    try {
+      const r = await api.importFootage(importPath.trim(), importName.trim());
+      setImportResult(
+        `Scanned ${r.frames_scanned} frame${r.frames_scanned === 1 ? "" : "s"}, created ${r.events_created} event${r.events_created === 1 ? "" : "s"} on “${r.camera}”.`
+      );
+      toast.success(`Imported ${r.events_created} events from footage`);
+      setImportPath("");
+      setImportName("");
+      onChange();
+    } catch (err) {
+      onError(`Couldn't import that footage — check the file path is correct on the Cammy server and is a video file. (${errMsg(err)})`);
+    } finally {
+      setImportBusy(false);
     }
   };
 
@@ -1338,6 +1365,54 @@ export default function Cameras({
         </p>
         </details>
       </div>
+
+      {isAdmin && (
+      <div className="card" style={{ margin: 0 }}>
+        <details className="adv tune-sec">
+        <summary><IconFilm size={15} /> Import footage</summary>
+        <p className="muted" style={{ marginTop: 8 }}>
+          Run detection over an existing video file (a phone clip, a dashcam recording, exported
+          footage) to add its events to the archive. The file must already be on the machine
+          running Cammy — give its full path below. This is not an upload from your browser.
+        </p>
+        <Callout tone="info">
+          The footage is imported as a <strong>virtual camera</strong>: it appears in the list but
+          stays paused (it never goes live or records). Its events show up on the Events page like
+          any other, searchable and filterable.
+        </Callout>
+        <form onSubmit={runImport} className="row" style={{ marginTop: 10 }}>
+          <label className="field" style={{ flex: 1, minWidth: 320 }}>
+            video file path (on the Cammy server)
+            <input
+              type="text"
+              placeholder="C:\\Users\\me\\Videos\\dashcam.mp4"
+              value={importPath}
+              onChange={(e) => setImportPath(e.target.value)}
+              required
+              style={{ width: "100%" }}
+            />
+            <span className="feat-help">Sampled at about one frame per second, so a long clip takes a while.</span>
+          </label>
+          <label className="field" style={{ minWidth: 180 }}>
+            name for this footage
+            <input
+              type="text"
+              placeholder="dashcam-jul-16"
+              value={importName}
+              onChange={(e) => setImportName(e.target.value)}
+              required
+            />
+          </label>
+          <button className="btn btn-primary" disabled={importBusy || !importPath.trim() || !importName.trim()}>
+            {importBusy ? "Importing…" : "Import"}
+          </button>
+        </form>
+        {importResult && (
+          <span className="save-ok" style={{ marginTop: 8 }}><IconCheck size={14} /> {importResult}</span>
+        )}
+        </details>
+      </div>
+      )}
       </div>
 
       {tuning && (

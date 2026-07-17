@@ -24,6 +24,7 @@ mod gait;
 mod genai;
 mod go2rtc;
 mod health;
+mod import;
 mod licensing;
 pub mod lpr;
 mod mqtt;
