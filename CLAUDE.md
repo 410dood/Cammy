@@ -16,7 +16,30 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
-### Latest: web UX RE-AUDIT (v0.4 surfaces) — a11y / states / forms / mobile, 2026-07-17
+### Latest: deferred-backlog pair — P2.8b v1 hoist + camera-tagged system pushes, 2026-07-17
+
+Two documented deferrals closed on `main` (`0f14b47`, `eb439f7`); clippy -D
+warnings clean, 224 core tests, web tsc+vite green. Both are default-inert
+(no behavior change until feedback exists / a camera-scoped user subscribes),
+so no release restart was performed — the running NVR picks them up on its
+next scheduled rebuild.
+
+- **P2.8b v1 hoist** (`0f14b47`): "Not this" feedback now quiets **plain
+  label-match rules** too, not just prompt/attr + VLM paths. When a
+  (camera,label) has a thumbs-down corpus and a rule passes the cheap gates,
+  the object crop is CLIP-embedded at dispatch time and every matching fire is
+  suppressed if `any_similar` ≥ 0.90. Runs BEFORE `notify::ready` so a
+  suppressed match never burns a cooldown (the prompt path checks after —
+  pre-existing); the early embedding is stashed per event id and reused by the
+  Re-ID pass (no duplicate CLIP run). Fail-open at every step. The
+  `feedback_by_cam` tick load broadened from prompt-rules-only to any-rules.
+- **Camera-tagged system notifications** (`eb439f7`, closes the P2.11 "KNOWN
+  v0 LIMIT"): camera offline/online, tamper ×2, and absence ×2 rows now carry
+  `camera_id` via new `db.add_camera_notification`; the push worker's existing
+  `user_can_see_camera` gate then RBAC-scopes those pushes per user. Digest/
+  backup/mode/genai/schedule rows stay global by design.
+
+### Earlier: web UX RE-AUDIT (v0.4 surfaces) — a11y / states / forms / mobile, 2026-07-17
 
 A **second** 8-lens audit (same Workflow: parallel lens-finders → per-finding
 adversarial verify → ranked plan), scoped to the surfaces the first pass never
