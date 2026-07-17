@@ -16,6 +16,50 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: web UX/UI audit pass — a11y / states / forms / mobile / deep-linking, 2026-07-17
+
+An adversarially-verified **8-lens UX/UI audit** of `web/src` (66 findings → 18
+work items, each real+safe-verified) shipped web-only in **PR #34** (`c99b80c` +
+`d76d957`, merged `6d4a4a4` on `main`); `tsc`+`vite` green, CI green (web +
+rust×3), and live-validated in Chrome against the running NVR (4 cams). No
+backend change. Produced by a Workflow: 8 parallel lens-finders → per-finding
+adversarial verify → ranked plan; then implemented tier-by-tier.
+
+- **A11y / valid HTML:** removed nested `<button>`s on People (`.identity-card`
+  div + `.identity-open` activator + sibling actions — 0 `button>button` left);
+  Live saved-view chip + group tabs + Events explore pills adopt the accessible
+  `TogglePill`; CameraDetail is a focus-trapped `role=dialog`; `MoreSheet`
+  extracted (focus trap + restore + Escape); Notifications Escape-to-close; login
+  dialog/aria wiring; clickable Home "Last seen" rows; richer img `alt` +
+  `decoding=async`; nav-group label contrast bumped to WCAG.
+- **States / forms:** double-submit guards + success toasts (Alarms / API tokens
+  / onboarding); surfaced previously-swallowed errors (Events search, Settings
+  load → `ErrorState`+retry) + an Events first-load skeleton; Enter-submit /
+  `autoComplete` / `inputMode` across camera/SMTP/login/user/token forms; email +
+  `http(s)` validation on alarm targets; numeric clamps on per-camera tuning.
+- **Mobile:** ≥40–44px touch targets, 16px inputs (no iOS zoom), toasts lifted
+  above the bottom tab bar, `.table-scroll` on Settings tables, `min()` widths +
+  a `<480px` field reset to kill horizontal overflow. **GOTCHA (caught live):**
+  mobile `.ev-act`/`.toast-host` overrides were defeated by later
+  same-specificity base rules — a **second** `@media (max-width:768px)` block
+  placed *after* those base rules is required (media queries don't add
+  specificity; later source wins).
+- **IA / clarity:** `#/live/<id>` deep-links a camera detail view (refresh / Back
+  / bookmark all work — the view is fully URL-derived, no local `detail` state);
+  command palette gains arm/disarm/add-camera/run-digest; Family modes cross-link
+  to Live; friendlier copy + friendly detection-label names; literal colors/sizes
+  → design tokens (incl. exported `ZoneEditor` `COLORS` so the legend can't drift).
+- **Perf:** memoized the heavy Faces aggregation; `LiveVideo` keyed on a derived
+  `offline` so the first status poll doesn't blip the player; fixed a `Wall`
+  `visibilitychange` listener leak; `Live` PTZ probe keyed on the camera-id set.
+
+**Deliberately skipped (documented):** the mobile-primary Recordings→Alarms swap
+and nav-label↔h1 renames (debatable/subjective — current choices are defensible);
+toasting Faces' 3 secondary *polled* fetches (15s spam; main content already
+`ErrorState`s); perf P4–P6 (broad `useVisiblePoll` refactor + micro-memos — a
+focused follow-up); the wholesale lowercase→Title-case field-label relabel (that
+lowercase is a consistent house style — only the inconsistent buttons changed).
+
 ### Latest: HomeKit v1 COMPLETE — motion sensors + doorbell + pairing management, 2026-07-17
 
 All three slices of docs/agent-task-homekit-v1.md shipped on `main` (`1f7e4fb`,
