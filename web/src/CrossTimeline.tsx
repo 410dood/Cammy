@@ -3,7 +3,7 @@
 // Clicking a lane seeks that camera's recording at that moment. Coverage is
 // coalesced (not one div per 60s segment) so a full day stays light.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { CamEvent, Camera, Segment } from "./api";
 import { prettyLabel } from "./labels";
 
@@ -164,6 +164,20 @@ export default function CrossTimeline({
 
   const hasActivity = events.some((e) => e.ts >= start && e.ts <= nowTs);
 
+  // Per-camera coverage blocks + event ticks, precomputed once per data change
+  // instead of re-coalescing/filtering inside the render map on every cursor
+  // move or parent re-render.
+  const laneData = useMemo(() => {
+    const m = new Map<number, { blocks: Block[]; evs: CamEvent[] }>();
+    for (const cam of cameras) {
+      m.set(cam.id, {
+        blocks: coalesce(segments.filter((s) => s.camera_id === cam.id), segmentSecs),
+        evs: events.filter((e) => e.camera_id === cam.id && e.ts >= start),
+      });
+    }
+    return m;
+  }, [cameras, segments, events, segmentSecs, start]);
+
   return (
     <div className="xtl card">
       <div className="xtl-grid">
@@ -186,8 +200,7 @@ export default function CrossTimeline({
         </div>
       )}
       {cameras.map((cam) => {
-        const blocks = coalesce(segments.filter((s) => s.camera_id === cam.id), segmentSecs);
-        const evs = events.filter((e) => e.camera_id === cam.id && e.ts >= start);
+        const { blocks, evs } = laneData.get(cam.id) ?? { blocks: [], evs: [] };
         return (
           <div className="xtl-row" key={cam.id}>
             <div className="xtl-name" title={cam.name}>{cam.name}</div>

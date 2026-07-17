@@ -54,14 +54,14 @@ export default function CameraHotspots({
               key={cam.id}
               type="button"
               className="hotspot-chip"
-              title={`Jump to ${cam.name}`}
+              aria-label={`Jump to ${cam.name}${online ? "" : " (offline)"}`}
               onClick={() => {
                 // Same navigation as Live.showCamera / App.openCamera — the hash
                 // is the single source of truth for the open camera.
                 window.location.hash = `#/live/${cam.id}`;
               }}
             >
-              <span className={`fp-dot ${online ? "on" : "off"}`} />
+              <span className={`fp-dot ${online ? "on" : "off"}`} aria-hidden="true" />
               <span className="fp-label">{cam.name}</span>
             </button>
           );

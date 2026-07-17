@@ -875,7 +875,7 @@ function OffsiteStatusReadout() {
   }, []);
   if (!st || !st.enabled) return null;
   return (
-    <div className="row" style={{ gap: 16, marginTop: 4, flexWrap: "wrap", fontSize: 13 }}>
+    <div className="row" style={{ gap: 16, marginTop: 4, flexWrap: "wrap", fontSize: "var(--text-sm)" }}>
       <span className="muted">
         Status:{" "}
         {!st.configured ? (
@@ -930,7 +930,7 @@ function ArchiveStatusReadout() {
   if (!st || !st.enabled) return null;
   const totalSegs = st.per_camera.reduce((a, c) => a + c.segments, 0);
   return (
-    <div style={{ marginTop: 4, fontSize: 13 }}>
+    <div style={{ marginTop: 4, fontSize: "var(--text-sm)" }}>
       <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
         <span className="muted">
           Status:{" "}
@@ -971,6 +971,10 @@ function ArchiveStatusReadout() {
 function HomekitReadout({ enabled }: { enabled: boolean }) {
   const [hk, setHk] = useState<HomekitInfo | null>(null);
   const [gen, setGen] = useState(0);
+  // Which slow/destructive HomeKit op is in flight (e.g. "unpair:front-door",
+  // "reset:cameras"). While non-null, every pairing button disables so a second
+  // click can't overlap a PIN rotation / bridge restart.
+  const [hkBusy, setHkBusy] = useState<string | null>(null);
   const toast = useToast();
   const dialog = useDialog();
   useEffect(() => {
@@ -985,7 +989,7 @@ function HomekitReadout({ enabled }: { enabled: boolean }) {
   const refresh = () => setGen((g) => g + 1);
   if (!hk || !hk.enabled) return null;
   return (
-    <div style={{ marginTop: 8, fontSize: 14 }}>
+    <div style={{ marginTop: 8, fontSize: "var(--text-sm)" }}>
       <div className="row" style={{ alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <span className="muted">Camera pairing code</span>
         <code
@@ -1048,8 +1052,10 @@ function HomekitReadout({ enabled }: { enabled: boolean }) {
                     {n === 0 ? "not paired" : `${n} paired device${n === 1 ? "" : "s"}`}
                     {n > 0 && (
                       <button
+                        type="button"
                         className="pill"
                         style={{ marginLeft: 8 }}
+                        disabled={hkBusy !== null}
                         onClick={async () => {
                           const ok = await dialog.confirm({
                             title: `Unpair “${c}” from Apple Home?`,
@@ -1058,16 +1064,19 @@ function HomekitReadout({ enabled }: { enabled: boolean }) {
                             danger: true,
                           });
                           if (!ok) return;
+                          setHkBusy(`unpair:${c}`);
                           try {
                             await api.homekitUnpair(c);
                             toast.success(`“${c}” unpaired from HomeKit`);
                             refresh();
                           } catch (e) {
                             toast.error(`Couldn't unpair: ${e}`);
+                          } finally {
+                            setHkBusy(null);
                           }
                         }}
                       >
-                        Unpair
+                        {hkBusy === `unpair:${c}` ? "Unpairing…" : "Unpair"}
                       </button>
                     )}
                   </li>
@@ -1091,7 +1100,9 @@ function HomekitReadout({ enabled }: { enabled: boolean }) {
       </div>
       <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
         <button
+          type="button"
           className="pill"
+          disabled={hkBusy !== null}
           onClick={async () => {
             const ok = await dialog.confirm({
               title: "Reset ALL camera pairings?",
@@ -1100,19 +1111,24 @@ function HomekitReadout({ enabled }: { enabled: boolean }) {
               danger: true,
             });
             if (!ok) return;
+            setHkBusy("reset:cameras");
             try {
               await api.homekitReset("cameras");
               toast.success("Camera pairings reset — new code generated");
               refresh();
             } catch (e) {
               toast.error(`Reset failed: ${e}`);
+            } finally {
+              setHkBusy(null);
             }
           }}
         >
-          Reset camera pairings
+          {hkBusy === "reset:cameras" ? "Resetting…" : "Reset camera pairings"}
         </button>
         <button
+          type="button"
           className="pill"
+          disabled={hkBusy !== null}
           onClick={async () => {
             const ok = await dialog.confirm({
               title: "Reset the Cammy Sensors bridge?",
@@ -1121,16 +1137,19 @@ function HomekitReadout({ enabled }: { enabled: boolean }) {
               danger: true,
             });
             if (!ok) return;
+            setHkBusy("reset:sensors");
             try {
               await api.homekitReset("sensors");
               toast.success("Sensor bridge reset — re-pair with the new code");
               setTimeout(refresh, 3000);
             } catch (e) {
               toast.error(`Reset failed: ${e}`);
+            } finally {
+              setHkBusy(null);
             }
           }}
         >
-          Reset sensor bridge
+          {hkBusy === "reset:sensors" ? "Resetting…" : "Reset sensor bridge"}
         </button>
       </div>
     </div>
@@ -1588,6 +1607,13 @@ const SETTINGS_GROUPS: { key: GroupKey; label: string }[] = [
   { key: "license", label: "License" },
 ];
 
+// `#/settings/<group>` deep-links a tab (e.g. the license banner's "Activate"
+// shortcut). Read the group out of the current hash, if it names a known one.
+function groupFromHash(): GroupKey | null {
+  const arg = window.location.hash.replace(/^#\/?/, "").split("/")[1];
+  return arg && SETTINGS_GROUPS.some((g) => g.key === arg) ? (arg as GroupKey) : null;
+}
+
 // Reveal only the active group's cards. An untagged card is left visible on
 // every tab so a new card can't silently disappear. Also called from the save
 // path, so validation can reveal an invalid card before focusing it.
@@ -1981,7 +2007,29 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [tab, setTab] = useState<GroupKey>("detection");
+  const [tab, setTab] = useState<GroupKey>(() => groupFromHash() ?? "detection");
+  // Change tab AND reflect it in the URL for bookmarking/deep-links. Uses
+  // replaceState (not a hash assignment) so it never fires `hashchange` — the
+  // app-shell router stays out of it, and tab clicks don't spam history.
+  const selectTab = (g: GroupKey) => {
+    setTab(g);
+    try {
+      history.replaceState(null, "", `#/settings/${g}`);
+    } catch {
+      /* history unavailable (e.g. sandboxed) — tab still switches */
+    }
+  };
+  // Sync the tab when the hash changes to a different group (e.g. clicking the
+  // license banner's "Activate" link while already on the Settings page, or
+  // Back/Forward between deep-linked tabs).
+  useEffect(() => {
+    const onHash = () => {
+      const g = groupFromHash();
+      if (g) setTab(g);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   // Whether a remote-access password is set (null = still loading). Owned here
   // (not in RemoteAccessCard) so the page-level banner sees it on every tab.
   const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);
@@ -2055,7 +2103,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
       const card = bad?.closest<HTMLElement>("[data-settings-group]");
       const g = card?.dataset.settingsGroup as GroupKey | undefined;
       if (g) {
-        setTab(g);
+        selectTab(g);
         applySettingsGroup(g); // reveal now — don't race the tab effect
       }
       requestAnimationFrame(() => (bad ?? form).reportValidity());
@@ -2084,12 +2132,12 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
       {authEnabled === false && (
         <Callout tone="warn">
           <b>No password set</b> — anyone who can reach this server has full access.{" "}
-          <button type="button" className="btn btn-ghost" onClick={() => setTab("security")}>
+          <button type="button" className="btn btn-ghost" onClick={() => selectTab("security")}>
             Set a password
           </button>
         </Callout>
       )}
-      <SettingsTabs active={tab} onSelect={setTab} />
+      <SettingsTabs active={tab} onSelect={selectTab} />
       <form onSubmit={save} noValidate>
         <ModelsCard />
         <div className="card" data-settings-group="detection">
@@ -2213,7 +2261,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
                 GPU uses this OS's accelerator (DirectML/CoreML/CUDA). Choose CPU if GPU detection
                 causes problems — slower but more compatible.
-                {!openvinoAvailable && " OpenVINO (Intel iGPU/NPU) needs a build with the Intel EP."}
+                {!openvinoAvailable && " OpenVINO (Intel iGPU/NPU) needs a special build compiled with Intel OpenVINO support."}
               </span>
             </label>
             <label className="field">
@@ -2421,7 +2469,9 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             <label className="field" style={{ flex: 1, minWidth: 320 }}>
               AI endpoint (OpenAI-compatible chat URL)
               <input
-                type="text"
+                type="url"
+                inputMode="url"
+                required={s.ask_enabled}
                 placeholder="http://localhost:1234/v1"
                 value={s.ask_endpoint ?? ""}
                 onChange={(e) => set({ ask_endpoint: e.target.value })}
@@ -2444,6 +2494,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               API key (blank for local)
               <input
                 type="password"
+                autoComplete="new-password"
                 value={s.ask_api_key ?? ""}
                 onChange={(e) => set({ ask_api_key: e.target.value })}
               />
@@ -2733,7 +2784,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             />
             Back up only clips around events (saves upload/storage)
           </label>
-          <p className="muted" style={{ margin: "0 0 8px 26px", fontSize: 13 }}>
+          <p className="muted" style={{ margin: "0 0 8px 26px", fontSize: "var(--text-sm)" }}>
             Only mirror the recordings that cover a detection — not 24/7 footage. Saved (bookmarked)
             clips are always backed up.
           </p>
@@ -2810,7 +2861,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             write-only here (never sent back; leave blank to keep it). A private/LAN primary URL
             is fine.
           </p>
-          <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
+          <p className="muted" style={{ marginTop: 0, fontSize: "var(--text-sm)" }}>
             v0 mirrors <b>recording segments only</b> — events, faces and plates are not copied
             yet. Pulled cameras appear disabled, in an <code>archive</code> group, and are never
             recorded/detected on locally.
@@ -2827,7 +2878,9 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             <label className="field" style={{ flex: 1, minWidth: 300 }}>
               primary URL
               <input
-                type="text"
+                type="url"
+                inputMode="url"
+                required={s.archive_pull_enabled}
                 placeholder="https://nvr.example:8080"
                 value={s.archive_primary_url}
                 onChange={(e) => set({ archive_primary_url: e.target.value })}
@@ -2853,7 +2906,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               onChange={(e) => set({ archive_cameras: e.target.value })}
             />
           </label>
-          <p className="muted" style={{ margin: "0 0 8px", fontSize: 13 }}>
+          <p className="muted" style={{ margin: "0 0 8px", fontSize: "var(--text-sm)" }}>
             Comma-separated remote camera names to mirror. Leave blank to pull every camera the
             token can see.
           </p>
@@ -2881,7 +2934,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             />
             Run the HomeKit bridge
           </label>
-          <p className="muted" style={{ margin: "0 0 4px", fontSize: 13 }}>
+          <p className="muted" style={{ margin: "0 0 4px", fontSize: "var(--text-sm)" }}>
             After you <b>Save</b>, choose which cameras appear in Home with the “Expose to HomeKit”
             switch under each camera&rsquo;s <b>Detection tuning</b> (Cameras page). A sensitive /
             no-clip camera stays off HomeKit unless you explicitly expose it.

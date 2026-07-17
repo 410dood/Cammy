@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 
 import { api, type Entitlement, type LicenseInfo } from "./api";
 import { IconInfo, IconAlert, IconCheck } from "./icons";
-import { Callout, ErrorState, useToast } from "./ui";
+import { Callout, ErrorState, useToast, useDialog } from "./ui";
 
 /** Days-left threshold below which the shell banner appears. */
 const NUDGE_WINDOW_DAYS = 7;
@@ -88,6 +88,9 @@ export function LicenseBanner() {
           <a className="btn btn-primary" href={info.buy_url} target="_blank" rel="noreferrer">
             Buy a license
           </a>
+          <a className="btn btn-ghost" href="#/settings/license">
+            Already purchased? Activate
+          </a>
           {!expired && (
             <button
               type="button"
@@ -137,6 +140,7 @@ function StatusLine({ ent, trialDays }: { ent: Entitlement; trialDays: number })
  *  Activation/removal are Admin-only server-side; a non-admin's attempt 403s. */
 export function LicensePane() {
   const toast = useToast();
+  const dialog = useDialog();
   const [info, setInfo] = useState<LicenseInfo | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [key, setKey] = useState("");
@@ -185,6 +189,13 @@ export function LicensePane() {
   };
 
   const remove = async () => {
+    const ok = await dialog.confirm({
+      title: "Remove license from this machine?",
+      body: "This computer returns to unlicensed (Cammy keeps running). Do this before moving the license to another machine.",
+      confirmLabel: "Remove license",
+      danger: true,
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       await api.removeLicense();
@@ -224,6 +235,7 @@ export function LicensePane() {
           <div className="row">
             <input
               type="text"
+              aria-label="License key"
               placeholder="CAMMY-…"
               value={key}
               spellCheck={false}

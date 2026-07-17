@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { api, AttributesCatalog, CamEvent, Camera, fmtTime, Segment, SimilarResult } from "../api";
 import { useToast, useDialog, Modal, RelTime, EmptyState, ErrorState, TogglePill, Callout } from "../ui";
 import Timeline from "../Timeline";
@@ -24,7 +24,7 @@ import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil, IconLink, IconShield,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
   IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX, IconVideo,
-  IconChevronLeft, IconChevronRight, IconThumbDown, IconRadar, IconRoute, IconGrid,
+  IconChevronLeft, IconChevronRight, IconThumbDown, IconRadar, IconRoute, IconGrid, IconLock,
 } from "../icons";
 import LifecycleModal from "../LifecycleModal";
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
@@ -638,7 +638,10 @@ export default function Events({
   // object's crop embedding so CLIP-similar FUTURE alerts on the same camera are
   // quieted — honest v0: only AI-watch (prompt/attribute) and AI-verified (VLM)
   // rules are filtered, not plain object rules.
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
   const suppressAlert = async (ev: CamEvent) => {
+    if (feedbackBusy) return;
+    setFeedbackBusy(true);
     try {
       const r = await api.eventFeedback(ev.id);
       if (r.ok) {
@@ -652,6 +655,8 @@ export default function Events({
       }
     } catch (e) {
       toast.error(`Couldn't send feedback: ${e}`);
+    } finally {
+      setFeedbackBusy(false);
     }
   };
   const toggleSelect = (id: number) =>
@@ -816,32 +821,49 @@ export default function Events({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraId, label, fromTime, toTime, flaggedOnly, tagFilter]);
 
-  const labels = [...new Set(events.map((e) => e.label))];
-  const faces = [...new Set(events.map((e) => e.face).filter(Boolean))] as string[];
-  const gestures = [...new Set(events.map((e) => e.gesture).filter(Boolean))] as string[];
-  const zones = [...new Set(events.map((e) => e.zone).filter(Boolean))] as string[];
-  let shown =
-    searchResults ??
-    (review === "alerts" ? events.filter((e) => alertLabels.includes(e.label)) : events);
-  if (faceFilter) shown = shown.filter((e) => e.face === faceFilter);
-  if (gestureFilter) shown = shown.filter((e) => e.gesture === gestureFilter);
-  if (zoneFilter) shown = shown.filter((e) => e.zone === zoneFilter);
-  if (highOnly) shown = shown.filter((e) => (e.severity ?? 2) >= 3);
-  if (plateFilter.trim())
-    shown = shown.filter((e) =>
-      (e.plate ?? "").toUpperCase().includes(plateFilter.trim().toUpperCase())
-    );
-  // Apply the time window client-side too, so it also narrows smart-search
-  // results (the server only time-filters the plain list, not the search).
-  const afterTs = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
-  const beforeTs = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
-  if (afterTs != null) shown = shown.filter((e) => e.ts >= afterTs);
-  if (beforeTs != null) shown = shown.filter((e) => e.ts < beforeTs);
+  // Filter-option lists (rescanned only when the event set changes, not on every
+  // keystroke/hover/modal toggle).
+  const { labels, faces, gestures, zones } = useMemo(
+    () => ({
+      labels: [...new Set(events.map((e) => e.label))],
+      faces: [...new Set(events.map((e) => e.face).filter(Boolean))] as string[],
+      gestures: [...new Set(events.map((e) => e.gesture).filter(Boolean))] as string[],
+      zones: [...new Set(events.map((e) => e.zone).filter(Boolean))] as string[],
+    }),
+    [events],
+  );
+
+  // The filtered event set — recomputed only when the events or a filter change.
+  const shown = useMemo(() => {
+    let s =
+      searchResults ??
+      (review === "alerts" ? events.filter((e) => alertLabels.includes(e.label)) : events);
+    if (faceFilter) s = s.filter((e) => e.face === faceFilter);
+    if (gestureFilter) s = s.filter((e) => e.gesture === gestureFilter);
+    if (zoneFilter) s = s.filter((e) => e.zone === zoneFilter);
+    if (highOnly) s = s.filter((e) => (e.severity ?? 2) >= 3);
+    if (plateFilter.trim())
+      s = s.filter((e) => (e.plate ?? "").toUpperCase().includes(plateFilter.trim().toUpperCase()));
+    // Apply the time window client-side too, so it also narrows smart-search
+    // results (the server only time-filters the plain list, not the search).
+    const afterTs = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
+    const beforeTs = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
+    if (afterTs != null) s = s.filter((e) => e.ts >= afterTs);
+    if (beforeTs != null) s = s.filter((e) => e.ts < beforeTs);
+    return s;
+  }, [
+    searchResults, review, events, alertLabels, faceFilter, gestureFilter, zoneFilter,
+    highOnly, plateFilter, fromTime, toTime,
+  ]);
 
   // A3: optionally collapse runs of detections into activity clusters.
-  const list: { ev: CamEvent; cluster?: Cluster }[] = grouped
-    ? groupEvents(shown).map((c) => ({ ev: c.rep, cluster: c }))
-    : shown.map((ev) => ({ ev }));
+  const list = useMemo<{ ev: CamEvent; cluster?: Cluster }[]>(
+    () =>
+      grouped
+        ? groupEvents(shown).map((c) => ({ ev: c.rep, cluster: c }))
+        : shown.map((ev) => ({ ev })),
+    [grouped, shown],
+  );
 
   // Detail-viewer navigation through the list as currently filtered/ordered
   // (newest first): ← steps to the newer event, → to the older one.
@@ -867,11 +889,13 @@ export default function Events({
 
   // Explore: object-type counts across the loaded window (pre object-filter).
   const exploreBase = searchResults ?? events;
-  const counts = exploreBase.reduce<Record<string, number>>((acc, e) => {
-    acc[e.label] = (acc[e.label] ?? 0) + 1;
-    return acc;
-  }, {});
-  const topLabels = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const topLabels = useMemo(() => {
+    const counts = exploreBase.reduce<Record<string, number>>((acc, e) => {
+      acc[e.label] = (acc[e.label] ?? 0) + 1;
+      return acc;
+    }, {});
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  }, [exploreBase]);
 
   return (
     <>
@@ -1504,10 +1528,11 @@ export default function Events({
             )}
             <button
               className="btn btn-ghost ev-act"
+              disabled={feedbackBusy}
               title="Not a real alert? Quiet future look-alikes on this camera. Note: this only quiets AI-watch and AI-verified rules — plain object rules aren't filtered yet."
               onClick={() => suppressAlert(open)}
             >
-              <IconThumbDown size={14} /> Not this
+              <IconThumbDown size={14} /> {feedbackBusy ? "Sending…" : "Not this"}
             </button>
             <span className="lightbox-sep" aria-hidden="true" />
             <button
@@ -1548,7 +1573,7 @@ export default function Events({
               title={recTitle("Save a tamper-evident copy (watermarked clip plus a signed manifest) that anyone can verify offline. Instructions are included in the file.")}
               onClick={() => exportBundle(open)}
             >
-              <IconShield size={14} /> Bundle
+              <IconLock size={14} /> Signed .zip
             </button>
             {(openPrev || openNext) && (
               <span className="muted lightbox-hint" aria-hidden="true">
@@ -1598,18 +1623,16 @@ export default function Events({
           }}
         >
           {hasResults && (
-            <div className="arm-bar" role="tablist" aria-label="Appearance results view">
+            <div className="arm-bar" role="group" aria-label="Appearance results view">
               <button
-                role="tab"
-                aria-selected={simView === "grid"}
+                aria-pressed={simView === "grid"}
                 className={`arm-opt ${simView === "grid" ? "active" : ""}`}
                 onClick={() => setSimView("grid")}
               >
                 <IconGrid size={15} /> Grid
               </button>
               <button
-                role="tab"
-                aria-selected={simView === "journey"}
+                aria-pressed={simView === "journey"}
                 className={`arm-opt ${simView === "journey" ? "active" : ""}`}
                 onClick={() => setSimView("journey")}
               >
@@ -1618,13 +1641,17 @@ export default function Events({
             </div>
           )}
 
+          {/* Identity disclaimer shows on BOTH Grid (the default landing tab) and
+              Journey — this is appearance-similarity, never confirmed identity. */}
+          {hasResults && (
+            <Callout tone="info">
+              These are <b>appearance-similarity</b> matches (same-looking clothing or
+              vehicle), <b>not confirmed identity</b>. Review each one before acting.
+            </Callout>
+          )}
+
           {simView === "journey" && hasResults ? (
             <div className="journey">
-              <Callout tone="info">
-                These are <b>appearance-similarity</b> matches (same-looking clothing or
-                vehicle), <b>not confirmed identity</b>. Review each one before acting.
-              </Callout>
-
               <div className="journey-steps">
                 {steps.map((s, i) => (
                   <button key={s.ev.id} className="journey-step" onClick={() => pick(s.ev)}>
@@ -1692,7 +1719,7 @@ export default function Events({
                     src={`/api/snapshots/${similar.ev.snapshot}?w=360`}
                     alt={`${similar.ev.label} on ${similar.ev.camera}`}
                     decoding="async"
-                    style={{ width: "100%", borderRadius: 8, border: "2px solid var(--accent-border)" }}
+                    style={{ width: "100%", borderRadius: "var(--r-md)", border: "2px solid var(--accent-border)" }}
                   />
                   <div className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
                     query · {fmtTime(similar.ev.ts)}
@@ -1781,9 +1808,9 @@ export default function Events({
               <img
                 src={imgSearch.url}
                 alt="Your uploaded query photo"
-                style={{ width: "100%", borderRadius: 8, border: "2px solid var(--accent-border)" }}
+                style={{ width: "100%", borderRadius: "var(--r-md)", border: "2px solid var(--accent-border)" }}
               />
-              <div className="muted" style={{ fontSize: "0.78rem", marginTop: 4 }}>
+              <div className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
                 uploaded photo
               </div>
             </div>

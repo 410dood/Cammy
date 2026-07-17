@@ -18,10 +18,12 @@ function hourLabel(h: number): string {
 
 function Stat({ label, value, sub }: { label: string; value: React.ReactNode; sub?: string }) {
   return (
-    <div className="card" style={{ margin: 0, padding: "16px 18px" }}>
-      <div className="stat-value tnum" style={{ fontSize: "1.5rem", fontWeight: 700 }}>{value}</div>
-      <div className="stat-label muted">{label}</div>
-      {sub && <div className="muted" style={{ fontSize: "var(--text-xs)" }}>{sub}</div>}
+    <div className="stat-card">
+      <div className="stat-body">
+        <div className="stat-value tnum">{value}</div>
+        <div className="stat-label">{label}</div>
+        {sub && <div className="stat-sub muted">{sub}</div>}
+      </div>
     </div>
   );
 }
@@ -31,6 +33,10 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
   const [data, setData] = useState<Timeseries | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // Tapped/focused bar readout — the chart's touch + keyboard + SR alternative
+  // to the hover-only tooltip (which never appears on a phone).
+  const [selDay, setSelDay] = useState<string | null>(null);
+  const [selHour, setSelHour] = useState<string | null>(null);
 
   const load = () => {
     setLoaded(false);
@@ -111,22 +117,33 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
           <div className="card">
             <h2>Detections per day</h2>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 170, marginTop: 8 }}>
-              {data.days.map((d) => (
-                <div
-                  key={d.ts}
-                  title={`${d.day}: ${d.count.toLocaleString()} detections`}
-                  style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }}
-                >
-                  <div
-                    style={{
-                      height: `${(d.count / maxDay) * 100}%`,
-                      minHeight: d.count > 0 ? 3 : 0,
-                      background: "var(--accent)",
-                      borderRadius: "3px 3px 0 0",
-                    }}
-                  />
-                </div>
-              ))}
+              {data.days.map((d) => {
+                const readout = `${d.day}: ${d.count.toLocaleString()} detections`;
+                return (
+                  <button
+                    key={d.ts}
+                    type="button"
+                    className="chart-bar"
+                    title={readout}
+                    aria-label={readout}
+                    aria-pressed={selDay === readout}
+                    onClick={() => setSelDay(readout)}
+                    style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }}
+                  >
+                    <div
+                      style={{
+                        height: `${(d.count / maxDay) * 100}%`,
+                        minHeight: d.count > 0 ? 3 : 0,
+                        background: "var(--accent)",
+                        borderRadius: "3px 3px 0 0",
+                      }}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+            <div className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 6, minHeight: "1.2em" }} aria-live="polite">
+              {selDay ?? "Tap a bar for its count."}
             </div>
             <div style={{ display: "flex", gap: 3, marginTop: 6 }}>
               {data.days.map((d, i) => (
@@ -151,10 +168,10 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
                     <div style={{ width: 96, textAlign: "right", textTransform: "capitalize", fontSize: "var(--text-sm)" }}>
                       {prettyLabel(label)}
                     </div>
-                    <div style={{ flex: 1, height: 18, background: "var(--surface-hover)", borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{ flex: 1, height: 18, background: "var(--surface-hover)", borderRadius: "var(--radius-xs)", overflow: "hidden" }}>
                       <div
                         title={`${n.toLocaleString()} detections`}
-                        style={{ width: `${(n / maxLabel) * 100}%`, height: "100%", background: "var(--accent)", borderRadius: 4 }}
+                        style={{ width: `${(n / maxLabel) * 100}%`, height: "100%", background: "var(--accent)", borderRadius: "var(--radius-xs)" }}
                       />
                     </div>
                     <div className="tnum muted" style={{ width: 60, textAlign: "right", fontSize: "var(--text-sm)" }}>
@@ -168,23 +185,34 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
             <div className="card">
               <h2>Activity by hour of day</h2>
               <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 150, marginTop: 8 }}>
-                {data.by_hour.map((c, h) => (
-                  <div
-                    key={h}
-                    title={`${hourLabel(h)}: ${c.toLocaleString()} detections`}
-                    style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }}
-                  >
-                    <div
-                      style={{
-                        height: `${(c / maxHour) * 100}%`,
-                        minHeight: c > 0 ? 2 : 0,
-                        background: h === busiestHour ? "var(--accent)" : "var(--accent-muted, var(--accent))",
-                        opacity: h === busiestHour ? 1 : 0.55,
-                        borderRadius: "2px 2px 0 0",
-                      }}
-                    />
-                  </div>
-                ))}
+                {data.by_hour.map((c, h) => {
+                  const readout = `${hourLabel(h)}: ${c.toLocaleString()} detections`;
+                  return (
+                    <button
+                      key={h}
+                      type="button"
+                      className="chart-bar"
+                      title={readout}
+                      aria-label={readout}
+                      aria-pressed={selHour === readout}
+                      onClick={() => setSelHour(readout)}
+                      style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }}
+                    >
+                      <div
+                        style={{
+                          height: `${(c / maxHour) * 100}%`,
+                          minHeight: c > 0 ? 2 : 0,
+                          background: h === busiestHour ? "var(--accent)" : "var(--accent-muted, var(--accent))",
+                          opacity: h === busiestHour ? 1 : 0.55,
+                          borderRadius: "2px 2px 0 0",
+                        }}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 6, minHeight: "1.2em" }} aria-live="polite">
+                {selHour ?? "Tap a bar for its count."}
               </div>
               <div style={{ display: "flex", gap: 2, marginTop: 6 }}>
                 {data.by_hour.map((_, h) => (

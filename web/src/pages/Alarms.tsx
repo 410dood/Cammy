@@ -163,6 +163,11 @@ export default function Alarms({
   const hasDeter = actions.some((a) => a.kind === "deterrence");
   const [deterCaps, setDeterCaps] = useState<DeterCaps | null>(null);
   const [deterLoading, setDeterLoading] = useState(false);
+  // A pulse fires a PHYSICAL relay (siren/light); one shared in-flight flag
+  // disables every Test button so rapid clicks can't queue overlapping pulses.
+  const [deterTesting, setDeterTesting] = useState(false);
+  // Which rule's "Test" (fires the real webhook/push/email) is in flight.
+  const [testingId, setTestingId] = useState<number | null>(null);
   useEffect(() => {
     if (!hasDeter || cameraId === "") {
       setDeterCaps(null);
@@ -194,7 +199,8 @@ export default function Alarms({
     };
   }, [hasDeter, cameraId]);
   const testRelay = async (token: string) => {
-    if (cameraId === "") return;
+    if (cameraId === "" || deterTesting) return;
+    setDeterTesting(true);
     try {
       await api.deterTest(cameraId as number, token, 2);
       toast.success(
@@ -202,6 +208,8 @@ export default function Alarms({
       );
     } catch (e) {
       onError(errMsg(e));
+    } finally {
+      setDeterTesting(false);
     }
   };
 
@@ -736,8 +744,11 @@ export default function Alarms({
                     <button
                       className="btn btn-ghost ev-act"
                       style={{ marginLeft: 8 }}
+                      disabled={testingId === r.id}
                       title="Fire this rule's actions once with a synthetic test event — verifies the webhook/push/email wiring without waiting for a detection"
                       onClick={async () => {
+                        if (testingId != null) return;
+                        setTestingId(r.id);
                         try {
                           await api.testAlarm(r.id);
                           toast.success(
@@ -745,10 +756,12 @@ export default function Alarms({
                           );
                         } catch (e) {
                           onError(String(e));
+                        } finally {
+                          setTestingId(null);
                         }
                       }}
                     >
-                      Test
+                      {testingId === r.id ? "Sending…" : "Test"}
                     </button>
                     <button
                       className="btn btn-ghost ev-act"
@@ -1122,11 +1135,11 @@ export default function Alarms({
                         <button
                           type="button"
                           className="ghost"
-                          disabled={!a.target}
+                          disabled={!a.target || deterTesting}
                           title="Pulse this relay now to confirm the siren/light is wired (the camera must accept the command)"
                           onClick={() => testRelay(a.target)}
                         >
-                          Test
+                          {deterTesting ? "Pulsing…" : "Test"}
                         </button>
                       </div>
                     ) : (
