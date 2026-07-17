@@ -1208,6 +1208,13 @@ pub struct Settings {
     /// Seconds a discovery binary_sensor stays "ON" after a detection before it
     /// is auto-cleared to "OFF".
     pub mqtt_state_timeout_secs: u64,
+    /// INBOUND MQTT control (P3.3): when on, the NVR subscribes to
+    /// `<mqtt_prefix>/cmd/#` and accepts arm/disarm + camera-trigger commands
+    /// published to the broker. OFF by default — this is a control surface:
+    /// ANYONE who can publish to your broker can arm/disarm and trigger cameras,
+    /// so only enable it on a broker you trust. Every accepted command is audited.
+    #[serde(default)]
+    pub mqtt_commands_enabled: bool,
     /// Optional webhook body template. Empty = the default detection JSON.
     /// Placeholders: {{event_id}} {{camera}} {{label}} {{score}} {{ts}}
     /// {{snapshot}} {{face}} {{plate}} {{gesture}} (unknowns render empty).
@@ -1446,6 +1453,7 @@ impl Default for Settings {
             mqtt_ha_discovery: true,
             mqtt_ha_prefix: "homeassistant".into(),
             mqtt_state_timeout_secs: 30,
+            mqtt_commands_enabled: false,
             webhook_template: String::new(),
             face_recognition: true,
             face_match_threshold: 0.4,

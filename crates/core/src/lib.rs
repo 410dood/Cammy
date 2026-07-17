@@ -48,6 +48,7 @@ mod tamper;
 pub mod tls;
 mod totp;
 mod transcribe;
+mod trigger;
 mod util;
 mod webpush;
 mod zonestate;
@@ -178,6 +179,15 @@ pub async fn run(
     let mqtt_tx_pose = mqtt_tx.clone();
     let mqtt_tx_onvif = mqtt_tx.clone();
     let mqtt_tx_api = mqtt_tx.clone();
+    // P3.3: the MQTT worker re-injects inbound-command events (a `<prefix>/cmd/trigger`
+    // creates a real soft-trigger event) back onto this channel so they publish +
+    // broadcast through the one choke point like any other event.
+    let mqtt_tx_cmd = mqtt_tx.clone();
+    // P3.3: a live SSE event feed (`GET /api/events/stream`). The MQTT worker taps
+    // EVERY EventMsg it consumes into this broadcast (even when outbound MQTT is
+    // off), and the SSE handler subscribes per client. The initial receiver is
+    // dropped; late subscribers get events from the moment they connect.
+    let (events_bcast_tx, _) = tokio::sync::broadcast::channel::<mqtt::EventMsg>(256);
     // The GenAI worker fires VLM-gated alarms after off-thread verification.
     let mqtt_tx_genai = mqtt_tx.clone();
     // Shared per-rule cooldown clock across pipeline / audio / API dispatch.
@@ -222,8 +232,18 @@ pub async fn run(
             }
         })?;
     let mqtt_thread = std::thread::Builder::new().name("mqtt".into()).spawn({
-        let (db, stop) = (db.clone(), workers_stop.clone());
-        move || mqtt::run(db, mqtt_rx, stop)
+        let (db, go2rtc, snaps, stop) = (
+            db.clone(),
+            go2rtc.clone(),
+            snapshots_dir.clone(),
+            workers_stop.clone(),
+        );
+        let (cmd_tx, bcast_tx, throttle) = (
+            mqtt_tx_cmd,
+            events_bcast_tx.clone(),
+            alarm_throttle.clone(),
+        );
+        move || mqtt::run(db, go2rtc, snaps, mqtt_rx, cmd_tx, bcast_tx, throttle, stop)
     })?;
     let health_thread = std::thread::Builder::new().name("health".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
@@ -350,6 +370,7 @@ pub async fn run(
         mqtt_tx: mqtt_tx_api,
         alarm_throttle,
         onvif_inspector,
+        events_tx: events_bcast_tx,
     };
     let ui =
         ServeDir::new(&cfg.ui_dir).not_found_service(ServeFile::new(cfg.ui_dir.join("index.html")));

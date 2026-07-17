@@ -263,6 +263,50 @@ brute-force throttle and loopback exemption would then key off an attacker-spoof
 
 ---
 
+## 5b. Home Assistant integration (P3.3)
+
+Cammy talks to Home Assistant three ways — pick any combination:
+
+**1. MQTT discovery (outbound, already shipped).** Point Settings → Notifications
+→ MQTT at your broker; with "Home Assistant discovery" on, Cammy auto-creates a
+`binary_sensor` per (camera, object) and a "last detection" sensor per camera,
+and publishes its arm mode retained to `<prefix>/mode`. No YAML.
+
+**2. Live SSE event feed (outbound, new).** `GET /api/events/stream` is a
+Server-Sent-Events stream of new events — one `data:` line of compact JSON
+`{event_id, camera, label, score, ts, snapshot}` per event, plus `:` keep-alive
+comments. Viewer-role; authenticate with an API token
+(`Authorization: Bearer zoomy_<hex>` from Settings → API tokens). It is
+**RBAC-scoped identically to `GET /api/events`** (a scoped token only sees its
+cameras), and works even when outbound MQTT is disabled. Verify by hand:
+
+```bash
+curl -N -H "Authorization: Bearer zoomy_XXXX" http://NVR:8080/api/events/stream
+```
+
+**3. Inbound MQTT commands (control surface, opt-in, default OFF, new).** Turn on
+Settings → Notifications → "Accept commands over MQTT". Cammy then subscribes to
+`<prefix>/cmd/#` and accepts:
+
+| Topic | Payload | Effect |
+| --- | --- | --- |
+| `<prefix>/cmd/arm` | `home` \| `away` \| `disarmed` | Set the system security mode (like `PUT /api/arm`). |
+| `<prefix>/cmd/trigger` | camera id or exact name | Log a bookmarked soft-trigger event on that camera and fire matching alarm rules (like `POST /api/cameras/{id}/trigger`). |
+
+> ⚠️ **This is a control surface.** Anyone who can publish to your MQTT broker can
+> arm/disarm and trigger cameras. Only enable it on a broker you control, and keep
+> the broker itself authenticated. Every accepted command is written to Cammy's
+> security audit log; malformed/unknown commands are ignored.
+
+**Custom component (v0 skeleton).** A Home Assistant `custom_component` that
+consumes the SSE feed (last-event sensor + per-camera motion binary_sensors)
+lives under [`integrations/homeassistant/`](integrations/homeassistant/). It is a
+documented **starting point, not tested on a live HA instance** — see its README
+for install (manual copy to `config/custom_components/cammy/`, or HACS custom
+repository).
+
+---
+
 ## 6. Releasing (maintainers): auto-update artifacts + code signing
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`: it fetches go2rtc/

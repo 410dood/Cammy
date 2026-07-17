@@ -47,6 +47,9 @@ pub struct AppState {
     /// P2.1 — recent raw camera-side (ONVIF) notifications per camera, for the
     /// Blue Iris-style event inspector.
     pub onvif_inspector: crate::onvif_events::InspectorBoard,
+    /// P3.3 — live event broadcast for the SSE feed (`GET /api/events/stream`).
+    /// The MQTT worker taps every EventMsg here; each SSE client `subscribe()`s.
+    pub events_tx: tokio::sync::broadcast::Sender<crate::mqtt::EventMsg>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -71,6 +74,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cameras/{id}/timelapse", axum::routing::post(create_timelapse))
         .route("/api/cameras/{id}/timelapse.mp4", get(serve_timelapse))
         .route("/api/events", get(list_events))
+        .route("/api/events/stream", get(events_stream))
         .route("/api/events/{id}", get(get_event_api))
         .route("/api/events/export.csv", get(export_events_csv))
         .route(
@@ -2370,6 +2374,90 @@ async fn get_event_api(
     Ok(Json(ev))
 }
 
+/// P3.3 — live Server-Sent-Events feed of new events (`GET /api/events/stream`,
+/// Viewer). Every detection/audio/trigger event the MQTT worker consumes is
+/// re-broadcast here; each client subscribes and receives compact JSON lines
+/// `{event_id,camera,label,score,ts,snapshot}`. This is the read side of the
+/// Home Assistant integration (the HACS component consumes it), and works even
+/// when outbound MQTT is disabled.
+///
+/// RBAC: filtered IDENTICALLY to `list_events` — a scoped user only sees events
+/// for cameras in their allow-list. The scope + camera name→id map are captured
+/// at connect (a long-lived stream; a scope change applies on reconnect, the
+/// same read-once model `list_events` uses per request). Fails CLOSED for a
+/// scoped caller on an unresolved camera name.
+async fn events_stream(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<
+    axum::response::Sse<
+        impl futures_util::Stream<
+            Item = Result<axum::response::sse::Event, std::convert::Infallible>,
+        >,
+    >,
+> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    let allow = allowed_cameras(&st, &p)?;
+    // EventMsg carries the camera NAME; the allow-list is camera ids, so build a
+    // name→id map to bridge them (only needed for a scoped caller).
+    let name_to_id: std::collections::HashMap<String, i64> = if allow.is_some() {
+        st.db
+            .list_cameras()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| (c.name, c.id))
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+    let rx = st.events_tx.subscribe();
+    let stream = futures_util::stream::unfold(
+        (rx, allow, name_to_id),
+        move |(mut rx, allow, name_to_id)| async move {
+            loop {
+                match rx.recv().await {
+                    Ok(msg) => {
+                        // Only the base publish (topic None) is a real, deduped
+                        // event; custom-topic re-publishes (mqtt-action rules, the
+                        // arm-mode state topic) are skipped.
+                        if msg.topic.is_some() {
+                            continue;
+                        }
+                        // RBAC: a scoped caller sees only their cameras' events;
+                        // an unresolved name fails closed (not in their scope).
+                        if let Some(set) = &allow {
+                            match name_to_id.get(&msg.camera) {
+                                Some(cid) if set.contains(cid) => {}
+                                _ => continue,
+                            }
+                        }
+                        let data = serde_json::json!({
+                            "event_id": msg.event_id,
+                            "camera": msg.camera,
+                            "label": msg.label,
+                            "score": msg.score,
+                            "ts": msg.ts,
+                            "snapshot": msg.snapshot,
+                        })
+                        .to_string();
+                        // Default (unnamed "message") SSE event so a plain
+                        // browser `EventSource.onmessage` and curl both see it.
+                        let ev = Event::default().data(data);
+                        return Some((Ok(ev), (rx, allow, name_to_id)));
+                    }
+                    // A slow client fell behind: skip the missed events, don't die.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::debug!("events SSE lagged, dropped {n}");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        },
+    );
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
 /// Object-lifecycle view (P2.16): the ordered story of the physical object behind
 /// a tracker-driven event — "entered zone → loitered → crossed line". Returns
 /// `{available:false}` for an event with no `track_id` (ordinary detection /
@@ -2706,11 +2794,13 @@ async fn record_gesture(
         let key = cam.name.clone();
         let masks = cam.detect_config.privacy_masks.clone();
         let abs = snap_abs.clone();
-        tokio::task::spawn_blocking(move || save_gesture_snapshot(&api_base, &key, &masks, &abs))
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .map(|_| snap_rel.clone())
+        tokio::task::spawn_blocking(move || {
+            crate::trigger::save_masked_snapshot(&api_base, &key, &masks, &abs)
+        })
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|_| snap_rel.clone())
     };
 
     let id = st.db.add_event(
@@ -2894,125 +2984,30 @@ async fn soft_trigger(
         .ok_or_else(not_found)?;
     // A scoped user can't create events / fire alarms on a camera they can't see.
     require_camera(&allowed_cameras(&st, &p)?, cam.id)?;
-    let settings = st.db.settings();
     let now = chrono::Local::now().timestamp();
 
-    // Best-effort context snapshot of what the camera sees right now.
-    let snap_rel = format!("{}-trigger-{}.jpg", cam.name, now);
-    let snap_abs = st.snapshots_dir.join(&snap_rel);
-    let snapshot = {
-        let api_base = st.go2rtc.api_base();
-        let key = cam.name.clone();
-        let masks = cam.detect_config.privacy_masks.clone();
-        let abs = snap_abs.clone();
-        tokio::task::spawn_blocking(move || save_gesture_snapshot(&api_base, &key, &masks, &abs))
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .map(|_| snap_rel.clone())
+    // Record the event (snapshot + row + bookmark + base publish) on a blocking
+    // task so the response has the id, then fire alarms DETACHED so blocking
+    // webhook/relay I/O never holds up the button's confirmation. Both steps are
+    // the shared `crate::trigger` helpers the inbound MQTT `cmd/trigger` reuses.
+    let ctx = crate::trigger::TriggerCtx {
+        db: st.db.clone(),
+        go2rtc: st.go2rtc.clone(),
+        snapshots_dir: st.snapshots_dir.clone(),
+        mqtt_tx: st.mqtt_tx.clone(),
+        alarm_throttle: st.alarm_throttle.clone(),
     };
-
-    let id = st.db.add_event(
-        cam.id,
-        now,
-        &label,
-        1.0,
-        [0.0; 4],
-        snapshot.as_deref(),
-        None,
-        None,
-        None,
-        None,
-    )?;
-    // Bookmark it: a deliberate button press is a moment the user chose to keep.
-    let _ = st.db.set_event_bookmark(id, true, None);
-    tracing::info!(camera = %cam.name, label = %label, event = id, "soft trigger recorded");
-
-    let snap_url = snapshot
-        .as_ref()
-        .map(|s| format!("/api/snapshots/{s}"))
-        .unwrap_or_default();
-    let _ = st.mqtt_tx.send(crate::mqtt::EventMsg {
-        event_id: id,
-        camera: cam.name.clone(),
-        label: label.clone(),
-        score: 1.0,
-        ts: now,
-        snapshot: snap_url.clone(),
-        topic: None,
+    let (ctx1, cam1, label1) = (ctx.clone(), cam.clone(), label.clone());
+    let rec = tokio::task::spawn_blocking(move || {
+        crate::trigger::record_event(&ctx1, &cam1, &label1, now)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    let id = rec.event_id;
+    let (cam2, label2) = (cam.clone(), label.clone());
+    tokio::task::spawn_blocking(move || {
+        crate::trigger::fire_alarms(&ctx, &cam2, &label2, now, &rec);
     });
-
-    // Fire matching alarm rules off-thread (blocking I/O must not stall the
-    // response), mirroring the gesture endpoint.
-    let rules: Vec<(crate::db::AlarmRule, u32)> = st
-        .db
-        .list_alarms()?
-        .into_iter()
-        .filter(|r| {
-            r.matches(cam.id, &label, 1.0, None, None, None, None)
-                && r.zone_ok(None)
-                && r.confirm_ok(&st.db, cam.id, now)
-                && crate::notify::armed_in_mode(&r.modes, &settings.arm_mode)
-                && crate::notify::ready(r, &st.alarm_throttle, now)
-        })
-        .map(|r| {
-            let suppressed = crate::notify::take_suppressed(&st.alarm_throttle, r.id);
-            (r, suppressed)
-        })
-        .collect();
-    if !rules.is_empty() {
-        let mqtt_tx = st.mqtt_tx.clone();
-        let base_url = settings.public_base_url.clone();
-        let webhook_template = settings.webhook_template.clone();
-        let notify_min_severity = settings.notify_min_severity;
-        let smtp_owned = (!settings.smtp_url.trim().is_empty()).then(|| {
-            (
-                settings.smtp_url.clone(),
-                settings.smtp_user.clone(),
-                settings.smtp_pass.clone(),
-                settings.smtp_from.clone(),
-                settings.smtp_to.clone(),
-            )
-        });
-        let camera = cam.name.clone();
-        let label_owned = label.clone();
-        let snap_path = snapshot.as_ref().map(|_| snap_abs.clone());
-        let db = st.db.clone(); // for the per-user notification write in fire() (P2.11)
-        tokio::task::spawn_blocking(move || {
-            let ev = crate::notify::AlarmEvent {
-                event_id: id,
-                camera: &camera,
-                label: &label_owned,
-                score: 1.0,
-                ts: now,
-                snapshot_url: &snap_url,
-                snapshot_path: snap_path.as_deref(),
-                face: None,
-                plate: None,
-                gesture: None,
-                transcript: None,
-                speed: None,
-                base_url: &base_url,
-                webhook_template: &webhook_template,
-                smtp: smtp_owned
-                    .as_ref()
-                    .map(|(u, us, pw, f, t)| crate::notify::SmtpConfig {
-                        url: u,
-                        user: us,
-                        pass: pw,
-                        from: f,
-                        to: t,
-                    }),
-                duress: false,
-                severity: crate::severity::severity_for(&label_owned, None, None),
-                min_push_severity: notify_min_severity,
-                caption: None,
-            };
-            for (rule, suppressed) in &rules {
-                crate::notify::fire(rule, &ev, &mqtt_tx, *suppressed, &db);
-            }
-        });
-    }
 
     Ok(Json(serde_json::json!({
         "recorded": true,
@@ -3020,39 +3015,6 @@ async fn soft_trigger(
         "label": label,
         "camera": cam.name,
     })))
-}
-
-/// Fetch the camera's current frame from go2rtc and write it to `path`, with
-/// the camera's privacy masks burned in — this is a raw frame grab (unlike the
-/// detection pipeline, which masks before analysis), so without this the
-/// gesture/soft-trigger snapshots would leak masked regions into pushes.
-fn save_gesture_snapshot(
-    api_base: &str,
-    camera: &str,
-    masks: &[Vec<[f32; 2]>],
-    path: &std::path::Path,
-) -> anyhow::Result<()> {
-    use std::io::Read as _;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let url = format!("{api_base}/api/frame.jpeg?src={camera}");
-    let resp = ureq::get(&url)
-        .timeout(std::time::Duration::from_secs(5))
-        .call()?;
-    let mut bytes = Vec::new();
-    resp.into_reader()
-        .take(32 * 1024 * 1024)
-        .read_to_end(&mut bytes)?;
-    if !masks.is_empty() {
-        // Fail CLOSED on a decode error: better no snapshot than an unmasked one.
-        let mut img = image::load_from_memory(&bytes)?;
-        crate::pipeline::apply_privacy_masks(&mut img, masks);
-        img.save(path)?;
-        return Ok(());
-    }
-    std::fs::write(path, &bytes)?;
-    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -5347,7 +5309,7 @@ async fn delete_presence(
     }
 }
 
-fn mode_phrase(mode: &str) -> &'static str {
+pub(crate) fn mode_phrase(mode: &str) -> &'static str {
     match mode {
         "home" => "armed (Home)",
         "disarmed" => "disarmed",

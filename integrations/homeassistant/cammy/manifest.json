@@ -1,0 +1,11 @@
+{
+  "domain": "cammy",
+  "name": "Cammy NVR",
+  "codeowners": ["@410dood"],
+  "config_flow": true,
+  "documentation": "https://github.com/410dood/Cammy/tree/main/integrations/homeassistant",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/410dood/Cammy/issues",
+  "requirements": [],
+  "version": "0.0.1"
+}

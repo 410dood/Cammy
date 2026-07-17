@@ -2739,6 +2739,37 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             </label>
           </div>
           <div className="row" style={{ marginTop: 10 }}>
+            <label className="toggle field">
+              Accept commands over MQTT (arm / trigger)
+              <input
+                type="checkbox"
+                checked={s.mqtt_commands_enabled ?? false}
+                onChange={() => set({ mqtt_commands_enabled: !s.mqtt_commands_enabled })}
+              />
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Lets Home Assistant (or any broker client) arm/disarm and trigger cameras by
+                publishing to <code>{(s.mqtt_prefix || "zoomy")}/cmd/arm</code> (payload{" "}
+                <code>home</code>/<code>away</code>/<code>disarmed</code>) and{" "}
+                <code>{(s.mqtt_prefix || "zoomy")}/cmd/trigger</code> (payload = camera id or name).
+              </span>
+            </label>
+          </div>
+          {s.mqtt_commands_enabled && (
+            <div className="callout callout-warn" role="note" style={{ marginTop: 8 }}>
+              <span className="callout-ico"><IconAlert size={16} /></span>
+              <div>
+                This is a control surface: <b>anyone who can publish to your MQTT broker can
+                arm/disarm and trigger cameras.</b> Only enable it on a broker you trust and control.
+                Every accepted command is written to the security audit log.
+              </div>
+            </div>
+          )}
+          <p className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 8 }}>
+            Home Assistant can also read a live event feed at{" "}
+            <code>GET /api/events/stream</code> (Server-Sent Events, Bearer-token auth). See the
+            Cammy Home Assistant custom component under <code>integrations/homeassistant/cammy</code>.
+          </p>
+          <div className="row" style={{ marginTop: 10 }}>
             <label className="field" style={{ flex: 1, minWidth: 420 }}>
               webhook body template (empty = default JSON)
               <textarea

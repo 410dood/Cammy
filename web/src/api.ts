@@ -258,6 +258,7 @@ export interface Settings {
   mqtt_ha_discovery: boolean;
   mqtt_ha_prefix: string;
   mqtt_state_timeout_secs: number;
+  mqtt_commands_enabled: boolean;
   webhook_template: string;
   face_recognition: boolean;
   face_match_threshold: number;
