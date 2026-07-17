@@ -26,6 +26,7 @@ mod gait;
 mod genai;
 mod go2rtc;
 mod health;
+mod homekit;
 mod import;
 mod licensing;
 pub mod lpr;
@@ -342,6 +343,16 @@ pub async fn run(
         move || posture::run(db, go2rtc, dir, tx, throttle, stop)
     })?;
 
+    // P3.4 v1a: the in-process "Cammy Sensors" HAP bridge (HomeKit motion
+    // sensors). Idles (no listener, no mDNS) unless Settings.homekit_enabled
+    // AND a camera opts in via homekit_expose; consumes the same event
+    // broadcast tap as the SSE feed.
+    let homekit_thread = std::thread::Builder::new().name("homekit".into()).spawn({
+        let (db, stop) = (db.clone(), workers_stop.clone());
+        let (data_dir, tx) = (cfg.data_dir.clone(), events_bcast_tx.clone());
+        move || homekit::run(db, data_dir, tx, stop)
+    })?;
+
     // go2rtc watchdog.
     tokio::spawn({
         let (db, go2rtc, stop) = (db.clone(), go2rtc.clone(), workers_stop.clone());
@@ -454,6 +465,7 @@ pub async fn run(
         let _ = push_thread.join();
         let _ = offsite_thread.join();
         let _ = archive_thread.join();
+        let _ = homekit_thread.join();
     })
     .await;
     go2rtc.stop();

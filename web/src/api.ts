@@ -367,6 +367,11 @@ export interface HomekitInfo {
   enabled: boolean;
   /** Display-formatted setup code (XXX-XX-XXX); empty while the bridge is off. */
   pin: string;
+  /** v1a: setup code for the separate "Cammy Sensors" motion-sensor bridge —
+   *  a SECOND pairing beside the per-camera ones. Empty while off. */
+  bridge_pin?: string;
+  /** TCP port the sensor bridge serves HAP on (for firewall rules). */
+  bridge_port?: number;
   exposed_cameras: string[];
 }
 

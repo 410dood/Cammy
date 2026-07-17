@@ -983,7 +983,7 @@ function HomekitReadout({ enabled }: { enabled: boolean }) {
   return (
     <div style={{ marginTop: 8, fontSize: 14 }}>
       <div className="row" style={{ alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span className="muted">Pairing code</span>
+        <span className="muted">Camera pairing code</span>
         <code
           style={{
             fontSize: "var(--text-lg)",
@@ -998,12 +998,36 @@ function HomekitReadout({ enabled }: { enabled: boolean }) {
           {hk.pin || "—"}
         </code>
       </div>
+      {hk.bridge_pin ? (
+        <div className="row" style={{ alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 6 }}>
+          <span className="muted">Motion-sensor pairing code (“Cammy Sensors”)</span>
+          <code
+            style={{
+              fontSize: "var(--text-lg)",
+              fontWeight: 700,
+              letterSpacing: "0.06em",
+              padding: "4px 10px",
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-sm)",
+            }}
+          >
+            {hk.bridge_pin}
+          </code>
+        </div>
+      ) : null}
       <ol className="muted" style={{ margin: "8px 0 0", paddingLeft: 20 }}>
         <li>
           On your iPhone/iPad, open <b>Home</b> &rarr; <b>+</b> &rarr; <b>Add Accessory</b>.
         </li>
         <li>
-          Tap <b>More options…</b> and pick your Cammy camera, then enter the code above.
+          Tap <b>More options…</b> and pick your Cammy camera, then enter the camera code above.
+          Repeat for each exposed camera.
+        </li>
+        <li>
+          Motion sensors are a <b>second, separate accessory</b>: add <b>Cammy Sensors</b> the same
+          way with its own code. One pairing brings the motion sensor for every exposed camera —
+          they drive Home automations (“when motion, turn on the lights”).
         </li>
       </ol>
       <div className="muted" style={{ marginTop: 6 }}>
@@ -2744,16 +2768,17 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         </div>
 
         <div className="card" data-settings-group="security">
-          <h2>Apple HomeKit (live view)</h2>
+          <h2>Apple HomeKit</h2>
           <p className="muted" style={{ marginTop: 0 }}>
-            Expose selected cameras to Apple <b>Home</b> as HomeKit cameras, so you can view them in
-            the Home app and on Apple TV. Cammy&rsquo;s built-in streamer runs the HomeKit bridge —
-            no extra software. It&rsquo;s off by default; the camera and your Apple hub (HomePod /
+            Expose selected cameras to Apple <b>Home</b>: live view in the Home app / Apple TV,
+            plus a <b>motion sensor per camera</b> for Home automations. Cammy runs both bridges
+            itself — no extra software. Off by default; the cameras and your Apple hub (HomePod /
             Apple TV / iPad) must be on the <b>same local network</b> for pairing to work.
           </p>
           <Callout tone="info">
-            This is a <b>v0: live view only</b> (no motion or event notifications into HomeKit yet),
-            and pairing must be done on a real Apple device — we can&rsquo;t verify it from here.
+            HomeKit needs <b>two pairings</b>: each camera is its own accessory (live view), and
+            all motion sensors arrive together as one “<b>Cammy Sensors</b>” bridge with its own
+            code. Pairing must be done on a real Apple device — we can&rsquo;t verify it from here.
           </Callout>
           <label className="row" style={{ alignItems: "center", gap: 8, marginTop: 8 }}>
             <input

@@ -46,6 +46,10 @@ whisper-rs.workspace = true
 # Email (SMTP) alarm action. rustls-tls resolves onto ring (our pinned crypto) —
 # vetted to NOT pull aws-lc-sys / openssl / CMake. Blocking SmtpTransport.
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "rustls-tls", "hostname"] }
+# P3.4 HomeKit v1: in-process HAP bridge for motion sensors ("Cammy Sensors").
+# Pre-release crate, pinned EXACTLY (API churns between pre-releases; the HAP
+# protocol itself is frozen). See docs/agent-task-homekit-v1.md.
+hap = "=0.1.0-pre.15"
 
 detector = { path = "../detector" }
 facerec = { path = "../facerec" }

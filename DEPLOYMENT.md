@@ -307,16 +307,28 @@ repository).
 
 ---
 
-## 5c. Apple HomeKit bridge (P3.4, v0 — live view only)
+## 5c. Apple HomeKit bridge (P3.4 — live view + motion sensors)
 
-Cammy can expose selected cameras to Apple **Home** as HomeKit cameras, so you
-can view live feeds in the Home app and on Apple TV. Cammy's already-supervised
-go2rtc streamer runs the HomeKit (HAP) accessory server — **no extra software**.
+Cammy can expose selected cameras to Apple **Home**: live view in the Home app
+and on Apple TV (via the already-supervised go2rtc streamer's HAP server), plus
+— since v1a — **one HomeKit motion sensor per exposed camera** (via Cammy's own
+in-process "Cammy Sensors" HAP bridge), which is what unlocks Home automations
+("when motion at the front door, turn on the porch light"). **No extra
+software.**
 
-**It is a v0: live view only.** There is no motion / event → HomeKit
-characteristic glue yet (that's future work), and **pairing must be done on a
-real Apple device — it cannot be verified from the server side.** Default is OFF,
-and when off the generated `go2rtc.yaml` is byte-for-byte unchanged.
+**Two pairings, honestly.** Each camera is its own HomeKit accessory with the
+*camera* code; all motion sensors arrive together as ONE extra "Cammy Sensors"
+bridge accessory with its *own* code (both codes are on the Settings card). This
+is a HomeKit protocol limitation — go2rtc's camera accessory cannot carry sensor
+services — so the Home app shows the sensor as a separate accessory; you can
+still reference both in the same automation/room. A motion sensor turns on when
+Cammy detects motion-driven events (person/vehicle/animal, tripwire, loitering,
+zone entry) on that camera and clears ~45 s after the last one.
+
+**Pairing must be done on a real Apple device — it cannot be verified from the
+server side.** Default is OFF: when off, the generated `go2rtc.yaml` is
+byte-for-byte unchanged AND the sensor bridge never binds a socket or announces
+itself on mDNS.
 
 **Network requirement.** HomeKit discovers accessories over **mDNS/Bonjour** on
 the local network, so the NVR host and your Apple hub (HomePod / Apple TV / an
@@ -324,6 +336,19 @@ iPad kept at home) **must be on the same LAN / broadcast domain**. It does not
 traverse subnets, VLANs, or a VPN without an mDNS reflector, and it is not
 reachable remotely (use the Home hub for that). The HAP server binds a port on
 all interfaces; keep the NVR on a trusted LAN.
+
+**Windows Firewall.** The sensor bridge answers mDNS itself and serves HAP on
+TCP `32180`, so on Windows allow both in (the §2 rule only covered the web UI):
+
+```powershell
+netsh advfirewall firewall add rule name="Cammy HomeKit mDNS" dir=in action=allow protocol=UDP localport=5353
+netsh advfirewall firewall add rule name="Cammy HomeKit sensors" dir=in action=allow protocol=TCP localport=32180
+```
+
+If "Cammy Sensors" never appears in the Home app's nearby-accessory list, the
+mDNS rule (UDP 5353) is the usual culprit; a multi-homed NVR (several NICs) can
+also announce on the wrong interface — disable unused adapters or add the code
+manually via **More options… → My accessory isn't shown here**.
 
 **Enable + pair:**
 
@@ -334,10 +359,13 @@ all interfaces; keep the NVR on a trusted LAN.
 2. For each camera you want in Home, open **Cameras → Detection tuning → Stream &
    recording → "Expose to HomeKit"** and save. A sensitive / no-clip camera stays
    **off** HomeKit unless you explicitly expose it here.
-3. Back on the Settings HomeKit card, note the **pairing code** (shown as
-   `XXX-XX-XXX`).
+3. Back on the Settings HomeKit card, note the **two pairing codes** (shown as
+   `XXX-XX-XXX`): the camera code and the "Cammy Sensors" code.
 4. On your iPhone/iPad on the same Wi-Fi: **Home app → + → Add Accessory → More
-   options…**, pick the Cammy camera, and enter the code.
+   options…**, pick the Cammy camera, and enter the camera code. Repeat per
+   camera.
+5. Add **Cammy Sensors** the same way with its own code — one pairing brings the
+   motion sensor for every exposed camera.
 
 **Identity / pairing persistence.** Cammy generates and persists the pairing PIN
 and a stable per-camera HomeKit identity (device id + private key) in its

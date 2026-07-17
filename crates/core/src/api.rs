@@ -6094,15 +6094,22 @@ async fn get_homekit(
         .filter(|c| c.enabled && c.detect_config.homekit_expose)
         .map(|c| c.name)
         .collect();
-    // Only generate/reveal the PIN once the bridge is actually on.
-    let pin = if s.homekit_enabled {
-        crate::go2rtc::format_homekit_pin(&crate::go2rtc::homekit_pin(&st.db))
+    // Only generate/reveal the PINs once the bridge is actually on.
+    let (pin, bridge_pin) = if s.homekit_enabled {
+        (
+            crate::go2rtc::format_homekit_pin(&crate::go2rtc::homekit_pin(&st.db)),
+            crate::go2rtc::format_homekit_pin(&crate::homekit::bridge_pin(&st.db)),
+        )
     } else {
-        String::new()
+        (String::new(), String::new())
     };
     Ok(Json(serde_json::json!({
         "enabled": s.homekit_enabled,
         "pin": pin,
+        // v1a: the in-process "Cammy Sensors" motion-sensor bridge is a SECOND,
+        // separately-paired accessory with its own PIN.
+        "bridge_pin": bridge_pin,
+        "bridge_port": crate::homekit::BRIDGE_PORT,
         "exposed_cameras": exposed,
     })))
 }

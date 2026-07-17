@@ -78,6 +78,15 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 # in-tree version so the graph doesn't change.
 ring = "0.17"
 
+# P3.4 HomeKit v1: hap 0.1.0-pre.15 (as published) depends on BOTH
+# `get_if_addrs` (get_if_addrs-sys, links="ifaddrs") and `libmdns 0.6`
+# (if-addrs-sys, links="ifaddrs"), which cargo cannot resolve — two crates may
+# not link the same native library. hap only ever calls `get_if_addrs()` to
+# find the first non-loopback local IP, so we substitute a zero-dependency
+# in-tree shim. See crates/vendor/get_if_addrs.
+[patch.crates-io]
+get_if_addrs = { path = "crates/vendor/get_if_addrs" }
+
 [workspace.package]
 edition = "2021"
 license = "MIT OR Apache-2.0"

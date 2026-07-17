@@ -353,7 +353,7 @@ fn rand_bytes(n: usize) -> Vec<u8> {
 
 /// Generate an 8-digit HAP setup code, avoiding the HAP-invalid trivial codes
 /// (all-same-digit and the reserved sequentials) so a real device can pair.
-fn gen_pin() -> String {
+pub(crate) fn gen_hap_pin() -> String {
     const INVALID: [&str; 12] = [
         "00000000", "11111111", "22222222", "33333333", "44444444", "55555555",
         "66666666", "77777777", "88888888", "99999999", "12345678", "87654321",
@@ -376,7 +376,7 @@ pub fn homekit_pin(db: &Db) -> String {
             return p;
         }
     }
-    let p = gen_pin();
+    let p = gen_hap_pin();
     let _ = db.set_kv("homekit.pin", &p);
     p
 }
@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(format_homekit_pin("19550224"), "195-50-224");
         assert_eq!(format_homekit_pin("195-50-224"), "195-50-224");
         // A generated PIN is exactly 8 digits and never a trivial/invalid code.
-        let p = gen_pin();
+        let p = gen_hap_pin();
         assert_eq!(p.len(), 8);
         assert!(p.bytes().all(|c| c.is_ascii_digit()));
         assert_ne!(p, "12345678");

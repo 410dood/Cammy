@@ -1,0 +1,17 @@
+[package]
+# In-tree SHIM for the abandoned `get_if_addrs` crate, wired in via
+# [patch.crates-io] in the workspace root. Why: `hap 0.1.0-pre.15` depends on
+# BOTH `get_if_addrs 0.5` (-> get_if_addrs-sys, links = "ifaddrs") and
+# `libmdns 0.6` (-> if-addrs -> if-addrs-sys, links = "ifaddrs"), and cargo
+# forbids two crates linking the same native library, so the published crate
+# graph cannot resolve at all. hap uses exactly one function from it
+# (`get_if_addrs()` to find the first non-loopback local IP), so this shim
+# implements just that surface with zero dependencies.
+name = "get_if_addrs"
+version = "0.5.3"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Local shim for hap-rs: minimal get_if_addrs() without the ifaddrs links conflict"
+
+[lib]
+path = "src/lib.rs"
