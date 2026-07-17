@@ -16,6 +16,46 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: HomeKit v1 COMPLETE — motion sensors + doorbell + pairing management, 2026-07-17
+
+All three slices of docs/agent-task-homekit-v1.md shipped on `main` (`1f7e4fb`,
+`2036b19`, `d592b3a`, + critical fix `a116e16`), release-rebuilt, NVR restarted
+and live-validated on :8080 (**5/5 cams online+recording after — pool2/cam6
+recovered on its own**). clippy -D warnings clean, 224 core tests, web green.
+
+- **v1a motion sensors**: new `homekit.rs` worker runs an in-process hap-rs
+  ("Cammy Sensors", hap `=0.1.0-pre.15` pinned, TCP 32180) HAP bridge — one
+  MotionSensor per `homekit_expose` camera off the events broadcast tap
+  (motion-ish labels → MotionDetected, 45s auto-clear). Default-off: no socket,
+  no mDNS until enabled+exposed; v0 go2rtc camera pairing untouched. The
+  published hap crate DOESN'T RESOLVE (two `links="ifaddrs"` deps) → zero-dep
+  `crates/vendor/get_if_addrs` shim via `[patch.crates-io]`. A 3-lens
+  adversarial review confirmed + fixed 4 real bugs pre-commit (per-generation
+  throwaway runtime so stale controller sessions die; catch_unwind around hap's
+  mDNS `expect`; aid-cache prune + c# bump on un-expose; 0700 secret dir).
+- **v1b doorbell**: `DetectConfig.homekit_doorbell` → StatelessProgrammableSwitch
+  (single press on YAMNet "Doorbell" / soft trigger `doorbell`). Deliberately a
+  plain switch, not a HomeKit Doorbell service (Home rejects doorbells lacking a
+  camera stream service) — documented honestly in UI + DEPLOYMENT.md.
+- **v1c pairing management**: GET /api/homekit gains per-camera pairing counts +
+  bridge count; POST /api/homekit/unpair + /api/homekit/reset (cameras rotates
+  PIN+identities via new `Go2Rtc::restart_dropping(DropPairings)`; sensors sets a
+  KV marker the worker consumes between generations — race-free). Settings card:
+  two clearly-labeled pairing codes, Unpair per camera, two danger-confirmed
+  resets.
+- **`a116e16` CRITICAL (found live, would have hit the owner immediately):**
+  every bridge teardown ABORTED the whole NVR — libmdns 0.6.3 `Drop` impls panic
+  (`expect`) when the mDNS FSM task is already gone, and it always is (it lives
+  in hap's run_handle future, which borrows the server) ⇒ double panic ⇒ abort.
+  Vendored `crates/vendor/libmdns` with a non-panicking send. Re-validated live:
+  reset/unpair/un-expose all tear down cleanly, NVR stays healthy.
+
+**Owner checklist (Apple side can't be validated here):** pair "Cammy Sensors"
+(second code on Settings → Apple HomeKit) after exposing cameras; check a
+motion event flips the sensor; Windows Firewall UDP 5353 + TCP 32180
+(DEPLOYMENT.md §5c). At validation time no camera had homekit_expose on — that
+prior owner state was restored exactly.
+
 ### Latest: roadmap-finish Wave 5 — ecosystem (P3.5·1 + P3.10 + P3.3 + P3.2 + P3.9 + P3.4) — ROADMAP COMPLETE, 2026-07-16
 
 Final wave — **all 18 docs/08 Phase-2-remainder + Phase-3 features are now

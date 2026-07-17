@@ -1,8 +1,45 @@
 # Agent task — HomeKit v1 (motion sensors + doorbell + pairing management)
 
-**Status: RECON DONE (2026-07-17), BUILD NOT STARTED.** v0 (live-view via go2rtc's
-HAP server) shipped in `d71ac96` and is owner-verified working. This doc holds the
-architecture recon for v1 so a fresh session can build without re-deriving it.
+**Status: v1 COMPLETE (2026-07-17).** All three slices shipped + pushed on `main`,
+release-rebuilt and live-validated on :8080 (5/5 cams online+recording after):
+
+- **v1a motion sensors** (`1f7e4fb`): `crates/core/src/homekit.rs` worker runs the
+  in-process hap-rs "Cammy Sensors" bridge (hap `=0.1.0-pre.15`, TCP 32180,
+  FileStorage under `data/homekit-bridge/`, KV `homekit.bridge_pin`), one
+  MotionSensor per exposed camera off the events broadcast tap (motion-ish labels,
+  45s auto-clear). NOTE: the published hap crate graph cannot resolve (two crates
+  `links = "ifaddrs"`) — fixed with a zero-dep `crates/vendor/get_if_addrs` shim
+  via `[patch.crates-io]`. 3-lens adversarial review confirmed + fixed: throwaway
+  runtime per generation (stale controller sessions), catch_unwind (hap mDNS
+  `expect`), aid-cache prune + c# bump on un-expose, 0700 secret dir. One finding
+  refuted (bridge PIN Viewer-readable — get_homekit has an in-handler Admin gate).
+- **v1b doorbell** (`2036b19`): `DetectConfig.homekit_doorbell` →
+  StatelessProgrammableSwitch (aid = id+1+2^20), single press on YAMNet
+  "Doorbell" or a soft trigger labeled `doorbell`. Deliberately NOT a HomeKit
+  Doorbell service (Home rejects doorbells without a camera stream service).
+- **v1c pairing management** (`d592b3a`): per-camera pairing counts + bridge count
+  in GET /api/homekit; POST /api/homekit/unpair {camera}; POST /api/homekit/reset
+  {target: cameras|sensors} (Admin, audited). Sensor reset = KV marker consumed by
+  the WORKER between generations (race-free); rides config_sig for prompt teardown.
+- **`a116e16` CRITICAL follow-up fix (live-repro'd):** every bridge teardown
+  ABORTED the NVR — libmdns 0.6.3's Responder/Service `Drop` impls `.expect()` on
+  a channel whose FSM task (inside hap's run_handle future, which borrows the
+  server) always drops first ⇒ double panic in one unwind ⇒ process abort.
+  Vendored `crates/vendor/libmdns` via `[patch.crates-io]` with a non-panicking
+  send. Re-validated: reset rotates PIN with the server healthy; un-expose
+  releases 32180; go2rtc.yaml stays homekit-free when nothing is exposed.
+
+**LIVE-VALIDATED (server side):** bridge binds LAN IP:32180 only when
+homekit_enabled + ≥1 exposed camera; teardown/rebuild/reset/unpair all clean;
+honest 404 on unknown camera; audit rows written. **NEEDS OWNER (Apple side):**
+pair "Cammy Sensors" in the Home app (second code on the Settings card), verify a
+motion event flips the sensor + 45s clear, doorbell press on a chime, and Windows
+Firewall UDP 5353 + TCP 32180 rules (DEPLOYMENT.md §5c). Note: at validation time
+NO camera had homekit_expose on (owner's current state, restored byte-identical).
+
+---
+
+Original recon below (kept for reference).
 
 ## Recon findings (grounded, cited)
 
