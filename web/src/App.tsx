@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import { api, AppConfig, Camera, Notification } from "./api";
-import { useFocusTrap, useToast } from "./ui";
+import { useFocusTrap, usePolling, useToast } from "./ui";
 import NotificationsPanel from "./Notifications";
 import Onboarding, { shouldOnboard } from "./Onboarding";
 import Home from "./pages/Home";
@@ -376,9 +376,6 @@ export default function App() {
     refresh(); // cameras load once on mount; Cameras-page edits call refresh() again
 
     api.config().then(setConfig).catch((e) => setError(friendlyError(e)));
-    loadNotifs();
-    // Pause the always-on notification poll while the tab is backgrounded.
-    const notifTimer = setInterval(() => { if (!document.hidden) loadNotifs(); }, 20000);
     // Cmd/Ctrl-K toggles the command palette.
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
@@ -391,9 +388,10 @@ export default function App() {
       window.removeEventListener("zoomy-401", onLocked);
       window.removeEventListener("hashchange", applyHash);
       window.removeEventListener("keydown", onKey);
-      clearInterval(notifTimer);
     };
   }, []);
+  // Always-on notification poll: paused while backgrounded, instant on return.
+  usePolling(loadNotifs, 20000);
 
   const commands: Command[] = [
     ...PAGES.map((p) => {

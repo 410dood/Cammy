@@ -7,7 +7,7 @@ import CameraDetail from "../CameraDetail";
 import LiveVideo from "../LiveVideo";
 import Wall from "../Wall";
 import PrivacyOverlay from "../PrivacyOverlay";
-import { useToast, useDialog, EmptyState, TogglePill } from "../ui";
+import { useToast, useDialog, EmptyState, TogglePill, usePolling } from "../ui";
 import {
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight,
   IconPlus, IconMinus, IconExpand, IconRecDot, IconX, IconVideo, IconAlert,
@@ -104,15 +104,12 @@ export default function Live({
   const [viewName, setViewName] = useState<string | null>(null);
   const settingsRef = useRef<Settings | null>(null);
 
+  usePolling(() => api.status().then(setStatus).catch(() => {}), 5000);
   useEffect(() => {
-    const load = () => api.status().then(setStatus).catch(() => {});
-    load();
-    const t = setInterval(() => { if (!document.hidden) load(); }, 5000);
     api.settings().then((s) => {
       settingsRef.current = s;
       setViews(s.liveviews ?? []);
     }).catch(() => {});
-    return () => clearInterval(t);
   }, []);
 
   const persistViews = async (next: Liveview[]) => {

@@ -409,9 +409,10 @@ export function useToast(): ToastApi {
  * your pocket or a background tab isn't hammering the NVR, and a returning user
  * sees fresh data instantly instead of waiting up to a full interval.
  * Runs `fn` once on mount. `fn` may change identity between renders (captured by
- * ref), so callers don't need to memoize it.
+ * ref), so callers don't need to memoize it. Pass `deps` when the poll target
+ * changes (e.g. a camera id): the immediate load + interval restart on change.
  */
-export function usePolling(fn: () => void, ms: number) {
+export function usePolling(fn: () => void, ms: number, deps: readonly unknown[] = []) {
   const saved = useRef(fn);
   saved.current = fn;
   useEffect(() => {
@@ -427,7 +428,8 @@ export function usePolling(fn: () => void, ms: number) {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [ms]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ms, ...deps]);
 }
 
 /* ======================================================================== */

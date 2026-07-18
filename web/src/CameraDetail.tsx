@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { api, CamEvent, Camera, FloorPlan, Segment, SimilarResult, StatusMap, getStreamMode } from "./api";
-import { RelTime, Modal, useToast, useDialog, useFocusTrap } from "./ui";
+import { RelTime, Modal, useToast, useDialog, useFocusTrap, usePolling } from "./ui";
 import Timeline from "./Timeline";
 import { ActivityStrip } from "./CrossTimeline";
 import LiveVideo from "./LiveVideo";
@@ -142,13 +142,6 @@ export default function CameraDetail({
         }
       })
       .catch(() => {});
-    const load = () => {
-      api.recordings({ camera_id: camera.id, limit: 1000 }).then(setSegments).catch(() => {});
-      api.events({ camera_id: camera.id, limit: 50 }).then(setEvents).catch(() => {});
-      api.status().then(setStatusMap).catch(() => {});
-    };
-    load();
-    const t = setInterval(load, 10000);
     // Esc steps back one level: an open modal handles its own Esc, then
     // playback → live, and only then close the whole view.
     const esc = (e: KeyboardEvent) => {
@@ -159,11 +152,17 @@ export default function CameraDetail({
     };
     window.addEventListener("keydown", esc);
     return () => {
-      clearInterval(t);
       window.removeEventListener("keydown", esc);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camera.id]);
+  // Segments/events/status refresh: visibility-paused (a backgrounded tab was
+  // previously hammering the NVR every 10s) + instant refresh on return.
+  usePolling(() => {
+    api.recordings({ camera_id: camera.id, limit: 1000 }).then(setSegments).catch(() => {});
+    api.events({ camera_id: camera.id, limit: 50 }).then(setEvents).catch(() => {});
+    api.status().then(setStatusMap).catch(() => {});
+  }, 10000, [camera.id]);
 
   const seekTo = async (ts: number, opts?: { stream?: "hd" | "sd"; silent?: boolean }) => {
     const q = opts?.stream ?? qualityRef.current;

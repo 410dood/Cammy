@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, CamEvent, GaitProfile, PlateEntry, PlateCategory } from "../api";
-import { useToast, useDialog, Modal, RelTime, ErrorState, EmptyState, Callout } from "../ui";
+import { useToast, useDialog, Modal, RelTime, ErrorState, EmptyState, Callout, usePolling } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 import { IconUser, IconStranger, IconCar, IconAlert, IconCheck, IconTrash, IconPlus } from "../icons";
@@ -160,14 +160,13 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
     }
   };
 
+  // Visibility-paused refresh (was an unguarded 15s interval even backgrounded).
+  usePolling(load, 15000);
   useEffect(() => {
-    load();
     api.settings().then((s) => {
       setPlateDeny(s.plate_denylist ?? []);
       setPlateAllow(s.plate_allowlist ?? []);
     }).catch(() => {});
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
   }, []);
 
   const enroll = async (file: string) => {

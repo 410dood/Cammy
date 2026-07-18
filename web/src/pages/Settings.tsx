@@ -1,6 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
-import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout } from "../ui";
+import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout, usePolling } from "../ui";
 import { LicensePane } from "../License";
 import { prettyGesture } from "../labels";
 import {
@@ -863,16 +863,7 @@ function BackupCard({ onError }: { onError: (e: string) => void }) {
 /// Live offsite-backup sync readout. Polls every 5s; read-only (no secrets).
 function OffsiteStatusReadout() {
   const [st, setSt] = useState<OffsiteStatus | null>(null);
-  useEffect(() => {
-    let live = true;
-    const poll = () => api.offsiteStatus().then((s) => live && setSt(s)).catch(() => {});
-    poll();
-    const t = setInterval(() => { if (!document.hidden) poll(); }, 5000);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-  }, []);
+  usePolling(() => api.offsiteStatus().then(setSt).catch(() => {}), 5000);
   if (!st || !st.enabled) return null;
   return (
     <div className="row" style={{ gap: 16, marginTop: 4, flexWrap: "wrap", fontSize: "var(--text-sm)" }}>
@@ -917,16 +908,7 @@ function OffsiteStatusReadout() {
 /// Live two-box archive-pull readout (P3.9). Polls every 5s; read-only.
 function ArchiveStatusReadout() {
   const [st, setSt] = useState<ArchiveStatus | null>(null);
-  useEffect(() => {
-    let live = true;
-    const poll = () => api.archiveStatus().then((s) => live && setSt(s)).catch(() => {});
-    poll();
-    const t = setInterval(() => { if (!document.hidden) poll(); }, 5000);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-  }, []);
+  usePolling(() => api.archiveStatus().then(setSt).catch(() => {}), 5000);
   if (!st || !st.enabled) return null;
   const totalSegs = st.per_camera.reduce((a, c) => a + c.segments, 0);
   return (

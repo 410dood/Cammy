@@ -1,7 +1,7 @@
 ﻿import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMap } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
-import { Modal, EmptyState, TogglePill, Callout, useToast, useDialog } from "../ui";
+import { Modal, EmptyState, TogglePill, Callout, useToast, useDialog, usePolling } from "../ui";
 import {
   IconRadar,
   IconSearch,
@@ -1005,10 +1005,8 @@ export default function Cameras({
   // no-op) — false out-of-the-box.
   const [openvinoAvailable, setOpenvinoAvailable] = useState(false);
 
+  usePolling(() => api.status().then(setStatus).catch(() => {}), 5000);
   useEffect(() => {
-    const load = () => api.status().then(setStatus).catch(() => {});
-    load();
-    const t = setInterval(() => { if (!document.hidden) load(); }, 5000);
     api.settings().then(setSettings).catch(() => {});
     api.me().then((m) => setIsAdmin(m.role === "admin")).catch(() => {});
     api
@@ -1018,7 +1016,6 @@ export default function Cameras({
         setOpenvinoAvailable(!!r.openvino);
       })
       .catch(() => {});
-    return () => clearInterval(t);
   }, []);
 
   // Auto-open the "Add a camera" form once, on first seeing zero cameras — an
