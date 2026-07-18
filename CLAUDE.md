@@ -16,13 +16,14 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
-### Latest: deferred-backlog pair — P2.8b v1 hoist + camera-tagged system pushes, 2026-07-17
+### Latest: deferred-backlog sweep — feedback hoist, camera-scoped pushes, poll unify, actionable notifs, 2026-07-18
 
-Two documented deferrals closed on `main` (`0f14b47`, `eb439f7`); clippy -D
-warnings clean, 224 core tests, web tsc+vite green. Both are default-inert
-(no behavior change until feedback exists / a camera-scoped user subscribes),
-so no release restart was performed — the running NVR picks them up on its
-next scheduled rebuild.
+Six commits on `main` (`0f14b47`, `eb439f7`, `f894346`, `d1c1a8c`, `76e2432`,
+`27a5a70`); clippy -D warnings clean, 224 core tests, web tsc+vite green, CI
+green throughout. The backend items are default-inert (no behavior change until
+feedback exists / a camera-scoped user subscribes / a camera goes offline), so
+no release restart was performed — the running NVR picks them up on its next
+rebuild. The web items are live (headless NVR serves `web/dist` from disk).
 
 - **P2.8b v1 hoist** (`0f14b47`): "Not this" feedback now quiets **plain
   label-match rules** too, not just prompt/attr + VLM paths. When a
@@ -33,11 +34,36 @@ next scheduled rebuild.
   pre-existing); the early embedding is stashed per event id and reused by the
   Re-ID pass (no duplicate CLIP run). Fail-open at every step. The
   `feedback_by_cam` tick load broadened from prompt-rules-only to any-rules.
+- **Cap fix** (`76e2432`, self-review of the hoist above): the feedback gate
+  embedded the crop for EVERY matching detection with no per-frame cap — a busy
+  camera + a thumbs-down corpus would run N inline CLIP embeds per frame on the
+  shared detection thread. Promoted `MAX_CROPS_PER_FRAME` (6) to a module const
+  and gated the feedback embed on it too (detections arrive ≈score order; past
+  the cap they fire ungated, matching the prompt path). Bounded again.
 - **Camera-tagged system notifications** (`eb439f7`, closes the P2.11 "KNOWN
   v0 LIMIT"): camera offline/online, tamper ×2, and absence ×2 rows now carry
   `camera_id` via new `db.add_camera_notification`; the push worker's existing
   `user_can_see_camera` gate then RBAC-scopes those pushes per user. Digest/
   backup/mode/genai/schedule rows stay global by design.
+- **Actionable camera notifications** (`27a5a70`, web, builds on the tag above):
+  a camera notification with no event_id now deep-links to that camera's live
+  view on click (RBAC-gated to the viewer's visible cameras; aria-label says so;
+  falls back to mark-read when no visible camera). Event notifications open the
+  event as before. Live-validated the event path in Chrome; the camera path
+  activates once the backend tag is deployed.
+- **Poll unify** (`d1c1a8c`, web, deferred P4): the seven remaining hand-rolled
+  `setInterval` pollers (App notifs, Live/Cameras status, CameraDetail, People,
+  Settings offsite/archive) moved onto the shared `usePolling` hook (now takes
+  an optional deps param). CameraDetail (10s) and People (15s) previously polled
+  while backgrounded; all now pause when hidden + refresh instantly on return.
+
+**Assessed + deliberately declined this sweep — pet Re-ID vertical.** The
+marquee remaining item, but `embed_crop` tight-crops the object yet a dog crop
+scores 0.94 cosine against PERSON crops in the live data — CLIP crop embeddings
+have a high same-camera floor and won't reliably discriminate pet-vs-pet
+identity. Only 1 animal event in the test DB, so discrimination is unvalidatable
+here too. Respect the existing deferral: it needs real multi-pet footage + is
+its own focused effort, not an autonomous drive-by.
 
 ### Earlier: web UX RE-AUDIT (v0.4 surfaces) — a11y / states / forms / mobile, 2026-07-17
 
