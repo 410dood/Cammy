@@ -25,12 +25,18 @@ export default function NotificationsPanel({
   onMarkRead,
   onMarkAll,
   onOpenEvent,
+  onOpenCamera,
+  visibleCameraIds,
 }: {
   notes: Notification[];
   onClose: () => void;
   onMarkRead: (id: number) => void;
   onMarkAll: () => void;
   onOpenEvent: (eventId: number) => void;
+  onOpenCamera: (cameraId: number) => void;
+  /** Camera ids the current user can see — a notification only deep-links to a
+   * camera the viewer actually has (a scoped user's list won't include it). */
+  visibleCameraIds: Set<number>;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   useFocusTrap(panelRef);
@@ -89,14 +95,23 @@ export default function NotificationsPanel({
                   : n.kind === "camera_online"
                   ? "ok"
                   : "";
+              // Where does clicking this go? An event notification opens the
+              // event; a camera notification with no event (offline/online,
+              // tamper, absence) deep-links to that camera's live view — but
+              // only if the viewer can actually see that camera.
+              const camLink =
+                !n.event_id && n.camera_id != null && visibleCameraIds.has(n.camera_id);
               return (
                 <button
                   key={n.id}
                   className={`notif-item ${n.read ? "" : "unread"}`}
-                  aria-label={`${n.read ? "" : "Unread. "}${n.title}${n.body ? `. ${n.body}` : ""}`}
+                  aria-label={`${n.read ? "" : "Unread. "}${n.title}${n.body ? `. ${n.body}` : ""}${
+                    n.event_id ? ". Opens the event." : camLink ? ". Opens the camera." : ""
+                  }`}
                   onClick={() => {
                     if (!n.read) onMarkRead(n.id);
                     if (n.event_id) onOpenEvent(n.event_id);
+                    else if (camLink) onOpenCamera(n.camera_id!);
                   }}
                 >
                   <span className={`notif-ico ${tone}`}><Icon size={16} /></span>

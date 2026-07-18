@@ -584,6 +584,9 @@ export interface Notification {
   title: string;
   body: string | null;
   event_id: number | null;
+  /** Source camera, when the notification is about one (offline/online, tamper,
+   * absence, alarm). Lets the panel deep-link to that camera's live view. */
+  camera_id: number | null;
   read: boolean;
 }
 

@@ -632,6 +632,11 @@ export default function App() {
             setNotifOpen(false);
             openEvent(eventId);
           }}
+          onOpenCamera={(cameraId) => {
+            setNotifOpen(false);
+            navigate(`#/live/${cameraId}`);
+          }}
+          visibleCameraIds={new Set(cameras.map((c) => c.id))}
         />
       )}
     </>
