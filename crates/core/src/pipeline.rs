@@ -1445,14 +1445,18 @@ fn run_worker(
                         // one. Runs BEFORE `ready` so a suppressed match never
                         // consumes a rule's cooldown, and the embedding is
                         // stashed for the Re-ID pass (no extra CLIP run for the
-                        // top crops). Fails OPEN at every step: no corpus, no
-                        // CLIP, or a failed embed → every rule fires as before.
+                        // top crops). Capped at MAX_CROPS_PER_FRAME (same as the
+                        // Re-ID pass) so a crowd can't stall the detection thread;
+                        // detections beyond the cap fire ungated (fail open).
+                        // Fails OPEN at every step: no corpus, no CLIP, or a
+                        // failed embed → every rule fires as before.
                         let fb_suppressed = {
                             let sup = feedback_by_cam
                                 .get(&(cam.id, d.label.to_string()))
                                 .map(Vec::as_slice)
                                 .unwrap_or(&[]);
-                            if !sup.is_empty()
+                            if i < MAX_CROPS_PER_FRAME
+                                && !sup.is_empty()
                                 && alarms.iter().any(|r| {
                                     r.matches(
                                         cam.id,
@@ -1692,11 +1696,11 @@ fn run_worker(
                             // The frame embedding (one CLIP run, text search) is
                             // written for every event. The per-object crop
                             // embedding (Re-ID) costs an extra CLIP run EACH, so
-                            // cap it per frame: a crowded scene must never block
-                            // the single shared detection thread with unbounded
-                            // inferences. `crop_jobs` is in detector (≈score)
-                            // order, so the cap keeps the most confident objects.
-                            const MAX_CROPS_PER_FRAME: usize = 6;
+                            // cap it per frame (MAX_CROPS_PER_FRAME): a crowded
+                            // scene must never block the single shared detection
+                            // thread with unbounded inferences. `crop_jobs` is in
+                            // detector (≈score) order, so the cap keeps the most
+                            // confident objects.
                             if crop_jobs.len() > MAX_CROPS_PER_FRAME {
                                 tracing::debug!(
                                     camera = %cam.name,
@@ -2336,6 +2340,12 @@ struct CropJob {
 /// unrelated pairs sit ≤0.2, so 0.27 is deliberately conservative (alerts must
 /// not cry wolf). Near-misses are logged at debug for tuning.
 const PROMPT_FIRE_COSINE: f32 = 0.27;
+
+/// Max per-object CLIP crop embeddings computed per frame on the shared
+/// detection thread. A crowded scene must never block detection with unbounded
+/// inferences, so both the Re-ID pass AND the P2.8b feedback gate honor this cap
+/// (detections arrive in ≈score order, so the cap keeps the most confident).
+const MAX_CROPS_PER_FRAME: usize = 6;
 
 /// P2.2 — prompt-based standing NL rules (Reolink "Prompt-Based Alerts"): fire
 /// every prompt rule whose CLIP text embedding is cosine-similar to this
