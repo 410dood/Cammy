@@ -1140,7 +1140,7 @@ export default function Events({
             <TogglePill
               key={l}
               on={label === l}
-              ariaLabel={`Filter to ${l}`}
+              ariaLabel={`Filter to ${prettyLabel(l)}`}
               onClick={() => setLabel(label === l ? "" : l)}
             >
               {prettyLabel(l)} ({n})
@@ -1263,8 +1263,8 @@ export default function Events({
               aria-pressed={selectMode ? isSel : undefined}
               aria-label={
                 selectMode
-                  ? `${isSel ? "Deselect" : "Select"} ${ev.label} from ${ev.camera}`
-                  : `Open ${ev.label} event from ${ev.camera}`
+                  ? `${isSel ? "Deselect" : "Select"} ${prettyLabel(ev.label)} from ${ev.camera}`
+                  : `Open ${prettyLabel(ev.label)} event from ${ev.camera}`
               }
               onClick={activate}
               onKeyDown={(e) => {
@@ -1285,7 +1285,7 @@ export default function Events({
                 <button
                   className={`ev-save ${ev.flagged ? "on" : ""}`}
                   aria-pressed={ev.flagged}
-                  aria-label={ev.flagged ? `Unsave this ${ev.label} event` : `Save this ${ev.label} event`}
+                  aria-label={ev.flagged ? `Unsave this ${prettyLabel(ev.label)} event` : `Save this ${prettyLabel(ev.label)} event`}
                   title={
                     ev.flagged
                       ? "Saved. This event is never deleted automatically. Click to unsave."

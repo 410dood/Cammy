@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { StreamMode } from "./api";
-import { IconWifiOff } from "./icons";
+import { IconWifiOff, IconAlert, IconRefresh } from "./icons";
 
 /// Native live player: embeds go2rtc's `<video-stream>` web component (a real
 /// `<video>` element with WebRTC + automatic MSE/MJPEG fallback) instead of an
@@ -70,8 +70,12 @@ export default function LiveVideo({
 }) {
   const host = useRef<HTMLDivElement>(null);
   // We own the status layer (go2rtc's raw "mse: stream not found" text is hidden
-  // in CSS): "connecting" until the first frame plays, then "live".
-  const [phase, setPhase] = useState<"connecting" | "live">("connecting");
+  // in CSS): "connecting" until the first frame plays, "live" once it does, or
+  // "error" if no frame ever decodes (so we never expose the browser's native
+  // "Unable to play media." chrome — that reads as broken).
+  const [phase, setPhase] = useState<"connecting" | "live" | "error">("connecting");
+  // Bumping this remounts the player — the Retry affordance on the error state.
+  const [reload, setReload] = useState(0);
 
   // Collapse `online: boolean | undefined` to a stable boolean: `undefined`
   // (status not loaded yet) and `true` both mean "try to connect", so keying the
@@ -86,9 +90,20 @@ export default function LiveVideo({
     let video: HTMLVideoElement | null = null;
     let cancelled = false;
     const markLive = () => setPhase("live");
-    // Safety net: never leave a (working) stream hidden behind our overlay if the
-    // <video> events are missed — clear "connecting" after a few seconds anyway.
-    const fallback = setTimeout(markLive, 4500);
+    // Grace backstop: `playing`/`loadeddata` normally flip us to "live" within a
+    // second or two. If neither fired, decide by whether a frame ACTUALLY
+    // decoded — `readyState >= 2` (HAVE_CURRENT_DATA) — flipping to "live" if so
+    // (covers a missed event on a working stream), otherwise surface a branded
+    // "error" state instead of unveiling go2rtc's broken native player. NB:
+    // `videoWidth > 0` is NOT sufficient — it's already true at HAVE_METADATA
+    // (readyState 1), which a stuck stream reaches without ever decoding a
+    // frame. go2rtc keeps retrying under the hood, so a later `playing` event
+    // still recovers us.
+    const grace = setTimeout(() => {
+      if (cancelled) return;
+      if (video && video.readyState >= 2) markLive();
+      else setPhase("error");
+    }, 10000);
     loadPlayer()
       .then(() => {
         if (cancelled || !host.current) return;
@@ -111,11 +126,11 @@ export default function LiveVideo({
         }
       })
       .catch(() => {
-        /* go2rtc unreachable — the fallback timer still clears "connecting" */
+        /* go2rtc unreachable — the grace timer surfaces the error state */
       });
     return () => {
       cancelled = true;
-      clearTimeout(fallback);
+      clearTimeout(grace);
       if (video) {
         video.removeEventListener("playing", markLive);
         video.removeEventListener("loadeddata", markLive);
@@ -129,7 +144,7 @@ export default function LiveVideo({
         el.parentNode?.removeChild(el);
       }
     };
-  }, [name, mode, audio, mic, offline]);
+  }, [name, mode, audio, mic, offline, reload]);
 
   return (
     <div className="live-video-host" ref={host}>
@@ -137,6 +152,18 @@ export default function LiveVideo({
         <div className="live-state offline">
           <IconWifiOff size={30} />
           <span>Camera offline</span>
+        </div>
+      ) : phase === "error" ? (
+        <div className="live-state error">
+          <IconAlert size={28} />
+          <span>Live video unavailable</span>
+          <button
+            type="button"
+            className="live-retry"
+            onClick={() => setReload((r) => r + 1)}
+          >
+            <IconRefresh size={14} /> Retry
+          </button>
         </div>
       ) : phase === "connecting" ? (
         <div className="live-state connecting">

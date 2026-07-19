@@ -16,6 +16,41 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: E2E Chrome walkthrough — 3 web fixes (wordmark, live-tile error state, a11y labels), 2026-07-19
+
+A full live Chrome-DevTools tour of every surface against the running NVR
+(:8080, 5/5 cams online) — Home, Live, Events (+viewer), Recordings (+playback),
+Family/Signals/People/Insights, Alarms (+builder preview), Cameras (+Tune
+modal), Map, Settings (all 5 tabs). The app is in strong shape; playback,
+filters, chip deep-links, modals, and the alarm "would-have-matched" preview all
+work. **Web-only, 4 files**, tsc+vite green, each fix re-validated live:
+
+- **Wordmark split (real visual bug)**: `.brand` / `.topbar-brand` are flex with
+  `gap`, and the mark is `Cam<span>my</span>` — the bare text node "Cam" and the
+  `<span>my</span>` became separate flex items, so the icon-gap also landed
+  *between* them, rendering "Cam␣my". Moved the spacing to the icon `::before`
+  `margin-right` and dropped `gap`; now reads "Cammy". (`styles.css`)
+- **Live tile exposed the browser's raw "Unable to play media."**: `LiveVideo`'s
+  4.5s fallback called `markLive()` unconditionally, so a stream that never
+  decoded a frame cleared our "Connecting…" overlay and unveiled go2rtc's native
+  error chrome (seen live on the intermittent pool2 restream). Now a 10s grace
+  backstop flips to "live" only when a frame really decoded (`readyState >= 2` —
+  NOT `videoWidth > 0`, which is already true at HAVE_METADATA on a stuck
+  stream), else shows a branded "Live video unavailable" + **Retry** state
+  (remounts the player); a later `playing` still auto-recovers. (`LiveVideo.tsx`,
+  `styles.css`)
+- **Raw snake_case in aria-labels**: event-card / Explore-pill / Home-spotlight
+  aria-labels spoke `camera_intrusion` to screen readers while the visible text
+  used "Camera Intrusion". Wrapped them in `prettyLabel()` (0 raw labels left
+  across 220 cards). (`Events.tsx`, `Home.tsx`)
+
+Noted but deferred (not web-fixable / low value): the **Daily Digest** text uses
+raw labels (`camera_tripwire` …) — it's backend-generated in `digest.rs`; and
+Chrome's "form field should have id/name" hints (fields already have aria-labels).
+**Environmental, not a regression:** pool2's live WebRTC intermittently won't
+establish (documented restream flap) — it recovered on reload during validation;
+the new error/Retry state now covers that case cleanly.
+
 ### Latest: deferred-backlog sweep — feedback hoist, camera-scoped pushes, poll unify, actionable notifs, 2026-07-18
 
 Six commits on `main` (`0f14b47`, `eb439f7`, `f894346`, `d1c1a8c`, `76e2432`,

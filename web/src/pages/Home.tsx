@@ -540,7 +540,7 @@ export default function Home({
                       type="button"
                       className="feed-thumb"
                       title="View snapshot"
-                      aria-label={`View ${e.label} snapshot from ${e.camera}`}
+                      aria-label={`View ${prettyLabel(e.label)} snapshot from ${e.camera}`}
                       onClick={() => setLightbox(e)}
                     >
                       <img src={`/api/snapshots/${e.snapshot}?w=160`} alt={e.label} loading="lazy" />

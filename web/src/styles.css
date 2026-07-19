@@ -256,13 +256,13 @@ body {
   margin-bottom: 6px;
   display: flex;
   align-items: center;
-  gap: 9px;
   border-bottom: 1px solid var(--hairline);
 }
 .brand::before {
   content: "";
   width: 24px;
   height: 24px;
+  margin-right: 9px;
   border-radius: 7px;
   background: radial-gradient(circle at 34% 30%, #5aa0ff, var(--accent) 58%, #0042a0);
   box-shadow: 0 0 0 1px rgba(0, 111, 255, 0.35), 0 2px 10px rgba(0, 111, 255, 0.45);
@@ -335,12 +335,12 @@ body {
   letter-spacing: var(--ls-tight);
   display: inline-flex;
   align-items: center;
-  gap: 8px;
 }
 .topbar-brand::before {
   content: "";
   width: 20px;
   height: 20px;
+  margin-right: 8px;
   border-radius: 6px;
   background: radial-gradient(circle at 34% 30%, #5aa0ff, var(--accent) 58%, #0042a0);
   box-shadow: 0 0 0 1px rgba(0, 111, 255, 0.35), 0 2px 8px rgba(0, 111, 255, 0.4);
@@ -424,6 +424,25 @@ video-stream.live-video .info { display: none; }
   background: color-mix(in oklch, var(--n-0) 55%, transparent);
   color: var(--text-subtle);
 }
+.live-state.error { background: var(--n-1); color: var(--muted); }
+.live-state.error svg { opacity: 0.7; color: var(--warn); }
+.live-retry {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--n-2);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.live-retry:hover { background: var(--n-3); border-color: var(--accent); }
 .live-spinner {
   width: 22px;
   height: 22px;
