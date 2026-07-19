@@ -210,7 +210,7 @@ function AskBox({ onOpenEvent }: { onOpenEvent?: (id: number) => void }) {
                 >
                   {e.snapshot && (
                     <span className="feed-thumb">
-                      <img src={`/api/snapshots/${e.snapshot}?w=160`} alt={e.label} loading="lazy" />
+                      <img src={`/api/snapshots/${e.snapshot}?w=160`} alt={prettyLabel(e.label)} loading="lazy" />
                     </span>
                   )}
                   <div>
@@ -543,7 +543,7 @@ export default function Home({
                       aria-label={`View ${prettyLabel(e.label)} snapshot from ${e.camera}`}
                       onClick={() => setLightbox(e)}
                     >
-                      <img src={`/api/snapshots/${e.snapshot}?w=160`} alt={e.label} loading="lazy" />
+                      <img src={`/api/snapshots/${e.snapshot}?w=160`} alt={prettyLabel(e.label)} loading="lazy" />
                     </button>
                   )}
                   <div>
@@ -697,12 +697,12 @@ export default function Home({
       {lightbox && lightbox.snapshot && (
         <Modal
           className="lightbox"
-          title={`${lightbox.label} · ${lightbox.camera}`}
+          title={`${prettyLabel(lightbox.label)} · ${lightbox.camera}`}
           onClose={() => setLightbox(null)}
         >
           <img
             src={`/api/snapshots/${lightbox.snapshot}`}
-            alt={`${lightbox.label} on ${lightbox.camera}`}
+            alt={`${prettyLabel(lightbox.label)} on ${lightbox.camera}`}
             style={{ display: "block", width: "100%" }}
           />
           <div className="lightbox-meta">

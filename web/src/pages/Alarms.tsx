@@ -2,7 +2,7 @@
 import { api, AlarmRule, Action, ActionKind, ArmMode, AttributesCatalog, CamEvent, Camera, DAY_NAMES, DeterCaps } from "../api";
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
-import { prettyGesture } from "../labels";
+import { prettyGesture, prettyLabel } from "../labels";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -1041,9 +1041,9 @@ export default function Alarms({
                           key={e.id}
                           className="rule-preview-thumb"
                           src={`/api/snapshots/${e.snapshot}?w=160`}
-                          alt={`${e.label} on ${e.camera}`}
+                          alt={`${prettyLabel(e.label)} on ${e.camera}`}
                           loading="lazy"
-                          title={`${e.label} · ${e.camera} · ${new Date(e.ts * 1000).toLocaleString()}`}
+                          title={`${prettyLabel(e.label)} · ${e.camera} · ${new Date(e.ts * 1000).toLocaleString()}`}
                         />
                       ) : null,
                     )}

@@ -1300,7 +1300,7 @@ export default function Events({
                 </button>
               )}
               {ev.snapshot ? (
-                <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={`${ev.label} on ${ev.camera}`} loading="lazy" decoding="async" />
+                <img src={`/api/snapshots/${ev.snapshot}?w=400`} alt={`${prettyLabel(ev.label)} on ${ev.camera}`} loading="lazy" decoding="async" />
               ) : (
                 <div
                   style={{
@@ -1440,7 +1440,7 @@ export default function Events({
               <img
                 className="lightbox-img"
                 src={`/api/snapshots/${open.snapshot}`}
-                alt={`${open.label} detected at ${open.camera}, ${fmtTime(open.ts)}`}
+                alt={`${prettyLabel(open.label)} detected at ${open.camera}, ${fmtTime(open.ts)}`}
               />
             ) : (
               <div className="lightbox-img" style={{ display: "grid", placeItems: "center", minHeight: 200 }}>
@@ -1679,7 +1679,7 @@ export default function Events({
                       <img
                         className="journey-step-thumb"
                         src={`/api/snapshots/${s.ev.snapshot}?w=200`}
-                        alt={`${s.ev.label} on ${s.ev.camera}`}
+                        alt={`${prettyLabel(s.ev.label)} on ${s.ev.camera}`}
                         loading="lazy"
                         decoding="async"
                       />
@@ -1736,7 +1736,7 @@ export default function Events({
                 <div style={{ flex: "0 0 180px" }}>
                   <img
                     src={`/api/snapshots/${similar.ev.snapshot}?w=360`}
-                    alt={`${similar.ev.label} on ${similar.ev.camera}`}
+                    alt={`${prettyLabel(similar.ev.label)} on ${similar.ev.camera}`}
                     decoding="async"
                     style={{ width: "100%", borderRadius: "var(--r-md)", border: "2px solid var(--accent-border)" }}
                   />
@@ -1780,7 +1780,7 @@ export default function Events({
                         onClick={() => pick(m.event)}
                       >
                         {m.event.snapshot ? (
-                          <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={`${m.event.label} on ${m.event.camera}`} loading="lazy" decoding="async" />
+                          <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={`${prettyLabel(m.event.label)} on ${m.event.camera}`} loading="lazy" decoding="async" />
                         ) : (
                           <div style={{ aspectRatio: "4 / 3", background: "var(--bg-sunken)" }} />
                         )}
@@ -1873,7 +1873,7 @@ export default function Events({
                       }}
                     >
                       {m.event.snapshot ? (
-                        <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={`${m.event.label} on ${m.event.camera}`} loading="lazy" decoding="async" />
+                        <img src={`/api/snapshots/${m.event.snapshot}?w=300`} alt={`${prettyLabel(m.event.label)} on ${m.event.camera}`} loading="lazy" decoding="async" />
                       ) : (
                         <div style={{ aspectRatio: "4 / 3", background: "var(--bg-sunken)" }} />
                       )}
