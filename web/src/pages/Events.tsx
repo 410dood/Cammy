@@ -175,7 +175,12 @@ export default function Events({
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [highOnly, setHighOnly] = useState(false);
-  const [grouped, setGrouped] = useState(false);
+  // Persisted: on a chatty install, collapsing repeat detections is a setting
+  // you pick once, not per visit.
+  const [grouped, setGrouped] = useState(() => localStorage.getItem("cammy-events-grouped") === "1");
+  useEffect(() => {
+    localStorage.setItem("cammy-events-grouped", grouped ? "1" : "0");
+  }, [grouped]);
   // "More filters" disclosure is state-driven (not derived from the filters), so
   // clearing the last active filter can't collapse the panel around the control
   // being used (React would drop focus mid-typing). A user toggle always wins;
