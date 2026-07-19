@@ -193,6 +193,20 @@ export default function Events({
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
+  // A page elsewhere (Home's "Today by type" chips) can stash a filter before
+  // navigating here; apply it once and clear, like the cammy-focus-event stash.
+  useEffect(() => {
+    const raw = sessionStorage.getItem("cammy-events-filter");
+    if (!raw) return;
+    sessionStorage.removeItem("cammy-events-filter");
+    try {
+      const f = JSON.parse(raw) as { label?: string };
+      if (f.label) setLabel(f.label);
+    } catch {
+      // a malformed stash just means no pre-filter
+    }
+  }, []);
+
   // Fetch the attribute-facet catalog once (static; drives the filter chips).
   useEffect(() => {
     let alive = true;

@@ -1665,6 +1665,12 @@ button.lastseen-item:hover { background: var(--surface-hover); }
 /* Cap the feed so a long activity list can't tower over the short left card
    (which produced the lower-left whitespace void). Scrolls like the other rails. */
 .recent-feed { display: flex; flex-direction: column; gap: 2px; max-height: 460px; overflow-y: auto; }
+/* Inner scroll areas get a slim themed scrollbar (the page itself keeps the
+   native one — grabbing a full-height scrollbar should stay easy). */
+.recent-feed, .detail-side, .notif-list, .cmdk-list, .table-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
 
 /* --- cross-camera timeline (A2) -------------------------------------------- */
 .xtl { position: relative; padding: 14px 16px 28px; }
@@ -1944,6 +1950,8 @@ button.lastseen-item:hover { background: var(--surface-hover); }
 }
 /* Clickable tag chips (#tag on event cards): the .badge look on a real button. */
 button.badge { appearance: none; font: inherit; background: none; cursor: pointer; }
+/* Chips that navigate somewhere (Home's Today-by-type → filtered Events). */
+.badge-link:hover { border-color: var(--border-hover); color: var(--text); }
 .wall-empty { margin: auto; color: var(--muted); }
 
 /* --- liveviews (A6) -------------------------------------------------------- */

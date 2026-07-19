@@ -455,9 +455,22 @@ export default function Home({
           ) : (
             <div className="row" style={{ flexWrap: "wrap" }}>
               {counts.map(([label, n]) => (
-                <span key={label} className="badge" style={{ textTransform: "capitalize" }}>
+                <button
+                  key={label}
+                  type="button"
+                  className="badge badge-link"
+                  style={{ textTransform: "capitalize" }}
+                  aria-label={`Show today's ${prettyLabel(label)} events`}
+                  onClick={() => {
+                    // Same stash pattern as cammy-focus-event: Events reads and
+                    // clears it on mount, so the chip deep-links a filtered list
+                    // without any router change.
+                    sessionStorage.setItem("cammy-events-filter", JSON.stringify({ label }));
+                    window.location.hash = "#/events";
+                  }}
+                >
                   {prettyLabel(label)} <b className="tnum">{n}</b>
-                </span>
+                </button>
               ))}
             </div>
           )}
