@@ -16,6 +16,36 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: label-humanization pass — pretty labels in digests/anomaly + img alts/titles, 2026-07-19
+
+Closed the raw snake_case label leaks the last walkthrough flagged as deferred,
+across both tiers. Two commits on `main` (`4dff66b` core, `c8d9354` web); clippy
+-D warnings clean, 224 core tests, tsc+vite green, live-validated on :8080 (5/5
+cams online+recording — release-rebuilt + restarted; pool2/cam6 recovered on its
+own again). CI green.
+
+- **Backend (`4dff66b`, closes the deferred "Daily Digest uses raw labels"
+  item):** new shared `util::pretty_label` mirroring the web `prettyLabel`
+  overrides (line crossing, loitering, motionless in water, zone opened/closed) +
+  a generic `_`→space swap, applied at the three text-generation sites that baked
+  raw labels into user-facing strings — the digest `summarize` "Mostly …" line,
+  the digest `key_moments` bullets, and the `anomaly` alert title. This also
+  fixes the **push/email** those carry (which the web can never touch). Stored
+  labels are untouched (rules/API still match verbatim); only rendering. Unit-
+  tested. Live: a regenerated digest reads "Mostly 88 camera intrusion, 52 camera
+  tripwire, 41 person, 32 camera motion". (Historical stored notifications keep
+  their old raw text — only new content is pretty; nothing rewrites DB history.)
+- **Web (`c8d9354`):** the prior pass prettified visible card text + aria-labels
+  but missed image `alt` text (which screen readers announce) and a few
+  `title`/Modal-title attrs. Wrapped every event-label alt/title in `prettyLabel`
+  — Home recent-activity + spotlight thumbs, the Home lightbox **Modal title** (a
+  *visible* header) + its alt, Events card/viewer/similar/journey-map img alts,
+  and the Alarms "would-have-matched" preview thumb alt+title (`prettyLabel` added
+  to that import). Live: all 198 Events img alts + the Home lightbox title read
+  "camera intrusion", 0 raw labels. Also re-verified: no console errors, no mobile
+  horizontal overflow on any page at 390px, Insights/Events dropdowns already
+  clean.
+
 ### Latest: E2E Chrome walkthrough — 3 web fixes (wordmark, live-tile error state, a11y labels), 2026-07-19
 
 A full live Chrome-DevTools tour of every surface against the running NVR
