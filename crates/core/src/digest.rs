@@ -96,7 +96,11 @@ fn key_moments(events: &[Event], base_url: &str, n: usize) -> Vec<String> {
             } else {
                 format!(" → {base}/api/events/{}/clip", e.id)
             };
-            format!("• {when} {} on {}{link}", e.label, e.camera)
+            format!(
+                "• {when} {} on {}{link}",
+                crate::util::pretty_label(&e.label),
+                e.camera
+            )
         })
         .collect()
 }
@@ -139,7 +143,7 @@ pub fn summarize(events: &[Event]) -> String {
     let label_str = labels
         .iter()
         .take(4)
-        .map(|(l, n)| format!("{n} {l}"))
+        .map(|(l, n)| format!("{n} {}", crate::util::pretty_label(l)))
         .collect::<Vec<_>>()
         .join(", ");
     if !label_str.is_empty() {

@@ -81,7 +81,11 @@ fn score_recent(db: &Db) -> anyhow::Result<()> {
         };
         db.set_event_anomaly(e.id, score)?;
         if score >= NOTIFY_THRESHOLD {
-            let title = format!("Unusual activity: {} at {}", e.label, e.camera);
+            let title = format!(
+                "Unusual activity: {} at {}",
+                crate::util::pretty_label(&e.label),
+                e.camera
+            );
             let _ = db.add_notification(now, "anomaly", &title, e.caption.as_deref(), Some(e.id));
         }
     }

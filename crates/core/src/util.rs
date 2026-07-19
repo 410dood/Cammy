@@ -17,6 +17,23 @@ pub fn hex(bytes: &[u8]) -> String {
     s
 }
 
+/// Humanize a raw event label (`"camera_tripwire"`, `"still_water"`) for
+/// display in backend-generated text — daily digests, the anomaly-alert title,
+/// and the push/email that carry them. The stored label is never changed
+/// (alarm rules and the API match on it verbatim); only rendering. Mirrors the
+/// web `prettyLabel` overrides so the same event reads identically everywhere.
+pub fn pretty_label(label: &str) -> String {
+    match label {
+        "crossing" => "line crossing".to_string(),
+        "loiter" => "loitering".to_string(),
+        "occupancy" => "occupancy limit".to_string(),
+        "still_water" => "motionless in water".to_string(),
+        "zone_open" => "zone opened".to_string(),
+        "zone_closed" => "zone closed".to_string(),
+        other => other.replace('_', " "),
+    }
+}
+
 /// Sleep up to `dur`, waking within ~200 ms once `shutdown` is set so a periodic
 /// background worker tears down promptly instead of blocking a full tick.
 pub fn sleep_interruptible(dur: Duration, shutdown: &Arc<AtomicBool>) {
@@ -35,5 +52,17 @@ mod tests {
         assert_eq!(hex(&[0x00, 0x0f, 0xff, 0xab]), "000fffab");
         assert_eq!(hex(&[]), "");
         assert_eq!(hex(&[0x01, 0x23, 0x45, 0x67, 0x89]), "0123456789");
+    }
+
+    #[test]
+    fn pretty_label_humanizes() {
+        // Generic underscore→space.
+        assert_eq!(pretty_label("camera_tripwire"), "camera tripwire");
+        assert_eq!(pretty_label("package_removed"), "package removed");
+        assert_eq!(pretty_label("person"), "person");
+        // Curated overrides where a bare swap reads wrong.
+        assert_eq!(pretty_label("crossing"), "line crossing");
+        assert_eq!(pretty_label("still_water"), "motionless in water");
+        assert_eq!(pretty_label("zone_open"), "zone opened");
     }
 }
