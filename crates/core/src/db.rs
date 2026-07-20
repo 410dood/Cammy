@@ -1403,6 +1403,11 @@ pub struct Settings {
     /// regardless. See `crate::lens`.
     #[serde(default = "default_true")]
     pub suppress_lens_obstruction: bool,
+    /// Send a weekly "all cameras healthy, N recording" reassurance heartbeat —
+    /// turns the "is it even recording?" anxiety of a self-hosted NVR into a
+    /// trust signal. On by default; weekly and unobtrusive. See `crate::health`.
+    #[serde(default = "default_true")]
+    pub health_heartbeat: bool,
     /// P3.6 — number of parallel detection worker threads. Cameras are sharded
     /// across the workers by list position so one camera's slow/blocking frame
     /// fetch can't stall the others. Read ONCE at pipeline startup and fixed for
@@ -1597,6 +1602,7 @@ impl Default for Settings {
             offsite_events_only: false,
             highlight_motion: true,
             suppress_lens_obstruction: true,
+            health_heartbeat: true,
             detect_workers: 1,
             ask_enabled: false,
             ask_endpoint: String::new(),

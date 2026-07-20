@@ -293,6 +293,8 @@ export interface Settings {
   deterrence_enabled: boolean;
   anomaly_detection: boolean;
   digest_enabled: boolean;
+  /** Weekly "all cameras healthy" reassurance heartbeat. Default true. */
+  health_heartbeat: boolean;
   liveviews: Liveview[];
   floorplan: string;
   /** AudioSet display names (yamnet_class_map.csv) that fire audio events. */

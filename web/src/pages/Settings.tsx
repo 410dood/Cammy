@@ -2714,6 +2714,17 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={() => set({ digest_enabled: !s.digest_enabled })}
               />
             </label>
+            <label
+              className="toggle field"
+              title="Send a weekly 'all cameras healthy, N recording' reassurance so you know the system is working — and get alerted the moment a camera goes offline or silently stops recording. Turns the 'is it even recording?' worry into a trust signal."
+            >
+              weekly health reassurance
+              <input
+                type="checkbox"
+                checked={s.health_heartbeat ?? true}
+                onChange={() => set({ health_heartbeat: !(s.health_heartbeat ?? true) })}
+              />
+            </label>
             <button
               type="button"
               className="btn btn-ghost"
