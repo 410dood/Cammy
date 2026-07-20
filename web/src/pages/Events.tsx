@@ -12,14 +12,6 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const fmtClock = (ts: number) =>
   new Date(ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
-/// Hide an AI caption that argues with the detection ("No cat detected, just a
-/// swimming pool…") — the card contradicting itself erodes trust more than a
-/// missing caption does. Cheap heuristic: the caption denies the event label.
-function captionContradicts(ev: { label: string; caption: string | null }): boolean {
-  const c = (ev.caption ?? "").toLowerCase();
-  const l = ev.label.toLowerCase();
-  return c.includes(`no ${l}`) || c.includes(`not a ${l}`);
-}
 import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil, IconLink, IconShield,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
@@ -30,7 +22,7 @@ import LifecycleModal from "../LifecycleModal";
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
 // uses it too) — see eventGroups.ts.
 import { Cluster, groupEvents } from "../eventGroups";
-import { isCameraSide, prettyLabel, prettyZone, prettyGesture } from "../labels";
+import { isCameraSide, prettyLabel, prettyZone, prettyGesture, captionContradicts } from "../labels";
 
 function durationLabel(secs: number): string {
   if (secs < 60) return `${secs}s`;

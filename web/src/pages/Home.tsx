@@ -32,7 +32,7 @@ import {
   IconLock,
 } from "../icons";
 
-import { prettyLabel } from "../labels";
+import { prettyLabel, captionContradicts } from "../labels";
 
 const VEHICLES = ["car", "truck", "bus", "motorcycle", "bicycle"];
 
@@ -567,6 +567,9 @@ export default function Home({
                       <span className="badge" style={{ marginLeft: 6 }} title="Why this is spotlighted">
                         {reason}
                       </span>
+                    )}
+                    {e.caption && !captionContradicts(e) && (
+                      <div className="ev-caption">“{e.caption}”</div>
                     )}
                     <RelTime ts={e.ts} className="muted clock" style={{ display: "block", fontSize: "var(--text-xs)" }} />
                   </div>

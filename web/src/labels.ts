@@ -15,6 +15,15 @@ const PRETTY: Record<string, string> = {
 
 export const prettyLabel = (l: string) => PRETTY[l] ?? l.replace(/_/g, " ");
 
+// Hide an AI caption that argues with the detection ("No cat detected, just a
+// swimming pool…") — a card contradicting itself erodes trust more than a
+// missing caption does. Cheap heuristic: the caption denies the event label.
+export function captionContradicts(ev: { label: string; caption: string | null }): boolean {
+  const c = (ev.caption ?? "").toLowerCase();
+  const l = ev.label.toLowerCase();
+  return c.includes(`no ${l}`) || c.includes(`not a ${l}`);
+}
+
 // Hand-signal tokens → readable names (Signals overlay, alarm builder, event
 // chips/filters). The value stays the raw token; only rendering changes.
 const GESTURE_PRETTY: Record<string, string> = {
