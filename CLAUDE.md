@@ -16,6 +16,65 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
+### Latest: 2026-competitor research → 4 real-life-use-case features shipped, 2026-07-19
+
+A four-stream competitor + pain-point research pass (parallel agents:
+UniFi/Ring/Nest UX · Reolink/Eufy/Arlo · self-hosted Frigate/BI6/Scrypted · real
+user pain from Reddit/ipcamtalk/GitHub, all URL-sourced; + a grounded Cammy
+capability map). **Headline finding: Cammy is already at or above 2026 parity on
+almost every marquee pattern** — NL/CLIP search, daily AI digests, cross-camera
+Re-ID + journey fusion, per-user notify matrix, anomaly + "not this" feedback,
+VLM alert gating, always-on event captions (genai worker captions every event;
+148/500 live events carry real captions), package detection, expiring shares +
+signed evidence, deterrence relays + two-way audio, MQTT/HA/HomeKit. The genuine
+gaps were on **fundamentals and surfacing**, not features. Six commits on `main`
+(`696cff3`, `84164b1`, `f1685a8`, `b261188`, `4ebd871` + this); clippy -D clean,
+**230 core tests**, tsc+vite green, release-rebuilt + restarted (5/5 online; cam6/
+pool2 back to its documented online-but-not-recording RTSP flap — unrelated, the
+pipeline diff is additive/gated). CI green.
+
+- **Save-search-as-alert** (`696cff3`, web): UniFi AI Key's flagship "NL query as
+  a standing alert". Cammy had the CLIP search box AND prompt_like ("AI watch")
+  rules but no bridge — now an Events "Save as alert" button stashes the query
+  and opens the Alarms builder prefilled with a prompt rule (Advanced auto-open)
+  for review. Live-validated ("red car" → builder prefilled). Severity triage
+  (the other half) was verified already shipped (severity_for mirrors Reolink
+  L1-L4, cards badge critical/high, "Important only", importance-ranked Spotlights).
+- **Near-lens insect/cobweb suppressor** (`84164b1`, core, THE #1 unsolved night
+  pain per every forum — Frigate #11017/#17882, ipcamtalk): new pure `lens`
+  module drops a detection only when its crop is large (near-lens) + near-white
+  (IR bloom) + flat/low-variance (featureless) — a real subject is never all
+  three. Wired after stationary suppression over `wanted` (cheap, reuses
+  tamper::thumb_of); a 1/hour/camera "wipe the lens" nudge surfaces it instead of
+  hiding events silently (the Blue Iris cancelled-bin trust lesson). Global
+  Setting `suppress_lens_obstruction` (default on) + toggle. 5 unit tests. Live:
+  0 false suppressions on daytime real scenes; **conservative v0 — thresholds
+  need owner tuning against real bug footage** (like zone-state).
+- **Camera-trust guardian** (`f1685a8`, core, the #2 "did it even record?"
+  pain): health.rs now catches **recording-stopped-while-online** (the silent
+  ffmpeg death a stream-only check misses; gated to record && no-schedule cameras
+  so a scheduled pause never false-alarms), **de-bounces brief offline blips**
+  (~30s, no more flap spam), and sends a **weekly "all cameras healthy, N
+  recording, ~X days retained" reassurance heartbeat** (KV-persisted, Setting
+  `health_heartbeat` default on) — turning "nobody watches the watcher" into a
+  trust signal. NOTE: pool2 is live-demonstrating the recording-stopped case
+  right now (online, recording=false).
+- **AI captions on the Home feed** (`b261188`, web): the "highest-leverage single
+  feature" per 3 vendors. Captions already generate + show on Events; extended to
+  Home's recent-activity/Spotlights ("what happened while I was away" glance),
+  reusing `.ev-caption` + the extracted `captionContradicts` guard. Live: Home
+  reads "Person standing at front door of residence.", "two cars parked… at night".
+
+**Deliberately deferred (documented, lower value / bigger / owner-gated):**
+Frigate's scene-level Alerts-vs-Detections *unread inbox* with swipe-to-clear
+(a review-loop redesign); the Blue Iris auditable *suppressed-events bin* (a full
+storage+UI feature — the lens nudge is the v0 trust surface); cross-camera
+*one-clip-one-notification* collapse (Eufy); actionable push buttons +
+animated-thumbnail previews (needs web-push actions); Eufy Delivery-Guard
+*package-still-present?* state machine + canned-audio warning (backchannel was
+already deferred); NL-to-rule generation (needs the ask LLM). Full findings:
+the four agent reports this session (competitor UX + pain points, all URL-cited).
+
 ### Latest: label-humanization pass — pretty labels in digests/anomaly + img alts/titles, 2026-07-19
 
 Closed the raw snake_case label leaks the last walkthrough flagged as deferred,
