@@ -1252,7 +1252,12 @@ fn run_worker(
                             cam.name
                         );
                         let _ = db.add_camera_notification(
-                            now, "lens_obstruction", title, Some(&msg), None, cam.id,
+                            now,
+                            "lens_obstruction",
+                            title,
+                            Some(&msg),
+                            None,
+                            cam.id,
                         );
                     }
                 }

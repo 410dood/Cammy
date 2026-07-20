@@ -53,7 +53,12 @@ pub fn luma_stats(thumb: &[f32]) -> (f32, f32) {
 
 /// Is a detection whose crop has this area fraction and luma stats a near-lens
 /// obstruction (bug / web) rather than a real object? All three gates must hold.
-pub fn is_obstruction(area_frac: f32, mean_luma: f32, luma_var: f32, cfg: &ObstructionConfig) -> bool {
+pub fn is_obstruction(
+    area_frac: f32,
+    mean_luma: f32,
+    luma_var: f32,
+    cfg: &ObstructionConfig,
+) -> bool {
     area_frac >= cfg.min_area_frac && mean_luma >= cfg.min_luma && luma_var <= cfg.max_var
 }
 
@@ -75,9 +80,14 @@ mod tests {
         let cfg = ObstructionConfig::default();
         // A real (even large, even bright-ish) subject has internal contrast —
         // alternating light/dark pixels give high variance.
-        let thumb: Vec<f32> = (0..256).map(|i| if i % 2 == 0 { 0.85 } else { 0.25 }).collect();
+        let thumb: Vec<f32> = (0..256)
+            .map(|i| if i % 2 == 0 { 0.85 } else { 0.25 })
+            .collect();
         let (mean, var) = luma_stats(&thumb);
-        assert!(!is_obstruction(0.6, mean, var, &cfg), "textured crop must survive");
+        assert!(
+            !is_obstruction(0.6, mean, var, &cfg),
+            "textured crop must survive"
+        );
     }
 
     #[test]

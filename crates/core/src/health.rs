@@ -206,7 +206,10 @@ fn maybe_heartbeat(
         .filter(|c| c.record && board.get(&c.id).map(|h| h.recording).unwrap_or(false))
         .count();
     let retain = if settings.retention_days > 0 {
-        format!(" Keeping about {} days of footage.", settings.retention_days)
+        format!(
+            " Keeping about {} days of footage.",
+            settings.retention_days
+        )
     } else {
         String::new()
     };
