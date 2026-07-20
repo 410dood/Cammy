@@ -2214,6 +2214,19 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={() => set({ highlight_motion: !(s.highlight_motion ?? true) })}
               />
             </label>
+            <label
+              className="toggle field"
+              title="Filter out the classic night-time false alarm: an insect, spider or cobweb sitting on the lens under IR looks like a big, bright, featureless blob that the AI mistakes for a person or animal. Cammy drops these (a real subject is essentially never all three at once) and nudges you to wipe the lens. Your continuous recording still keeps every frame."
+            >
+              ignore insects / cobwebs on the lens
+              <input
+                type="checkbox"
+                checked={s.suppress_lens_obstruction ?? true}
+                onChange={() =>
+                  set({ suppress_lens_obstruction: !(s.suppress_lens_obstruction ?? true) })
+                }
+              />
+            </label>
             <label className="field" title="Which processor runs AI detection (and face/pose). GPU is fastest; CPU is the most compatible fallback.">
               detection accelerator
               <select

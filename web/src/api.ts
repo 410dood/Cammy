@@ -335,6 +335,9 @@ export interface Settings {
   /** Burn an amber outline of the motion region(s) that tripped the gate onto
    *  detection snapshots, so you can see what actually triggered an event. */
   highlight_motion: boolean;
+  /** Suppress near-lens obstruction (insect/spider/cobweb-on-the-glass) false
+   *  alarms — the perennial night-time IR false positive. Default true. */
+  suppress_lens_obstruction: boolean;
   /** Number of parallel detection worker threads (1..8). Cameras are sharded
    *  across the workers so one slow camera can't stall the others. Takes effect
    *  after a restart; each worker uses its own detector session. */

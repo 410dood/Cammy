@@ -297,6 +297,10 @@ fn run_worker(
     // event. A track already in here that hasn't moved past `STATIONARY_MOVE_FRAC`
     // is suppressed (a parked car re-tripping the gate via ambient motion).
     let mut alerted_tracks: HashMap<i64, HashMap<u64, (f32, f32)>> = HashMap::new();
+    // Near-lens obstruction (bug/web) suppression: last time we nudged the owner
+    // to check a camera's lens, per camera id — so a persistent cobweb produces a
+    // single helpful "clean the lens" notification per hour, not a stream.
+    let mut lens_notified: HashMap<i64, i64> = HashMap::new();
     // P3.5 zero-shot zone-state classifier (garage/gate open-vs-closed). Keyed by
     // (camera id, zone name): `state_last` throttles a zone to ~one classification
     // per `STATE_CLASSIFY_INTERVAL`; `state_known` holds the last CONFIRMED binary
@@ -1197,6 +1201,61 @@ fn run_worker(
                     let dbox = tracker::BBox::new(d.x1 / fw, d.y1 / fh, d.x2 / fw, d.y2 / fh);
                     stationary_should_fire(dbox, d.label, &sup_tracks, alerted)
                 });
+                if wanted.is_empty() {
+                    continue;
+                }
+            }
+
+            // Near-lens obstruction suppression (insect / spider / cobweb on the
+            // glass under IR — the perennial night false-alarm). Drop any detection
+            // whose crop is large + near-white + texture-free; a real subject that
+            // is simultaneously all three is essentially unheard of, and continuous
+            // recording keeps the footage regardless. Cheap: only runs over the
+            // already-filtered `wanted` set when the (default-on) setting is set.
+            if settings.suppress_lens_obstruction {
+                let cfg = crate::lens::ObstructionConfig::default();
+                let before = wanted.len();
+                wanted.retain(|d| {
+                    let (w, h) = ((d.x2 - d.x1).max(0.0), (d.y2 - d.y1).max(0.0));
+                    let area_frac = (w * h) / (fw * fh);
+                    // Cheap early-out: only crop + measure detections big enough to
+                    // possibly be on the lens.
+                    if area_frac < cfg.min_area_frac {
+                        return true;
+                    }
+                    let cx = d.x1.max(0.0) as u32;
+                    let cy = d.y1.max(0.0) as u32;
+                    let cw = (w as u32).min(frame.width().saturating_sub(cx));
+                    let ch = (h as u32).min(frame.height().saturating_sub(cy));
+                    if cw < 8 || ch < 8 {
+                        return true;
+                    }
+                    let crop = frame.crop_imm(cx, cy, cw, ch);
+                    let (mean, var) = crate::lens::luma_stats(&crate::tamper::thumb_of(&crop));
+                    !crate::lens::is_obstruction(area_frac, mean, var, &cfg)
+                });
+                if wanted.len() < before {
+                    tracing::info!(
+                        camera = %cam.name,
+                        dropped = before - wanted.len(),
+                        "suppressed near-lens obstruction (possible insect/cobweb)"
+                    );
+                    // Nudge the owner to check the lens, at most once/hour/camera.
+                    let last = lens_notified.get(&cam.id).copied().unwrap_or(0);
+                    if now - last >= 3600 {
+                        lens_notified.insert(cam.id, now);
+                        let title = "Possible lens obstruction";
+                        let msg = format!(
+                            "{}: repeated near-lens detections look like an insect or \
+                             cobweb on the glass — a quick lens wipe may help. These are \
+                             being filtered so they don't alert you.",
+                            cam.name
+                        );
+                        let _ = db.add_camera_notification(
+                            now, "lens_obstruction", title, Some(&msg), None, cam.id,
+                        );
+                    }
+                }
                 if wanted.is_empty() {
                     continue;
                 }

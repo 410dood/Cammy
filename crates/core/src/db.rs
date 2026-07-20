@@ -1395,6 +1395,14 @@ pub struct Settings {
     /// On by default; purely cosmetic on the saved JPEG.
     #[serde(default = "default_true")]
     pub highlight_motion: bool,
+    /// Suppress near-lens obstruction false alarms — an insect / spider / cobweb
+    /// sitting on the glass under IR reads as a large, uniformly bright, texture-
+    /// free blob that the object model hallucinates into a person/animal. On by
+    /// default; conservative (a real subject that's also huge + near-white + flat
+    /// is essentially unheard of), and continuous recording keeps the footage
+    /// regardless. See `crate::lens`.
+    #[serde(default = "default_true")]
+    pub suppress_lens_obstruction: bool,
     /// P3.6 — number of parallel detection worker threads. Cameras are sharded
     /// across the workers by list position so one camera's slow/blocking frame
     /// fetch can't stall the others. Read ONCE at pipeline startup and fixed for
@@ -1588,6 +1596,7 @@ impl Default for Settings {
             offsite_secret_key: String::new(),
             offsite_events_only: false,
             highlight_motion: true,
+            suppress_lens_obstruction: true,
             detect_workers: 1,
             ask_enabled: false,
             ask_endpoint: String::new(),

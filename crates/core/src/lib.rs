@@ -28,6 +28,7 @@ mod go2rtc;
 mod health;
 mod homekit;
 mod import;
+mod lens;
 mod licensing;
 pub mod lpr;
 mod mqtt;
