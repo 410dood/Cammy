@@ -145,6 +145,9 @@ export default function Alarms({
   const [days, setDays] = useState<number[]>([]);
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
+  // Advanced-conditions disclosure — controlled so "Save as alert" from Events
+  // (which prefills an AI-watch prompt living in this section) can force it open.
+  const [advOpen, setAdvOpen] = useState(false);
 
   const toggleDay = (d: number) =>
     setDays((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d].sort()));
@@ -301,6 +304,22 @@ export default function Alarms({
       builderRef.current?.querySelector("input")?.focus({ preventScroll: true });
     });
   };
+
+  // Bridge from Events' "Save as alert": a stashed search query prefills a new
+  // prompt-based ("AI watch") rule for the user to review, adjust, and save —
+  // turning any smart search into a standing NL alert (UniFi-style). Prefill
+  // only; the rule isn't created until the user submits the builder.
+  useEffect(() => {
+    const q = sessionStorage.getItem("cammy-alarm-prompt");
+    if (!q) return;
+    sessionStorage.removeItem("cammy-alarm-prompt");
+    resetBuilder();
+    setPromptLike(q);
+    setName(q.length > 40 ? `Watch: ${q.slice(0, 40)}…` : `Watch: ${q}`);
+    setAdvOpen(true);
+    openBuilder();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const removeRule = async (r: AlarmRule) => {
     if (
@@ -839,7 +858,11 @@ export default function Alarms({
               <input type="text" value={plateLike} onChange={(e) => setPlateLike(e.target.value)} placeholder="any plate" />
             </label>
           </div>
-          <details className="adv">
+          <details
+            className="adv"
+            open={advOpen}
+            onToggle={(e) => setAdvOpen((e.currentTarget as HTMLDetailsElement).open)}
+          >
             <summary>Advanced conditions — stranger, hand signal, spoken phrase, zone, confirmation, AI watch &amp; verification</summary>
             <div className="row" style={{ marginTop: 8, marginBottom: 12 }}>
               <label

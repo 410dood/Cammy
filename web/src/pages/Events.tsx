@@ -959,6 +959,18 @@ export default function Events({
         <button className="btn btn-primary" onClick={runSearch} disabled={searching || !query.trim()}>
           {searching ? "searching…" : "Search"}
         </button>
+        {query.trim() && (
+          <button
+            className="btn btn-ghost"
+            title="Turn this search into a standing alert — get notified whenever something matching it appears."
+            onClick={() => {
+              sessionStorage.setItem("cammy-alarm-prompt", query.trim());
+              window.location.hash = "#/alarms";
+            }}
+          >
+            <IconBell size={16} /> Save as alert
+          </button>
+        )}
       </div>
       {interpreted.length > 0 && (
         <div className="row" style={{ marginTop: -8, marginBottom: 14, gap: 6, flexWrap: "wrap" }}>
