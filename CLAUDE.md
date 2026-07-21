@@ -16,7 +16,26 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
 
-### Latest: 2026-competitor research → 4 real-life-use-case features shipped, 2026-07-19
+### Latest: db.rs infra — versioned migrations + WAL read pool, 2026-07-21
+
+Two structural fixes shipped on `main` (`a562aef`), behavior-preserving; 234
+core tests, clippy -D clean. (1) **Versioned schema migrations**: `PRAGMA
+user_version` ladder — v1 is the full idempotent v0.4 baseline (existing
+installs at version 0 restamp in place), future steps append as strict,
+transaction-wrapped, run-once migrations (`Db::migrate` documents the rules);
+a newer-than-build schema warns instead of bricking. (2) **Read pool beside
+the writer**: the single writer `Connection` keeps its Mutex (multi-statement
+RMW sequences under one `conn()` guard stay atomic — the last-admin guard
+depends on it); a 3-connection `query_only` pool now serves the 14 heavy
+SELECT-only paths (event list/count/search, analytics, embedding scans,
+segment lists, motion search) so under WAL a slow scan never stalls a
+recording-path write. + `busy_timeout=5000`, `synchronous=NORMAL` everywhere.
+**Rule for new schema changes: bump `SCHEMA_VERSION`, append to `MIGRATIONS`
+— never extend the v1 baseline. Never call `self.read()` in a fn that
+writes.** Running NVR picks this up on its next release rebuild (no restart
+performed; migration restamp is a no-op on live data).
+
+### Earlier: 2026-competitor research → 4 real-life-use-case features shipped, 2026-07-19
 
 A four-stream competitor + pain-point research pass (parallel agents:
 UniFi/Ring/Nest UX · Reolink/Eufy/Arlo · self-hosted Frigate/BI6/Scrypted · real
