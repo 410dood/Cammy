@@ -1,16 +1,56 @@
 //! SQLite store: camera registry, detection events, recording segment index,
-//! and a single JSON settings blob. Connection is wrapped in a Mutex — every
-//! query here is sub-millisecond, so contention is a non-issue at home scale.
+//! and a single JSON settings blob.
+//!
+//! Concurrency model: ONE writer connection behind a Mutex (so multi-statement
+//! read-modify-write sequences under a single `conn()` guard stay atomic — the
+//! last-admin guard, self-trim patterns, etc. rely on this), plus a small pool
+//! of `query_only` read connections for the heavy SELECT paths (event lists,
+//! search scans, heatmap/timeseries aggregation). The database runs in WAL
+//! mode, so those readers never block the writer and vice versa — a slow
+//! analytics scan can no longer stall a recording-path write.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+/// Current schema version (`PRAGMA user_version`). Bump this and append a
+/// step to `MIGRATIONS` (in `Db::migrate`) to change the schema — never edit
+/// an existing step, and keep v1 idempotent (see the note on `migrate_v1`).
+const SCHEMA_VERSION: i64 = 1;
+
+/// Read connections in the pool. Home scale: a couple of concurrent UI
+/// readers plus a background analytics scan is the realistic worst case.
+const READ_POOL_SIZE: usize = 3;
+
+/// A fixed set of `query_only` connections for SELECT-heavy paths. Not a
+/// checkout pool — each connection keeps its own Mutex; `get` grabs the first
+/// free one and only blocks when all are busy.
+struct ReadPool {
+    conns: Vec<Mutex<Connection>>,
+    next: AtomicUsize,
+}
+
+impl ReadPool {
+    fn get(&self) -> MutexGuard<'_, Connection> {
+        for c in &self.conns {
+            if let Ok(g) = c.try_lock() {
+                return g;
+            }
+        }
+        let i = self.next.fetch_add(1, Ordering::Relaxed) % self.conns.len();
+        self.conns[i].lock().expect("db read-pool mutex poisoned")
+    }
+}
+
 #[derive(Clone)]
-pub struct Db(Arc<Mutex<Connection>>);
+pub struct Db {
+    write: Arc<Mutex<Connection>>,
+    read: Arc<ReadPool>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Camera {
@@ -1622,10 +1662,78 @@ impl Db {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let conn = Connection::open(path)
+        let mut conn = Connection::open(path)
             .with_context(|| format!("opening database {}", path.display()))?;
+        Self::tune(&conn)?;
+        Self::migrate(&mut conn).context("running database migrations")?;
+        // Touch a write transaction so the WAL -shm/-wal sidecars exist before
+        // the readers open (on an already-migrated DB nothing above writes).
+        conn.execute_batch("BEGIN IMMEDIATE; COMMIT;")?;
+        let mut readers = Vec::with_capacity(READ_POOL_SIZE);
+        for _ in 0..READ_POOL_SIZE {
+            let r = Connection::open(path)
+                .with_context(|| format!("opening read connection {}", path.display()))?;
+            Self::tune(&r)?;
+            // Fail loudly if a write ever sneaks onto a read connection.
+            r.pragma_update(None, "query_only", "ON")?;
+            readers.push(Mutex::new(r));
+        }
+        Ok(Self {
+            write: Arc::new(Mutex::new(conn)),
+            read: Arc::new(ReadPool {
+                conns: readers,
+                next: AtomicUsize::new(0),
+            }),
+        })
+    }
+
+    /// Per-connection pragmas (writer and readers alike).
+    fn tune(conn: &Connection) -> Result<()> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // With WAL + multiple connections, a briefly-locked writer should wait,
+        // not error with SQLITE_BUSY.
+        conn.pragma_update(None, "busy_timeout", 5000)?;
+        // NORMAL is durable-enough under WAL (a power cut can lose the last
+        // transactions but never corrupts) and much cheaper than FULL.
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        Ok(())
+    }
+
+    /// Versioned migration ladder over `PRAGMA user_version`. Each step runs
+    /// in its own transaction and stamps the version on commit, so a crash
+    /// mid-migration re-runs only the unfinished step. Rules:
+    /// - append new steps, never edit shipped ones;
+    /// - v1 is the pre-versioning baseline and MUST stay idempotent (every
+    ///   existing install is at user_version 0 and runs it once);
+    /// - steps v2+ only ever run exactly once, so they may be strict
+    ///   (error-checked ALTERs, data backfills, renames).
+    fn migrate(conn: &mut Connection) -> Result<()> {
+        const MIGRATIONS: &[fn(&Connection) -> Result<()>] = &[Db::migrate_v1];
+        let have: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if have > SCHEMA_VERSION {
+            // A newer build touched this DB. All migrations are additive, so
+            // reading it is safe — warn instead of bricking the camera system.
+            tracing::warn!(
+                "database schema v{have} is newer than this build (v{SCHEMA_VERSION}); \
+                 continuing without migrating"
+            );
+            return Ok(());
+        }
+        for ver in (have + 1)..=SCHEMA_VERSION {
+            let tx = conn.transaction()?;
+            MIGRATIONS[(ver - 1) as usize](&tx)
+                .with_context(|| format!("schema migration to v{ver}"))?;
+            tx.pragma_update(None, "user_version", ver)?;
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
+    /// v1: the full v0.4 baseline schema. Idempotent by construction
+    /// (CREATE IF NOT EXISTS + best-effort ADD COLUMN) because every install
+    /// from before schema versioning already has some prefix of it applied.
+    fn migrate_v1(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS cameras (
                  id         INTEGER PRIMARY KEY,
@@ -1977,11 +2085,20 @@ impl Db {
                  PRIMARY KEY (user_id, rule_id, channel)
              );",
         )?;
-        Ok(Self(Arc::new(Mutex::new(conn))))
+        Ok(())
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.0.lock().expect("db mutex poisoned")
+    /// The single writer connection. Multi-statement sequences under one
+    /// guard are atomic with respect to every other `conn()` caller.
+    fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.write.lock().expect("db mutex poisoned")
+    }
+
+    /// A pooled `query_only` connection for SELECT-heavy paths. Under WAL
+    /// these never block (or get blocked by) the writer, so a slow scan
+    /// can't stall recording-path writes. Never use for writes.
+    fn read(&self) -> MutexGuard<'_, Connection> {
+        self.read.get()
     }
 
     // --- cameras ---------------------------------------------------------
@@ -2136,7 +2253,7 @@ impl Db {
         flagged_only: bool,
         limit: u32,
     ) -> Result<Vec<Event>> {
-        let conn = self.conn();
+        let conn = self.read();
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
@@ -2419,7 +2536,7 @@ impl Db {
         to: Option<i64>,
         allowed: Option<&std::collections::HashSet<i64>>,
     ) -> Result<serde_json::Value> {
-        let conn = self.conn();
+        let conn = self.read();
         // Per-camera RBAC: restrict to the caller's allowed cameras (ids are our
         // own i64s -> inline IN-list is injection-safe). `None` = unrestricted;
         // `Some` is always non-empty (allowed_cameras maps empty -> None).
@@ -2474,7 +2591,7 @@ impl Db {
     ) -> Result<serde_json::Value> {
         use chrono::{Duration as CDur, Local, TimeZone};
         let days = days.clamp(1, 90);
-        let conn = self.conn();
+        let conn = self.read();
         // Per-camera RBAC (ids are our own i64s -> inline IN-list is injection-safe).
         let cam = match allowed {
             Some(ids) if !ids.is_empty() => format!(
@@ -2586,7 +2703,7 @@ impl Db {
     ) -> Result<Vec<u32>> {
         let grid = grid.clamp(8, 128);
         let mut cells = vec![0u32; grid * grid];
-        let conn = self.conn();
+        let conn = self.read();
         let mut q = conn.prepare(
             "SELECT x1, y1, x2, y2 FROM events
              WHERE camera_id = ?1
@@ -3845,7 +3962,7 @@ impl Db {
             .map(i64::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        Ok(self.conn().query_row(
+        Ok(self.read().query_row(
             &format!("SELECT COUNT(*) FROM events WHERE camera_id IN ({in_list})"),
             [],
             |r| r.get(0),
@@ -3886,7 +4003,7 @@ impl Db {
             sql.push_str(&format!(" AND camera_id IN ({in_list})"));
         }
         let params = rusqlite::params_from_iter(binds.iter().map(|b| b.as_ref()));
-        Ok(self.conn().query_row(&sql, params, |r| r.get(0))?)
+        Ok(self.read().query_row(&sql, params, |r| r.get(0))?)
     }
 
     pub fn delete_alarm(&self, id: i64) -> Result<()> {
@@ -4013,7 +4130,7 @@ impl Db {
     /// candidate corpus for cross-camera appearance search. Retention-bounded
     /// (deleted events cascade), no row cap so recall isn't truncated.
     pub fn crop_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>> {
-        let conn = self.conn();
+        let conn = self.read();
         let mut stmt = conn.prepare(
             "SELECT event_id, crop_embedding FROM event_embeddings
              WHERE crop_embedding IS NOT NULL",
@@ -4072,7 +4189,7 @@ impl Db {
         camera_id: i64,
         label: &str,
     ) -> Result<Vec<Vec<f32>>> {
-        let conn = self.conn();
+        let conn = self.read();
         let mut stmt = conn
             .prepare("SELECT embedding FROM alert_feedback WHERE camera_id = ?1 AND label = ?2")?;
         let rows = stmt
@@ -4087,7 +4204,7 @@ impl Db {
     /// All feedback crops as `(camera_id, label, embedding)` — the bulk load the
     /// detection pipeline caches once per tick into a per-(camera,label) map.
     pub fn feedback_embeddings(&self) -> Result<Vec<(i64, String, Vec<f32>)>> {
-        let conn = self.conn();
+        let conn = self.read();
         let mut stmt = conn.prepare("SELECT camera_id, label, embedding FROM alert_feedback")?;
         let rows = stmt
             .query_map([], |r| {
@@ -4105,7 +4222,7 @@ impl Db {
     /// events table (holding the DB mutex) on every query; ORDER BY ts DESC keeps
     /// recent recall. The embedding column (and JOIN) is skipped in text-only mode.
     pub fn search_corpus(&self, with_embeddings: bool, limit: usize) -> Result<Vec<SearchRow>> {
-        let conn = self.conn();
+        let conn = self.read();
         let sql = if with_embeddings {
             "SELECT e.id, e.transcript, e.caption, em.embedding
              FROM events e LEFT JOIN event_embeddings em ON em.event_id = e.id
@@ -4332,7 +4449,7 @@ impl Db {
         stream: Option<&str>,
     ) -> Result<Vec<SegmentRow>> {
         let stream = stream.unwrap_or("main");
-        let conn = self.conn();
+        let conn = self.read();
         let mut stmt = conn.prepare(
             "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path, s.stream
              FROM segments s JOIN cameras c ON c.id = s.camera_id
@@ -4367,7 +4484,7 @@ impl Db {
         since_ts: i64,
         limit: u32,
     ) -> Result<Vec<SegmentRow>> {
-        let conn = self.conn();
+        let conn = self.read();
         let mut stmt = conn.prepare(
             "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path, s.stream
              FROM segments s JOIN cameras c ON c.id = s.camera_id
@@ -4427,7 +4544,7 @@ impl Db {
         from: i64,
         to: i64,
     ) -> Result<Vec<(i64, Vec<u8>)>> {
-        let conn = self.conn();
+        let conn = self.read();
         let mut stmt = conn.prepare(
             "SELECT minute_ts, cells FROM motion_grid
              WHERE camera_id = ?1 AND minute_ts >= ?2 AND minute_ts <= ?3
@@ -4818,7 +4935,7 @@ impl Db {
 
     pub fn count_events(&self) -> Result<i64> {
         Ok(self
-            .conn()
+            .read()
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
     }
 
@@ -5006,9 +5123,97 @@ mod tests {
     use super::*;
 
     fn mem_db() -> Db {
+        Db::open(&mem_db_path()).unwrap()
+    }
+
+    fn mem_db_path() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("zoomy-db-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        Db::open(&dir.join(format!("t-{:?}.db", std::time::Instant::now()))).unwrap()
+        dir.join(format!("t-{:?}.db", std::time::Instant::now()))
+    }
+
+    #[test]
+    fn schema_version_stamped_and_reopen_is_clean() {
+        let path = mem_db_path();
+        let db = Db::open(&path).unwrap();
+        let v: i64 = db
+            .conn()
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        db.add_camera("c1", "rtsp://x", None, true, true).unwrap();
+        drop(db);
+        // Reopen: migrations are a no-op, data survives.
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.list_cameras().unwrap().len(), 1);
+        let v: i64 = db
+            .conn()
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn pre_versioning_db_migrates_to_baseline() {
+        // Simulate an existing v0.4 install: full schema but user_version 0
+        // (every DB from before the ladder). Reopen must restamp cleanly and
+        // keep data — v1 is idempotent over an already-complete schema.
+        let path = mem_db_path();
+        let db = Db::open(&path).unwrap();
+        db.add_camera("c1", "rtsp://x", None, true, true).unwrap();
+        db.conn().pragma_update(None, "user_version", 0).unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.list_cameras().unwrap().len(), 1);
+        let v: i64 = db
+            .conn()
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn newer_schema_is_left_untouched() {
+        let path = mem_db_path();
+        let db = Db::open(&path).unwrap();
+        db.conn()
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 5)
+            .unwrap();
+        drop(db);
+        // Opens fine (never brick), and the future version stamp is preserved.
+        let db = Db::open(&path).unwrap();
+        let v: i64 = db
+            .conn()
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION + 5);
+    }
+
+    #[test]
+    fn read_pool_sees_writes_and_rejects_its_own() {
+        let db = mem_db();
+        let cam = db.add_camera("c1", "rtsp://x", None, true, true).unwrap();
+        db.add_event(
+            cam.id, 1000, "person", 0.9, [0.0; 4], None, None, None, None, None,
+        )
+        .unwrap();
+        // A pooled read connection sees committed writes immediately (WAL).
+        let n: i64 = db
+            .read()
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        // count_events rides the pool too.
+        assert_eq!(db.count_events().unwrap(), 1);
+        // query_only: a write on a read connection fails loudly.
+        assert!(db.read().execute("DELETE FROM events", []).is_err());
+        // ...and grabbing more guards than the pool holds still works (the
+        // overflow caller blocks on / reuses a slot rather than deadlocking is
+        // not testable single-threaded, but distinct slots hand out fine).
+        let g1 = db.read();
+        let g2 = db.read();
+        let g3 = db.read();
+        drop((g1, g2, g3));
     }
 
     #[test]
