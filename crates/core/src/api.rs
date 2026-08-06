@@ -6417,61 +6417,77 @@ async fn homekit_reset(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// Whether a settings delta touches Admin-only configuration.
+///
+/// Operators may tune detection and alerting, but not the config that points
+/// this box at somewhere else or hands over a secret: the forward-auth SSO
+/// default role (a delta to admin escalates every unmatched proxied user), the
+/// offsite-backup destination + credentials (repointing them exfiltrates all
+/// recordings), the Ask/archive endpoints and tokens, the HomeKit LAN exposure,
+/// and the outbound mail server.
+///
+/// Pure and exhaustively tested BECAUSE the failure mode here is omission, not
+/// logic: SMTP was silently missing from this list for its whole life, and an
+/// inline boolean inside an async handler gave nothing to test against. Any new
+/// secret-bearing or destination-bearing setting belongs here and in
+/// `admin_only_settings_fields_are_all_guarded`.
+fn admin_only_settings_delta(s: &Settings, cur: &Settings) -> bool {
+    // Write-only secrets are blanked on read, so only a non-blank incoming value
+    // that differs counts as a change (a blank one means "keep the stored one").
+    let secret_changed =
+        !s.offsite_secret_key.is_empty() && s.offsite_secret_key != cur.offsite_secret_key;
+    let ask_key_changed = !s.ask_api_key.is_empty() && s.ask_api_key != cur.ask_api_key;
+    let archive_token_changed = !s.archive_token.is_empty() && s.archive_token != cur.archive_token;
+    // smtp_pass is write-only too — but smtp_url and smtp_user are NOT blanked
+    // on read, and a blank incoming password is deliberately preserved. Without
+    // the smtp_url/user guards below, an Operator could GET the settings,
+    // repoint the mail host at one they control, PUT it back with every other
+    // field byte-identical, then force a delivery (the alarm Test button
+    // bypasses schedule/mode/cooldown gates) — handing over the owner's real
+    // mail credentials.
+    let smtp_pass_changed = !s.smtp_pass.is_empty() && s.smtp_pass != cur.smtp_pass;
+
+    s.auth_proxy_header != cur.auth_proxy_header
+        || s.auth_proxy_role_header != cur.auth_proxy_role_header
+        || s.auth_proxy_default_role != cur.auth_proxy_default_role
+        || s.offsite_backup_enabled != cur.offsite_backup_enabled
+        || s.offsite_endpoint != cur.offsite_endpoint
+        || s.offsite_region != cur.offsite_region
+        || s.offsite_bucket != cur.offsite_bucket
+        || s.offsite_prefix != cur.offsite_prefix
+        || s.offsite_access_key != cur.offsite_access_key
+        || secret_changed
+        // P3.2: the ask config points the box at an external LLM and holds a key.
+        || s.ask_enabled != cur.ask_enabled
+        || s.ask_endpoint != cur.ask_endpoint
+        || s.ask_model != cur.ask_model
+        || ask_key_changed
+        // P3.9: archive-pull points this box at another Cammy and holds a token.
+        || s.archive_pull_enabled != cur.archive_pull_enabled
+        || s.archive_primary_url != cur.archive_primary_url
+        || s.archive_cameras != cur.archive_cameras
+        || archive_token_changed
+        // P3.4: the HomeKit bridge exposes cameras on the LAN and holds the PIN.
+        || s.homekit_enabled != cur.homekit_enabled
+        // Outbound mail server + credentials — see `smtp_pass_changed`.
+        || s.smtp_url != cur.smtp_url
+        || s.smtp_user != cur.smtp_user
+        || s.smtp_from != cur.smtp_from
+        || s.smtp_to != cur.smtp_to
+        || smtp_pass_changed
+}
+
 async fn put_settings(
     State(st): State<AppState>,
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Json(s): Json<Settings>,
 ) -> ApiResult<Json<Settings>> {
-    // Operators may tune detection/alerts, but security-critical config is
-    // Admin-only: the forward-auth SSO default role (a delta to admin escalates
-    // every unmatched proxied user) and the offsite-backup destination/credentials
-    // (repointing them exfiltrates all recordings). Consistent with /api/backup
-    // being Admin-gated. Reject a non-Admin PATCH that changes any of them.
-    if p.role < crate::auth::Role::Admin {
-        let cur = st.db.settings();
-        // offsite_secret_key is write-only (blanked on read); only a non-blank
-        // incoming value that differs counts as a change.
-        let secret_changed =
-            !s.offsite_secret_key.is_empty() && s.offsite_secret_key != cur.offsite_secret_key;
-        // The ask API key is write-only (blanked on read); a non-blank incoming
-        // value that differs counts as a change.
-        let ask_key_changed = !s.ask_api_key.is_empty() && s.ask_api_key != cur.ask_api_key;
-        // P3.9 archive token is write-only (blanked on read); a non-blank
-        // incoming value that differs counts as a change.
-        let archive_token_changed =
-            !s.archive_token.is_empty() && s.archive_token != cur.archive_token;
-        if s.auth_proxy_header != cur.auth_proxy_header
-            || s.auth_proxy_role_header != cur.auth_proxy_role_header
-            || s.auth_proxy_default_role != cur.auth_proxy_default_role
-            || s.offsite_backup_enabled != cur.offsite_backup_enabled
-            || s.offsite_endpoint != cur.offsite_endpoint
-            || s.offsite_region != cur.offsite_region
-            || s.offsite_bucket != cur.offsite_bucket
-            || s.offsite_prefix != cur.offsite_prefix
-            || s.offsite_access_key != cur.offsite_access_key
-            || secret_changed
-            // P3.2: the ask config points the box at an external LLM and holds a
-            // key — Admin-only, like the offsite destination/credentials.
-            || s.ask_enabled != cur.ask_enabled
-            || s.ask_endpoint != cur.ask_endpoint
-            || s.ask_model != cur.ask_model
-            || ask_key_changed
-            // P3.9: the archive-pull config points this box at another Cammy and
-            // holds a token — Admin-only, like the offsite destination/creds.
-            || s.archive_pull_enabled != cur.archive_pull_enabled
-            || s.archive_primary_url != cur.archive_primary_url
-            || s.archive_cameras != cur.archive_cameras
-            || archive_token_changed
-            // P3.4: the HomeKit bridge exposes cameras on the LAN over HAP and
-            // holds the pairing PIN — Admin-only, like the other network exposures.
-            || s.homekit_enabled != cur.homekit_enabled
-        {
-            return Err(ApiError(
-                StatusCode::FORBIDDEN,
-                "changing SSO forward-auth, offsite-backup, Ask, archive, or HomeKit settings requires an admin"
-                    .into(),
-            ));
-        }
+    if p.role < crate::auth::Role::Admin && admin_only_settings_delta(&s, &st.db.settings()) {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "changing SSO forward-auth, offsite-backup, email/SMTP, Ask, archive, or HomeKit settings requires an admin"
+                .into(),
+        ));
     }
     if !(0.0..=1.0).contains(&s.confidence)
         || !(0.0..=1.0).contains(&s.nms_iou)
@@ -6566,8 +6582,8 @@ async fn put_settings(
 #[cfg(test)]
 mod tests {
     use super::{
-        csv_field, events_to_csv, no_control, redact_url_creds, render_metrics, valid_group,
-        valid_source, BackupMetric, BookmarkReq, CamMetric,
+        admin_only_settings_delta, csv_field, events_to_csv, no_control, redact_url_creds,
+        render_metrics, valid_group, valid_source, BackupMetric, BookmarkReq, CamMetric, Settings,
     };
 
     #[test]
@@ -6650,6 +6666,91 @@ mod tests {
         assert!(row.contains(",a_to_b,32,")); // direction + rounded speed
         assert!(row.contains(",yes,")); // flagged
         assert!(row.ends_with(",\"help, fire\"")); // transcript quoted
+    }
+
+    #[test]
+    fn admin_only_settings_fields_are_all_guarded() {
+        let base = Settings::default();
+        // An unchanged submission is never Admin-only…
+        assert!(!admin_only_settings_delta(&base, &base));
+        // …nor is an ordinary Operator-tunable knob.
+        let tuned = Settings {
+            confidence: 0.7,
+            highlight_motion: false,
+            ..base.clone()
+        };
+        assert!(!admin_only_settings_delta(&tuned, &base));
+
+        // Each of these, changed ALONE, must require an admin. SMTP is listed
+        // first because it was the one silently missing: an Operator repointing
+        // `smtp_url` at their own host, leaving the (blanked-on-read) password
+        // blank so the server restores the real one, then forcing a delivery,
+        // walks off with the owner's mail credentials.
+        type Mutate = (&'static str, fn(&mut Settings));
+        let mutate: Vec<Mutate> = vec![
+            ("smtp_url", |s| s.smtp_url = "smtp://evil.example:25".into()),
+            ("smtp_user", |s| s.smtp_user = "attacker".into()),
+            ("smtp_from", |s| s.smtp_from = "a@evil.example".into()),
+            ("smtp_to", |s| s.smtp_to = "a@evil.example".into()),
+            ("smtp_pass", |s| s.smtp_pass = "stolen".into()),
+            ("auth_proxy_header", |s| s.auth_proxy_header = "X-U".into()),
+            ("auth_proxy_role_header", |s| {
+                s.auth_proxy_role_header = "X-R".into()
+            }),
+            ("auth_proxy_default_role", |s| {
+                s.auth_proxy_default_role = "admin".into()
+            }),
+            ("offsite_backup_enabled", |s| {
+                s.offsite_backup_enabled = true
+            }),
+            ("offsite_endpoint", |s| {
+                s.offsite_endpoint = "https://evil.example".into()
+            }),
+            ("offsite_region", |s| s.offsite_region = "us-evil".into()),
+            ("offsite_bucket", |s| s.offsite_bucket = "loot".into()),
+            ("offsite_prefix", |s| s.offsite_prefix = "x".into()),
+            ("offsite_access_key", |s| s.offsite_access_key = "AK".into()),
+            ("offsite_secret_key", |s| s.offsite_secret_key = "SK".into()),
+            ("ask_enabled", |s| s.ask_enabled = true),
+            ("ask_endpoint", |s| {
+                s.ask_endpoint = "https://evil.example".into()
+            }),
+            ("ask_model", |s| s.ask_model = "evil".into()),
+            ("ask_api_key", |s| s.ask_api_key = "key".into()),
+            ("archive_pull_enabled", |s| s.archive_pull_enabled = true),
+            ("archive_primary_url", |s| {
+                s.archive_primary_url = "https://evil.example".into()
+            }),
+            ("archive_cameras", |s| s.archive_cameras = "all".into()),
+            ("archive_token", |s| s.archive_token = "tok".into()),
+            ("homekit_enabled", |s| s.homekit_enabled = true),
+        ];
+        for (name, f) in mutate {
+            let mut s = base.clone();
+            f(&mut s);
+            assert!(
+                admin_only_settings_delta(&s, &base),
+                "{name} must be admin-only"
+            );
+        }
+
+        // A blank write-only secret means "keep the stored one", so it is not a
+        // change — otherwise every ordinary Operator save would 403.
+        let stored = Settings {
+            smtp_pass: "real".into(),
+            offsite_secret_key: "real".into(),
+            ask_api_key: "real".into(),
+            archive_token: "real".into(),
+            ..base.clone()
+        };
+        let echoed = Settings {
+            smtp_pass: String::new(),
+            offsite_secret_key: String::new(),
+            ask_api_key: String::new(),
+            archive_token: String::new(),
+            ..stored.clone()
+        };
+        assert!(!admin_only_settings_delta(&echoed, &stored));
     }
 
     #[test]
