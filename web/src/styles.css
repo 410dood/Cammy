@@ -2611,3 +2611,31 @@ img.identity-thumb { background: var(--n-0); }
   font-size: var(--text-sm);
 }
 .daycal-foot input[type="date"] { margin-left: auto; }
+
+/* DayStrip on phones. A SEPARATE @media block placed after the base rules
+   above — media queries add no specificity, so a block earlier in the file
+   loses to any later same-specificity rule (the gotcha this stylesheet has hit
+   before). Targets meet the 40px minimum the rest of the app uses. */
+@media (max-width: 768px) {
+  .daystrip { width: 100%; }
+  .daystrip > .btn,
+  .daystep .btn {
+    min-height: 40px;
+    padding-inline: var(--sp-3);
+  }
+  .daystep-label { min-width: 7rem; }
+  /* Anchor the popover to the VIEWPORT, not to its trigger. Absolute
+     positioning put it wherever the day label happened to sit, which pushed a
+     ~210px grid off the right edge and gave the whole page a horizontal
+     scrollbar. Fixed insets keep it on screen at any width. */
+  .daycal {
+    position: fixed;
+    left: var(--sp-3);
+    right: var(--sp-3);
+    top: auto;
+    transform: none;
+    max-height: 60vh;
+    overflow: auto;
+  }
+  .daycal-grid { justify-content: center; }
+}
