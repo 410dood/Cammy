@@ -2542,3 +2542,12 @@ img.identity-thumb { background: var(--n-0); }
 .lc-step-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .lc-step-label { text-transform: capitalize; font-weight: 600; }
 .lc-step-time { font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+
+/* "Load older events" footer under the Events grid. Centred and generously
+   spaced so it reads as the end of the list rather than another card. */
+.load-older {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: var(--sp-6) 0 var(--sp-4);
+}

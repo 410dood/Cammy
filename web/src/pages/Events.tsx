@@ -7,6 +7,10 @@ import JourneyMap, { JourneyStep } from "../JourneyMap";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/// Events fetched per page. Also the "is there more?" probe: a short page means
+/// the history behind the current filters is exhausted.
+const PAGE = 200;
+
 /// Absolute wall-clock ("3:42 PM") for the journey narrative — the ordered
 /// step list reads as a time-of-day sequence, not relative "4m ago".
 const fmtClock = (ts: number) =>
@@ -146,6 +150,10 @@ export default function Events({
   const [events, setEvents] = useState<CamEvent[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  /// No more history behind the current filters — hides the "Load older" button
+  /// rather than leaving a control that can only disappoint.
+  const [noOlder, setNoOlder] = useState(false);
   const [cameraId, setCameraId] = useState<number | "">("");
   const [label, setLabel] = useState("");
   const [review, setReview] = useState<"all" | "alerts">("all");
@@ -762,25 +770,58 @@ export default function Events({
     }
   };
 
+  // The active filter set, shared by the first page, "Load older" and the CSV
+  // export so the three can never disagree about what is being looked at.
+  const filterArgs = () => ({
+    camera_id: cameraId === "" ? undefined : cameraId,
+    label: label || undefined,
+    after: fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined,
+    before: toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined,
+    flagged: flaggedOnly || undefined,
+    tag: tagFilter || undefined,
+  });
+
   const load = () => {
-    const after = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
-    const before = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
+    setNoOlder(false);
     api
-      .events({
-        camera_id: cameraId === "" ? undefined : cameraId,
-        label: label || undefined,
-        after,
-        before,
-        flagged: flaggedOnly || undefined,
-        tag: tagFilter || undefined,
-        limit: 200,
-      })
+      .events({ ...filterArgs(), limit: PAGE })
       .then((d) => {
         setEvents(d);
         setLoadError(null);
+        // Fewer than a full page back means there is nothing older to ask for.
+        setNoOlder(d.length < PAGE);
       })
       .catch((e) => setLoadError(errMsg(e)))
       .finally(() => setLoaded(true));
+  };
+
+  // Reach events older than the newest page. Without this the list was a hard
+  // wall at 200 with no way past it, so anything further back was simply
+  // unreachable from this page — the single biggest reason "finding past
+  // footage" was painful.
+  const loadOlder = async () => {
+    if (loadingOlder || noOlder || events.length === 0) return;
+    setLoadingOlder(true);
+    try {
+      const oldest = events[events.length - 1].ts;
+      // `before` is STRICT (`e.ts < ?`) and timestamps are whole seconds, so a
+      // cursor of exactly `oldest` would silently drop every other event that
+      // shares that second — and burst detections routinely share one. Ask from
+      // one second later and drop the overlap by id instead: re-fetching a few
+      // rows is cheap, skipping events is not.
+      const older = await api.events({ ...filterArgs(), before: oldest + 1, limit: PAGE });
+      setEvents((prev) => {
+        const seen = new Set(prev.map((e) => e.id));
+        const fresh = older.filter((e) => !seen.has(e.id));
+        if (fresh.length === 0) setNoOlder(true);
+        return [...prev, ...fresh];
+      });
+      if (older.length < PAGE) setNoOlder(true);
+    } catch (e) {
+      toast.error(`Couldn't load older events: ${errMsg(e)}`);
+    } finally {
+      setLoadingOlder(false);
+    }
   };
 
   // Download the current filter set as a CSV (server streams it with the same
@@ -1417,6 +1458,24 @@ export default function Events({
             </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Reach further back than the newest page. Hidden while searching (those
+          results are ranked, not chronological, so "older" is meaningless) and
+          once the history behind the current filters runs out. */}
+      {!searchResults && events.length > 0 && (
+        <div className="load-older">
+          {noOlder ? (
+            <span className="muted">
+              That&apos;s everything{fromTime || toTime ? " in this time range" : ""}
+              {cameraId !== "" || label || flaggedOnly || tagFilter ? " for these filters" : ""}.
+            </span>
+          ) : (
+            <button type="button" className="btn btn-ghost" onClick={loadOlder} disabled={loadingOlder}>
+              {loadingOlder ? "Loading…" : `Load older events (${events.length} shown)`}
+            </button>
+          )}
         </div>
       )}
 
