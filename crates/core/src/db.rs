@@ -4946,10 +4946,22 @@ impl Db {
     pub fn prune_events_before(&self, cutoff_ts: i64) -> Result<Vec<String>> {
         let conn = self.conn();
         // Don't delete a snapshot still referenced by a kept (flagged) event.
+        //
+        // The `IS NOT NULL` inside the sub-select is load-bearing, not defensive:
+        // in SQL `x NOT IN (…, NULL)` is NULL — never TRUE — so a SINGLE flagged
+        // event with no snapshot made this return zero rows while the DELETE
+        // below still ran, orphaning every snapshot file on disk from then on.
+        // Rows with `snapshot = NULL` are ordinary: a `no_clip` camera (nursery /
+        // bedroom privacy) writes one for EVERY event, so bookmarking one such
+        // event permanently disabled snapshot cleanup install-wide. Measured on
+        // this repo's live database: one poison row, 6050 files / 1.5 GB on disk,
+        // only 2169 still referenced, and the prune returning 0 instead of 2166.
         let mut stmt = conn.prepare(
             "SELECT DISTINCT snapshot FROM events
              WHERE ts < ?1 AND flagged = 0 AND snapshot IS NOT NULL
-               AND snapshot NOT IN (SELECT snapshot FROM events WHERE flagged = 1)",
+               AND snapshot NOT IN (
+                     SELECT snapshot FROM events
+                      WHERE flagged = 1 AND snapshot IS NOT NULL)",
         )?;
         let snapshots = stmt
             .query_map([cutoff_ts], |r| r.get::<_, String>(0))?
@@ -5903,6 +5915,52 @@ mod tests {
             !removed.iter().any(|s| s == shared),
             "shared snapshot must not be deleted out from under the kept event"
         );
+    }
+
+    #[test]
+    fn snapshotless_bookmark_does_not_disable_snapshot_cleanup() {
+        // Regression: the protect-the-flagged sub-select used a bare
+        // `NOT IN (SELECT snapshot FROM events WHERE flagged = 1)`. Because
+        // `x NOT IN (…, NULL)` is NULL rather than TRUE, ONE flagged event with
+        // no snapshot made the whole query return nothing — while the DELETE
+        // still removed the rows — so every snapshot file leaked from then on.
+        //
+        // A snapshot-less event is not exotic: a `no_clip` privacy camera
+        // (nursery/bedroom) writes one for every event, and bookmarking a single
+        // one of those was enough to orphan snapshots install-wide.
+        let db = mem_db();
+        let cam = db
+            .add_camera("nursery", "rtsp://x", None, true, true)
+            .unwrap();
+        // The poison row: flagged, but no snapshot on disk to protect.
+        let privacy = db
+            .add_event(
+                cam.id, 200, "person", 0.9, [0.0; 4], None, None, None, None, None,
+            )
+            .unwrap();
+        assert!(db.set_event_flag(privacy, true).unwrap());
+        // An ordinary old event whose file SHOULD be cleaned up.
+        db.add_event(
+            cam.id,
+            100,
+            "person",
+            0.9,
+            [0.0; 4],
+            Some("nursery-old.jpg"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let removed = db.prune_events_before(1000).unwrap();
+        assert!(
+            removed.iter().any(|s| s == "nursery-old.jpg"),
+            "a snapshot-less bookmark must not suppress cleanup of unrelated snapshots"
+        );
+        // The bookmark itself still survives retention, as always.
+        assert!(db.get_event(privacy).unwrap().is_some());
     }
 
     #[test]
