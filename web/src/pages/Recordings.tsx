@@ -4,10 +4,23 @@ import Timeline from "../Timeline";
 import CrossTimeline, { ActivityStrip } from "../CrossTimeline";
 import { IconPlay, IconFilm, IconAlert, IconChevronDown, IconChevronRight, IconChevronLeft, IconX } from "../icons";
 import { Callout, EmptyState, ErrorState, Modal, useToast } from "../ui";
+import { prettyLabel } from "../labels";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-type HourGroup = { key: string; camera: string; hourTs: number; segs: Segment[]; bytes: number };
+type HourGroup = {
+  key: string;
+  camera: string;
+  cameraId: number;
+  hourTs: number;
+  segs: Segment[];
+  bytes: number;
+  /// Detections inside this bucket, most common first — what turns a row of
+  /// near-identical "47 clips" into something you can triage. `null` means the
+  /// bucket falls outside the event window we actually fetched, so we say
+  /// NOTHING rather than render a "0" that would claim the hour was quiet.
+  counts: [string, number][] | null;
+};
 
 const EXPORT_DURATIONS = [
   { label: "1 min", secs: 60 },
@@ -538,7 +551,7 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       const key = `${s.camera}|${hourTs}|${groupSecs > 0 ? "" : s.id}`;
       let g = map.get(key);
       if (!g) {
-        g = { key, camera: s.camera, hourTs, segs: [], bytes: 0 };
+        g = { key, camera: s.camera, cameraId: s.camera_id, hourTs, segs: [], bytes: 0, counts: null };
         map.set(key, g);
       }
       g.segs.push(s);
@@ -549,8 +562,26 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
       (a, b) => b.hourTs - a.hourTs || a.camera.localeCompare(b.camera)
     );
     for (const g of groups) g.segs.sort((a, b) => a.start_ts - b.start_ts);
+
+    // Label each bucket with what was detected in it, derived from the events
+    // this page ALREADY fetched for the timeline — no extra request. Buckets
+    // older than the oldest event we hold get `null`, not an empty list: a bare
+    // "0 detections" on an hour we simply didn't ask about would be a lie about
+    // whether that footage is worth watching.
+    const oldestEventTs = events.length ? Math.min(...events.map((e) => e.ts)) : Infinity;
+    const span = groupSecs > 0 ? groupSecs : segmentSecs;
+    for (const g of groups) {
+      if (g.hourTs < oldestEventTs) continue; // outside what we know — stay silent
+      const tally = new Map<string, number>();
+      for (const e of events) {
+        if (e.camera_id !== g.cameraId) continue;
+        if (e.ts < g.hourTs || e.ts >= g.hourTs + span) continue;
+        tally.set(e.label, (tally.get(e.label) ?? 0) + 1);
+      }
+      g.counts = [...tally.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+    }
     return groups;
-  }, [segments, groupSecs]);
+  }, [segments, groupSecs, events, segmentSecs]);
 
   // Severity keys ONLY on actual disk headroom (days_until_full): <7 days
   // gets a warn callout and <2 a danger one instead of muted text. The
@@ -1079,10 +1110,27 @@ function HourRows({
           >
             {open ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />} {hourLabel}
             <span className="muted"> · {group.segs.length} clips</span>
+            {/* What is IN the footage. Without this every row read the same and
+                the only way to triage an hour was to watch it. `null` counts
+                mean "outside the events we hold" — render nothing rather than
+                imply the hour was quiet. */}
+            {group.counts && group.counts.length > 0 && (
+              <span className="muted">
+                {" · "}
+                {group.counts.map(([l, n]) => `${n} ${prettyLabel(l)}`).join(", ")}
+              </span>
+            )}
           </button>
         </td>
         <td className="muted">{fmtBytes(group.bytes)}</td>
         <td>
+          <a
+            className="btn btn-ghost ev-act"
+            href={`#/live/${group.cameraId}/${group.hourTs}`}
+            title="Open this camera's timeline here — scrub freely either side"
+          >
+            <IconFilm size={13} /> Timeline
+          </a>
           <button
             className="btn btn-ghost ev-act"
             title="Play these clips back-to-back, like one recording"

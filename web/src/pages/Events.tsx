@@ -20,7 +20,7 @@ import {
   IconSparkles, IconBell, IconStar, IconDownload, IconPlay, IconPencil, IconLink, IconShield,
   IconUser, IconStranger, IconCar, IconHand, IconZone, IconMic,
   IconAlert, IconCheck, IconLayers, IconUpload, IconTag, IconX, IconVideo,
-  IconChevronLeft, IconChevronRight, IconThumbDown, IconRadar, IconRoute, IconGrid, IconLock,
+  IconChevronLeft, IconChevronRight, IconThumbDown, IconRadar, IconRoute, IconGrid, IconLock, IconFilm,
 } from "../icons";
 import LifecycleModal from "../LifecycleModal";
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
@@ -1598,6 +1598,19 @@ export default function Events({
             </button>
             <button className="btn btn-ghost ev-act" onClick={() => editNote(open)}>
               <IconPencil size={14} /> {open.note ? "Edit note" : "Note"}
+            </button>
+            {/* The bridge out of the event and into continuous footage. The
+                viewer's mini-timeline is deliberately event-scoped; this hands
+                the same instant to the camera's own timeline, where you can
+                scrub as far either way as retention allows. */}
+            <button
+              className="btn btn-ghost ev-act"
+              title="Open this camera's timeline at this moment — scrub before and after"
+              onClick={() => {
+                window.location.hash = `#/live/${open.camera_id}/${open.ts}`;
+              }}
+            >
+              <IconFilm size={14} /> See in timeline
             </button>
             <button className="btn btn-ghost ev-act" title={(open.tags ?? []).length ? "Edit tags" : "Add tags"} onClick={() => editTags(open)}>
               <IconTag size={14} /> Tags
