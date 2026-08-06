@@ -76,11 +76,15 @@ export default function Live({
   cameras,
   config,
   focusCameraId,
+  focusTs,
 }: {
   cameras: Camera[];
   config: AppConfig | null;
   /** Camera id from the `#/live/<id>` hash; opens that camera's detail view. */
   focusCameraId?: number | null;
+  /** Optional third hash segment (`#/live/<id>/<ts>`): open that camera scrubbed
+   *  to a past moment. Undefined/null = live, i.e. unchanged behaviour. */
+  focusTs?: number | null;
 }) {
   const [status, setStatus] = useState<StatusMap>({});
   const [ptz, setPtz] = useState<Record<number, boolean>>({});
@@ -411,6 +415,7 @@ export default function Live({
           cameras={cameras}
           ptz={!!ptz[detail.id]}
           onClose={closeCamera}
+          anchorTs={focusTs ?? null}
         />
       )}
 

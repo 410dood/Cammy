@@ -21,12 +21,21 @@ export default function CameraDetail({
   cameras,
   ptz,
   onClose,
+  anchorTs = null,
 }: {
   camera: Camera;
   /** RBAC-scoped camera list — used to resolve floor-plan hotspot neighbors. */
   cameras: Camera[];
   ptz: boolean;
   onClose: () => void;
+  /** A past instant to open scrubbed to, from `#/live/<id>/<ts>`.
+   *
+   *  `null` (the default, and what every existing `#/live/<id>` link produces)
+   *  means "anchor to now" — byte-for-byte today's behaviour. When set, the
+   *  timeline window is centred on that moment instead of the present and the
+   *  player seeks there on mount, which is what makes any event, recording row
+   *  or search hit openable as a place in time rather than a modal. */
+  anchorTs?: number | null;
 }) {
   const [segments, setSegments] = useState<Segment[]>([]);
   const [events, setEvents] = useState<CamEvent[]>([]);
@@ -37,6 +46,9 @@ export default function CameraDetail({
   const [playback, setPlayback] = useState<{ segment: Segment; offset: number } | null>(null);
   const playbackRef = useRef<typeof playback>(null);
   playbackRef.current = playback;
+  // The Esc handler is bound once per camera, so it reaches `backToLive`
+  // through a ref rather than capturing a stale closure.
+  const backToLiveRef = useRef<() => void>(() => {});
   // Coarse playhead position (whole seconds) for the timeline marker.
   const [posTs, setPosTs] = useState<number | null>(null);
   // P3.7 dual-stream playback quality: "hd" plays the full-res main recording,
@@ -147,7 +159,7 @@ export default function CameraDetail({
     const esc = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (findOpenRef.current) return; // the Find-in-frame modal closes itself
-      if (playbackRef.current) setPlayback(null);
+      if (playbackRef.current) backToLiveRef.current();
       else onClose();
     };
     window.addEventListener("keydown", esc);
@@ -156,13 +168,69 @@ export default function CameraDetail({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camera.id]);
+  // What the timeline is centred on. Without an anchor this is "now", ticking
+  // with the poll exactly as before; with one it is frozen at that moment, so
+  // the window shows the footage around it instead of racing back to live.
+  const [anchor, setAnchor] = useState<number | null>(anchorTs ?? null);
+  /// The anchor we have already scrubbed to, so the landing seek happens once
+  /// per deep link and never fights a manual scrub afterwards.
+  const landedRef = useRef<number | null>(null);
+  useEffect(() => {
+    setAnchor(anchorTs ?? null);
+    // Dropping the `/<ts>` from the hash (Back, or "Back to live" on another
+    // surface) must also tear down the swapped-in recording. Clearing only the
+    // anchor left `#/live/<id>` showing playback with a playhead and a "Back to
+    // live" button — i.e. NOT live, which is the one thing that route promises.
+    if (anchorTs == null) {
+      setPlayback(null);
+      landedRef.current = null;
+    }
+  }, [anchorTs]);
+  const [nowTick, setNowTick] = useState(() => Math.floor(Date.now() / 1000));
+  // `Timeline` renders `[nowTs - windowSecs, nowTs]`, i.e. the anchor is the
+  // RIGHT edge. Sitting the moment exactly on that edge puts the playhead off
+  // the end of the track (the seek lands on the next keyframe, a few seconds
+  // LATER) and leaves no view of what happened next — so lead the window past
+  // the moment by a quarter of its span. The moment then sits ~75% across with
+  // real context on both sides.
+  const anchorLead = Math.floor(windowSecs / 4);
+  const timelineNow = anchor != null ? anchor + anchorLead : nowTick;
+
   // Segments/events/status refresh: visibility-paused (a backgrounded tab was
   // previously hammering the NVR every 10s) + instant refresh on return.
   usePolling(() => {
-    api.recordings({ camera_id: camera.id, limit: 1000 }).then(setSegments).catch(() => {});
-    api.events({ camera_id: camera.id, limit: 50 }).then(setEvents).catch(() => {});
+    // Fetch the window the timeline actually draws, not just up to the moment —
+    // otherwise the lead-in region renders empty and the camera looks like it
+    // stopped recording right after the thing you came to see.
+    const before = anchor != null ? timelineNow + 1 : undefined;
+    api.recordings({ camera_id: camera.id, before, limit: 1000 }).then(setSegments).catch(() => {});
+    api.events({ camera_id: camera.id, before, limit: 50 }).then(setEvents).catch(() => {});
     api.status().then(setStatusMap).catch(() => {});
-  }, 10000, [camera.id]);
+    if (anchor == null) setNowTick(Math.floor(Date.now() / 1000));
+  }, 10000, [camera.id, anchor, timelineNow]);
+
+  // Land on the requested moment once. Seeking is idempotent and `seekTo`
+  // already toasts honestly when no recording covers the instant (retention may
+  // have pruned it), so a stale deep link degrades to a clear message.
+  useEffect(() => {
+    if (anchorTs == null || landedRef.current === anchorTs) return;
+    landedRef.current = anchorTs;
+    seekTo(anchorTs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anchorTs]);
+
+  /// Return to the present. Clears the playback swap, the timeline anchor, and
+  /// the `/<ts>` hash segment together — leaving any one of them set would put
+  /// the view back in the past on the next poll or refresh.
+  const backToLive = () => {
+    setPlayback(null);
+    setAnchor(null);
+    landedRef.current = null;
+    setNowTick(Math.floor(Date.now() / 1000));
+    if (anchorTs != null) window.location.hash = `#/live/${camera.id}`;
+  };
+
+  backToLiveRef.current = backToLive;
 
   const seekTo = async (ts: number, opts?: { stream?: "hd" | "sd"; silent?: boolean }) => {
     const q = opts?.stream ?? qualityRef.current;
@@ -322,7 +390,7 @@ export default function CameraDetail({
                   >
                     <IconDownload size={14} /> Download
                   </a>
-                  <button className="btn btn-primary ev-act" onClick={() => setPlayback(null)}>
+                  <button className="btn btn-primary ev-act" onClick={backToLive}>
                     <IconRecDot size={10} /> Back to live
                   </button>
                 </div>
@@ -356,17 +424,14 @@ export default function CameraDetail({
             )}
           </div>
           <div>
-            <ActivityStrip
-              events={events}
-              windowSecs={windowSecs}
-              nowTs={Math.floor(Date.now() / 1000)}
-            />
+            <ActivityStrip events={events} windowSecs={windowSecs} nowTs={timelineNow} />
             <Timeline
               windowSecs={windowSecs}
               segmentSecs={segmentSecs}
               segments={segments}
               events={events}
               onSeek={seekTo}
+              nowTs={timelineNow}
               markTs={playback ? posTs : null}
             />
           </div>

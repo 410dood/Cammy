@@ -103,14 +103,27 @@ const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
 function pageHash(p: Page): string {
   return `#/${p.toLowerCase()}`;
 }
-function parseHash(): { page: Page; eventId?: number; cameraId?: number } {
+function parseHash(): {
+  page: Page;
+  eventId?: number;
+  cameraId?: number;
+  focusTs?: number;
+} {
   const raw = window.location.hash.replace(/^#\/?/, "");
-  const [seg, arg] = raw.split("/");
+  // Strip any query string first (`#/events?day=…`) so it can't leak into a
+  // path segment; the third segment was previously parsed and discarded.
+  const [path] = raw.split("?");
+  const [seg, arg, arg2] = path.split("/");
   const page = PAGES.find((p) => p.toLowerCase() === seg.toLowerCase()) ?? "Home";
   const eventId = page === "Events" && arg ? Number(arg) || undefined : undefined;
   // `#/live/<id>` deep-links a camera's detail view (refresh / Back / bookmark).
   const cameraId = page === "Live" && arg ? Number(arg) || undefined : undefined;
-  return { page, eventId, cameraId };
+  // `#/live/<id>/<unix-ts>` additionally opens that camera scrubbed to a moment
+  // in the past — the shared destination for "see this in the timeline" from
+  // anywhere (an event card, a recording row, a search hit). Purely additive:
+  // `#/live/<id>` with no third segment behaves exactly as it always has.
+  const focusTs = page === "Live" && arg2 ? Number(arg2) || undefined : undefined;
+  return { page, eventId, cameraId, focusTs };
 }
 
 function LoginOverlay() {
@@ -311,6 +324,9 @@ export default function App() {
   const [locked, setLocked] = useState(false);
   const [palette, setPalette] = useState(false);
   const [focusCameraId, setFocusCameraId] = useState<number | null>(() => parseHash().cameraId ?? null);
+  // `#/live/<id>/<ts>` — the moment to scrub to. null = live, i.e. exactly the
+  // behaviour every existing `#/live/<id>` link has always had.
+  const [focusTs, setFocusTs] = useState<number | null>(() => parseHash().focusTs ?? null);
   // Seed from the hash like focusCameraId, so a bookmarked / pasted
   // `#/events/<id>` link opens the event viewer on a fresh page load too —
   // not only after an in-app hashchange.
@@ -364,12 +380,13 @@ export default function App() {
     // Keep state in sync with the URL: applies the initial hash (incl. an event
     // deep-link) and reacts to Back/Forward + manual hash edits.
     const applyHash = () => {
-      const { page: p, eventId, cameraId } = parseHash();
+      const { page: p, eventId, cameraId, focusTs: ts } = parseHash();
       setPage(p);
       if (eventId != null) setFocusEvent(eventId);
       // Camera detail is fully URL-driven: `#/live/<id>` opens it, `#/live` (or any
       // other page) closes it. Resolution against the camera list happens in Live.
       setFocusCameraId(cameraId ?? null);
+      setFocusTs(ts ?? null);
     };
     applyHash();
     window.addEventListener("hashchange", applyHash);
@@ -580,7 +597,12 @@ export default function App() {
             />
           )}
           {page === "Live" && (
-            <Live cameras={cameras} config={config} focusCameraId={focusCameraId} />
+            <Live
+              cameras={cameras}
+              config={config}
+              focusCameraId={focusCameraId}
+              focusTs={focusTs}
+            />
           )}
           {page === "Events" && (
             <Events
