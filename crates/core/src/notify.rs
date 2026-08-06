@@ -31,6 +31,241 @@ pub struct SmtpConfig<'a> {
     pub to: &'a str,
 }
 
+/// Queued deliveries allowed before new ones are dropped. Generous: a healthy
+/// target drains this instantly, so reaching the cap means the target is down,
+/// and those alerts are already worthless. Dropping them is strictly better than
+/// the alternative it replaces — stalling detection on every camera.
+const DISPATCH_CAP: usize = 512;
+
+struct Dispatch {
+    /// (rule name, event id, job) — the ids ride along so a failure logged
+    /// from the worker carries the same context the inline path did.
+    tx: std::sync::mpsc::Sender<(String, i64, Outbound)>,
+    depth: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Process-global and set-once, so `fire` needs no extra parameter at any of
+/// its eleven call sites. NOTE for tests: once any test starts a dispatcher,
+/// every later `fire` in that binary queues instead of delivering inline.
+/// Only one test currently dispatches; a second one asserting on delivery
+/// outcomes would need to account for this.
+static DISPATCH: std::sync::OnceLock<Dispatch> = std::sync::OnceLock::new();
+
+/// Start the alarm-delivery worker. Call once at startup; `lib.rs` joins the
+/// returned handle at shutdown so queued alerts drain instead of vanishing.
+///
+/// Until this is called (unit tests, the `--verify` CLI) every delivery happens
+/// inline exactly as before, so nothing silently no-ops in a context that has no
+/// worker.
+pub fn start_dispatch(shutdown: Arc<std::sync::atomic::AtomicBool>) -> std::thread::JoinHandle<()> {
+    use std::sync::atomic::Ordering;
+    let (tx, rx) = std::sync::mpsc::channel::<(String, i64, Outbound)>();
+    let depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let worker_depth = depth.clone();
+    if DISPATCH.set(Dispatch { tx, depth }).is_err() {
+        tracing::warn!("alarm dispatch already started");
+    }
+    std::thread::Builder::new()
+        .name("alarm-dispatch".into())
+        .spawn(move || {
+            // On shutdown, finish the backlog — but only for this long. Each
+            // delivery can burn its full 10 s timeout, so a queue pointed at a
+            // dead target would otherwise hold the whole process open for many
+            // minutes, right when the user is waiting for it to close.
+            const SHUTDOWN_DRAIN: Duration = Duration::from_secs(5);
+            let mut deadline: Option<std::time::Instant> = None;
+            loop {
+                if deadline.is_none() && shutdown.load(Ordering::Relaxed) {
+                    deadline = Some(std::time::Instant::now() + SHUTDOWN_DRAIN);
+                }
+                if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                    break;
+                }
+                // Wake periodically rather than blocking forever, so shutdown is
+                // noticed even while the queue is idle.
+                match rx.recv_timeout(Duration::from_millis(250)) {
+                    Ok((rule, event, job)) => {
+                        worker_depth.fetch_sub(1, Ordering::Relaxed);
+                        let kind = job.kind();
+                        if let Err(e) = job.deliver() {
+                            // The owner needs to know an alert never arrived.
+                            tracing::warn!(
+                                rule = %rule, event, kind,
+                                "alarm action FAILED to deliver: {e}"
+                            );
+                        }
+                    }
+                    // Idle: done if we are shutting down, since the queue is empty.
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if deadline.is_some() {
+                            break;
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            let abandoned = worker_depth.load(Ordering::Relaxed);
+            if abandoned > 0 {
+                tracing::warn!(
+                    abandoned,
+                    "alarm dispatch stopped with deliveries still queued (target too slow)"
+                );
+            } else {
+                tracing::info!("alarm dispatch stopped");
+            }
+        })
+        .expect("spawning the alarm dispatch thread")
+}
+
+/// Hand a delivery to the worker.
+///
+/// `None` = taken care of (queued, or deliberately dropped because the queue is
+/// saturated). `Some(job)` hands the job back because there is no worker at all
+/// — unit tests and the `--verify` CLI never start one — and the caller should
+/// perform it inline, exactly as before this queue existed.
+fn enqueue(rule_name: &str, event_id: i64, job: Outbound) -> Option<Outbound> {
+    use std::sync::atomic::Ordering;
+    let d = DISPATCH.get()?;
+    if d.depth.load(Ordering::Relaxed) >= DISPATCH_CAP {
+        tracing::warn!(
+            rule = %rule_name, kind = job.kind(),
+            "alarm delivery queue is full ({DISPATCH_CAP}) — dropping this one; \
+             the target is not keeping up"
+        );
+        // Dropped on purpose: falling back to inline here would re-introduce
+        // exactly the detection-thread stall this queue exists to prevent.
+        return None;
+    }
+    d.depth.fetch_add(1, Ordering::Relaxed);
+    match d.tx.send((rule_name.to_string(), event_id, job)) {
+        Ok(()) => None,
+        Err(e) => {
+            d.depth.fetch_sub(1, Ordering::Relaxed);
+            Some(e.0 .2) // worker gone — give the job back
+        }
+    }
+}
+
+/// An owned copy of [`SmtpConfig`], so a built message can cross a thread
+/// boundary into the dispatch worker.
+#[derive(Clone)]
+pub struct OwnedSmtp {
+    url: String,
+    user: String,
+    pass: String,
+    from: String,
+    to: String,
+}
+
+impl OwnedSmtp {
+    fn of(c: &SmtpConfig) -> Self {
+        Self {
+            url: c.url.to_string(),
+            user: c.user.to_string(),
+            pass: c.pass.to_string(),
+            from: c.from.to_string(),
+            to: c.to.to_string(),
+        }
+    }
+    fn borrow(&self) -> SmtpConfig<'_> {
+        SmtpConfig {
+            url: &self.url,
+            user: &self.user,
+            pass: &self.pass,
+            from: &self.from,
+            to: &self.to,
+        }
+    }
+}
+
+/// One fully-prepared outbound delivery. Everything is owned, so it can be
+/// handed to the dispatch worker; performing it is the ONLY part that touches
+/// the network.
+///
+/// The split exists because `fire` runs inline on the detection thread. An ntfy
+/// push is a `PUT` with the snapshot attached on a 10-second timeout, so a
+/// single unreachable push server stalled detection for every camera (the
+/// default `detect_workers` is 1) for ten seconds per firing rule. Building the
+/// request is pure string work; only `deliver` blocks.
+enum Outbound {
+    Webhook {
+        url: String,
+        body: String,
+        content_type: &'static str,
+    },
+    Ntfy {
+        url: String,
+        title: String,
+        tags: &'static str,
+        priority: u8,
+        actions: Option<String>,
+        message: String,
+        snapshot: Option<Vec<u8>>,
+    },
+    Email {
+        cfg: OwnedSmtp,
+        msg: Box<lettre::Message>,
+    },
+}
+
+impl Outbound {
+    /// A short label for logs — the action kind this delivery belongs to.
+    fn kind(&self) -> &'static str {
+        match self {
+            Outbound::Webhook { .. } => "webhook",
+            Outbound::Ntfy { .. } => "ntfy",
+            Outbound::Email { .. } => "email",
+        }
+    }
+
+    /// Perform the delivery. Blocking; runs on the dispatch worker (or inline
+    /// for a clicked Test, which wants the answer).
+    fn deliver(self) -> Result<(), String> {
+        match self {
+            Outbound::Webhook {
+                url,
+                body,
+                content_type,
+            } => ureq::post(&url)
+                .timeout(Duration::from_secs(3))
+                .set("Content-Type", content_type)
+                .send_string(&body)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            Outbound::Ntfy {
+                url,
+                title,
+                tags,
+                priority,
+                actions,
+                message,
+                snapshot,
+            } => {
+                let apply = |req: ureq::Request| {
+                    let mut req = req.set("X-Title", &title).set("X-Tags", tags);
+                    if (1..=5).contains(&priority) {
+                        req = req.set("X-Priority", &priority.to_string());
+                    }
+                    if let Some(a) = &actions {
+                        req = req.set("X-Actions", a);
+                    }
+                    req
+                };
+                let result = match snapshot {
+                    Some(bytes) => apply(ureq::put(&url).timeout(Duration::from_secs(10)))
+                        .set("X-Message", &message)
+                        .set("Filename", "snapshot.jpg")
+                        .send_bytes(&bytes),
+                    None => apply(ureq::post(&url).timeout(Duration::from_secs(10)))
+                        .send_string(&message),
+                };
+                result.map(|_| ()).map_err(|e| e.to_string())
+            }
+            Outbound::Email { cfg, msg } => send_built(&cfg.borrow(), *msg),
+        }
+    }
+}
+
 /// Borrow an SmtpConfig from Settings when SMTP is configured (URL set), for the
 /// `smtp` field of an AlarmEvent at each dispatch site. `None` = email off.
 pub fn smtp_cfg(s: &crate::db::Settings) -> Option<SmtpConfig<'_>> {
@@ -342,8 +577,11 @@ fn fire_action(
             "skipped: this alert is below your minimum notification severity",
         );
     }
-    let result: Result<(), String> = match action.kind.as_str() {
-        "webhook" => webhook(&action.target, ev),
+    // Channels that touch the network are BUILT here (pure string work) and
+    // performed on the dispatch worker; MQTT is already a channel send and
+    // deterrence already offloads its SOAP call, so both stay inline.
+    let job: Result<Option<Outbound>, String> = match action.kind.as_str() {
+        "webhook" => Ok(Some(build_webhook(&action.target, ev))),
         "mqtt" => mqtt_tx
             .send(EventMsg {
                 event_id: ev.event_id,
@@ -354,14 +592,42 @@ fn fire_action(
                 snapshot: ev.snapshot_url.to_string(),
                 topic: Some(format!("alarms/{}", action.target)),
             })
+            .map(|()| None)
             .map_err(|e| format!("the MQTT worker is not accepting events: {e}")),
-        "ntfy" => ntfy(&action.target, rule_name, action.priority, ev, suppressed),
-        "email" => email(&action.target, rule_name, ev, suppressed),
+        "ntfy" => Ok(Some(build_ntfy(
+            &action.target,
+            rule_name,
+            action.priority,
+            ev,
+            suppressed,
+        ))),
+        "email" => build_email(&action.target, rule_name, ev, suppressed).map(Some),
         "deterrence" => {
             deterrence(&action.target, rule_name, ev, db);
-            Ok(())
+            Ok(None)
         }
         other => Err(format!("unknown alarm action {other:?}")),
+    };
+
+    let result: Result<(), String> = match job {
+        Err(e) => Err(e),
+        Ok(None) => Ok(()), // nothing to send (mqtt/deterrence), or a build-time skip
+        Ok(Some(job)) => {
+            // `event_id == 0` is the synthetic fire behind the alarm Test button
+            // — the ONLY place in the tree that builds one. A clicked test must
+            // wait and report the real answer, so it delivers inline. Everything
+            // else is a live detection running on the detection thread and must
+            // not block on a network round trip.
+            if ev.event_id == 0 {
+                job.deliver()
+            } else {
+                match enqueue(rule_name, ev.event_id, job) {
+                    None => return ActionOutcome::skipped(&action.kind, "queued for delivery"),
+                    // No worker running (tests / CLI): behave exactly as before.
+                    Some(job) => job.deliver(),
+                }
+            }
+        }
     };
     // An alert that did NOT reach anyone is the single most important thing this
     // module can report, and every channel used to swallow it at debug level —
@@ -429,7 +695,12 @@ fn deterrence(target_token: &str, rule_name: &str, ev: &AlarmEvent, db: &Db) {
 /// Email (SMTP) action: send the alarm detail with the snapshot attached.
 /// Best-effort and log-and-swallow like every other channel. The recipient is
 /// the action's `target` if set, else the configured default `smtp.to`.
-fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) -> Result<(), String> {
+fn build_email(
+    target: &str,
+    rule_name: &str,
+    ev: &AlarmEvent,
+    suppressed: u32,
+) -> Result<Outbound, String> {
     use lettre::message::{header::ContentType, Attachment, MultiPart, SinglePart};
     use lettre::Message;
 
@@ -500,7 +771,13 @@ fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) -> Res
         None => builder.singlepart(text),
     };
     let msg = msg.map_err(|e| format!("building the message: {e}"))?;
-    send_built(cfg, msg)
+    // Configuration errors (no SMTP, bad address) surfaced above, synchronously,
+    // so a clicked Test still reports them immediately rather than queueing a
+    // job that is already doomed.
+    Ok(Outbound::Email {
+        cfg: OwnedSmtp::of(cfg),
+        msg: Box::new(msg),
+    })
 }
 
 /// Build the SMTP transport and send a fully-built message. Shared by the
@@ -605,8 +882,8 @@ pub fn ntfy_text(url: &str, title: &str, message: &str, tags: &str) {
     }
 }
 
-fn webhook(url: &str, ev: &AlarmEvent) -> Result<(), String> {
-    let result = if ev.webhook_template.is_empty() {
+fn build_webhook(url: &str, ev: &AlarmEvent) -> Outbound {
+    let (body, content_type) = if ev.webhook_template.is_empty() {
         let payload = serde_json::json!({
             "type": "alarm",
             "event_id": ev.event_id,
@@ -622,30 +899,28 @@ fn webhook(url: &str, ev: &AlarmEvent) -> Result<(), String> {
             "caption": ev.caption,
             "severity": ev.severity,
         });
-        ureq::post(url)
-            .timeout(Duration::from_secs(3))
-            .send_json(payload)
+        (payload.to_string(), "application/json")
     } else {
-        let body = render_template(ev.webhook_template, ev);
-        ureq::post(url)
-            .timeout(Duration::from_secs(3))
-            .set("Content-Type", "application/json")
-            .send_string(&body)
+        (render_template(ev.webhook_template, ev), "application/json")
     };
-    result.map(|_| ()).map_err(|e| e.to_string())
+    Outbound::Webhook {
+        url: url.to_string(),
+        body,
+        content_type,
+    }
 }
 
 /// ntfy push: PUT with the snapshot attached when available, plain POST
 /// otherwise. Title/extras travel as headers per the ntfy protocol. When a
 /// public base URL is known the push carries tap-through "View clip" /
 /// "Snapshot" actions, and `priority` (1..5) maps to ntfy's X-Priority.
-fn ntfy(
+fn build_ntfy(
     url: &str,
     rule_name: &str,
     priority: u8,
     ev: &AlarmEvent,
     suppressed: u32,
-) -> Result<(), String> {
+) -> Outbound {
     let mut detail = format!("{} ({:.0}%) on {}", ev.label, ev.score * 100.0, ev.camera);
     // A GenAI description leads the push (Wyze/Nest "descriptive alert" style);
     // the structured detail follows so nothing is lost if the caption is vague.
@@ -704,31 +979,93 @@ fn ntfy(
         ("rotating_light", p)
     };
 
-    let apply = |req: ureq::Request| {
-        let mut req = req.set("X-Title", &title).set("X-Tags", tags);
-        if (1..=5).contains(&eff_priority) {
-            req = req.set("X-Priority", &eff_priority.to_string());
-        }
-        if let Some(a) = &actions {
-            req = req.set("X-Actions", a);
-        }
-        req
-    };
-
-    let snapshot = ev.snapshot_path.and_then(|p| std::fs::read(p).ok());
-    let result = match snapshot {
-        Some(bytes) => apply(ureq::put(url).timeout(Duration::from_secs(10)))
-            .set("X-Message", &detail)
-            .set("Filename", "snapshot.jpg")
-            .send_bytes(&bytes),
-        None => apply(ureq::post(url).timeout(Duration::from_secs(10))).send_string(&detail),
-    };
-    result.map(|_| ()).map_err(|e| e.to_string())
+    Outbound::Ntfy {
+        url: url.to_string(),
+        title,
+        tags,
+        priority: eff_priority,
+        actions,
+        message: detail,
+        // Read here rather than in the worker: it is a local file of a couple
+        // hundred KB, and reading it now means retention cannot delete it out
+        // from under a queued push.
+        snapshot: ev.snapshot_path.and_then(|p| std::fs::read(p).ok()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The point of the dispatch queue: a firing rule must not make the caller
+    /// wait on a network round trip. `fire` runs inline on the detection thread,
+    /// and an ntfy push is a PUT on a 10 s timeout — so before this, one
+    /// unreachable push server stalled detection for EVERY camera.
+    ///
+    /// Uses a black-hole address so the delivery would certainly block if it
+    /// were attempted inline, then asserts the call returned promptly and the
+    /// action was reported as queued rather than delivered.
+    #[test]
+    fn a_firing_rule_does_not_block_the_caller_on_the_network() {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker = start_dispatch(stop.clone());
+
+        let mut r = rule(1, 0, 0);
+        r.action = "ntfy".into();
+        // A closed local port: refused instantly, so the worker's attempt does
+        // not add ten seconds of timeout to the suite. The load-bearing
+        // assertion below is the ROUTING one ("queued for delivery"), which
+        // proves the delivery left this thread; that is deterministic, whereas a
+        // timing assertion against a black-hole address would be both slow and
+        // flaky on a loaded machine.
+        r.target = "http://127.0.0.1:9/closed".into();
+        let (tx, _rx) = std::sync::mpsc::channel::<EventMsg>();
+        let dir = std::env::temp_dir().join(format!("cammy-dispatch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = crate::db::Db::open(&dir.join("t.db")).expect("test db");
+        let ev = AlarmEvent {
+            event_id: 42, // non-zero: a real detection, so it must be queued
+            camera: "cam",
+            label: "person",
+            score: 0.9,
+            ts: 1,
+            snapshot_url: "/s.jpg",
+            snapshot_path: None,
+            face: None,
+            plate: None,
+            gesture: None,
+            transcript: None,
+            speed: None,
+            base_url: "",
+            webhook_template: "",
+            smtp: None,
+            duress: false,
+            severity: 2,
+            min_push_severity: 0,
+            caption: None,
+        };
+
+        let t = std::time::Instant::now();
+        let outcomes = fire(&r, &ev, &tx, 0, &db);
+        let elapsed = t.elapsed();
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].kind, "ntfy");
+        // THE assertion: the delivery was handed to the worker, not performed
+        // here. Anything else means alarm I/O is back on the detection thread.
+        assert_eq!(
+            outcomes[0].detail.as_deref(),
+            Some("queued for delivery"),
+            "a live detection's alarm must be queued, never delivered inline"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "fire() took {elapsed:?} — it should only be building a request"
+        );
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = worker.join();
+    }
 
     fn rule(id: i64, cooldown: i64, snooze: i64) -> AlarmRule {
         AlarmRule {

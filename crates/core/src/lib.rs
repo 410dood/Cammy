@@ -288,6 +288,12 @@ pub async fn run(
         let (db, stop) = (db.clone(), workers_stop.clone());
         move || push::run(db, stop)
     })?;
+    // Alarm delivery (webhook / ntfy / email) runs here rather than inline on
+    // the detection thread: an ntfy push is a PUT with the snapshot attached on
+    // a 10 s timeout, so one unreachable target used to stall detection for
+    // EVERY camera. Started before the pipeline so no early firing can miss it;
+    // joined at shutdown below so queued alerts drain rather than vanish.
+    let dispatch_thread = notify::start_dispatch(workers_stop.clone());
     // #70: offsite/cloud backup of recordings to S3-compatible storage. Opt-in
     // (gated on Settings.offsite_backup_enabled), re-reads live config each tick.
     let offsite_thread = std::thread::Builder::new().name("offsite".into()).spawn({
@@ -470,6 +476,9 @@ pub async fn run(
         let _ = schedule_thread.join();
         let _ = pose_thread.join();
         let _ = push_thread.join();
+        // After the producers above have stopped, so anything they queued on
+        // the way out still gets delivered.
+        let _ = dispatch_thread.join();
         let _ = offsite_thread.join();
         let _ = archive_thread.join();
         let _ = homekit_thread.join();
