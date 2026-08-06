@@ -647,8 +647,11 @@ export default function Events({
   };
   // P2.8b feedback learning: thumbs-down an alert. The server stores this
   // object's crop embedding so CLIP-similar FUTURE alerts on the same camera are
-  // quieted — since the v1 hoist this covers plain object rules too, not just
-  // AI-watch (prompt/attribute) and AI-verified (VLM) rules.
+  // quieted. Scope is AI-watch (prompt/attribute) + AI-verified (VLM) rules;
+  // widening it to plain object rules is opt-in per install
+  // (Settings.feedback_suppress_plain_rules, default off) because the crop
+  // similarity is not sharp enough to risk muting a plain intruder alarm.
+  // Clearable under Settings — keep this comment and the button's title in sync.
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const suppressAlert = async (ev: CamEvent) => {
     if (feedbackBusy) return;
@@ -1552,7 +1555,7 @@ export default function Events({
             <button
               className="btn btn-ghost ev-act"
               disabled={feedbackBusy}
-              title="Not a real alert? Quiet future look-alikes on this camera. Note: this only quiets AI-watch and AI-verified rules — plain object rules aren't filtered yet."
+              title="Not a real alert? Quiet future look-alikes on this camera. Applies to AI-watch and AI-verified rules; plain object rules are only filtered if you turn that on in Settings. You can undo this any time under Settings → Alert feedback."
               onClick={() => suppressAlert(open)}
             >
               <IconThumbDown size={14} /> {feedbackBusy ? "Sending…" : "Not this"}

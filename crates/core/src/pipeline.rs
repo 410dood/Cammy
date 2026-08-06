@@ -1519,7 +1519,17 @@ fn run_worker(
                                 .get(&(cam.id, d.label.to_string()))
                                 .map(Vec::as_slice)
                                 .unwrap_or(&[]);
-                            if i < MAX_CROPS_PER_FRAME
+                            // Off by default. The crop-cosine signal cannot
+                            // separate "this false alarm" from "another object
+                            // of the same class here" (see
+                            // smart::FEEDBACK_SUPPRESS_COSINE for the measured
+                            // distributions), and on a PLAIN label rule a wrong
+                            // suppression means a real intruder alert is dropped
+                            // silently, without even burning a cooldown. The
+                            // AI-watch / AI-verified paths below are best-effort
+                            // by construction and keep the documented v0 scope.
+                            if settings.feedback_suppress_plain_rules
+                                && i < MAX_CROPS_PER_FRAME
                                 && !sup.is_empty()
                                 && alarms.iter().any(|r| {
                                     r.matches(
@@ -1565,9 +1575,14 @@ fn run_worker(
                             }
                         };
                         if fb_suppressed {
-                            tracing::debug!(
+                            // INFO, not DEBUG: this silently drops every alarm
+                            // for a detection. If it ever misfires, the log is
+                            // the only way anyone finds out why the alerts
+                            // stopped, and debug is off in normal operation.
+                            tracing::info!(
                                 camera = %cam.name, label = d.label, event = id,
-                                "alarm fires suppressed by feedback (crop matches a thumbs-down)"
+                                "alarm fires suppressed by feedback (crop matches a thumbs-down); \
+                                 clear it under Settings if this is wrong"
                             );
                         }
                         for rule in alarms.iter().filter(|r| {

@@ -1,8 +1,8 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, fmtBytes, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout, usePolling } from "../ui";
 import { LicensePane } from "../License";
-import { prettyGesture } from "../labels";
+import { prettyGesture, prettyLabel } from "../labels";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
   IconDownload, IconUpload, IconCheck, IconUser, IconShield, IconAlert, IconMic,
@@ -400,6 +400,113 @@ function TokensCard({ onError }: { onError: (e: string) => void }) {
 }
 
 // Shareable clip links (P2.7) — list active no-login links + revoke them early.
+// What the "Not this" button on Events has learned. This corpus used to be
+// write-only: pressing the button quieted future alerts on that camera+label
+// forever, nothing in the product could show it had happened, and undoing it
+// meant hand-editing SQLite. Since the matching signal is a CLIP crop cosine —
+// which cannot reliably separate "this false alarm" from "another object of the
+// same class on this camera" — being able to SEE and CLEAR it is the safeguard.
+function AlertFeedbackCard({
+  s,
+  set,
+}: {
+  s: Partial<S>;
+  set: (patch: Partial<S>) => void;
+}) {
+  const toast = useToast();
+  const dialog = useDialog();
+  const [rows, setRows] = useState<FeedbackSummary[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = () => api.feedback().then(setRows).catch(() => setRows([]));
+  useEffect(() => {
+    load();
+  }, []);
+  const clear = async (r: FeedbackSummary) => {
+    const ok = await dialog.confirm({
+      title: `Forget "${prettyLabel(r.label)}" feedback on ${r.camera}?`,
+      body: `Cammy will stop quieting ${prettyLabel(r.label)} alerts on ${r.camera} that look like the ${r.count} you marked "Not this".`,
+      confirmLabel: "Forget",
+    });
+    if (!ok || busy) return;
+    setBusy(true);
+    try {
+      await api.clearFeedback(r.camera_id, r.label);
+      toast.success(`Cleared — ${prettyLabel(r.label)} alerts on ${r.camera} are no longer quieted`);
+      load();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="card" data-settings-group="detection">
+      <h2>Alert feedback (&quot;Not this&quot;)</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        When you mark an alert &quot;Not this&quot; on the Events page, Cammy remembers what that
+        object looked like and quiets future alerts on the same camera that look like it.
+      </p>
+      <label
+        className="toggle field"
+        title="Off by default on purpose. Cammy compares objects by overall appearance, which on a single fixed camera can't reliably tell one car from another car, or one person from another person. That's fine for the best-effort AI rules, but on a plain 'alert me about people' rule a single mistaken match could silence a real alert."
+      >
+        also quiet plain object rules (not just AI rules)
+        <input
+          type="checkbox"
+          checked={s.feedback_suppress_plain_rules ?? false}
+          onChange={() =>
+            set({ feedback_suppress_plain_rules: !(s.feedback_suppress_plain_rules ?? false) })
+          }
+        />
+      </label>
+      {s.feedback_suppress_plain_rules && (
+        <Callout tone="warn" role="note">
+          Plain object rules are now filtered too. Because look-alike matching isn&apos;t exact,
+          a few &quot;Not this&quot; taps on a busy camera can quiet a large share of that
+          camera&apos;s alerts — including ones you want. Clear them below if alerts go quiet.
+        </Callout>
+      )}
+      {rows === null ? (
+        <p className="muted">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="muted">
+          Nothing marked yet. Anything you mark &quot;Not this&quot; will appear here so you can
+          undo it.
+        </p>
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Camera</th>
+                <th>Object</th>
+                <th>Marked</th>
+                <th>Last</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={`${r.camera_id}-${r.label}`}>
+                  <td>{r.camera}</td>
+                  <td style={{ textTransform: "capitalize" }}>{prettyLabel(r.label)}</td>
+                  <td>{r.count}</td>
+                  <td><RelTime ts={r.last_ts} /></td>
+                  <td>
+                    <button type="button" className="ghost" disabled={busy} onClick={() => clear(r)}>
+                      <IconTrash size={13} /> Forget
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SharesCard({ onError }: { onError: (e: string) => void }) {
   const toast = useToast();
   const dialog = useDialog();
@@ -2384,6 +2491,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             </label>
           </div>
         </div>
+
+        <AlertFeedbackCard s={s} set={set} />
 
         <div className="card" data-settings-group="detection">
           <h2>AI event captions (opt-in)</h2>

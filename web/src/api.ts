@@ -340,6 +340,11 @@ export interface Settings {
   /** Suppress near-lens obstruction (insect/spider/cobweb-on-the-glass) false
    *  alarms — the perennial night-time IR false positive. Default true. */
   suppress_lens_obstruction: boolean;
+  /** Let "Not this" feedback also quiet PLAIN object-label rules, not just the
+   *  AI-watch / AI-verified paths. Off by default: the crop-similarity signal
+   *  can't reliably tell one false alarm from another object of the same class
+   *  on the same camera, so on a plain rule a mis-tap can mute a real alert. */
+  feedback_suppress_plain_rules: boolean;
   /** Number of parallel detection worker threads (1..8). Cameras are sharded
    *  across the workers so one slow camera can't stall the others. Takes effect
    *  after a restart; each worker uses its own detector session. */
@@ -585,6 +590,15 @@ export interface CamStatus {
 }
 
 export type StatusMap = Record<string, CamStatus>;
+
+/** One camera+label's accumulated "Not this" feedback (P2.8b). */
+export interface FeedbackSummary {
+  camera_id: number;
+  camera: string;
+  label: string;
+  count: number;
+  last_ts: number;
+}
 
 export interface Notification {
   id: number;
@@ -911,13 +925,23 @@ export const api = {
     }),
   // P2.8b feedback learning: thumbs-down an alert. On success the server stores
   // the event's object-crop embedding so CLIP-similar FUTURE alerts on the same
-  // camera are quieted (AI-watch / AI-verified rules only in v0). An event with
-  // no object crop returns {ok:false, reason:"no_crop"}.
+  // camera are quieted (AI-watch / AI-verified rules; plain object rules only if
+  // feedback_suppress_plain_rules is on). An event with no object crop returns
+  // {ok:false, reason:"no_crop"}.
   eventFeedback: (id: number) =>
     req<{ ok: boolean; suppressed?: boolean; reason?: string }>(
       `/api/events/${id}/feedback`,
       { method: "POST" }
     ),
+  /** What "Not this" has learned, per camera + label — so it can be seen and undone. */
+  feedback: () =>
+    req<{ feedback: FeedbackSummary[] }>("/api/feedback").then((r) => r.feedback),
+  /** Forget thumbs-downs. Omit `label` to clear every label on the camera. */
+  clearFeedback: (camera_id: number, label?: string) =>
+    req<{ ok: boolean; removed: number }>("/api/feedback", {
+      method: "DELETE",
+      body: JSON.stringify({ camera_id, label }),
+    }),
   recordGesture: (body: { camera?: string; gesture: string; score?: number }) =>
     req<{ recorded: boolean; event_id?: number; gesture?: string; reason?: string; duress?: boolean }>(
       "/api/gesture",

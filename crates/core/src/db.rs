@@ -1443,6 +1443,20 @@ pub struct Settings {
     /// regardless. See `crate::lens`.
     #[serde(default = "default_true")]
     pub suppress_lens_obstruction: bool,
+    /// Let "Not this" feedback also quiet PLAIN object-label alarm rules, not
+    /// just the AI-watch (prompt/attribute) and AI-verified (VLM) paths.
+    ///
+    /// **Off by default, deliberately.** The gate is a CLIP crop-cosine match
+    /// against thumbs-downed crops, and that signal cannot tell "this particular
+    /// false alarm" from "another object of the same class on this camera" —
+    /// measured on a real install, ten thumbs-downs on `car` silenced 68% of all
+    /// later car alerts, with no cooldown trace and no way to notice. Applied to
+    /// plain rules that means a single mis-tap can permanently mute a burglar
+    /// alarm. The AI paths are best-effort by construction, so the documented v0
+    /// scope stays on; this widens it for owners who want it and accept that.
+    /// See `crate::smart::FEEDBACK_SUPPRESS_COSINE` for the measurements.
+    #[serde(default)]
+    pub feedback_suppress_plain_rules: bool,
     /// Send a weekly "all cameras healthy, N recording" reassurance heartbeat —
     /// turns the "is it even recording?" anxiety of a self-hosted NVR into a
     /// trust signal. On by default; weekly and unobtrusive. See `crate::health`.
@@ -1642,6 +1656,7 @@ impl Default for Settings {
             offsite_events_only: false,
             highlight_motion: true,
             suppress_lens_obstruction: true,
+            feedback_suppress_plain_rules: false,
             health_heartbeat: true,
             detect_workers: 1,
             ask_enabled: false,
@@ -4213,6 +4228,39 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Per-(camera, label) thumbs-down counts + the newest one's timestamp, for
+    /// the Settings card that finally makes this corpus visible. Without it a
+    /// "Not this" tap was write-only: it silently quiets future alerts forever
+    /// and nothing in the product could show, let alone undo, that it happened.
+    pub fn feedback_summary(&self) -> Result<Vec<(i64, String, i64, i64)>> {
+        let conn = self.read();
+        let mut stmt = conn.prepare(
+            "SELECT camera_id, label, COUNT(*), MAX(created_ts)
+               FROM alert_feedback GROUP BY camera_id, label
+              ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Forget thumbs-down feedback. `label = None` clears every label on the
+    /// camera. Returns the number of rows removed.
+    pub fn clear_alert_feedback(&self, camera_id: i64, label: Option<&str>) -> Result<usize> {
+        let conn = self.conn();
+        Ok(match label {
+            Some(l) => conn.execute(
+                "DELETE FROM alert_feedback WHERE camera_id = ?1 AND label = ?2",
+                params![camera_id, l],
+            )?,
+            None => conn.execute(
+                "DELETE FROM alert_feedback WHERE camera_id = ?1",
+                params![camera_id],
+            )?,
+        })
     }
 
     /// The most-recent `limit` events with their searchable text + (when

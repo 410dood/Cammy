@@ -89,6 +89,10 @@ pub fn router(state: AppState) -> Router {
             "/api/events/{id}/feedback",
             axum::routing::post(event_feedback),
         )
+        .route(
+            "/api/feedback",
+            get(list_feedback).delete(clear_feedback_api),
+        )
         .route("/api/gesture", axum::routing::post(record_gesture))
         .route(
             "/api/cameras/{id}/trigger",
@@ -2795,6 +2799,61 @@ async fn event_feedback(
             serde_json::json!({ "ok": false, "reason": "no_crop" }),
         )),
     }
+}
+
+/// What "Not this" has learned so far, per camera + label. The corpus was
+/// previously write-only: nothing could show that a camera had been quieted,
+/// and undoing it meant hand-editing SQLite. RBAC-scoped like every other
+/// camera-keyed read, so a scoped user only sees their own cameras.
+async fn list_feedback(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let allow = allowed_cameras(&st, &p)?;
+    let names: std::collections::HashMap<i64, String> = st
+        .db
+        .list_cameras()?
+        .into_iter()
+        .map(|c| (c.id, c.name))
+        .collect();
+    let rows: Vec<serde_json::Value> = st
+        .db
+        .feedback_summary()?
+        .into_iter()
+        .filter(|(cam, ..)| camera_allowed(&allow, *cam))
+        .map(|(camera_id, label, count, last_ts)| {
+            serde_json::json!({
+                "camera_id": camera_id,
+                "camera": names.get(&camera_id).cloned().unwrap_or_default(),
+                "label": label,
+                "count": count,
+                "last_ts": last_ts,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "feedback": rows })))
+}
+
+#[derive(Deserialize)]
+struct ClearFeedbackReq {
+    camera_id: i64,
+    /// Absent = forget every label learned on that camera.
+    #[serde(default)]
+    label: Option<String>,
+}
+
+/// Undo "Not this". Scoped to the caller's cameras (404 for a camera they
+/// cannot see, matching `require_camera`'s anti-enumeration convention).
+async fn clear_feedback_api(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<ClearFeedbackReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_camera(&allowed_cameras(&st, &p)?, req.camera_id)?;
+    let removed = st
+        .db
+        .clear_alert_feedback(req.camera_id, req.label.as_deref())?;
+    Ok(Json(serde_json::json!({ "ok": true, "removed": removed })))
 }
 
 #[derive(Deserialize)]

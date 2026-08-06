@@ -133,9 +133,34 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 
 /// Cosine at/above which a firing object crop is judged "the same thing" as a
 /// thumbs-downed one and its alert is quieted (P2.8b feedback learning).
-/// Deliberately conservative: the #61 Re-ID data put true same-object crop pairs
-/// at 0.91–0.97 and unrelated pairs at 0.11–0.22, so 0.90 suppresses only a near-
-/// identical re-detection and never a merely similar object. May need live tuning.
+///
+/// **This threshold is NOT well calibrated, and the figures once quoted here to
+/// justify it came from the wrong regime.** They were the #61 Re-ID numbers
+/// ("true pairs 0.91–0.97, unrelated 0.11–0.22"), which were measured
+/// CROSS-camera. This gate only ever compares crops from the SAME camera with
+/// the SAME label, where the geometry, background, lighting and scale are shared
+/// and the baseline similarity is enormously higher.
+///
+/// Measured over 1340 stored crop embeddings in a real 5-camera install
+/// (arbitrary, unrelated same-camera/same-label pairs):
+///
+/// ```text
+///   camera / label          min    median   p95    >= 0.90
+///   pool3 / person         0.604   0.816   0.906     6.2%
+///   front-door / car       0.579   0.851   0.934    17.3%
+///   ptz-cam / car          0.535   0.876   0.954    33.7%
+/// ```
+///
+/// Because [`any_similar`] is a MAX over a corpus that grows to 200 entries,
+/// the suppression rate compounds fast — on front-door/car, 1 thumbs-down
+/// silenced 18% of subsequent alerts, 10 silenced 68%, 25 silenced 90%.
+///
+/// The lesson matches this project's own pet Re-ID finding (declined for the
+/// same reason): CLIP whole-crop cosine cannot separate "this particular false
+/// alarm" from "another object of the same class on the same camera", at any
+/// threshold that leaves the feature useful. Until a better signal exists, the
+/// blast radius is limited by scope, not by this number — see
+/// `Settings::feedback_suppress_plain_rules`.
 pub const FEEDBACK_SUPPRESS_COSINE: f32 = 0.90;
 
 /// True if any vector in `corpus` is cosine-similar to `query` at/above
