@@ -1,6 +1,7 @@
 ﻿import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMap } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
+import { recordState, recordStateHint, scheduleWindow } from "../labels";
 import { Modal, EmptyState, TogglePill, Callout, useToast, useDialog, usePolling } from "../ui";
 import {
   IconRadar,
@@ -1226,6 +1227,27 @@ export default function Cameras({
                             <IconAlert size={11} /> error
                           </span>
                         )}
+                        {/* Online but not writing footage. "Paused" is the
+                            camera's own schedule doing its job; "not recording"
+                            means footage is being lost right now. */}
+                        {(() => {
+                          const rec = recordState(cam, s);
+                          if (rec !== "paused" && rec !== "fault") return null;
+                          const hint = recordStateHint(
+                            rec,
+                            scheduleWindow(cam.detect_config.record_schedule),
+                          );
+                          return (
+                            <span
+                              className={`badge ${rec === "fault" ? "danger" : ""}`}
+                              style={{ marginLeft: 6 }}
+                              title={hint}
+                            >
+                              {rec === "fault" ? <IconAlert size={11} /> : null}{" "}
+                              {rec === "fault" ? "not recording" : "paused"}
+                            </span>
+                          );
+                        })()}
                       </>
                     )}
                   </td>

@@ -301,7 +301,13 @@ export default function Home({
 
   const enabled = cameras.filter((c) => c.enabled);
   const online = enabled.filter((c) => status[String(c.id)]?.online).length;
-  const recording = Object.values(status).filter((s) => s.recording).length;
+  const recording = enabled.filter((c) => status[String(c.id)]?.recording).length;
+  // Cameras deliberately parked by their own recording schedule. Counting them
+  // separately keeps "3 of 5 recording" from reading like an outage when two of
+  // them are simply outside their window.
+  const paused = enabled.filter(
+    (c) => c.record && status[String(c.id)]?.record_paused,
+  ).length;
   const offline = enabled.filter((c) => status[String(c.id)] && !status[String(c.id)]?.online);
 
   const todayStart = startOfToday();
@@ -421,7 +427,11 @@ export default function Home({
           icon={<IconRecDot size={18} />}
           label="Recording"
           value={loaded ? recording : <SkelValue />}
-          sub={`of ${enabled.length} cameras`}
+          sub={
+            paused > 0
+              ? `of ${enabled.length} cameras · ${paused} paused by schedule`
+              : `of ${enabled.length} cameras`
+          }
           tone={loaded && recording > 0 ? "danger" : undefined}
         />
         <StatCard

@@ -12,6 +12,7 @@ import {
   IconArrowUp, IconArrowDown, IconArrowLeft, IconArrowRight,
   IconPlus, IconMinus, IconExpand, IconRecDot, IconX, IconVideo, IconAlert,
 } from "../icons";
+import { recordState, recordStateHint, scheduleWindow } from "../labels";
 
 // Humanized camera-tamper kinds (#63) for the live-tile warning chip.
 const TAMPER_LABEL: Record<string, string> = {
@@ -354,6 +355,13 @@ export default function Live({
             !!s && s.online && !tamper && !!s.last_frame_ts && serverNow - s.last_frame_ts > STALE_SECS;
           const dotCls = !s ? "" : !s.online ? "off" : tamper || stale ? "warn" : "on";
           const alert = tamper ? TAMPER_LABEL[tamper] ?? "Tampered" : stale ? "No signal" : null;
+          // A camera set to record but not recording used to render exactly like
+          // one that is recording nothing on purpose: no chip at all. Say which.
+          const rec = recordState(cam, s);
+          const recHint = recordStateHint(
+            rec,
+            scheduleWindow(cam.detect_config.record_schedule),
+          );
           return (
             // The whole tile opens the camera (Protect's "click a camera to
             // expand it") — the corner expand button stays as the keyboard/
@@ -361,8 +369,14 @@ export default function Live({
             <div className="tile" key={cam.id} onClick={() => showCamera(cam)}>
               <div className="label">
                 <span className={`dot ${dotCls}`} /> {cam.name}
-                {s?.recording && (
+                {rec === "rec" && (
                   <span className="rec"><IconRecDot size={9} /> REC</span>
+                )}
+                {rec === "paused" && (
+                  <span className="rec rec-paused" title={recHint}>Paused</span>
+                )}
+                {rec === "fault" && (
+                  <span className="rec rec-fault" title={recHint}>Not recording</span>
                 )}
               </div>
               {alert && (

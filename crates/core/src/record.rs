@@ -148,7 +148,19 @@ pub fn run(
         // "recording" indicator — the sub copy is a background scrub aid) + drop
         // status for deleted cameras.
         for cam in &cameras {
-            status.set_recording(cam.id, running.contains_key(&(cam.id, "main")));
+            let recording = running.contains_key(&(cam.id, "main"));
+            // Separate "parked by its own schedule" from "should be recording
+            // and isn't". Both look identical on the wire otherwise, and the
+            // second one is the failure this product exists to catch.
+            let paused = !recording
+                && cam.enabled
+                && cam.record
+                && cam
+                    .detect_config
+                    .record_schedule
+                    .as_ref()
+                    .is_some_and(|s| !s.active_now());
+            status.set_recording(cam.id, recording, paused);
         }
         status.retain(&cameras.iter().map(|c| c.id).collect::<Vec<_>>());
 

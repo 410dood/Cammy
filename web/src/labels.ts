@@ -40,6 +40,55 @@ const GESTURE_PRETTY: Record<string, string> = {
 };
 export const prettyGesture = (g: string) => GESTURE_PRETTY[g] ?? g.replace(/_/g, " ");
 
+// --- recording state -------------------------------------------------------
+
+/** Why a camera is or isn't writing footage right now.
+ *  - "rec"    — recording.
+ *  - "paused" — deliberately parked by its recording schedule (#67).
+ *  - "fault"  — it is online and set to record, but ISN'T. Footage is being lost.
+ *  - null     — nothing meaningful to say (offline, or recording turned off).
+ *
+ *  Splitting "paused" from "fault" is the whole point: they used to render
+ *  identically (no REC chip at all), so a healthy scheduled pause and a dead
+ *  recorder were indistinguishable at a glance. */
+export type RecordState = "rec" | "paused" | "fault" | null;
+
+export function recordState(
+  cam: { enabled: boolean; record: boolean },
+  st: { online: boolean; recording: boolean; record_paused?: boolean } | undefined,
+): RecordState {
+  if (!st || !cam.enabled || !cam.record) return null;
+  if (st.recording) return "rec";
+  if (st.record_paused) return "paused";
+  // Only claim a fault once the stream itself is up: an offline camera is
+  // already reported as offline, and stacking "not recording" on top of that is
+  // noise rather than news.
+  return st.online ? "fault" : null;
+}
+
+/** Tooltip explaining a non-recording state in the owner's terms. */
+export function recordStateHint(state: RecordState, scheduleWindow?: string | null): string {
+  if (state === "paused")
+    return scheduleWindow
+      ? `Not recording right now — this camera's recording schedule (${scheduleWindow}) has it paused. Detection and event clips still run.`
+      : "Not recording right now — this camera's recording schedule has it paused. Detection and event clips still run.";
+  if (state === "fault")
+    return "This camera is online and set to record, but no footage is being saved. The recorder keeps retrying; check Recordings and the camera's stream.";
+  return "";
+}
+
+/** Compact "08:00–18:00" window from a recording schedule, for the hints above. */
+export function scheduleWindow(
+  s: { start_hhmm?: string | null; end_hhmm?: string | null } | null | undefined,
+): string | null {
+  if (!s) return null;
+  const { start_hhmm: a, end_hhmm: b } = s;
+  if (a && b) return `${a}–${b}`;
+  if (a) return `from ${a}`;
+  if (b) return `until ${b}`;
+  return null;
+}
+
 // Camera-side (ONVIF-ingested) events carry a synthetic 1.0 confidence — a
 // "100%" badge on every one of them is noise, so score displays skip them.
 export const isCameraSide = (l: string) => l.startsWith("camera_");

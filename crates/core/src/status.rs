@@ -16,6 +16,16 @@ pub struct CamHealth {
     pub last_error: Option<String>,
     /// ffmpeg recorder process currently alive.
     pub recording: bool,
+    /// `recording == false` **on purpose**: the camera's per-camera recording
+    /// schedule (#67) has it parked right now. `false` here alongside
+    /// `recording: false` means it SHOULD be recording and isn't — a fault.
+    ///
+    /// Without this the two cases are indistinguishable to every consumer, and
+    /// an owner staring at a dark REC dot cannot tell "working as configured"
+    /// from "silently lost my footage". That ambiguity is not hypothetical: this
+    /// project's own notes recorded a scheduled pause on pool2 as a hardware
+    /// "RTSP flap" across several sessions, and chased a camera that was fine.
+    pub record_paused: bool,
     /// Last YOLO inference latency for this camera (milliseconds).
     pub inference_ms: Option<f32>,
     /// Execution provider the camera's detector is using (DirectML/CoreML/CUDA/CPU).
@@ -82,8 +92,14 @@ impl StatusBoard {
         self.write().entry(camera_id).or_default().last_error = Some(err);
     }
 
-    pub fn set_recording(&self, camera_id: i64, recording: bool) {
-        self.write().entry(camera_id).or_default().recording = recording;
+    /// Publish recorder liveness plus WHY it is off. `paused` must be true only
+    /// when a recording schedule is deliberately holding the camera off, so
+    /// `!recording && !paused` stays a trustworthy "this is broken" signal.
+    pub fn set_recording(&self, camera_id: i64, recording: bool, paused: bool) {
+        let mut m = self.write();
+        let e = m.entry(camera_id).or_default();
+        e.recording = recording;
+        e.record_paused = paused;
     }
 
     /// Record a detector run's latency + which accelerator/model served it.
@@ -138,8 +154,8 @@ mod tests {
     #[test]
     fn retain_drops_deleted_cameras() {
         let b = StatusBoard::default();
-        b.set_recording(1, true);
-        b.set_recording(2, true);
+        b.set_recording(1, true, false);
+        b.set_recording(2, true, false);
         b.retain(&[2]);
         let s = b.snapshot();
         assert!(!s.contains_key(&1));

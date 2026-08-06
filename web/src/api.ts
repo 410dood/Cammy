@@ -569,6 +569,10 @@ export interface AuditEntry {
 export interface CamStatus {
   online: boolean;
   recording: boolean;
+  /** `recording: false` ON PURPOSE — the camera's recording schedule (#67) has it
+   *  parked right now. When this is false and `recording` is false too, the
+   *  camera should be recording and isn't: that is a fault worth surfacing. */
+  record_paused?: boolean;
   last_frame_ts: number | null;
   last_error: string | null;
   inference_ms: number | null;

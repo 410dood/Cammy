@@ -488,6 +488,11 @@ video-stream.live-video .info { display: none; }
 }
 .tile .label .rec svg { animation: rec-blink 1.6s ease-in-out infinite; }
 @keyframes rec-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+/* "Parked by its schedule" is normal, so it stays quiet — but it must still be
+   SAID, because an absent REC chip alone can't be told apart from a dead
+   recorder. "Not recording" is a real fault and is coloured accordingly. */
+.tile .label .rec-paused { color: var(--text-muted); letter-spacing: 0.3px; }
+.tile .label .rec-fault { color: var(--danger); letter-spacing: 0.3px; }
 
 /* --- cards / tables ----------------------------------------------------------- */
 .card {

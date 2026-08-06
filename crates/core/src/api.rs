@@ -420,6 +420,7 @@ async fn camera_status(
             serde_json::json!({
                 "online": online && cam.enabled,
                 "recording": h.recording,
+                "record_paused": h.record_paused,
                 "last_frame_ts": h.last_frame_ts,
                 "last_error": h.last_error,
                 "inference_ms": h.inference_ms,
@@ -5751,6 +5752,10 @@ struct CamMetric {
     name: String,
     online: bool,
     recording: bool,
+    /// Not recording *by schedule*. Lets a scraper alert on the failure that
+    /// matters — `recording == 0 and record_paused == 0` — instead of paging
+    /// every night when a scheduled camera legitimately parks.
+    record_paused: bool,
     inference_ms: Option<f32>,
     last_frame_age: Option<i64>,
     bytes: u64,
@@ -5849,6 +5854,20 @@ fn render_metrics(
             "zoomy_camera_recording{{camera=\"{}\"}} {}\n",
             esc_label(&c.name),
             c.recording as u8
+        ));
+    }
+    family(
+        &mut out,
+        "zoomy_camera_record_paused",
+        "Not recording because a recording schedule parked it (1/0). \
+         recording=0 with record_paused=0 means the recorder has failed.",
+        "gauge",
+    );
+    for c in cams {
+        out.push_str(&format!(
+            "zoomy_camera_record_paused{{camera=\"{}\"}} {}\n",
+            esc_label(&c.name),
+            c.record_paused as u8
         ));
     }
     family(
@@ -6006,6 +6025,7 @@ async fn metrics(
                 name: cam.name.clone(),
                 online: cam.enabled && h.is_online(cam.detect, now, window),
                 recording: h.recording,
+                record_paused: h.record_paused,
                 inference_ms: h.inference_ms,
                 last_frame_age: h.last_frame_ts.map(|t| (now - t).max(0)),
                 bytes: s.map(|s| s.bytes).unwrap_or(0),
@@ -6580,16 +6600,20 @@ mod tests {
                 name: "porch".into(),
                 online: true,
                 recording: true,
+                record_paused: false,
                 inference_ms: Some(8.74),
                 last_frame_age: Some(2),
                 bytes: 1024,
                 segments: 5,
             },
             // A name with characters that must be escaped in a Prometheus label.
+            // Also the "parked by schedule" case: online but deliberately not
+            // recording, which must render as recording=0 + record_paused=1.
             CamMetric {
                 name: "a\"b\\c".into(),
                 online: false,
                 recording: false,
+                record_paused: true,
                 inference_ms: None,
                 last_frame_age: None,
                 bytes: 0,
@@ -6628,6 +6652,12 @@ mod tests {
         assert!(m.contains("zoomy_camera_last_frame_age_seconds{camera=\"porch\"} 2\n"));
         // Escaped name: " -> \" and \ -> \\.
         assert!(m.contains("zoomy_camera_online{camera=\"a\\\"b\\\\c\"} 0\n"));
+        // "Parked by schedule" is distinguishable from "recorder died": porch is
+        // recording (paused=0); the second camera is stopped ON PURPOSE
+        // (recording=0, paused=1). An alert wants recording=0 AND paused=0.
+        assert!(m.contains("zoomy_camera_recording{camera=\"porch\"} 1\n"));
+        assert!(m.contains("zoomy_camera_record_paused{camera=\"porch\"} 0\n"));
+        assert!(m.contains("zoomy_camera_record_paused{camera=\"a\\\"b\\\\c\"} 1\n"));
         // The offline camera has no inference/last-frame lines (None skipped).
         assert!(!m.contains("zoomy_camera_inference_ms{camera=\"a\\\"b\\\\c\"}"));
     }
