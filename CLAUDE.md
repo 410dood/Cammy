@@ -14,9 +14,103 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — two-round autonomous improvement sweep (audit → ship → verify), 2026-07-09
+## Current status: v0.4 — adversarial audit sweep (8 real defects fixed), 2026-08-05
 
-### Latest: db.rs infra — versioned migrations + WAL read pool, 2026-07-21
+### Latest: adversarial audit → 8 real defects fixed (trust/footage/security), 2026-08-05
+
+A 13-agent multi-lens audit (5 independent finders → per-finding adversarial
+refutation → ranked synthesis) plus live observation of an ordinary restart.
+Eight commits on `main` (`babf771`, `ccd2288`, `15948a3`, `2d217ff`, `e1b1650`,
+`71cf273`, `c98cf4b`, `f155e63`); **245 core tests** (was 234), clippy -D clean,
+tsc+vite green, release-rebuilt + restarted on :8081, every fix live-validated.
+
+**⚠️ CORRECTION — pool2 was never broken.** Sessions since 2026-07-16 have
+recorded pool2/cam6 as an environmental "RTSP flap … power-cycle the camera",
+and the 2026-07-19 notes claim it was "live-demonstrating the recording-stopped
+case". **It is not.** pool2 has a `record_schedule` of 08:00–18:00 and every
+observation was simply taken outside that window — the recorder was parking it
+correctly and logging nothing. Nothing distinguished "parked" from "broken" on
+the wire, so with full source access we still chased healthy hardware for weeks.
+That ambiguity is now fixed (below); **no owner power-cycle is needed.**
+
+- **Health guardian: false alarms on every restart, and blind to what it
+  exists to catch** (`babf771`). Observed live 30 s after a clean start: 6 junk
+  notifications (3 "Camera offline" then 3 "back online") **plus a false
+  "Weekly check: attention needed — 0 of 5 cameras online"** heartbeat that
+  pushed to the owner's phone, because the worker judged a status board no
+  camera had reported into yet. Separately, notifying only on a *transition*
+  meant a camera already broken at startup never produced one — verified: a
+  camera sat online-but-not-recording across 30+ checks in silence. Both are
+  one root cause (seeding the state machine optimistically, then trusting the
+  seed). Now a per-camera ~90 s warmup precedes any verdict, and the first
+  verdict stays quiet when healthy but **speaks when broken**. De-bounce/warmup/
+  seed logic moved into a pure `Watch` state machine (4 HashMaps → 1) with 6
+  tests. Live re-validated: the same restart now emits **zero**.
+- **"Recording" meant "an ffmpeg process exists"** (`2d217ff`). The only test
+  was `try_wait()`; ffmpeg attached to a dead RTSP source stays up and retries
+  forever, so status/REC pip/metrics/guardian all read healthy while nothing
+  reached disk. Now requires a newly completed segment within
+  `segment_seconds*2+60` (proof already free from the 3 s dir rescan). Also:
+  event-only / detection-triggered retention deleted **everything** on a camera
+  that emits no events (`detect:false` + `event_only_recording:true` → bare
+  `NOT EXISTS` matches every segment) — now gated on `can_emit_events`. Also:
+  ffmpeg stderr was `Stdio::inherit()`, i.e. discarded in the windowless
+  desktop/service build — now piped and logged.
+- **One snapshot-less bookmark disabled ALL snapshot cleanup, forever**
+  (`15948a3`). `x NOT IN (…NULL…)` is NULL, never TRUE. A `no_clip` privacy
+  camera writes `snapshot = NULL` for every event, so bookmarking one froze the
+  prune install-wide while the row DELETE still ran. **Measured on this repo's
+  live DB: 1 poison row → query returns 0 instead of 2166; snapshots dir held
+  6050 files / 1.5 GB with only 2169 referenced (~1 GB orphaned).** Regression
+  test confirmed to fail against the old query.
+- **"Not this" could silently mute a camera's real alarms, irreversibly**
+  (`e1b1650`). The v1 hoist let one thumbs-down gate *every* rule via CLIP crop
+  cosine ≥ 0.90 — a threshold justified in-code with **cross-camera** Re-ID
+  numbers while the gate only ever compares **same-camera** crops. Measured over
+  the 1340 stored embeddings: unrelated same-camera/same-label pairs run
+  0.54–0.99 (median 0.82–0.88), and since `any_similar` is a max over a
+  200-entry corpus, on front-door/car **1 thumbs-down silenced 18% of later
+  alerts, 10 silenced 68%, 25 silenced 90%** — with no cooldown trace, debug-only
+  logging, and no undo. Plain-rule gating is now behind
+  `Settings.feedback_suppress_plain_rules` (**default off**, restoring the
+  documented v0 scope); no threshold was re-guessed (same wall as the declined
+  pet Re-ID). Added `GET`/`DELETE /api/feedback` + a Settings → "Alert feedback"
+  card, INFO logging, and a tooltip that no longer promises the opposite.
+- **Say WHY a camera isn't recording** (`ccd2288`). New `CamHealth.record_paused`
+  (+ `/api/status`, `/api/stats`, `zoomy_camera_record_paused` gauge) so
+  `!recording && !paused` is a trustworthy fault signal. Web: muted "Paused" vs
+  red "Not recording" chips on Live + Cameras with the schedule window in the
+  tooltip, and Home reads "4 Recording · 1 paused by schedule".
+- **An Operator could steal the owner's SMTP password** (`71cf273`). The
+  Admin-only settings delta guard listed every other secret but **no `smtp_*`
+  field**. `smtp_url`/`smtp_user` aren't blanked on read, a blank `smtp_pass` is
+  restored from storage, and the alarm Test button forces a send — so repoint
+  the host, PUT, test, collect. The guard is now a pure
+  `admin_only_settings_delta` with a test asserting each of 24 fields *alone*
+  requires Admin (the failure mode is omission, not logic).
+- **Alarm CRUD had no per-camera RBAC** (`c98cf4b`). `list_alarms_api` hides
+  other cameras' rules; the five mutators extracted no `Principal` at all, so a
+  scoped Operator could author a global rule + ntfy action and receive forbidden
+  cameras' snapshots, or disable/delete/test the owner's rules.
+- **Push notifications dead-ended on Home** (`f155e63`). `sw.js` stashed
+  `event_id` and the click handler never read it. Now navigates to
+  `#/events/<id>` (or `#/live/<id>`; `push.rs` gained the missing `camera_id`).
+
+**Live-validated:** `record_paused:true` only for pool2; the metrics gauge
+splits paused (1) from recording (0); Live shows "Paused" vs 4× "REC"; the
+Cameras tooltip names "08:00–18:00"; Home reads "1 paused by schedule"; the
+feedback create→list→clear round-trip works both ways and left the DB clean;
+zero console errors; **zero health notifications across a full restart**.
+
+**Not done, deliberately:** arbitrary-range footage export (`extract_event_clip`
+is hard-capped to one 60 s segment, so a 6-minute incident is six unlabelled
+downloads and the signed evidence bundle inherits the ceiling) — genuinely the
+biggest remaining capability gap, but it needs a new endpoint, a concat path,
+cache keying *and* timeline drag-select UI. Also deferred: re-tuning
+`FEEDBACK_SUPPRESS_COSINE` (no same-camera calibration data exists — guessing
+just moves the failure), Events paging, and a global timed snooze.
+
+### Earlier: db.rs infra — versioned migrations + WAL read pool, 2026-07-21
 
 Two structural fixes shipped on `main` (`a562aef`), behavior-preserving; 234
 core tests, clippy -D clean. (1) **Versioned schema migrations**: `PRAGMA
@@ -49,7 +143,7 @@ signed evidence, deterrence relays + two-way audio, MQTT/HA/HomeKit. The genuine
 gaps were on **fundamentals and surfacing**, not features. Six commits on `main`
 (`696cff3`, `84164b1`, `f1685a8`, `b261188`, `4ebd871` + this); clippy -D clean,
 **230 core tests**, tsc+vite green, release-rebuilt + restarted (5/5 online; cam6/
-pool2 back to its documented online-but-not-recording RTSP flap — unrelated, the
+pool2 back to its online-but-not-recording state [a record_schedule, not an RTSP flap — see the 2026-08-05 correction] — unrelated, the
 pipeline diff is additive/gated). CI green.
 
 - **Save-search-as-alert** (`696cff3`, web): UniFi AI Key's flagship "NL query as
@@ -76,8 +170,11 @@ pipeline diff is additive/gated). CI green.
   (~30s, no more flap spam), and sends a **weekly "all cameras healthy, N
   recording, ~X days retained" reassurance heartbeat** (KV-persisted, Setting
   `health_heartbeat` default on) — turning "nobody watches the watcher" into a
-  trust signal. NOTE: pool2 is live-demonstrating the recording-stopped case
-  right now (online, recording=false).
+  trust signal. NOTE: pool2 is NOT demonstrating the recording-stopped case —
+  it is online with recording=false because of its own 08:00–18:00
+  `record_schedule` (see the 2026-08-05 correction). Both the de-bounce and the
+  heartbeat described here were subsequently found to be broken and were
+  rewritten in `babf771`.
 - **AI captions on the Home feed** (`b261188`, web): the "highest-leverage single
   feature" per 3 vendors. Captions already generate + show on Events; extended to
   Home's recent-activity/Spotlights ("what happened while I was away" glance),
@@ -383,7 +480,7 @@ every wave 3-lens/2-lens adversarially reviewed + cross-feature self-reviewed
 (the reviews caught + fixed real camera-scope leaks, an SMTP-relay vector, a SOAP
 injection, a detection-thread stall, two footage-loss windows, and a spurious
 zone-state transition). Still open for the OWNER (also see each wave's notes):
-pool2 camera env-flap (power-cycle it); relay hardware pulse on cam 3 (`00000`);
+~~pool2 camera env-flap (power-cycle it)~~ [WRONG — it is a record_schedule, see the 2026-08-05 correction]; relay hardware pulse on cam 3 (`00000`);
 HomeKit pairing; ask endpoint; OpenVINO build; two-box archive peer; HACS
 component on a real HA; CLIP zone-state prompts on a real garage.
 
@@ -423,7 +520,7 @@ clippy clean, **206 core tests**, web green.
 
 Self-review cleared the other interaction axes (offsite double-filter AND-ed;
 sub-segment protection works; stream params correct; P3.6 extraction verbatim).
-**pool2 (cam6) still environmentally not-recording** (see Wave 3 note; unaffected
+**pool2 (cam6) still not-recording** [NOT environmental — a record_schedule; see the 2026-08-05 correction] (see Wave 3 note; unaffected
 by this wave — 4/5 recording). Remaining: Wave 5 ecosystem (P3.3 HA, P3.2 ask-your-
 cameras, P3.4 HomeKit v0, P3.9 archive, P3.10 import, P3.5·1 OpenVINO EP).
 
@@ -458,6 +555,14 @@ green.
   detection's-pre-roll segment is never eligible; flagged/bookmarked footage always
   kept (tested); fail-SAFE (DB error → keep footage). Cameras 3-way arm-bar mode
   selector. No new endpoint (rides PATCH /api/cameras).
+
+**⚠ SUPERSEDED — this diagnosis was WRONG; see the 2026-08-05 correction at the
+top of this file.** pool2 has a `record_schedule` of 08:00–18:00, so the recorder
+was deliberately parking it outside that window and logging nothing. Every
+"pool2 won't record" note below and in later sessions is that schedule, not a
+camera fault. **No power-cycle is needed.** Kept verbatim as a record of how a
+missing "why isn't it recording?" signal cost several sessions of misdiagnosis —
+which is what `record_paused` (`ccd2288`) now exists to prevent.
 
 **⚠ LIVE-SYSTEM NOTE (owner action):** during the P3.8 release restart, **camera 6
 (pool2, 192.168.1.139) stopped recording and would not re-establish** — its go2rtc
