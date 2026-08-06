@@ -175,7 +175,14 @@ pub async fn run(
         );
         let ffmpeg_bin = cfg.ffmpeg_bin.clone();
         let status = status_board.clone();
-        move || record::run(db, go2rtc, dir, snaps, ffmpeg_bin, status, stop)
+        // The recorder owns the retention tick, so it also caps the derived-media
+        // cache (clips / evidence / time-lapses / range exports) written by the API.
+        let dirs_cfg = record::RecordDirs {
+            recordings: dir,
+            snapshots: snaps,
+            clips: cfg.data_dir.join("clips"),
+        };
+        move || record::run(db, go2rtc, dirs_cfg, ffmpeg_bin, status, stop)
     })?;
     let (mqtt_tx, mqtt_rx) = std::sync::mpsc::channel::<mqtt::EventMsg>();
     let mqtt_tx2 = mqtt_tx.clone();

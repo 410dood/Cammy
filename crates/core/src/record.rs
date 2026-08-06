@@ -33,6 +33,64 @@ fn stall_after(segment_seconds: u32) -> Duration {
     )
 }
 
+/// Byte cap for the derived-media cache under `data/clips`. Everything in there
+/// is regenerable from the recorded segments, so it is a cache, not data — but
+/// nothing pruned it, and a single arbitrary-range export can be gigabytes.
+const CLIP_CACHE_BYTES: u64 = 4_000_000_000;
+
+/// Files in the clip cache that are NOT finished artefacts and must never be
+/// deleted by the cache prune: `run_ffmpeg_atomic`'s in-flight temp output, the
+/// time-lapse concat list, and the "build in progress" marker. Deleting one of
+/// these would corrupt or orphan a build that is actively running.
+fn is_cache_workfile(name: &str) -> bool {
+    name.contains(".partial-") || name.ends_with(".txt") || name.ends_with(".building")
+}
+
+/// Delete oldest-first from `dir` until it fits in `max_bytes`. Best-effort and
+/// non-fatal: this is a cache, so a failure here must never disturb recording.
+fn prune_clip_cache(dir: &std::path::Path, max_bytes: u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return; // no cache yet — nothing to do
+    };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if is_cache_workfile(&name) {
+            continue;
+        }
+        let Ok(md) = entry.metadata() else { continue };
+        if !md.is_file() {
+            continue;
+        }
+        let mtime = md.modified().unwrap_or(std::time::UNIX_EPOCH);
+        total = total.saturating_add(md.len());
+        files.push((mtime, md.len(), entry.path()));
+    }
+    if total <= max_bytes {
+        return;
+    }
+    files.sort_by_key(|(t, _, _)| *t); // oldest first
+    let mut freed = 0u64;
+    let mut n = 0u32;
+    for (_, len, path) in files {
+        if total.saturating_sub(freed) <= max_bytes {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            freed = freed.saturating_add(len);
+            n += 1;
+        }
+    }
+    if n > 0 {
+        tracing::info!(
+            files = n,
+            freed_mb = freed / 1_000_000,
+            "clip cache pruned (regenerable on next request)"
+        );
+    }
+}
+
 /// Whether this camera can produce events at all — i.e. whether "no event
 /// covers this segment" is meaningful evidence that nothing happened.
 ///
@@ -49,15 +107,30 @@ fn can_emit_events(c: &crate::db::Camera) -> bool {
         || c.detect_config.onvif_events
 }
 
+/// Where the recorder reads and writes on disk.
+pub struct RecordDirs {
+    /// Default recordings root; a `Settings.recordings_dir` override wins per tick.
+    pub recordings: PathBuf,
+    pub snapshots: PathBuf,
+    /// `data/clips` — the API's derived-media cache (event clips, evidence
+    /// exports, time-lapses, range exports). The recorder owns the retention
+    /// tick, so it also caps this; see [`prune_clip_cache`].
+    pub clips: PathBuf,
+}
+
 pub fn run(
     db: Db,
     go2rtc: Arc<Go2Rtc>,
-    default_recordings_dir: PathBuf,
-    snapshots_dir: PathBuf,
+    dirs_cfg: RecordDirs,
     ffmpeg_bin: Option<PathBuf>,
     status: StatusBoard,
     shutdown: Arc<AtomicBool>,
 ) {
+    let RecordDirs {
+        recordings: default_recordings_dir,
+        snapshots: snapshots_dir,
+        clips: clips_dir,
+    } = dirs_cfg;
     let ffmpeg = match recorder::locate_ffmpeg(ffmpeg_bin.as_deref()) {
         Ok(p) => p,
         Err(e) => {
@@ -489,6 +562,13 @@ pub fn run(
                     Err(e) => tracing::warn!("event retention failed: {e:#}"),
                 }
             }
+
+            // Derived-media cache (data/clips): event clips, evidence exports,
+            // time-lapses and range exports. Every one of these is REPRODUCIBLE
+            // from the segments on disk, but nothing ever deleted them, so the
+            // directory grew for the life of the install — and a single range
+            // export can be gigabytes. Oldest-first until under the cap.
+            prune_clip_cache(&clips_dir, CLIP_CACHE_BYTES);
         }
 
         // Sleep in small steps so shutdown is responsive.
@@ -551,6 +631,60 @@ mod tests {
         ] {
             assert!(can_emit_events(&cam(false, dc)));
         }
+    }
+
+    #[test]
+    fn clip_cache_prunes_oldest_first_and_spares_in_flight_builds() {
+        use std::io::Write as _;
+        let dir = std::env::temp_dir().join(format!("cammy-clipcache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, bytes: usize| {
+            let p = dir.join(name);
+            let mut f = std::fs::File::create(&p).unwrap();
+            f.write_all(&vec![0u8; bytes]).unwrap();
+            p
+        };
+        // Written oldest-first; set explicit mtimes so ordering is deterministic
+        // rather than dependent on filesystem timestamp resolution.
+        let old = write("event-1-5-10.mp4", 4000);
+        let mid = write("timelapse-cam-2026-01-01.mp4", 4000);
+        let new = write("export-cam-100-200.mp4", 4000);
+        // An in-flight build: ffmpeg's temp output plus a concat list. Deleting
+        // either would corrupt a running export.
+        let partial = write("export-cam-300-400.partial-99-1.mp4", 4000);
+        let list = write("timelapse-cam-2026-01-02.txt", 10);
+        for (p, secs) in [(&old, 100u64), (&mid, 200), (&new, 300)] {
+            let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+            filetime_set(p, t);
+        }
+
+        // 12000 bytes of prunable artefacts against a 5000 cap: delete the
+        // oldest (8000 left, still over), then the next (4000, under) and stop.
+        // Work files are excluded from the total as well as from deletion.
+        prune_clip_cache(&dir, 5000);
+        assert!(!old.exists(), "oldest artefact should be pruned first");
+        assert!(!mid.exists(), "prune should continue until under the cap");
+        assert!(new.exists(), "newest artefact should survive");
+        assert!(
+            partial.exists(),
+            "an in-flight ffmpeg temp must never be deleted"
+        );
+        assert!(
+            list.exists(),
+            "a concat list for a running build must survive"
+        );
+
+        // Under the cap: nothing is touched.
+        prune_clip_cache(&dir, 10_000_000);
+        assert!(new.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Set a file's mtime without pulling in a dependency (the `filetime` crate
+    /// is not in the workspace and this is the only place that needs it).
+    fn filetime_set(path: &std::path::Path, t: std::time::SystemTime) {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(t).unwrap();
     }
 
     #[test]
