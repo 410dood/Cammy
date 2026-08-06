@@ -14,9 +14,68 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — adversarial audit sweep (8 real defects fixed), 2026-08-05
+## Current status: v0.4 — two audit sweeps + range export, 2026-08-06
 
-### Latest: adversarial audit → 8 real defects fixed (trust/footage/security), 2026-08-05
+### Latest: round-2 audit + arbitrary-range export, 2026-08-06
+
+A second 13-agent audit (lenses the first pass never covered: concurrency,
+packaging/desktop/service, integrations, silent failures, scale) plus the
+capability gap the first pass deferred. Six commits (`6df98c6`, `f8df8ed`,
+`1d61bdb`, `b6b42ee`, `6bf07b1`, `52a5e02`); **252 core tests** (was 245),
+clippy -D clean workspace-wide, tsc+vite green, release-rebuilt + restarted and
+live-validated on :8081.
+
+- **Arbitrary-range footage export** (`f8df8ed`) — the biggest remaining gap,
+  deferred last session. `GET /api/export.mp4?camera_id&from&to&stream` concats
+  every covering segment and trims to the window, packet-copied, capped at 1 h,
+  cached, RBAC'd and audited; `GET /api/export/preview` reports segments, size,
+  covered seconds and exact gaps *before* you download. Recordings gains an
+  "Export a range" card. **LIVE: a 5-minute range spanning 7 segments produced
+  one 226 MB file, ffprobe duration 300.006 s, 4K h264+AAC, built in 1.6 s
+  (cached re-request 0.46 s)** — previously impossible (`extract_event_clip` is
+  hard-capped to one 60 s segment). Coverage maths errs LOW on purpose: a
+  segment ends where the next begins, so a recorder-truncated segment is exact;
+  measured 74 s predicted vs a 70 s file where the naive slack estimate said 89.
+- **Clip cache capped** (`6df98c6`, prerequisite): `data/clips` was never
+  pruned — regenerable media growing forever, and one hour of 4K is ~2.7 GB.
+  Now 4 GB, oldest-first, sparing in-flight `.partial-`/`.txt`/`.building`.
+- **Two privilege escalations out of Operator** (`1d61bdb`): an Operator could
+  set an `exec:` camera source → **arbitrary code execution as the NVR user**
+  (LocalSystem under the service), while restore/import were already Admin-gated
+  for exactly that reason; and **ten more settings** were missing from the
+  Admin-only guard, incl. `recordings_dir`, `genai_url`/`genai_api_key`,
+  `mqtt_url`, the five model paths and `gesture_model_url` (fetched and
+  EXECUTED as JS+WASM in every browser). The SMTP-era test could not have caught
+  these — it listed the guarded fields, so it was blind to what was missing.
+  Replaced with an exhaustive test: serialize `Settings`, mutate each field, and
+  assert every one is either explicitly Operator-tunable or trips the guard.
+- **Alert failures were invisible and "Test" always claimed success**
+  (`b6b42ee`): every channel swallowed its failure at `debug!`, and `fire()`
+  returned `()` so the endpoint answered `{"fired": true}` regardless. This
+  install has three rules pointed at dead webhooks that had been failing
+  silently. Now per-action outcomes + `warn!`. LIVE: a rule at a closed port
+  returns `fired:false` with the OS error.
+- **Update orphaned go2rtc + ffmpeg; service dropped TLS/proxy flags**
+  (`6bf07b1`): Tauri's `restart()` never emits `RunEvent::Exit`, so the only
+  clean shutdown was skipped and the orphaned go2rtc kept the ports the NEW
+  version needed. And `--install-service --tls-self-signed --trusted-proxy`
+  installed a service serving PLAIN HTTP with the loopback-auth exemption live.
+  **Neither is verified end-to-end here** — both need an elevated install / a
+  real signed update.
+- **Retention query wedged the writer once a minute** (`52a5e02`):
+  `flagged_segment_paths` scanned all segments × all events on the WRITER
+  connection every 60 s — reproduced at 2.1 s (10k segs), 28.6 s (50k), **463 s
+  at 30-day retention**, and it cost the same with zero bookmarks. Schema v2
+  partial index + inverted CROSS JOIN + moved to the read pool. Live plan is now
+  two index seeks; migration applied in place (user_version 1→2).
+
+**Still deliberately open:** re-tuning `FEEDBACK_SUPPRESS_COSINE` (no
+same-camera calibration data), Events paging, a global timed snooze, the
+evidence bundle's self-carried key, MQTT connection state in the UI, and the
+GenAI worker's single unbounded FIFO. Full round-2 findings incl. refuted ones
+are in the workflow transcript.
+
+### Earlier: adversarial audit → 8 real defects fixed (trust/footage/security), 2026-08-05
 
 A 13-agent multi-lens audit (5 independent finders → per-finding adversarial
 refutation → ranked synthesis) plus live observation of an ordinary restart.
