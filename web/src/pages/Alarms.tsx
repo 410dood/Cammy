@@ -769,10 +769,24 @@ export default function Alarms({
                         if (testingId != null) return;
                         setTestingId(r.id);
                         try {
-                          await api.testAlarm(r.id);
-                          toast.success(
-                            `Test sent — check that the ${[...new Set(ruleActions(r).map((a) => a.kind))].join(" + ")} target received it`,
-                          );
+                          const res = await api.testAlarm(r.id);
+                          // The server now reports per-action delivery. Showing
+                          // a success tick regardless (the old behaviour) taught
+                          // people to trust an alarm whose webhook never
+                          // connected — the opposite of what a test is for.
+                          const bad = (res.actions ?? []).filter((a) => !a.ok);
+                          if (bad.length > 0) {
+                            onError(
+                              `Test failed: ${bad
+                                .map((a) => `${a.kind} — ${a.detail ?? "could not deliver"}`)
+                                .join("; ")}`,
+                            );
+                          } else {
+                            const kinds = [...new Set((res.actions ?? []).map((a) => a.kind))];
+                            toast.success(
+                              `Test delivered to ${kinds.join(" + ") || "no configured target"}`,
+                            );
+                          }
                         } catch (e) {
                           onError(String(e));
                         } finally {

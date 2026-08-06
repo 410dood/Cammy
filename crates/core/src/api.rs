@@ -4578,7 +4578,7 @@ async fn test_alarm_api(
     let now = chrono::Local::now().timestamp();
     let mqtt_tx = st.mqtt_tx.clone();
     let db = st.db.clone(); // for the per-user notification write in fire() (P2.11)
-    tokio::task::spawn_blocking(move || {
+    let outcomes = tokio::task::spawn_blocking(move || {
         let ev = crate::notify::AlarmEvent {
             event_id: 0,
             camera: "TEST",
@@ -4600,11 +4600,22 @@ async fn test_alarm_api(
             min_push_severity: 1, // a clicked test always delivers
             caption: Some("This is a test of this alarm rule — no event occurred."),
         };
-        crate::notify::fire(&rule, &ev, &mqtt_tx, 0, &db);
+        crate::notify::fire(&rule, &ev, &mqtt_tx, 0, &db)
     })
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "fired": true })))
+    // Report what actually happened. This used to return `{"fired": true}`
+    // unconditionally, so a Test against an unreachable webhook or a wrong SMTP
+    // password showed a success tick — training the owner to trust an alarm
+    // that would never have reached them.
+    let delivered = outcomes.iter().filter(|o| o.ok).count();
+    let failed: Vec<&crate::notify::ActionOutcome> = outcomes.iter().filter(|o| !o.ok).collect();
+    Ok(Json(serde_json::json!({
+        "fired": failed.is_empty(),
+        "delivered": delivered,
+        "failed": failed.len(),
+        "actions": outcomes,
+    })))
 }
 
 /// P2.1 — the ONVIF event inspector (Blue Iris-style): the most recent raw

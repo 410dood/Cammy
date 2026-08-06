@@ -209,16 +209,18 @@ pub fn fire(
     mqtt_tx: &std::sync::mpsc::Sender<EventMsg>,
     suppressed: u32,
     db: &Db,
-) {
+) -> Vec<ActionOutcome> {
     tracing::info!(rule = %rule.name, event = ev.event_id, suppressed, "alarm triggered");
-    for action in rule.effective_actions() {
-        fire_action(&action, &rule.name, ev, mqtt_tx, suppressed, db);
-    }
+    let outcomes: Vec<ActionOutcome> = rule
+        .effective_actions()
+        .iter()
+        .map(|action| fire_action(action, &rule.name, ev, mqtt_tx, suppressed, db))
+        .collect();
     // A synthetic/test fire (event_id 0) exercises ONLY the rule's own configured
     // actions above — it must not create a per-user notification (no bell entry /
     // push / email to everyone), so bail out here.
     if ev.event_id == 0 {
-        return;
+        return outcomes;
     }
     // Resolve the camera id from the camera NAME first. A NULL camera_id makes the
     // push worker skip the per-user camera-visibility gate (fail-OPEN), so we must
@@ -270,7 +272,48 @@ pub fn fire(
         camera_id,
         Some(ev.severity as i64),
     ) {
-        tracing::debug!("alarm notification insert failed: {e:#}");
+        // The bell row failing means the in-app notification (and the per-user
+        // push/email the worker derives from it) never happened — a delivery
+        // failure like any other, so it warns rather than hiding at debug.
+        tracing::warn!("alarm notification insert failed: {e:#}");
+    }
+    outcomes
+}
+
+/// What one action dispatch actually did — so a clicked "Test" can report the
+/// truth instead of an unconditional success.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActionOutcome {
+    pub kind: String,
+    pub ok: bool,
+    /// Why it failed, or why it was deliberately skipped. `None` on success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl ActionOutcome {
+    fn ok(kind: &str) -> Self {
+        Self {
+            kind: kind.to_string(),
+            ok: true,
+            detail: None,
+        }
+    }
+    fn failed(kind: &str, detail: impl Into<String>) -> Self {
+        Self {
+            kind: kind.to_string(),
+            ok: false,
+            detail: Some(detail.into()),
+        }
+    }
+    /// Not attempted, and correctly so (e.g. gated below `notify_min_severity`).
+    /// Reported as ok — nothing is broken — but with the reason attached.
+    fn skipped(kind: &str, why: impl Into<String>) -> Self {
+        Self {
+            kind: kind.to_string(),
+            ok: true,
+            detail: Some(why.into()),
+        }
     }
 }
 
@@ -281,7 +324,7 @@ fn fire_action(
     mqtt_tx: &std::sync::mpsc::Sender<EventMsg>,
     suppressed: u32,
     db: &Db,
-) {
+) -> ActionOutcome {
     // One-knob fatigue gate: quiet the human channels below the configured
     // severity; automations still see everything. (Deterrence is a physical
     // automation, never a human-facing push, so it is intentionally NOT gated
@@ -294,12 +337,15 @@ fn fire_action(
             min = ev.min_push_severity, kind = %action.kind,
             "push skipped: below notify_min_severity"
         );
-        return;
+        return ActionOutcome::skipped(
+            &action.kind,
+            "skipped: this alert is below your minimum notification severity",
+        );
     }
-    match action.kind.as_str() {
+    let result: Result<(), String> = match action.kind.as_str() {
         "webhook" => webhook(&action.target, ev),
-        "mqtt" => {
-            let _ = mqtt_tx.send(EventMsg {
+        "mqtt" => mqtt_tx
+            .send(EventMsg {
                 event_id: ev.event_id,
                 camera: ev.camera.to_string(),
                 label: ev.label.to_string(),
@@ -307,12 +353,30 @@ fn fire_action(
                 ts: ev.ts,
                 snapshot: ev.snapshot_url.to_string(),
                 topic: Some(format!("alarms/{}", action.target)),
-            });
-        }
+            })
+            .map_err(|e| format!("the MQTT worker is not accepting events: {e}")),
         "ntfy" => ntfy(&action.target, rule_name, action.priority, ev, suppressed),
         "email" => email(&action.target, rule_name, ev, suppressed),
-        "deterrence" => deterrence(&action.target, rule_name, ev, db),
-        other => tracing::warn!("unknown alarm action {other:?}"),
+        "deterrence" => {
+            deterrence(&action.target, rule_name, ev, db);
+            Ok(())
+        }
+        other => Err(format!("unknown alarm action {other:?}")),
+    };
+    // An alert that did NOT reach anyone is the single most important thing this
+    // module can report, and every channel used to swallow it at debug level —
+    // invisible in normal operation. It is a warning now, and the outcome also
+    // travels back to the caller so the "Test" button can stop claiming success
+    // for a webhook that never connected.
+    match result {
+        Ok(()) => ActionOutcome::ok(&action.kind),
+        Err(detail) => {
+            tracing::warn!(
+                rule = rule_name, event = ev.event_id, kind = %action.kind,
+                "alarm action FAILED to deliver: {detail}"
+            );
+            ActionOutcome::failed(&action.kind, detail)
+        }
     }
 }
 
@@ -365,13 +429,12 @@ fn deterrence(target_token: &str, rule_name: &str, ev: &AlarmEvent, db: &Db) {
 /// Email (SMTP) action: send the alarm detail with the snapshot attached.
 /// Best-effort and log-and-swallow like every other channel. The recipient is
 /// the action's `target` if set, else the configured default `smtp.to`.
-fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) {
+fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) -> Result<(), String> {
     use lettre::message::{header::ContentType, Attachment, MultiPart, SinglePart};
     use lettre::Message;
 
     let Some(cfg) = &ev.smtp else {
-        tracing::warn!("email action skipped: SMTP not configured in Settings");
-        return;
+        return Err("SMTP is not configured in Settings".into());
     };
     let to_raw = if target.trim().is_empty() {
         cfg.to
@@ -379,16 +442,13 @@ fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) {
         target
     };
     if cfg.from.trim().is_empty() || to_raw.trim().is_empty() {
-        tracing::warn!("email action skipped: missing from/to address");
-        return;
+        return Err("no from/to address configured".into());
     }
-    let from = match cfg.from.trim().parse() {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!("email skipped: bad from address {:?}: {e}", cfg.from);
-            return;
-        }
-    };
+    let from = cfg
+        .from
+        .trim()
+        .parse()
+        .map_err(|e| format!("bad from address {:?}: {e}", cfg.from))?;
     let subject = if ev.duress {
         format!("🚨 DURESS — {rule_name}")
     } else {
@@ -427,7 +487,7 @@ fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) {
         }
     }
     if !any_to {
-        return;
+        return Err("no valid recipient address".into());
     }
 
     let text = SinglePart::plain(body);
@@ -439,29 +499,17 @@ fn email(target: &str, rule_name: &str, ev: &AlarmEvent, suppressed: u32) {
         }
         None => builder.singlepart(text),
     };
-    let msg = match msg {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!("email build failed: {e}");
-            return;
-        }
-    };
-    send_built(cfg, msg);
+    let msg = msg.map_err(|e| format!("building the message: {e}"))?;
+    send_built(cfg, msg)
 }
 
 /// Build the SMTP transport and send a fully-built message. Shared by the
 /// per-rule `email` action and the per-user [`email_simple`] path (P2.11) so both
 /// go through the same bounded, log-and-swallow transport.
-fn send_built(cfg: &SmtpConfig, msg: lettre::Message) {
+fn send_built(cfg: &SmtpConfig, msg: lettre::Message) -> Result<(), String> {
     use lettre::Transport;
-    match build_smtp(cfg) {
-        Ok(mailer) => {
-            if let Err(e) = mailer.send(&msg) {
-                tracing::debug!("email send failed: {e}");
-            }
-        }
-        Err(e) => tracing::warn!("email transport failed: {e}"),
-    }
+    let mailer = build_smtp(cfg).map_err(|e| format!("transport: {e}"))?;
+    mailer.send(&msg).map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// P2.11: send a plain-text email (no attachment) with an explicit subject/body
@@ -496,9 +544,12 @@ pub(crate) fn email_simple(cfg: &SmtpConfig, to: &str, subject: &str, body: &str
     if !any_to {
         return;
     }
-    match builder.singlepart(SinglePart::plain(body.to_string())) {
+    let sent = match builder.singlepart(SinglePart::plain(body.to_string())) {
         Ok(msg) => send_built(cfg, msg),
-        Err(e) => tracing::warn!("email build failed: {e}"),
+        Err(e) => Err(format!("building the message: {e}")),
+    };
+    if let Err(e) = sent {
+        tracing::warn!(to = %to, "notification email FAILED to send: {e}");
     }
 }
 
@@ -547,11 +598,14 @@ pub fn ntfy_text(url: &str, title: &str, message: &str, tags: &str) {
         .set("X-Tags", tags)
         .send_string(message)
     {
-        tracing::debug!("ntfy push failed: {e}");
+        // An undelivered alert is precisely what the owner needs to hear about,
+        // so this is warn-level: debug is off in normal operation, which made
+        // every failed health/alarm push invisible.
+        tracing::warn!("ntfy push failed: {e}");
     }
 }
 
-fn webhook(url: &str, ev: &AlarmEvent) {
+fn webhook(url: &str, ev: &AlarmEvent) -> Result<(), String> {
     let result = if ev.webhook_template.is_empty() {
         let payload = serde_json::json!({
             "type": "alarm",
@@ -578,16 +632,20 @@ fn webhook(url: &str, ev: &AlarmEvent) {
             .set("Content-Type", "application/json")
             .send_string(&body)
     };
-    if let Err(e) = result {
-        tracing::debug!("alarm webhook failed: {e}");
-    }
+    result.map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// ntfy push: PUT with the snapshot attached when available, plain POST
 /// otherwise. Title/extras travel as headers per the ntfy protocol. When a
 /// public base URL is known the push carries tap-through "View clip" /
 /// "Snapshot" actions, and `priority` (1..5) maps to ntfy's X-Priority.
-fn ntfy(url: &str, rule_name: &str, priority: u8, ev: &AlarmEvent, suppressed: u32) {
+fn ntfy(
+    url: &str,
+    rule_name: &str,
+    priority: u8,
+    ev: &AlarmEvent,
+    suppressed: u32,
+) -> Result<(), String> {
     let mut detail = format!("{} ({:.0}%) on {}", ev.label, ev.score * 100.0, ev.camera);
     // A GenAI description leads the push (Wyze/Nest "descriptive alert" style);
     // the structured detail follows so nothing is lost if the caption is vague.
@@ -665,9 +723,7 @@ fn ntfy(url: &str, rule_name: &str, priority: u8, ev: &AlarmEvent, suppressed: u
             .send_bytes(&bytes),
         None => apply(ureq::post(url).timeout(Duration::from_secs(10))).send_string(&detail),
     };
-    if let Err(e) = result {
-        tracing::debug!("ntfy push failed: {e}");
-    }
+    result.map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

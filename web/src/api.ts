@@ -900,7 +900,14 @@ export const api = {
   /** Fire a rule's actions once with a synthetic TEST event (no event created,
    *  cooldown untouched) — verifies the webhook/ntfy/email wiring. */
   testAlarm: (id: number) =>
-    req<{ fired: boolean }>(`/api/alarms/${id}/test`, { method: "POST" }),
+    req<{
+      /** True only if EVERY action delivered. */
+      fired: boolean;
+      delivered: number;
+      failed: number;
+      /** Per-action result; `detail` carries the failure (or skip) reason. */
+      actions: { kind: string; ok: boolean; detail?: string }[];
+    }>(`/api/alarms/${id}/test`, { method: "POST" }),
   /** Per-rule throttle stats (this run): last-fired ts + cooldown-suppressed count. */
   alarmStats: () =>
     req<Record<string, { last_fired_ts: number; suppressed_since: number }>>("/api/alarms/stats"),
