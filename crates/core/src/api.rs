@@ -4094,11 +4094,58 @@ fn validate_alarm_rule(rule: &crate::db::AlarmRule) -> ApiResult<()> {
     Ok(())
 }
 
+/// Guard a rule the caller is trying to CREATE or re-point.
+///
+/// `list_alarms_api` already hides other cameras' rules from a scoped user, but
+/// the mutators extracted no `Principal` at all, so scoping was impossible
+/// inside them. A camera-scoped Operator could author a rule against a camera
+/// they cannot see — or a global rule (`camera_id: None`, which `matches` treats
+/// as EVERY camera) — attach an ntfy/webhook action, and have `notify.rs` ship
+/// those cameras' snapshot JPEGs to a URL they control.
+///
+/// A scoped caller must therefore name a camera, and one they can see. An
+/// unscoped caller (Admin, or a user with no allow-list) is unaffected.
+fn require_rule_scope(
+    allowed: &Option<std::collections::HashSet<i64>>,
+    camera_id: Option<i64>,
+) -> ApiResult<()> {
+    let Some(set) = allowed else { return Ok(()) };
+    match camera_id {
+        Some(id) if set.contains(&id) => Ok(()),
+        // 404 for a real-but-forbidden camera (anti-enumeration, as
+        // `require_camera` does); a global rule is a plain refusal.
+        Some(_) => Err(not_found()),
+        None => Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "a camera-scoped user must target one of their own cameras, not all cameras".into(),
+        )),
+    }
+}
+
+/// Guard a rule the caller is trying to MODIFY, by its stored definition.
+/// 404 (never 403) for a rule outside scope, so rule ids can't be enumerated.
+fn require_existing_rule(
+    st: &AppState,
+    allowed: &Option<std::collections::HashSet<i64>>,
+    id: i64,
+) -> ApiResult<crate::db::AlarmRule> {
+    let rule = st
+        .db
+        .list_alarms()?
+        .into_iter()
+        .find(|r| r.id == id)
+        .ok_or_else(not_found)?;
+    require_rule_scope(allowed, rule.camera_id).map_err(|_| not_found())?;
+    Ok(rule)
+}
+
 async fn add_alarm_api(
     State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Json(rule): Json<crate::db::AlarmRule>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     validate_alarm_rule(&rule)?;
+    require_rule_scope(&allowed_cameras(&st, &p)?, rule.camera_id)?;
     let id = st.db.add_alarm(&rule)?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
 }
@@ -4107,10 +4154,16 @@ async fn add_alarm_api(
 /// same validation as create, then an in-place update that keeps id/snooze.
 async fn put_alarm_api(
     State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Path(id): Path<i64>,
     Json(rule): Json<crate::db::AlarmRule>,
 ) -> ApiResult<StatusCode> {
     validate_alarm_rule(&rule)?;
+    let allowed = allowed_cameras(&st, &p)?;
+    // BOTH ends: the rule as stored (so you can't take over one you can't see)
+    // and as submitted (so you can't re-point one you can see at one you can't).
+    require_existing_rule(&st, &allowed, id)?;
+    require_rule_scope(&allowed, rule.camera_id)?;
     if st.db.update_alarm(id, &rule)? {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -4127,9 +4180,12 @@ struct AlarmPatch {
 
 async fn patch_alarm_api(
     State(st): State<AppState>,
+    axum::Extension(principal): axum::Extension<crate::auth::Principal>,
     Path(id): Path<i64>,
     Json(p): Json<AlarmPatch>,
 ) -> ApiResult<StatusCode> {
+    // Disabling or snoozing someone else's rule silences THEIR alerts.
+    require_existing_rule(&st, &allowed_cameras(&st, &principal)?, id)?;
     if let Some(enabled) = p.enabled {
         st.db.set_alarm_enabled(id, enabled)?;
     }
@@ -4146,8 +4202,10 @@ async fn patch_alarm_api(
 
 async fn delete_alarm_api(
     State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
+    require_existing_rule(&st, &allowed_cameras(&st, &p)?, id)?;
     st.db.delete_alarm(id)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -4159,14 +4217,12 @@ async fn delete_alarm_api(
 /// does NOT create an event or stamp the cooldown clock.
 async fn test_alarm_api(
     State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let rule = st
-        .db
-        .list_alarms()?
-        .into_iter()
-        .find(|r| r.id == id)
-        .ok_or_else(not_found)?;
+    // Fires real actions on demand (push/email/webhook/relay), so it needs the
+    // same scope check as editing the rule.
+    let rule = require_existing_rule(&st, &allowed_cameras(&st, &p)?, id)?;
     let s = st.db.settings();
     let now = chrono::Local::now().timestamp();
     let mqtt_tx = st.mqtt_tx.clone();
@@ -6666,6 +6722,29 @@ mod tests {
         assert!(row.contains(",a_to_b,32,")); // direction + rounded speed
         assert!(row.contains(",yes,")); // flagged
         assert!(row.ends_with(",\"help, fire\"")); // transcript quoted
+    }
+
+    #[test]
+    fn alarm_rule_scope_blocks_forbidden_and_global_targets() {
+        use super::{require_rule_scope, StatusCode};
+        let scoped: Option<std::collections::HashSet<i64>> = Some([1i64, 2].into_iter().collect());
+
+        // Own camera: allowed.
+        assert!(require_rule_scope(&scoped, Some(1)).is_ok());
+        // Someone else's camera: 404, not 403, so ids can't be enumerated.
+        let e = require_rule_scope(&scoped, Some(9)).unwrap_err();
+        assert_eq!(e.0, StatusCode::NOT_FOUND);
+        // A global rule (camera_id = None) matches EVERY camera, including ones
+        // this user may not see — the exact way a scoped Operator could have
+        // had forbidden cameras' snapshots posted to their own webhook.
+        let e = require_rule_scope(&scoped, None).unwrap_err();
+        assert_eq!(e.0, StatusCode::FORBIDDEN);
+
+        // An unscoped caller (Admin, or a user with no allow-list) is unaffected
+        // and may still author global rules.
+        let unscoped: Option<std::collections::HashSet<i64>> = None;
+        assert!(require_rule_scope(&unscoped, None).is_ok());
+        assert!(require_rule_scope(&unscoped, Some(9)).is_ok());
     }
 
     #[test]
