@@ -20,7 +20,34 @@ use serde::{Deserialize, Serialize};
 /// Current schema version (`PRAGMA user_version`). Bump this and append a
 /// step to `MIGRATIONS` (in `Db::migrate`) to change the schema — never edit
 /// an existing step, and keep v1 idempotent (see the note on `migrate_v1`).
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+/// Which recording segments a bookmark protects from retention.
+///
+/// A shared constant so the test can assert the plan of the query that actually
+/// runs — an EXPLAIN over a copy-pasted string proves nothing once the two
+/// drift, which is exactly how a first attempt at that test passed against a
+/// deliberately broken production query.
+///
+/// Driven from the FLAGGED events, not from `segments`. The original shape
+/// (`FROM segments s JOIN events e`) made SQLite scan the whole segments table
+/// and probe events for every row — O(segments x events-per-camera) — once a
+/// minute, forever, on the writer connection. Reproduced at 30-day/5-camera
+/// scale it took ~463 s per pass, i.e. it could never finish before the next
+/// tick, wedging the detection pipeline's `settings()` and the recorder's
+/// `upsert_segment` behind it. It cost the same with ZERO bookmarks, because
+/// `flagged = 1` was a residual filter on rows the loop had already visited.
+///
+/// CROSS JOIN is load-bearing, not decoration: it is SQLite's documented way to
+/// pin the outer loop, and with a plain JOIN the planner still chose `segments`
+/// as the outer table. Semantics are unchanged — the ON clause is the same
+/// window, and both shapes were verified to return an identical path set.
+const FLAGGED_SEGMENTS_SQL: &str = "SELECT DISTINCT s.path FROM events e
+     CROSS JOIN segments s
+       ON s.camera_id = e.camera_id
+      AND s.start_ts <= e.ts
+      AND s.start_ts >= e.ts - ?1
+     WHERE e.flagged = 1";
 
 /// Read connections in the pool. Home scale: a couple of concurrent UI
 /// readers plus a background analytics scan is the realistic worst case.
@@ -1724,7 +1751,7 @@ impl Db {
     /// - steps v2+ only ever run exactly once, so they may be strict
     ///   (error-checked ALTERs, data backfills, renames).
     fn migrate(conn: &mut Connection) -> Result<()> {
-        const MIGRATIONS: &[fn(&Connection) -> Result<()>] = &[Db::migrate_v1];
+        const MIGRATIONS: &[fn(&Connection) -> Result<()>] = &[Db::migrate_v1, Db::migrate_v2];
         let have: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if have > SCHEMA_VERSION {
             // A newer build touched this DB. All migrations are additive, so
@@ -2099,6 +2126,27 @@ impl Db {
                  enabled INTEGER NOT NULL,
                  PRIMARY KEY (user_id, rule_id, channel)
              );",
+        )?;
+        Ok(())
+    }
+
+    /// v2: a partial index over bookmarked events.
+    ///
+    /// [`flagged_segment_paths`](Self::flagged_segment_paths) runs on every
+    /// retention tick (once a minute, forever) to work out which footage a
+    /// bookmark protects. It used to drive from `segments`, so SQLite scanned
+    /// the whole segments table and probed `events` per row — cost
+    /// O(segments x events-per-camera), on a table that reaches ~216k rows at
+    /// the documented 30-day/5-camera retention.
+    ///
+    /// Driving from the flagged events instead makes it O(bookmarks), but only
+    /// if finding them is cheap: no existing index mentions `flagged`, so it
+    /// would still scan every event. This partial index covers exactly the
+    /// bookmarked rows — a handful in practice — and is therefore tiny.
+    fn migrate_v2(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS events_flagged_cam_ts
+                 ON events(camera_id, ts) WHERE flagged = 1;",
         )?;
         Ok(())
     }
@@ -4730,14 +4778,10 @@ impl Db {
         &self,
         span_secs: i64,
     ) -> Result<std::collections::HashSet<String>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT s.path FROM segments s
-             JOIN events e ON e.camera_id = s.camera_id
-             WHERE e.flagged = 1
-               AND e.ts >= s.start_ts
-               AND e.ts <= s.start_ts + ?1",
-        )?;
+        // Runs on the read pool, so it can never stall the recording path —
+        // this is the heaviest SELECT in the codebase and it was on the writer.
+        let conn = self.read();
+        let mut stmt = conn.prepare(FLAGGED_SEGMENTS_SQL)?;
         let paths = stmt
             .query_map(params![span_secs], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<std::collections::HashSet<String>>>()?;
@@ -5438,6 +5482,109 @@ mod tests {
 
     /// P2.14 Part 1: `flagged_segment_paths` returns exactly the segment(s) that
     /// COVER a flagged (bookmarked) event, and the flag drives membership.
+    #[test]
+    fn flagged_segment_paths_stays_fast_at_retention_scale() {
+        // This query gates EVERY retention pass, once a minute, forever. Written
+        // as `FROM segments JOIN events` it planned as a full segments scan with
+        // a per-row probe into events — O(segments x events-per-camera) — and it
+        // ran on the writer connection, so each pass blocked the detection
+        // pipeline's `settings()` and the recorder's `upsert_segment`. Measured
+        // at 30-day/5-camera scale it took ~463 s, i.e. it could never finish
+        // before the next tick.
+        //
+        // It is equally slow with NO bookmarks, because `flagged = 1` is a
+        // residual filter on rows the nested loop has already visited — so every
+        // install paid it whether or not the feature was ever used. This test
+        // therefore deliberately flags only ONE event out of many.
+        let db = mem_db();
+        let cams: Vec<i64> = (0..5)
+            .map(|i| {
+                db.add_camera(&format!("cam{i}"), "rtsp://x", None, true, true)
+                    .unwrap()
+                    .id
+            })
+            .collect();
+        // ~5 hours x 5 cameras of 60 s segments, plus a busy event history.
+        for (ci, cam) in cams.iter().enumerate() {
+            for n in 0..1_500i64 {
+                let ts = 1_000_000 + n * 60;
+                db.upsert_segment(*cam, ts, &format!("/rec/c{ci}/{n}.mp4"), 100, "main")
+                    .unwrap();
+                if n % 3 == 0 {
+                    db.add_event(
+                        *cam,
+                        ts + 5,
+                        "person",
+                        0.9,
+                        [0.0; 4],
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        let flagged = db
+            .add_event(
+                cams[2],
+                1_000_000 + 600,
+                "person",
+                0.9,
+                [0.0; 4],
+                Some("x.jpg"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(db.set_event_flag(flagged, true).unwrap());
+
+        let t = std::time::Instant::now();
+        let protected = db.flagged_segment_paths(75).unwrap();
+        let elapsed = t.elapsed();
+        assert!(
+            !protected.is_empty(),
+            "the bookmarked event's covering segment must still be protected"
+        );
+        // Catches the missing-index regression: without `events_flagged_cam_ts`
+        // this dataset takes seconds, and real retention takes minutes.
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "flagged_segment_paths took {elapsed:?} over 7500 segments — check that the \
+             v2 partial index exists"
+        );
+
+        // ...and assert the PLAN, because the timing bound alone does not catch
+        // a lost CROSS JOIN: at test scale the partial index keeps even the
+        // wrong join order under a second. It is the join order that decides
+        // whether this is O(bookmarks) or O(segments), so check it directly.
+        // Explains the SHARED constant, so a change to the production query is
+        // what gets checked. (An earlier version of this test explained its own
+        // copy of the SQL and happily passed while the real query was broken.)
+        let conn = db.read();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {FLAGGED_SEGMENTS_SQL}"))
+            .unwrap()
+            .query_map(params![75i64], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let plan_text = plan.join(" | ");
+        assert!(
+            plan_text.contains("events_flagged_cam_ts"),
+            "the bookmark lookup must use the v2 partial index; plan was: {plan_text}"
+        );
+        assert!(
+            plan_text.contains("SEARCH s"),
+            "segments must be probed by index per bookmark, never scanned — that is the \
+             difference between O(bookmarks) and O(segments); plan was: {plan_text}"
+        );
+    }
+
     #[test]
     fn flagged_segment_paths_resolves_covering_segment() {
         let db = mem_db();
