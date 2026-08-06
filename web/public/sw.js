@@ -74,19 +74,42 @@ self.addEventListener("push", (event) => {
     icon: "/icons/icon-192.png",
     badge: "/icons/icon-192.png",
     tag: data.id ? `cammy-${data.id}` : undefined,
-    data: { kind: data.kind, event_id: data.event_id },
+    data: { kind: data.kind, event_id: data.event_id, camera_id: data.camera_id },
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
+// Where a notification should take you. The app routes these hashes already
+// (App.tsx parses #/events/<id> and #/live/<id>, and cold-loading an event deep
+// link was made to work on purpose), so a push can land on the thing it is
+// about instead of on Home.
+function targetFor(data) {
+  if (!data) return "/";
+  if (data.event_id) return `/#/events/${data.event_id}`;
+  // Camera notifications (offline / tamper / absence) have no event to open.
+  if (data.camera_id) return `/#/live/${data.camera_id}`;
+  return "/";
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  const target = targetFor(event.notification.data);
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cls) => {
       for (const c of cls) {
+        // An already-open tab is sitting on whatever page the user last used —
+        // focusing it without navigating is what made every alert dead-end on
+        // Home. Navigate first, then focus; fall back to a plain focus if the
+        // client refuses to navigate (cross-origin / not controlled).
+        if ("navigate" in c && "focus" in c) {
+          return c
+            .navigate(target)
+            .then((nc) => (nc || c).focus())
+            .catch(() => c.focus());
+        }
         if ("focus" in c) return c.focus();
       }
-      if (self.clients.openWindow) return self.clients.openWindow("/");
+      if (self.clients.openWindow) return self.clients.openWindow(target);
     }),
   );
 });

@@ -105,6 +105,12 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
                     "body": n.body.as_deref().map(|b| clamp(b, 600)),
                     "kind": n.kind,
                     "event_id": n.event_id,
+                    // Lets the service worker deep-link a camera notification
+                    // (offline / tamper / absence) straight to that camera's
+                    // live view. The rows were tagged with camera_id precisely
+                    // so pushes could be per-user scoped AND actionable; the
+                    // scoping shipped, the payload field was missed.
+                    "camera_id": n.camera_id,
                     "id": n.id,
                     "ts": n.ts,
                 })
