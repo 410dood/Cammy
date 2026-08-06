@@ -120,6 +120,58 @@ fn server_config(args: &Args) -> Result<ServerConfig> {
     })
 }
 
+/// The runtime flags beyond `--data-dir`/`--ui-dir`/`--port` that the installed
+/// Windows service must inherit.
+///
+/// Every `Args` field is accounted for here on purpose. The service previously
+/// captured only those three plus the workdir and silently dropped the rest, so
+/// `--install-service --tls-self-signed --trusted-proxy` produced a service
+/// serving PLAIN HTTP with the loopback-auth exemption still live — a silent
+/// downgrade of both things the operator explicitly asked for.
+///
+/// Paths are absolutized because a service starts in System32, where anything
+/// relative resolves somewhere the operator never intended.
+///
+/// Not forwarded, by design: `--install-service` / `--uninstall-service` /
+/// `--run-service` (install-time verbs) and `--verify` (a standalone offline
+/// command that never starts a server).
+#[cfg(windows)]
+fn service_flags(args: &Args) -> Result<Vec<std::ffi::OsString>> {
+    use std::ffi::OsString;
+    let cwd = std::env::current_dir()?;
+    let abs = |p: &PathBuf| -> OsString {
+        if p.is_absolute() {
+            p.clone().into_os_string()
+        } else {
+            cwd.join(p).into_os_string()
+        }
+    };
+    let mut out: Vec<OsString> = Vec::new();
+    if let Some(p) = &args.go2rtc_bin {
+        out.push("--go2rtc-bin".into());
+        out.push(abs(p));
+    }
+    if let Some(p) = &args.ffmpeg_bin {
+        out.push("--ffmpeg-bin".into());
+        out.push(abs(p));
+    }
+    if let Some(p) = &args.tls_cert {
+        out.push("--tls-cert".into());
+        out.push(abs(p));
+    }
+    if let Some(p) = &args.tls_key {
+        out.push("--tls-key".into());
+        out.push(abs(p));
+    }
+    if args.tls_self_signed {
+        out.push("--tls-self-signed".into());
+    }
+    if args.trusted_proxy {
+        out.push("--trusted-proxy".into());
+    }
+    Ok(out)
+}
+
 fn main() -> Result<()> {
     let args = cli_args();
 
@@ -135,7 +187,8 @@ fn main() -> Result<()> {
             anyhow::bail!("pick one of --install-service / --uninstall-service");
         }
         if args.install_service {
-            return winsvc::install(&args.data_dir, &args.ui_dir, args.port);
+            let extra = service_flags(&args)?;
+            return winsvc::install(&args.data_dir, &args.ui_dir, args.port, &extra);
         }
         if args.uninstall_service {
             return winsvc::uninstall();

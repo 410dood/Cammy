@@ -37,7 +37,17 @@ const DISPLAY_NAME: &str = "Cammy NVR";
 /// Register the service: auto-start at boot, restart-on-crash, running the
 /// current exe with `--run-service` + absolute paths captured NOW (a service
 /// starts in System32, so nothing may stay relative).
-pub fn install(data_dir: &Path, ui_dir: &Path, port: u16) -> Result<()> {
+/// Install the service, capturing `--data-dir`/`--ui-dir`/`--port` plus `extra`
+/// — the remaining runtime flags the caller was invoked with.
+///
+/// `extra` exists because the service used to capture ONLY those four values and
+/// silently drop everything else. Installing with `--tls-self-signed
+/// --trusted-proxy` produced a service that served plain HTTP with the
+/// loopback-auth exemption still active: the exact opposite of what was asked
+/// for, with no warning. The caller builds `extra` (see `service_flags` in
+/// main.rs) so there is one reviewable place listing every flag and whether it
+/// is forwarded.
+pub fn install(data_dir: &Path, ui_dir: &Path, port: u16, extra: &[OsString]) -> Result<()> {
     let exe = std::env::current_exe().context("locating zoomy.exe")?;
     let cwd = std::env::current_dir().context("current dir")?;
     let abs = |p: &Path| {
@@ -55,7 +65,7 @@ pub fn install(data_dir: &Path, ui_dir: &Path, port: u16) -> Result<()> {
     )
     .context("opening the service manager (run this from an elevated/Administrator prompt)")?;
 
-    let launch_arguments = vec![
+    let mut launch_arguments = vec![
         OsString::from("--run-service"),
         OsString::from("--service-workdir"),
         cwd.clone().into_os_string(),
@@ -66,6 +76,7 @@ pub fn install(data_dir: &Path, ui_dir: &Path, port: u16) -> Result<()> {
         OsString::from("--port"),
         OsString::from(port.to_string()),
     ];
+    launch_arguments.extend_from_slice(extra);
     let info = ServiceInfo {
         name: SERVICE_NAME.into(),
         display_name: DISPLAY_NAME.into(),

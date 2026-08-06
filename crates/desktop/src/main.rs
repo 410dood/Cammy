@@ -103,16 +103,29 @@ fn main() {
         .expect("failed to build tauri app")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                let handle = app.state::<ServerHandle>();
-                let _ = handle.shutdown.send(true);
-                // Join so ffmpeg finalizes segments and go2rtc is killed before
-                // the process disappears.
-                let thread = handle.thread.lock().expect("server handle").take();
-                if let Some(t) = thread {
-                    let _ = t.join();
-                }
+                shutdown_engine(app);
             }
         });
+}
+
+/// Stop the embedded engine and WAIT for it, so ffmpeg finalizes its segments
+/// and go2rtc is killed before this process disappears.
+///
+/// Idempotent — the thread handle is taken, so a second call is a no-op. That
+/// matters because this now runs on two paths: the normal `RunEvent::Exit`, and
+/// explicitly before an update restart. `AppHandle::restart()` exits the process
+/// immediately and never emits `RunEvent::Exit`, so without the explicit call an
+/// update would orphan go2rtc and every ffmpeg child: the abandoned go2rtc keeps
+/// holding its RTSP/API ports, so the freshly installed version cannot bind them
+/// and comes up with no live view and no recording, and the in-progress MP4
+/// segments are left unfinalized.
+fn shutdown_engine(app: &tauri::AppHandle) {
+    let handle = app.state::<ServerHandle>();
+    let _ = handle.shutdown.send(true);
+    let thread = handle.thread.lock().expect("server handle").take();
+    if let Some(t) = thread {
+        let _ = t.join();
+    }
 }
 
 /// First packaged run: register launch-at-login by default (an NVR that stays
@@ -296,8 +309,13 @@ fn install_update(
     tauri::async_runtime::spawn(async move {
         match update.download_and_install(|_, _| {}, || {}).await {
             Ok(()) => {
-                // Clean restart: RunEvent::Exit joins the server thread, so
-                // ffmpeg finalizes segments before the new version launches.
+                // `restart()` exits the process immediately and does NOT emit
+                // RunEvent::Exit, so the engine must be stopped explicitly first
+                // — otherwise go2rtc and every ffmpeg survive as orphans holding
+                // the ports the new version needs. Blocking here is fine: the
+                // only thing left to do is exit.
+                let _ = item.set_text("Finishing recordings…");
+                shutdown_engine(&app);
                 app.restart();
             }
             Err(e) => {
