@@ -26,6 +26,7 @@ import LifecycleModal from "../LifecycleModal";
 // A3 smart-detection grouping lives in a shared module (the camera detail rail
 // uses it too) — see eventGroups.ts.
 import { Cluster, groupEvents } from "../eventGroups";
+import DayStrip, { DayWindow } from "../DayStrip";
 import { isCameraSide, prettyLabel, prettyZone, prettyGesture, captionContradicts } from "../labels";
 
 function durationLabel(secs: number): string {
@@ -151,6 +152,9 @@ export default function Events({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  /// Which day is being looked at. `null` = all time, which is what the page
+  /// has always done (newest first, no day filter) — so the default is unchanged.
+  const [day, setDay] = useState<DayWindow>(null);
   /// No more history behind the current filters — hides the "Load older" button
   /// rather than leaving a control that can only disappoint.
   const [noOlder, setNoOlder] = useState(false);
@@ -775,8 +779,11 @@ export default function Events({
   const filterArgs = () => ({
     camera_id: cameraId === "" ? undefined : cameraId,
     label: label || undefined,
-    after: fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined,
-    before: toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined,
+    // A chosen day wins over the free-form from/to inputs (which remain in More
+    // filters for sub-day precision). Only one time filter can be in force, and
+    // the visible one must be the one that applies.
+    after: day ? day.from : fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined,
+    before: day ? day.to : toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined,
     flagged: flaggedOnly || undefined,
     tag: tagFilter || undefined,
   });
@@ -874,7 +881,8 @@ export default function Events({
     }, 5000); // events appear as they happen
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cameraId, label, fromTime, toTime, flaggedOnly, tagFilter]);
+    // `day` is a dep: changing the day must refetch, not just re-render.
+  }, [cameraId, label, fromTime, toTime, flaggedOnly, tagFilter, day?.from, day?.to]);
 
   // Filter-option lists (rescanned only when the event set changes, not on every
   // keystroke/hover/modal toggle).
@@ -1074,6 +1082,7 @@ export default function Events({
         >
           <IconCheck size={15} /> {selectMode ? "Done" : "Select"}
         </button>
+        <DayStrip value={day} onChange={setDay} />
         <select
           value={cameraId}
           onChange={(e) => setCameraId(e.target.value === "" ? "" : Number(e.target.value))}

@@ -2551,3 +2551,63 @@ img.identity-thumb { background: var(--n-0); }
   align-items: center;
   padding: var(--sp-6) 0 var(--sp-4);
 }
+
+/* --- DayStrip: pick a day, see where the activity is ------------------------- */
+.daystrip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.daystep {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.daystep .btn { border: 0; background: transparent; }
+.daystep-label { min-width: 8.5rem; font-variant-numeric: tabular-nums; }
+.daycal-wrap { position: relative; }
+.daycal {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-3);
+  padding: var(--sp-3);
+}
+.daycal-grid { display: flex; gap: 3px; }
+.daycal-col { display: flex; flex-direction: column; gap: 3px; }
+/* Density cells. Shading runs on the accent so "where did things happen" reads
+   pre-attentively — the whole reason the calendar beats a bare date input. */
+.daycal-day {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  background: var(--surface-hover);
+  padding: 0;
+  cursor: pointer;
+}
+.daycal-day.s0 { background: var(--surface-hover); }
+.daycal-day.s1 { background: color-mix(in oklab, var(--accent) 25%, var(--surface-hover)); }
+.daycal-day.s2 { background: color-mix(in oklab, var(--accent) 45%, var(--surface-hover)); }
+.daycal-day.s3 { background: color-mix(in oklab, var(--accent) 70%, var(--surface-hover)); }
+.daycal-day.s4 { background: var(--accent); }
+.daycal-day.sel { border-color: var(--text); }
+.daycal-day:disabled { opacity: 0.25; cursor: default; }
+.daycal-day:hover:not(:disabled) { outline: 1px solid var(--text-muted); }
+.daycal-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: var(--sp-3);
+  font-size: var(--text-sm);
+}
+.daycal-foot input[type="date"] { margin-left: auto; }
