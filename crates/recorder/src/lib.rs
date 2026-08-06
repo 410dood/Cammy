@@ -86,12 +86,31 @@ impl Recording {
             .arg(&pattern)
             .stdin(Stdio::piped()) // lets us send 'q' for a clean finalize
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
+            // Capture rather than inherit: the packaged desktop app and the
+            // Windows service are windowless, so an inherited stderr goes
+            // nowhere and ffmpeg's account of WHY a camera stopped recording is
+            // lost exactly when it is needed. `-loglevel error` above means this
+            // pipe carries only real errors, so logging every line is cheap.
+            .stderr(Stdio::piped())
             .no_console()
             .spawn()
             .with_context(|| format!("spawning ffmpeg for camera {camera}"))?;
 
         tracing::info!(camera, pid = child.id(), dir = %out_dir.display(), "recording started");
+        let mut child = child;
+        if let Some(err) = child.stderr.take() {
+            let cam = camera.to_string();
+            // Ends on EOF when ffmpeg exits, so the thread cannot outlive it.
+            std::thread::spawn(move || {
+                use std::io::BufRead as _;
+                for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        tracing::warn!(camera = %cam, "ffmpeg: {line}");
+                    }
+                }
+            });
+        }
         Ok(Self {
             child,
             camera: camera.to_string(),

@@ -20,6 +20,35 @@ const SEGMENT_QUIET_SECS: u64 = 5;
 const RECONCILE_EVERY: Duration = Duration::from_secs(3);
 const RETENTION_EVERY: Duration = Duration::from_secs(60);
 
+/// How long a live ffmpeg may go without completing a segment before we stop
+/// calling it "recording". A healthy recorder finishes one every
+/// `segment_seconds`, so this is a generous multiple-plus-slack: it must never
+/// fire on a healthy camera (that would re-create the false "recording stopped"
+/// alerts), only on one that has genuinely stopped producing footage.
+fn stall_after(segment_seconds: u32) -> Duration {
+    Duration::from_secs(
+        u64::from(segment_seconds)
+            .saturating_mul(2)
+            .saturating_add(60),
+    )
+}
+
+/// Whether this camera can produce events at all — i.e. whether "no event
+/// covers this segment" is meaningful evidence that nothing happened.
+///
+/// The event-only and detection-triggered retention modes delete every segment
+/// no event vouches for. On a camera that emits no events they therefore delete
+/// EVERYTHING, within about a minute, silently. Detection runs only when
+/// `detect` is on (`pipeline.rs` filters `c.enabled && c.detect`); the other
+/// three are the remaining always-on background emitters. Deliberately
+/// restrictive: anything not listed here means "keep the footage".
+fn can_emit_events(c: &crate::db::Camera) -> bool {
+    c.detect
+        || c.detect_config.audio_detect
+        || c.detect_config.pose_detect
+        || c.detect_config.onvif_events
+}
+
 pub fn run(
     db: Db,
     go2rtc: Arc<Go2Rtc>,
@@ -46,6 +75,14 @@ pub fn run(
     // flipping either setting restarts the affected recorder(s).
     let mut running: HashMap<(i64, &'static str), (bool, PathBuf, Recording)> = HashMap::new();
     let mut last_retention = Instant::now() - RETENTION_EVERY;
+    // Segment-progress watchdog. `is_alive()` only asks whether the ffmpeg
+    // process has exited — an ffmpeg that is up but writing nothing (a dead or
+    // stalled RTSP source it keeps retrying) reported `recording: true` forever
+    // while no footage reached disk. These track the newest completed segment
+    // seen per recorder and when we last saw a NEW one; both are reset whenever
+    // a recorder starts, so a fresh process gets a full grace period.
+    let mut newest_seen: HashMap<(i64, &'static str), i64> = HashMap::new();
+    let mut last_progress: HashMap<(i64, &'static str), Instant> = HashMap::new();
 
     while !shutdown.load(Ordering::Relaxed) {
         let settings = db.settings();
@@ -115,6 +152,8 @@ pub fn run(
             if let Some((_, _, rec)) = running.remove(&key) {
                 rec.stop();
             }
+            newest_seen.remove(&key);
+            last_progress.remove(&key);
         }
 
         for (key, (stream_name, dir)) in &desired {
@@ -136,6 +175,11 @@ pub fn run(
                 ) {
                     Ok(rec) => {
                         running.insert(*key, (settings.record_audio, dir.clone(), rec));
+                        // A fresh process gets a full grace period before the
+                        // progress watchdog can judge it — its first segment
+                        // cannot complete for `segment_seconds` yet.
+                        newest_seen.remove(key);
+                        last_progress.insert(*key, Instant::now());
                     }
                     Err(e) => {
                         tracing::warn!(camera = %stream_name, "failed to start recording: {e:#}")
@@ -143,26 +187,6 @@ pub fn run(
                 }
             }
         }
-
-        // Publish recorder liveness (the MAIN recorder drives the camera's
-        // "recording" indicator — the sub copy is a background scrub aid) + drop
-        // status for deleted cameras.
-        for cam in &cameras {
-            let recording = running.contains_key(&(cam.id, "main"));
-            // Separate "parked by its own schedule" from "should be recording
-            // and isn't". Both look identical on the wire otherwise, and the
-            // second one is the failure this product exists to catch.
-            let paused = !recording
-                && cam.enabled
-                && cam.record
-                && cam
-                    .detect_config
-                    .record_schedule
-                    .as_ref()
-                    .is_some_and(|s| !s.active_now());
-            status.set_recording(cam.id, recording, paused);
-        }
-        status.retain(&cameras.iter().map(|c| c.id).collect::<Vec<_>>());
 
         // --- index completed segments ------------------------------------
         // Index the main dir (always) and the sub dir (P3.7), tagging each with
@@ -177,7 +201,9 @@ pub fn run(
                 (recordings_dir.join(format!("{}__sub", cam.name)), "sub"),
             ] {
                 if let Ok(segments) = recorder::scan_segments(&dir, SEGMENT_QUIET_SECS) {
+                    let mut newest = 0i64;
                     for seg in segments {
+                        newest = newest.max(seg.start_ts);
                         let path = seg.path.to_string_lossy().to_string();
                         if let Err(e) =
                             db.upsert_segment(cam.id, seg.start_ts, &path, seg.bytes, stream)
@@ -185,9 +211,54 @@ pub fn run(
                             tracing::warn!("segment index failed: {e:#}");
                         }
                     }
+                    // A newly completed segment is the only proof footage is
+                    // really reaching disk. Comparing against the newest we had
+                    // already seen (rather than a wall clock) keeps this immune
+                    // to clock skew and to re-scanning the same old files.
+                    let key = (cam.id, stream);
+                    if newest > 0 && newest > newest_seen.get(&key).copied().unwrap_or(0) {
+                        newest_seen.insert(key, newest);
+                        last_progress.insert(key, Instant::now());
+                    }
                 }
             }
         }
+
+        // Publish recorder liveness (the MAIN recorder drives the camera's
+        // "recording" indicator — the sub copy is a background scrub aid) + drop
+        // status for deleted cameras.
+        let stall = stall_after(settings.segment_seconds);
+        for cam in &cameras {
+            let key = (cam.id, "main");
+            // "Recording" must mean footage is being SAVED, not merely that an
+            // ffmpeg process object exists. A recorder attached to a dead or
+            // stalled source stays alive and retries forever, so `is_alive()`
+            // alone reported healthy while nothing reached disk — the exact
+            // silent failure the health guardian is supposed to catch.
+            let alive = running.contains_key(&key);
+            let progressing = last_progress.get(&key).is_some_and(|t| t.elapsed() < stall);
+            let recording = alive && progressing;
+            if alive && !progressing {
+                tracing::warn!(
+                    camera = %cam.name,
+                    "recorder is running but has completed no segment recently — \
+                     reporting it as not recording"
+                );
+            }
+            // Separate "parked by its own schedule" from "should be recording
+            // and isn't". Both look identical on the wire otherwise, and the
+            // second one is the failure this product exists to catch.
+            let paused = !recording
+                && cam.enabled
+                && cam.record
+                && cam
+                    .detect_config
+                    .record_schedule
+                    .as_ref()
+                    .is_some_and(|s| !s.active_now());
+            status.set_recording(cam.id, recording, paused);
+        }
+        status.retain(&cameras.iter().map(|c| c.id).collect::<Vec<_>>());
 
         // --- retention ----------------------------------------------------
         if last_retention.elapsed() >= RETENTION_EVERY {
@@ -268,10 +339,9 @@ pub fn run(
             // Event-only recording (Frigate retain mode): for cameras with
             // the flag, drop segments that have no event within one segment
             // span of them once they age past a 15-minute review grace.
-            for cam in cameras
-                .iter()
-                .filter(|c| do_deletes && c.record && c.detect_config.event_only_recording)
-            {
+            for cam in cameras.iter().filter(|c| {
+                do_deletes && c.record && c.detect_config.event_only_recording && can_emit_events(c)
+            }) {
                 let older_than = chrono::Local::now().timestamp() - 15 * 60;
                 let span = i64::from(settings.segment_seconds);
                 // (span, span) reproduces the original symmetric window exactly.
@@ -307,10 +377,9 @@ pub fn run(
             // events are ordinary event rows (never pruned), so their segment is
             // always kept by the same nearby-event check. Fail-SAFE: any DB error
             // skips pruning this tick — on doubt, footage is kept.
-            for cam in cameras
-                .iter()
-                .filter(|c| do_deletes && c.record && c.detect_config.trigger_recording)
-            {
+            for cam in cameras.iter().filter(|c| {
+                do_deletes && c.record && c.detect_config.trigger_recording && can_emit_events(c)
+            }) {
                 let span = i64::from(settings.segment_seconds);
                 let pre = i64::from(cam.detect_config.trigger_pre_roll_secs.unwrap_or(10));
                 let post = i64::from(cam.detect_config.trigger_post_roll_secs.unwrap_or(30));
@@ -432,5 +501,71 @@ pub fn run(
     tracing::info!("stopping {} recording(s)", running.len());
     for (_, (_, _, rec)) in running.drain() {
         rec.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{Camera, DetectConfig};
+
+    fn cam(detect: bool, dc: DetectConfig) -> Camera {
+        Camera {
+            id: 1,
+            name: "gate".into(),
+            source: "rtsp://x".into(),
+            detect_source: None,
+            enabled: true,
+            detect,
+            record: true,
+            created_ts: 0,
+            detect_config: dc,
+            group: None,
+        }
+    }
+
+    #[test]
+    fn event_only_retention_is_skipped_on_a_camera_that_emits_no_events() {
+        // Event-only / detection-triggered retention deletes every segment no
+        // event vouches for. With detection off and no other emitter, a camera
+        // produces no events at all, so that rule would delete 100% of its
+        // footage within about a minute. Nothing in the UI or in
+        // `PATCH /api/cameras` prevents the combination.
+        assert!(!can_emit_events(&cam(false, DetectConfig::default())));
+
+        // Any always-on emitter makes "no event here" meaningful again.
+        assert!(can_emit_events(&cam(true, DetectConfig::default())));
+        for dc in [
+            DetectConfig {
+                audio_detect: true,
+                ..Default::default()
+            },
+            DetectConfig {
+                pose_detect: true,
+                ..Default::default()
+            },
+            DetectConfig {
+                onvif_events: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(can_emit_events(&cam(false, dc)));
+        }
+    }
+
+    #[test]
+    fn stall_window_is_generous_enough_never_to_flag_a_healthy_recorder() {
+        // A healthy recorder completes a segment every `segment_seconds`, so the
+        // window must comfortably exceed that or we resurrect the false
+        // "recording stopped" alerts this release just removed.
+        for secs in [10u32, 60, 300] {
+            assert!(
+                stall_after(secs) > Duration::from_secs(u64::from(secs) * 2),
+                "stall window must allow at least two missed segments"
+            );
+        }
+        assert_eq!(stall_after(60), Duration::from_secs(180));
+        // Absurd operator input must not overflow into a tiny window.
+        assert!(stall_after(u32::MAX) > Duration::from_secs(60));
     }
 }
