@@ -591,6 +591,33 @@ export interface CamStatus {
 
 export type StatusMap = Record<string, CamStatus>;
 
+const exportParams = (q: { camera_id: number; from: number; to: number; stream?: string }) => {
+  const p = new URLSearchParams({
+    camera_id: String(q.camera_id),
+    from: String(q.from),
+    to: String(q.to),
+  });
+  if (q.stream) p.set("stream", q.stream);
+  return p.toString();
+};
+
+/** What an arbitrary-range footage export would contain, without building it. */
+export interface ExportPreview {
+  camera: string;
+  camera_id: number;
+  from: number;
+  to: number;
+  stream: string;
+  requested_secs: number;
+  /** Seconds of the window real footage actually covers (gaps excluded). */
+  covered_secs: number;
+  segments: number;
+  /** Upper bound — the whole of every overlapping segment, before trimming. */
+  approx_bytes: number;
+  /** Stretches of the window with no recording (restart, schedule, retention). */
+  gaps: { from: number; to: number }[];
+}
+
 /** One camera+label's accumulated "Not this" feedback (P2.8b). */
 export interface FeedbackSummary {
   camera_id: number;
@@ -933,6 +960,12 @@ export const api = {
       `/api/events/${id}/feedback`,
       { method: "POST" }
     ),
+  /** Inspect an arbitrary-range export (coverage, gaps, size) before downloading it. */
+  exportPreview: (q: { camera_id: number; from: number; to: number; stream?: string }) =>
+    req<ExportPreview>(`/api/export/preview?${exportParams(q)}`),
+  /** Direct download URL for the range — the server builds and caches the MP4. */
+  exportUrl: (q: { camera_id: number; from: number; to: number; stream?: string }) =>
+    `/api/export.mp4?${exportParams(q)}`,
   /** What "Not this" has learned, per camera + label — so it can be seen and undone. */
   feedback: () =>
     req<{ feedback: FeedbackSummary[] }>("/api/feedback").then((r) => r.feedback),

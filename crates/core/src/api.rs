@@ -99,6 +99,8 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(soft_trigger),
         )
         .route("/api/events/{id}/clip", get(event_clip))
+        .route("/api/export/preview", get(export_preview))
+        .route("/api/export.mp4", get(export_range))
         .route("/api/events/{id}/evidence.mp4", get(event_evidence))
         .route("/api/events/{id}/evidence.zip", get(event_evidence_zip))
         .route(
@@ -224,6 +226,7 @@ pub fn router(state: AppState) -> Router {
 
 /// anyhow -> 500 with the error chain in the body (it's a self-hosted LAN app;
 /// surfacing real errors beats opaque codes).
+#[derive(Debug)]
 struct ApiError(StatusCode, String);
 
 impl IntoResponse for ApiError {
@@ -3291,6 +3294,309 @@ async fn event_clip(
         .expect("valid header"),
     );
     Ok(resp)
+}
+
+// --- arbitrary-range export -------------------------------------------------
+// The per-event clip above deliberately clamps to ONE 60 s segment ("clips do
+// not span segments"), which meant a six-minute incident was six unlabelled
+// downloads the owner had to stitch themselves — and the signed evidence bundle
+// inherited the same ceiling. These endpoints export any span the recorder
+// still holds, packet-copied across segment boundaries.
+
+/// Longest single export. Packet-copy is cheap, but an unbounded range would
+/// let one request pin an ffmpeg process and write tens of GB into the clip
+/// cache. An hour covers real incidents; a whole day is what the time-lapse is
+/// for.
+const MAX_EXPORT_SECS: i64 = 3600;
+/// Keyframe slack: ffmpeg cuts segments on keyframes, so a segment can run a
+/// GOP past its configured length. Same constant the flagged-segment protection
+/// uses, for the same reason.
+const SEGMENT_SLACK_SECS: i64 = 15;
+
+#[derive(Deserialize)]
+struct ExportQuery {
+    camera_id: i64,
+    from: i64,
+    to: i64,
+    /// "main" (default, full-res) or "sub" (P3.7 low-res copy, when recorded).
+    stream: Option<String>,
+}
+
+/// Validated, normalized export request.
+struct ExportSpec {
+    camera_id: i64,
+    from: i64,
+    to: i64,
+    stream: &'static str,
+}
+
+fn parse_export(q: &ExportQuery) -> ApiResult<ExportSpec> {
+    if q.to <= q.from {
+        return Err(bad_request("`to` must be after `from`"));
+    }
+    if q.to - q.from > MAX_EXPORT_SECS {
+        return Err(bad_request(format!(
+            "range too long: {} seconds (max {MAX_EXPORT_SECS}). Export a shorter \
+             span, or use the day time-lapse.",
+            q.to - q.from
+        )));
+    }
+    // Only ever two values, and they reach a filename — keep them &'static so a
+    // caller-supplied string can never influence a path.
+    let stream = match q.stream.as_deref().unwrap_or("main") {
+        "sub" => "sub",
+        "main" => "main",
+        _ => return Err(bad_request("stream must be 'main' or 'sub'")),
+    };
+    Ok(ExportSpec {
+        camera_id: q.camera_id,
+        from: q.from,
+        to: q.to,
+        stream,
+    })
+}
+
+/// Real time extent of each segment, from consecutive start times.
+///
+/// A segment ends where the NEXT one begins — which is exact even when the
+/// recorder cut one short (a restart, a reconcile), where assuming a full
+/// `nominal` length would over-report. Only the last segment of a run has no
+/// successor and falls back to `nominal`.
+///
+/// Errs toward reporting LESS coverage: over-reporting is the dangerous
+/// direction here, since the whole point is to warn that an export will be
+/// shorter than the user asked for. Measured against a real truncated pair
+/// (14 s + a final segment) this returns 74 s where the naive
+/// `segment_seconds + slack` returned 89 s and the file was 70 s.
+fn segment_spans(starts: &[i64], nominal: i64) -> Vec<(i64, i64)> {
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| {
+            let end = match starts.get(i + 1) {
+                // Contiguous run → the next start IS this one's end. A far-away
+                // next start means a gap, so fall back to the nominal length.
+                Some(&next) => next.min(s + nominal),
+                None => s + nominal,
+            };
+            (s, end)
+        })
+        .collect()
+}
+
+/// How much of `[from, to]` real footage covers, and where the holes are.
+///
+/// Pure. `spans` are the raw `[start, end]` of each overlapping segment; they
+/// are clamped to the window, merged, then inverted. Recording gaps are normal
+/// (a restart, a scheduled pause, retention having eaten the tail), and an
+/// export that silently returns 4 minutes when the user asked for 10 is exactly
+/// the kind of quiet wrongness this project keeps getting bitten by — so the UI
+/// gets to say so up front.
+fn coverage_gaps(spans: &[(i64, i64)], from: i64, to: i64) -> (i64, Vec<(i64, i64)>) {
+    let mut clamped: Vec<(i64, i64)> = spans
+        .iter()
+        .map(|&(s, e)| (s.max(from), e.min(to)))
+        .filter(|(s, e)| e > s)
+        .collect();
+    clamped.sort_unstable();
+    let mut merged: Vec<(i64, i64)> = Vec::with_capacity(clamped.len());
+    for (s, e) in clamped {
+        match merged.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => merged.push((s, e)),
+        }
+    }
+    let covered = merged.iter().map(|(s, e)| e - s).sum();
+    let mut gaps = Vec::new();
+    let mut cursor = from;
+    for (s, e) in &merged {
+        if *s > cursor {
+            gaps.push((cursor, *s));
+        }
+        cursor = cursor.max(*e);
+    }
+    if cursor < to {
+        gaps.push((cursor, to));
+    }
+    (covered, gaps)
+}
+
+/// What an export of this range would contain — segment count, bytes, coverage
+/// and gaps — WITHOUT running ffmpeg. Lets the UI show "12 min, 1 gap of 40 s,
+/// ~180 MB" before the user commits to a download. Pure DB, no side effects.
+async fn export_preview(
+    State(st): State<AppState>,
+    Query(q): Query<ExportQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let spec = parse_export(&q)?;
+    require_camera(&allowed_cameras(&st, &p)?, spec.camera_id)?;
+    let cam = st.db.get_camera(spec.camera_id)?.ok_or_else(not_found)?;
+    let nominal = i64::from(st.db.settings().segment_seconds);
+    // The LOOKUP is deliberately generous (nominal + keyframe slack) so no
+    // covering segment is missed. The COVERAGE maths is not, so the number the
+    // user sees can never over-promise how much footage they will get.
+    let segs = st.db.segments_overlapping(
+        spec.camera_id,
+        spec.from,
+        spec.to,
+        nominal + SEGMENT_SLACK_SECS,
+        spec.stream,
+    )?;
+    let starts: Vec<i64> = segs.iter().map(|s| s.start_ts).collect();
+    let (covered, gaps) = coverage_gaps(&segment_spans(&starts, nominal), spec.from, spec.to);
+    let bytes: u64 = segs.iter().map(|s| s.bytes).sum();
+    Ok(Json(serde_json::json!({
+        "camera": cam.name,
+        "camera_id": spec.camera_id,
+        "from": spec.from,
+        "to": spec.to,
+        "stream": spec.stream,
+        "requested_secs": spec.to - spec.from,
+        "covered_secs": covered,
+        "segments": segs.len(),
+        // Upper bound: the whole of every overlapping segment. The trimmed
+        // export is smaller, but over-estimating a download is the safe way to
+        // be wrong.
+        "approx_bytes": bytes,
+        "gaps": gaps.iter().map(|(s, e)| serde_json::json!({ "from": s, "to": e })).collect::<Vec<_>>(),
+    })))
+}
+
+/// Export an arbitrary time range as one MP4, packet-copied across segment
+/// boundaries. Cached under `data/clips` (capped by the recorder's retention
+/// tick) and keyed purely by server-validated values, so no caller string ever
+/// reaches the path. RBAC-scoped and audited like every other footage pull.
+async fn export_range(
+    State(st): State<AppState>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<ExportQuery>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    req: Request,
+) -> ApiResult<Response> {
+    let spec = parse_export(&q)?;
+    require_camera(&allowed_cameras(&st, &p)?, spec.camera_id)?;
+    let cam = st.db.get_camera(spec.camera_id)?.ok_or_else(not_found)?;
+
+    let span = i64::from(st.db.settings().segment_seconds) + SEGMENT_SLACK_SECS;
+    let segs = st
+        .db
+        .segments_overlapping(spec.camera_id, spec.from, spec.to, span, spec.stream)?;
+    if segs.is_empty() {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "no recording covers that range — it may have passed retention, or the \
+             camera wasn't recording then"
+                .into(),
+        ));
+    }
+
+    // Footage-access accountability, same as /clip and the CSV export.
+    let ip = crate::auth::client_ip(&headers, addr.ip(), st.behind_proxy)
+        .0
+        .to_string();
+    st.db.add_audit(
+        chrono::Local::now().timestamp(),
+        Some(&ip),
+        "range_exported",
+        Some(&format!(
+            "{} {}..{} ({}s, {} segments)",
+            cam.name,
+            spec.from,
+            spec.to,
+            spec.to - spec.from,
+            segs.len()
+        )),
+    );
+
+    let out = st.clips_dir.join(format!(
+        "export-{}-{}-{}-{}.mp4",
+        spec.camera_id, spec.from, spec.to, spec.stream
+    ));
+    if !out.exists() {
+        std::fs::create_dir_all(&st.clips_dir).ok();
+        build_range_export(st.ffmpeg_bin.as_deref(), &segs, spec.from, spec.to, &out)
+            .await
+            .map_err(|e| {
+                ApiError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("export failed: {e}"),
+                )
+            })?;
+    }
+
+    use chrono::TimeZone as _;
+    let mut resp = ServeFile::new(out).oneshot(req).await.into_response();
+    let stamp = chrono::Local
+        .timestamp_opt(spec.from, 0)
+        .single()
+        .map(|d| d.format("%Y%m%d-%H%M%S").to_string())
+        .unwrap_or_else(|| spec.from.to_string());
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_DISPOSITION,
+        format!(
+            "attachment; filename=\"{}-{}-{}s.mp4\"",
+            cam.name,
+            stamp,
+            spec.to - spec.from
+        )
+        .parse()
+        .expect("valid header"),
+    );
+    Ok(resp)
+}
+
+/// Concat the covering segments and trim to `[from, to]`, packet-copied.
+///
+/// The trim is OUTPUT-side (`-ss` after `-i`): the offset is at most one segment
+/// length because the list starts at the first overlapping segment, so the cost
+/// is negligible, and output seeking behaves predictably across a concat
+/// demuxer where input seeking does not.
+async fn build_range_export(
+    ffmpeg_bin: Option<&std::path::Path>,
+    segs: &[crate::db::SegmentRow],
+    from: i64,
+    to: i64,
+    out: &std::path::Path,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    let first = segs.first().ok_or_else(|| anyhow::anyhow!("no segments"))?;
+    // Never negative: `segments_overlapping` only returns segments that start
+    // at or before `to`, and the first one may start before `from`.
+    let offset = (from - first.start_ts).max(0);
+    let duration = to - from;
+
+    let list_path = out.with_extension("txt");
+    {
+        let mut f = std::fs::File::create(&list_path)?;
+        for s in segs {
+            // Paths are server-generated; the quote escaping is defensive, and
+            // matches the time-lapse concat writer.
+            let p = s.path.replace('\'', "'\\''");
+            writeln!(f, "file '{p}'")?;
+        }
+    }
+    let list_c = list_path.clone();
+    let res = run_ffmpeg_atomic(ffmpeg_bin, out, move |cmd, tmp| {
+        cmd.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+        ])
+        .arg(&list_c)
+        .args(["-ss", &offset.to_string(), "-t", &duration.to_string()])
+        .args(["-c", "copy", "-movflags", "+faststart", "-y"])
+        .arg(tmp);
+    })
+    .await;
+    std::fs::remove_file(&list_path).ok();
+    res
 }
 
 #[derive(Deserialize)]
@@ -6722,6 +7028,89 @@ mod tests {
         assert!(row.contains(",a_to_b,32,")); // direction + rounded speed
         assert!(row.contains(",yes,")); // flagged
         assert!(row.ends_with(",\"help, fire\"")); // transcript quoted
+    }
+
+    #[test]
+    fn segment_spans_do_not_over_report_a_truncated_segment() {
+        use super::segment_spans;
+        // Contiguous 60 s run: each ends where the next begins.
+        assert_eq!(
+            segment_spans(&[100, 160, 220], 60),
+            vec![(100, 160), (160, 220), (220, 280)]
+        );
+        // A recorder restart cut the first segment to 14 s. Assuming a full
+        // nominal length here is what made a real preview claim 89 s of
+        // coverage for a file that turned out to be 70 s.
+        assert_eq!(segment_spans(&[100, 114], 60), vec![(100, 114), (114, 174)]);
+        // A genuine gap: the next start is far away, so the nominal length wins
+        // rather than swallowing the hole.
+        assert_eq!(segment_spans(&[100, 900], 60), vec![(100, 160), (900, 960)]);
+        assert!(segment_spans(&[], 60).is_empty());
+    }
+
+    #[test]
+    fn export_coverage_reports_real_gaps() {
+        use super::coverage_gaps;
+
+        // Fully covered by two touching segments → no gaps.
+        let (covered, gaps) = coverage_gaps(&[(100, 160), (160, 220)], 100, 220);
+        assert_eq!(covered, 120);
+        assert!(gaps.is_empty());
+
+        // Segments overhang the window on both sides; coverage is clamped to it.
+        let (covered, gaps) = coverage_gaps(&[(0, 500)], 100, 200);
+        assert_eq!(covered, 100);
+        assert!(gaps.is_empty());
+
+        // A real recording gap in the middle must be reported, not silently
+        // swallowed — an export that returns 100 s when 160 s was asked for is
+        // exactly the quiet wrongness this endpoint has to avoid.
+        let (covered, gaps) = coverage_gaps(&[(100, 160), (220, 260)], 100, 260);
+        assert_eq!(covered, 100);
+        assert_eq!(gaps, vec![(160, 220)]);
+
+        // Missing head and tail.
+        let (covered, gaps) = coverage_gaps(&[(150, 200)], 100, 300);
+        assert_eq!(covered, 50);
+        assert_eq!(gaps, vec![(100, 150), (200, 300)]);
+
+        // Overlapping/unsorted segments must merge, not double-count.
+        let (covered, gaps) = coverage_gaps(&[(160, 260), (100, 200)], 100, 260);
+        assert_eq!(covered, 160);
+        assert!(gaps.is_empty());
+
+        // No footage at all: the whole window is one gap.
+        let (covered, gaps) = coverage_gaps(&[], 100, 200);
+        assert_eq!(covered, 0);
+        assert_eq!(gaps, vec![(100, 200)]);
+    }
+
+    #[test]
+    fn export_request_validation_bounds_the_work() {
+        use super::{parse_export, ExportQuery, MAX_EXPORT_SECS};
+        let q = |from, to, stream: Option<&str>| ExportQuery {
+            camera_id: 1,
+            from,
+            to,
+            stream: stream.map(str::to_string),
+        };
+        // Happy path defaults to the full-res stream.
+        let spec = parse_export(&q(100, 200, None)).unwrap();
+        assert_eq!((spec.from, spec.to, spec.stream), (100, 200, "main"));
+        assert_eq!(
+            parse_export(&q(100, 200, Some("sub"))).unwrap().stream,
+            "sub"
+        );
+
+        // An inverted or empty range is a client error, not a 0-byte file.
+        assert!(parse_export(&q(200, 100, None)).is_err());
+        assert!(parse_export(&q(100, 100, None)).is_err());
+        // Unbounded ranges would pin ffmpeg and fill the clip cache.
+        assert!(parse_export(&q(0, MAX_EXPORT_SECS + 1, None)).is_err());
+        assert!(parse_export(&q(0, MAX_EXPORT_SECS, None)).is_ok());
+        // The stream name reaches a cache filename, so it is an allow-list —
+        // never a caller-supplied string.
+        assert!(parse_export(&q(100, 200, Some("../../etc"))).is_err());
     }
 
     #[test]

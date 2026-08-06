@@ -4668,6 +4668,48 @@ impl Db {
         Ok(row)
     }
 
+    /// Every segment of one camera+stream that OVERLAPS `[from, to]`, oldest
+    /// first — the input to an arbitrary-range export.
+    ///
+    /// A segment spans `[start_ts, start_ts + span_secs]`; `span_secs` should be
+    /// `segment_seconds + slack` because ffmpeg cuts on keyframes and a real
+    /// segment can run a GOP past its configured length. Overlap (rather than
+    /// containment) is what makes an export span segment boundaries at all —
+    /// the pre-existing per-event clip path deliberately clamps to ONE segment.
+    ///
+    /// Read-only, so it uses the query pool.
+    pub fn segments_overlapping(
+        &self,
+        camera_id: i64,
+        from: i64,
+        to: i64,
+        span_secs: i64,
+        stream: &str,
+    ) -> Result<Vec<SegmentRow>> {
+        let conn = self.read();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.camera_id, c.name, s.start_ts, s.bytes, s.path, s.stream
+               FROM segments s JOIN cameras c ON c.id = s.camera_id
+              WHERE s.camera_id = ?1 AND s.stream = ?2
+                AND s.start_ts <= ?3 AND s.start_ts + ?4 >= ?5
+              ORDER BY s.start_ts ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![camera_id, stream, to, span_secs, from], |r| {
+                Ok(SegmentRow {
+                    id: r.get(0)?,
+                    camera_id: r.get(1)?,
+                    camera: r.get(2)?,
+                    start_ts: r.get(3)?,
+                    bytes: r.get::<_, i64>(4)? as u64,
+                    path: r.get(5)?,
+                    stream: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// The set of recording-segment file paths that COVER a flagged (bookmarked)
     /// event — i.e. a segment whose span `[start_ts, start_ts + span_secs]`
     /// contains the event's `ts`, mirroring [`find_segment_at`](Self::find_segment_at)/
