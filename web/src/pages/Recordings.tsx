@@ -5,6 +5,7 @@ import CrossTimeline, { ActivityStrip } from "../CrossTimeline";
 import { IconPlay, IconFilm, IconAlert, IconChevronDown, IconChevronRight, IconChevronLeft, IconX } from "../icons";
 import { Callout, EmptyState, ErrorState, Modal, useToast } from "../ui";
 import { prettyLabel } from "../labels";
+import DayStrip, { fromDateInput, toDateInput, windowForDay } from "../DayStrip";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -484,8 +485,15 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
         before: day ? anchor + 1 : undefined,
         limit: 1000,
       })
-      .then((s) => {
-        setSegments(s);
+      .then((all) => {
+        // `/api/recordings` bounds only the top (`before`), so asking for a day
+        // whose footage retention has already deleted returns the newest
+        // SURVIVING segments from before it — silently showing you a different
+        // day. Clamp to the requested day so an empty day reads as empty.
+        const from = day ? fromDateInput(day) : null;
+        setSegments(
+          from == null ? all : all.filter((x) => x.start_ts >= from && x.start_ts < from + 86400),
+        );
         setLoadError(null);
       })
       .catch((e) => setLoadError(errMsg(e)))
@@ -647,28 +655,18 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             {w.label}
           </button>
         ))}
-        <label className="field" title="Scrub a past day's recordings; clear to return to live">
-          day
-          <input
-            type="date"
-            aria-label="Jump to a day"
-            value={day}
-            max={(() => {
-              // Local date, not UTC — toISOString() flips days near midnight.
-              const d = new Date();
-              return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-            })()}
-            onChange={(e) => {
-              setDay(e.target.value);
-              if (e.target.value) setWindowSecs(24 * 3600);
-            }}
-          />
-        </label>
-        {day && (
-          <button className="btn btn-primary" onClick={() => setDay("")} title="Back to the live, auto-refreshing view">
-            Live
-          </button>
-        )}
+        {/* The same day control Events uses, so moving between the two pages
+            doesn't mean re-learning how to pick a day — and the density calendar
+            shows where the activity actually is rather than making you guess one
+            date at a time. `day` stays a YYYY-MM-DD string because the timelapse
+            endpoint takes one; DayStrip is bridged to it. */}
+        <DayStrip
+          value={day ? windowForDay(fromDateInput(day) ?? 0) : null}
+          onChange={(w) => {
+            setDay(w ? toDateInput(w.from) : "");
+            if (w) setWindowSecs(24 * 3600);
+          }}
+        />
         {cameraId !== "" && (
           <button
             className={`btn ${scrub ? "btn-primary" : "btn-ghost"}`}
@@ -766,11 +764,31 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
         ) : loadError ? (
           <ErrorState what="recordings" message={loadError} onRetry={load} />
         ) : (
-          <EmptyState
-            icon={<IconFilm />}
-            title="No recordings yet"
-            hint="Recordings appear here about a minute after a camera with recording turned on connects. Check that recording is on for at least one camera."
-          />
+          day ? (
+            // Detections are kept far longer than video (event retention vs the
+            // disk cap), so the density calendar happily offers a day whose
+            // footage is long gone. Say that, and point at where the record of
+            // that day DOES still live, instead of showing an empty table.
+            <EmptyState
+              icon={<IconFilm />}
+              title={`No footage saved from ${new Date((fromDateInput(day) ?? 0) * 1000).toLocaleDateString(
+                undefined,
+                { weekday: "long", month: "long", day: "numeric" },
+              )}`}
+              hint="Video is deleted once it passes your recording-history limit or the disk cap, which is usually sooner than detections are. The detections from that day may still be on the Events page."
+              action={
+                <a className="btn btn-ghost" href="#/events">
+                  See that day&apos;s detections → Events
+                </a>
+              }
+            />
+          ) : (
+            <EmptyState
+              icon={<IconFilm />}
+              title="No recordings yet"
+              hint="Recordings appear here about a minute after a camera with recording turned on connects. Check that recording is on for at least one camera."
+            />
+          )
         )
       ) : (
         <div className="card">

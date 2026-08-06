@@ -17,12 +17,12 @@ const DAY = 86400;
 
 /// `YYYY-MM-DD` in LOCAL time, for `<input type="date">` (which speaks local
 /// wall-clock without a zone). `toISOString()` is UTC and would shift the day.
-function toDateInput(ts: number): string {
+export function toDateInput(ts: number): string {
   const d = new Date(ts * 1000);
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
   return d.toISOString().slice(0, 10);
 }
-function fromDateInput(v: string): number | null {
+export function fromDateInput(v: string): number | null {
   const [y, m, d] = v.split("-").map(Number);
   if (!y || !m || !d) return null;
   return Math.floor(new Date(y, m - 1, d, 0, 0, 0, 0).getTime() / 1000);
