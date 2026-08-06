@@ -16,7 +16,33 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — two audit sweeps + range export, 2026-08-06
 
-### Latest: round-2 audit + arbitrary-range export, 2026-08-06
+### Latest: alarm delivery moved off the detection thread, 2026-08-06
+
+`b32de46`, **253 core tests**, clippy -D clean, live-validated on :8081.
+
+`notify::fire` runs inline on the detection thread at eleven call sites, and
+webhook/ntfy/email do blocking network I/O there. With the default
+`detect_workers = 1`, one unreachable target stalled detection for EVERY camera
+once per firing rule. **Measured live: 0.494 s to return vs the delivery failing
+21 s later** — `ureq`'s `.timeout()` does not bound the TCP connect phase, so a
+black-holed address ran to the Windows SYN-retry default. Inline, that was 21 s
+of no detection anywhere, and this install has three rules aimed at dead
+webhooks.
+
+The three network channels split into a BUILD step (inline, pure string work)
+and a `deliver` step on a new `alarm-dispatch` worker. MQTT and deterrence stay
+inline (already non-blocking). Key decisions: a clicked **Test still delivers
+inline and reports the truth**, detected via `event_id == 0` — constructed in
+exactly one place in the tree, so no call site changed; email config errors
+still surface synchronously; the queue is bounded at 512 and drops rather than
+falling back to inline (which would reinstate the stall); with no worker
+started (tests, `--verify`) delivery is inline exactly as before; shutdown
+drains for at most 5 s.
+
+**Also confirmed today:** pool2 recorded normally at 09:0x — inside its
+08:00–18:00 window — independently validating the schedule diagnosis below.
+
+### Earlier: round-2 audit + arbitrary-range export, 2026-08-06
 
 A second 13-agent audit (lenses the first pass never covered: concurrency,
 packaging/desktop/service, integrations, silent failures, scale) plus the
