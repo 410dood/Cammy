@@ -1533,6 +1533,41 @@ fn valid_source(s: &str) -> bool {
     !s.is_empty() && no_control(s)
 }
 
+/// Whether a camera source makes go2rtc RUN something rather than merely
+/// connect somewhere.
+///
+/// `exec:` hands go2rtc a command line, which it executes as the NVR's own
+/// user — LocalSystem when installed as a Windows service. `ffmpeg:` builds an
+/// ffmpeg invocation and accepts raw argument passthrough, which reaches the
+/// same place via ffmpeg's file and protocol handlers.
+///
+/// These are legitimate, supported sources (this repo's own synthetic test
+/// cameras use `exec:ffmpeg …`), so they are not rejected — they are restricted
+/// to Admin. Camera CRUD is otherwise Operator-reachable, which meant an
+/// Operator could turn "may tune detection" into arbitrary code execution on
+/// the host. Backup/restore and `/api/import` are already Admin-gated for
+/// exactly this reason; direct camera CRUD was the hole left in that fence.
+fn source_executes_a_command(s: &str) -> bool {
+    let s = s.trim_start().to_ascii_lowercase();
+    s.starts_with("exec:") || s.starts_with("ffmpeg:")
+}
+
+/// Reject a command-executing source from a non-Admin. `None` = field absent.
+fn check_source_privilege(p: &crate::auth::Principal, source: Option<&str>) -> ApiResult<()> {
+    if p.role >= crate::auth::Role::Admin {
+        return Ok(());
+    }
+    if source.is_some_and(source_executes_a_command) {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "an `exec:` or `ffmpeg:` camera source runs a command on the server, so only \
+             an admin can set one"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Strip `user:pass@` userinfo from a URL-ish source so a non-Admin never sees
 /// camera/router credentials in the clear (they're frequently reused). Handles
 /// the common single-URL case and an rtsp URL embedded in an `exec:`/`ffmpeg:`
@@ -1567,6 +1602,7 @@ fn redact_camera_creds(c: &mut Camera) {
 
 async fn add_camera(
     State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
     Json(body): Json<NewCamera>,
 ) -> ApiResult<(StatusCode, Json<Camera>)> {
     if !valid_name(&body.name) {
@@ -1589,6 +1625,9 @@ async fn add_camera(
             "sub-stream source must be free of control characters",
         ));
     }
+    // Both stream fields reach go2rtc's config, so both can execute.
+    check_source_privilege(&p, Some(body.source.as_str()))?;
+    check_source_privilege(&p, detect_source)?;
     let mut cam = st
         .db
         .add_camera(
@@ -1738,6 +1777,11 @@ async fn patch_camera(
                     "source must be non-empty and free of control characters",
                 ));
             }
+            // Checked on the SUBMITTED value only: an Operator may still edit
+            // other fields of a camera that already has an `exec:` source (the
+            // masked-noop path above leaves it untouched), but may not
+            // introduce or rewrite one.
+            check_source_privilege(&p, Some(source.as_str()))?;
             cam.source = source.trim().to_string();
         }
     }
@@ -1755,6 +1799,7 @@ async fn patch_camera(
                     "sub-stream source must be free of control characters",
                 ));
             }
+            check_source_privilege(&p, (!ds.is_empty()).then_some(ds))?;
             cam.detect_source = (!ds.is_empty()).then(|| ds.to_string());
         }
     }
@@ -6808,6 +6853,7 @@ fn admin_only_settings_delta(s: &Settings, cur: &Settings) -> bool {
     // bypasses schedule/mode/cooldown gates) — handing over the owner's real
     // mail credentials.
     let smtp_pass_changed = !s.smtp_pass.is_empty() && s.smtp_pass != cur.smtp_pass;
+    let genai_key_changed = !s.genai_api_key.is_empty() && s.genai_api_key != cur.genai_api_key;
 
     s.auth_proxy_header != cur.auth_proxy_header
         || s.auth_proxy_role_header != cur.auth_proxy_role_header
@@ -6837,6 +6883,30 @@ fn admin_only_settings_delta(s: &Settings, cur: &Settings) -> bool {
         || s.smtp_from != cur.smtp_from
         || s.smtp_to != cur.smtp_to
         || smtp_pass_changed
+        // Where footage is WRITTEN. Repointing it at a network share
+        // exfiltrates every future recording; repointing it at a system volume
+        // fills the boot disk. Same class as the offsite destination.
+        || s.recordings_dir != cur.recordings_dir
+        // The vision endpoint receives snapshot IMAGES and carries a key —
+        // exactly the shape of `ask_endpoint`/`ask_api_key`, which are guarded.
+        || s.genai_url != cur.genai_url
+        || genai_key_changed
+        // The MQTT broker receives every event (and may carry credentials in
+        // the URL). Redirecting it is an event-stream exfiltration.
+        || s.mqtt_url != cur.mqtt_url
+        // Server-side files loaded as MODELS. A path here is read (and fed to
+        // ONNX Runtime / whisper) by the server process.
+        || s.model_path != cur.model_path
+        || s.face_det_model != cur.face_det_model
+        || s.face_rec_model != cur.face_rec_model
+        || s.pose_model != cur.pose_model
+        || s.transcription_model != cur.transcription_model
+        // Fetched and EXECUTED (JS + WASM) in every user's browser, so a
+        // hostile URL here is stored code execution against other people's
+        // sessions — not merely a broken feature.
+        || s.gesture_model_url != cur.gesture_model_url
+        // A network binding.
+        || s.go2rtc_api_port != cur.go2rtc_api_port
 }
 
 async fn put_settings(
@@ -7134,6 +7204,156 @@ mod tests {
         let unscoped: Option<std::collections::HashSet<i64>> = None;
         assert!(require_rule_scope(&unscoped, None).is_ok());
         assert!(require_rule_scope(&unscoped, Some(9)).is_ok());
+    }
+
+    /// Settings an Operator is *meant* to change: detection tuning, alerting
+    /// behaviour, retention sizing, UI state. Everything NOT listed here must be
+    /// Admin-only, and `every_settings_field_is_classified` enforces that.
+    ///
+    /// Deliberately Operator-tunable despite being outbound: `webhook_url`,
+    /// `webhook_template`, `health_ntfy_url` and `public_base_url` are how a
+    /// family member points alerts at their own phone — the entire purpose of
+    /// the role. They carry event metadata, not footage destinations or secrets.
+    const OPERATOR_TUNABLE: &[&str] = &[
+        "accelerator",
+        "alert_labels",
+        "anomaly_detection",
+        "arm_mode",
+        "arm_schedule",
+        "audio_labels",
+        "audio_threshold",
+        "confidence",
+        "detect_labels",
+        "detect_workers",
+        "deterrence_enabled",
+        "digest_enabled",
+        "enhanced_retention_days",
+        "event_cooldown_secs",
+        "event_retention_days",
+        "face_match_threshold",
+        "face_recognition",
+        "feedback_suppress_plain_rules",
+        "floorplan",
+        "force_cpu",
+        "genai_enabled",
+        "genai_model",
+        "gesture_duress",
+        "gesture_hold_secs",
+        "gesture_labels",
+        "gesture_recognition",
+        "health_heartbeat",
+        "health_ntfy_url",
+        "highlight_motion",
+        "hwaccel",
+        "liveviews",
+        "motion_threshold",
+        "mqtt_commands_enabled",
+        "mqtt_ha_discovery",
+        "mqtt_ha_prefix",
+        "mqtt_prefix",
+        "mqtt_state_timeout_secs",
+        "nms_iou",
+        "notify_min_severity",
+        "offsite_events_only",
+        "plate_allowlist",
+        "plate_denylist",
+        "poll_ms",
+        "public_base_url",
+        "record_audio",
+        "retention_days",
+        "retention_gb",
+        "segment_seconds",
+        "suppress_lens_obstruction",
+        "transcription_enabled",
+        "webhook_template",
+        "webhook_url",
+    ];
+
+    /// The property that matters: EVERY field of `Settings` is either explicitly
+    /// Operator-tunable or trips the Admin guard. A new field is neither until
+    /// someone classifies it, so this test fails until they do.
+    ///
+    /// The previous version listed the guarded fields and checked each one — it
+    /// could only prove that what was already guarded stayed guarded, and was
+    /// blind to what was MISSING. That is exactly how `smtp_*` went unguarded
+    /// for its whole life, and how `recordings_dir`, `genai_url`/`genai_api_key`,
+    /// `mqtt_url`, the five model paths, `gesture_model_url` and
+    /// `go2rtc_api_port` were found unguarded straight afterwards.
+    #[test]
+    fn command_executing_sources_are_recognised() {
+        use super::source_executes_a_command as x;
+        // go2rtc runs these as the NVR's own user (LocalSystem under the service).
+        assert!(x("exec:ffmpeg -re -i sample.mp4 -f rtsp {output}"));
+        assert!(x("ffmpeg:rtsp://cam/live#video=h264"));
+        // Case and leading whitespace must not be an escape hatch.
+        assert!(x("  EXEC:whoami"));
+        assert!(x("FFmpeg:x"));
+        // Ordinary camera sources connect somewhere; they do not execute.
+        assert!(!x("rtsp://admin:pw@192.168.1.5:554/Streaming/Channels/101"));
+        assert!(!x("onvif://admin:pw@192.168.1.9?subtype=1"));
+        assert!(!x("http://cam/stream.m3u8"));
+        assert!(!x(""));
+        // Not a prefix match on a hostname that merely contains the word.
+        assert!(!x("rtsp://exec.example.com/live"));
+        assert!(!x("rtsp://ffmpeg-host/live"));
+    }
+
+    #[test]
+    fn every_settings_field_is_classified() {
+        let base = Settings::default();
+        let json = serde_json::to_value(&base).expect("Settings serializes");
+        let obj = json.as_object().expect("Settings is a JSON object");
+        let mut checked = 0;
+        for (key, val) in obj {
+            // Produce a value of the same shape but a different value. Arrays and
+            // objects have no safe generic mutation (their element types are
+            // typed), so they must be classified by hand — a new one fails below.
+            let mutated = match val {
+                serde_json::Value::Bool(b) => serde_json::Value::Bool(!b),
+                serde_json::Value::Number(n) => {
+                    serde_json::json!(n.as_i64().map(|i| i + 7).unwrap_or(7))
+                }
+                serde_json::Value::String(s) => serde_json::json!(format!("{s}-changed-by-test")),
+                _ => {
+                    assert!(
+                        OPERATOR_TUNABLE.contains(&key.as_str()),
+                        "settings field `{key}` is an array/object this test can't mutate \
+                         generically: classify it in OPERATOR_TUNABLE, or guard it in \
+                         admin_only_settings_delta and add a targeted case"
+                    );
+                    continue;
+                }
+            };
+            let mut next = obj.clone();
+            next.insert(key.clone(), mutated);
+            let candidate: Settings = serde_json::from_value(serde_json::Value::Object(next))
+                .unwrap_or_else(|e| panic!("mutated Settings must deserialize ({key}): {e}"));
+
+            let guarded = admin_only_settings_delta(&candidate, &base);
+            let expected_operator = OPERATOR_TUNABLE.contains(&key.as_str());
+            assert_eq!(
+                !guarded,
+                expected_operator,
+                "settings field `{key}` is {}, but is {} in OPERATOR_TUNABLE. Every field must \
+                 be one or the other — anything that names an outbound destination, holds a \
+                 secret, points at a file the server loads, or binds a port is Admin-only.",
+                if guarded {
+                    "Admin-guarded"
+                } else {
+                    "Operator-writable"
+                },
+                if expected_operator {
+                    "listed"
+                } else {
+                    "not listed"
+                },
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 60,
+            "expected to check most of Settings, saw {checked}"
+        );
     }
 
     #[test]
