@@ -1535,6 +1535,14 @@ label.file-btn:focus-within {
 .objpick-other { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 .objpick-other input { width: 130px; font-size: var(--text-sm); }
 
+/* AI-watch "Test this description" hits: thumbnail + similarity badge. */
+.aitest-hit { position: relative; display: inline-block; }
+.aitest-score {
+  position: absolute; right: 3px; bottom: 3px;
+  font-size: 0.625rem; padding: 0 4px; border-radius: 3px;
+  background: var(--overlay); color: var(--text);
+}
+
 /* Weekly mode grid: paint the week instead of programming transitions. */
 .wkgrid-wrap { max-width: 560px; }
 .wkgrid {

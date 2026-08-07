@@ -31,10 +31,18 @@ plate library; `9d7339f` P1.7 draggable zone/mask/tripwire/calib vertex
 handles + double-click-delete + rubber-band + rectangle preset; `c642da9`
 P1.9 `ChildHeightEditor` (drag a person-height bar on the frame). All
 web-only, every one live-validated on :8081 then state restored.
-**Remaining P1: P1.3 discover-first camera wizard, P1.4 week-grid
-schedules, P1.10 AI-watch/verification test buttons (needs small API
-additions). Then P2 (honest gating, live motion tuner, provider pickers,
-Family wizard).**
+**Then the rest of P1 the same day:** `ae3e73d` P1.3 discovery-first camera
+add (auto-scan on open, brand URL templates, friendly names slugified with
+live preview, sub-stream demoted to an outcome line, raw URLs behind
+Advanced); `f4eb41c` P1.4 paintable 7×24 WeekModeGrid deriving the arm
+transitions (list view kept for exact minutes); + P1.10 "Test this
+description" on AI-watch rules via the existing scoped `/api/search`
+(24 h thumbnails; scores ≥1 are labeled "caption match", not "203%").
+**P1 COMPLETE except the VLM yes/no-question test button (needs a live
+vision model to test against — do with P2's provider-picker work). Next: P2
+— honest capability gating everywhere, live motion tuner, per-kind alert
+actions + Send-a-test, provider pickers (SMTP/S3/Ollama), Family wizard,
+outcome-named notification tiers.**
 
 ### Earlier: tuning controls speak homeowner + the control-UX backlog, 2026-08-07
 

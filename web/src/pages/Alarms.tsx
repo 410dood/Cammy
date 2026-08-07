@@ -132,6 +132,13 @@ export default function Alarms({
   // knows (People page enrollments, plate library) — free text stays as an
   // explicit "match text…" mode for partials.
   const [faceCustomMode, setFaceCustomMode] = useState(false);
+  // "Test this description" for AI-watch prompts: rank the last 24 h against
+  // the text so a nonsense prompt stops looking like a working rule.
+  const [aiTest, setAiTest] = useState<null | {
+    busy: boolean;
+    q: string;
+    results: { similarity: number; event: CamEvent }[];
+  }>(null);
   const [plateCustomMode, setPlateCustomMode] = useState(false);
   const [enrolledFaces, setEnrolledFaces] = useState<string[]>([]);
   const [knownPlates, setKnownPlates] = useState<{ plate: string; name: string }[]>([]);
@@ -1160,6 +1167,68 @@ export default function Alarms({
                   (needs the smart-search models). Best-effort — pair with an object/camera/zone
                   scope for precision.
                 </small>
+                <span style={{ marginTop: 6 }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost ev-act"
+                    disabled={!promptLike.trim() || aiTest?.busy}
+                    onClick={async () => {
+                      const q = promptLike.trim();
+                      setAiTest({ busy: true, q, results: [] });
+                      try {
+                        const r = await api.search(q, 6, {
+                          after: Math.floor(Date.now() / 1000) - 86400,
+                          camera_id: cameraId === "" ? undefined : cameraId,
+                        });
+                        setAiTest({ busy: false, q, results: r.results });
+                      } catch (e) {
+                        setAiTest(null);
+                        onError(`Couldn't test the description — ${errMsg(e)}`);
+                      }
+                    }}
+                  >
+                    {aiTest?.busy ? "Testing…" : "Test this description"}
+                  </button>
+                </span>
+                {aiTest && !aiTest.busy && (
+                  <div className="rule-preview" role="status" style={{ marginTop: 8 }}>
+                    <span className="muted">
+                      {aiTest.results.length === 0 ? (
+                        <>
+                          Nothing from the last 24 hours looks like “{aiTest.q}” — the description
+                          may be too specific, or nothing similar has happened yet.
+                        </>
+                      ) : (
+                        <>
+                          Closest events from the last 24 hours (visual ranking — the live rule
+                          checks each new object as it's detected):
+                        </>
+                      )}
+                    </span>
+                    {aiTest.results.length > 0 && (
+                      <div className="rule-preview-strip">
+                        {aiTest.results.map(({ similarity, event: e }) =>
+                          e.snapshot ? (
+                            <span key={e.id} className="aitest-hit">
+                              <img
+                                className="rule-preview-thumb"
+                                src={`/api/snapshots/${e.snapshot}?w=160`}
+                                alt={`${prettyLabel(e.label)} on ${e.camera}`}
+                                loading="lazy"
+                                title={`${prettyLabel(e.label)} · ${e.camera} · ${new Date(e.ts * 1000).toLocaleString()}`}
+                              />
+                              {/* Hybrid search boosts caption/speech text hits above 1.0 —
+                                  a raw percent there would read "203%". Name the reason. */}
+                              <span className="aitest-score tnum">
+                                {similarity >= 1 ? "caption match" : `${Math.round(similarity * 100)}%`}
+                              </span>
+                            </span>
+                          ) : null,
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </label>
               <label
                 className="field"
