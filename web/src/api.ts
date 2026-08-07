@@ -1048,6 +1048,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kind, target }),
     }),
+  /** Is this server-side folder real + writable, and how much space is free?
+   *  (P3 — validates the recordings-folder field.) Empty = the default dir. */
+  pathProbe: (path: string) =>
+    req<{
+      ok: boolean;
+      exists: boolean;
+      writable: boolean;
+      free_bytes?: number | null;
+      message?: string | null;
+      path: string;
+    }>(`/api/path_probe?path=${encodeURIComponent(path)}`),
   /** Test the SAVED offsite S3 settings: PUT + DELETE a tiny object (P2.4). */
   offsiteTest: () =>
     req<{ ok: boolean; detail?: string; error?: string }>("/api/offsite/test", {

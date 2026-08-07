@@ -459,6 +459,11 @@ function writeRate(): Promise<number | null> {
 /// six hours on a 4K install, which is exactly how this NVR ended up claiming a
 /// week of history it did not have. Showing the consequence beside the number,
 /// and which of the two limits binds, turns a guess into a decision.
+/// The honest "what will you ACTUALLY keep" readout for the two retention
+/// knobs. Upgraded for docs/10 P3: when the disk budget silently undercuts the
+/// day setting (the `d061880` 6-hour-retention surprise — the owner believed
+/// "7 days" while 20 GB kept ~6 hours), it escalates to a loud callout with
+/// the exact fix, instead of a one-line footnote.
 function RetentionHint({ days, gb }: { days: number; gb: number }) {
   const [rate, setRate] = useState<number | null>(null);
   useEffect(() => {
@@ -467,17 +472,83 @@ function RetentionHint({ days, gb }: { days: number; gb: number }) {
   if (!rate) return null;
   const byDisk = gb > 0 ? (gb * 1e9) / rate : Infinity;
   const byAge = days > 0 ? days : Infinity;
-  const binds = byDisk < byAge ? "disk" : "age";
   const effective = Math.min(byDisk, byAge);
   if (!Number.isFinite(effective)) return null;
+  // Disk budget keeps meaningfully less than the days asked for → say so loudly.
+  if (byDisk < byAge && Number.isFinite(byAge)) {
+    const needGb = Math.ceil((days * rate) / 1e9);
+    const severe = byDisk < byAge * 0.5;
+    return (
+      <div
+        className={`callout ${severe ? "callout-warn" : "callout-info"}`}
+        role="status"
+        style={{ marginTop: 8 }}
+      >
+        <span className="callout-ico"><IconAlert size={16} /></span>
+        <div>
+          At your cameras&rsquo; current {fmtBytes(rate)}/day, the {gb} GB budget really keeps{" "}
+          <b>{fmtSpan(byDisk)}</b> of footage — not the {days} day{days === 1 ? "" : "s"} set
+          above. Raise the budget to about <b>{needGb} GB</b> to actually get {days} day
+          {days === 1 ? "" : "s"}, or lower the days to match.
+        </div>
+      </div>
+    );
+  }
   return (
     <span className="feat-help">
-      At your current {fmtBytes(rate)}/day this keeps <b>{fmtSpan(effective)}</b> of footage
-      {binds === "disk"
-        ? ` — the GB cap runs out first, so the day limit never applies. ${
-            days > 0 ? `Matching ${days} days would need ~${Math.round((days * rate) / 1e9)} GB.` : ""
-          }`
-        : " — the day limit binds first, so there is disk headroom to spare."}
+      At your current {fmtBytes(rate)}/day this keeps <b>{fmtSpan(effective)}</b> of footage —
+      the day limit binds first, so there is disk headroom to spare.
+    </span>
+  );
+}
+
+/// docs/10 P3 — the recordings-folder field is the highest-consequence typo on
+/// the page: a wrong path means nothing records where anyone will look. "Check
+/// this folder" asks the server whether the path really exists, is writable,
+/// and how much room it has.
+function FolderProbe({ path }: { path: string }) {
+  const [busy, setBusy] = useState(false);
+  const [rate, setRate] = useState<number | null>(null);
+  const [res, setRes] = useState<Awaited<ReturnType<typeof api.pathProbe>> | null>(null);
+  useEffect(() => setRes(null), [path]);
+  useEffect(() => {
+    writeRate().then(setRate);
+  }, []);
+  return (
+    <span style={{ marginTop: 4 }}>
+      <span className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <button
+          type="button"
+          className="btn btn-ghost ev-act"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              setRes(await api.pathProbe(path.trim()));
+            } catch (e) {
+              setRes({ ok: false, exists: false, writable: false, message: errMsg(e), path });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? "Checking…" : "Check this folder"}
+        </button>
+        {res &&
+          (res.ok ? (
+            <span style={{ color: "var(--success)", fontSize: "var(--text-sm)" }}>
+              ✓ writable
+              {res.free_bytes != null ? ` · ${fmtBytes(res.free_bytes)} free` : ""}
+              {res.free_bytes != null && rate
+                ? ` · room for ${fmtSpan(res.free_bytes / rate)} at your current recording rate`
+                : ""}
+            </span>
+          ) : (
+            <span style={{ color: "var(--danger)", fontSize: "var(--text-sm)" }}>
+              ✗ {res.message ?? "not usable"}
+            </span>
+          ))}
+      </span>
     </span>
   );
 }
@@ -3137,8 +3208,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             also read what was said.
           </p>
           <label className="field" style={{ maxWidth: 460 }}>
-            sensitivity — higher fires fewer, more confident triggers (
-            {s.audio_threshold.toFixed(2)})
+            sensitivity
             <input
               type="range"
               min="0.1"
@@ -3146,7 +3216,15 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               step="0.05"
               value={s.audio_threshold}
               onChange={(e) => set({ audio_threshold: Number(e.target.value) })}
+              aria-label="Audio sensitivity — left hears more sounds, right only loud clear ones"
             />
+            <span
+              className="muted"
+              style={{ display: "flex", justifyContent: "space-between", fontSize: "var(--text-sm)", marginTop: 2 }}
+            >
+              <span>Hears more (some false triggers)</span>
+              <span>Only loud, clear sounds</span>
+            </span>
           </label>
           <div className="muted" style={{ margin: "12px 0 6px" }}>monitored sounds</div>
           <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
@@ -3799,17 +3877,6 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(e) => set({ mqtt_url: e.target.value })}
               />
             </label>
-            <label className="field">
-              MQTT topic prefix
-              <input
-                type="text"
-                value={s.mqtt_prefix}
-                onChange={(e) => set({ mqtt_prefix: e.target.value })}
-              />
-              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                Text at the start of every topic. The default is fine.
-              </span>
-            </label>
             <label className="toggle field" title="Publish MQTT-discovery configs so Home Assistant auto-creates a binary_sensor per (camera, object) and a last-detection sensor per camera.">
               Home Assistant discovery
               <input
@@ -3821,26 +3888,44 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 Lets Home Assistant find your cameras automatically.
               </span>
             </label>
-            <label className="field">
-              HA discovery prefix
-              <input
-                type="text"
-                value={s.mqtt_ha_prefix}
-                onChange={(e) => set({ mqtt_ha_prefix: e.target.value })}
-              />
-              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                Text at the start of every topic. The default is fine.
-              </span>
-            </label>
-            <label className="field" title="Seconds a Home Assistant binary_sensor stays ON after a detection before auto-clearing.">
-              sensor ON timeout (s)
-              <input
-                type="number" min="1"
-                value={s.mqtt_state_timeout_secs}
-                onChange={(e) => set({ mqtt_state_timeout_secs: num(e.target.value, s.mqtt_state_timeout_secs) })}
-              />
-            </label>
           </div>
+          {/* docs/10 P3: fields whose own helper says "the default is fine" don't
+              belong at eye level — they live behind Advanced. */}
+          <details className="adv" style={{ marginTop: 8 }}>
+            <summary>Advanced (topic names &amp; timings — the defaults are fine)</summary>
+            <div className="row" style={{ marginTop: 8 }}>
+              <label className="field">
+                MQTT topic prefix
+                <input
+                  type="text"
+                  value={s.mqtt_prefix}
+                  onChange={(e) => set({ mqtt_prefix: e.target.value })}
+                />
+                <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                  Text at the start of every topic.
+                </span>
+              </label>
+              <label className="field">
+                HA discovery prefix
+                <input
+                  type="text"
+                  value={s.mqtt_ha_prefix}
+                  onChange={(e) => set({ mqtt_ha_prefix: e.target.value })}
+                />
+                <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                  Where Home Assistant listens for discovery.
+                </span>
+              </label>
+              <label className="field" title="Seconds a Home Assistant binary_sensor stays ON after a detection before auto-clearing.">
+                sensor ON timeout (s)
+                <input
+                  type="number" min="1"
+                  value={s.mqtt_state_timeout_secs}
+                  onChange={(e) => set({ mqtt_state_timeout_secs: num(e.target.value, s.mqtt_state_timeout_secs) })}
+                />
+              </label>
+            </div>
+          </details>
           <div className="row" style={{ marginTop: 10 }}>
             <label className="toggle field">
               Accept commands over MQTT (arm / trigger)
@@ -3891,62 +3976,52 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
 
         <div className="card" data-settings-group="recording">
           <h2>Recording &amp; retention</h2>
-          <div className="row">
+          <div className="row" style={{ alignItems: "flex-end" }}>
             <label className="field">
-              segment length (s)
-              <input
-                type="number" min="10"
-                value={s.segment_seconds}
-                onChange={(e) => set({ segment_seconds: num(e.target.value, s.segment_seconds) })}
-              />
+              keep footage for
+              <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                {[
+                  { d: 1, t: "1 day" },
+                  { d: 3, t: "3 days" },
+                  { d: 7, t: "1 week" },
+                  { d: 14, t: "2 weeks" },
+                  { d: 30, t: "30 days" },
+                ].map((p) => (
+                  <TogglePill
+                    key={p.d}
+                    on={s.retention_days === p.d}
+                    ariaLabel={`Keep footage for ${p.t}`}
+                    onClick={() => set({ retention_days: p.d })}
+                  >
+                    {p.t}
+                  </TogglePill>
+                ))}
+              </div>
             </label>
-            <label className="field">
-              keep at most (days)
+            <label className="field" style={{ maxWidth: 130 }}>
+              custom (days)
               <input
                 type="number" min="1"
                 value={s.retention_days}
                 onChange={(e) => set({ retention_days: num(e.target.value, s.retention_days) })}
               />
             </label>
-            <label className="field">
-              keep at most (GB)
+            <label
+              className="field"
+              style={{ maxWidth: 160 }}
+              title="Hard ceiling on total footage size. When it fills, the oldest footage is deleted first — regardless of the day setting."
+            >
+              disk budget (GB)
               <input
                 type="number" min="1"
                 value={s.retention_gb}
                 onChange={(e) => set({ retention_gb: num(e.target.value, s.retention_gb) })}
               />
-              <RetentionHint days={s.retention_days ?? 0} gb={s.retention_gb ?? 0} />
             </label>
-            <label className="field">
-              reduce quality after (days, 0 = off)
-              <input
-                type="number" min="0"
-                value={s.enhanced_retention_days}
-                onChange={(e) =>
-                  set({ enhanced_retention_days: num(e.target.value, s.enhanced_retention_days) })
-                }
-              />
-            </label>
-            <label className="field" title="Hardware video encoder for the enhanced-retention re-encode. Falls back to CPU automatically if unavailable.">
-              re-encode with
-              <select value={s.hwaccel ?? ""} onChange={(e) => set({ hwaccel: e.target.value })}>
-                <option value="">CPU (libx264)</option>
-                <option value="nvenc">NVIDIA NVENC</option>
-                <option value="qsv">Intel QuickSync</option>
-                <option value="videotoolbox">Apple VideoToolbox</option>
-              </select>
-            </label>
-            <label className="field">
-              keep events (days)
-              <input
-                type="number" min="1"
-                value={s.event_retention_days}
-                onChange={(e) =>
-                  set({ event_retention_days: num(e.target.value, s.event_retention_days) })
-                }
-              />
-            </label>
-            <label className="field" style={{ minWidth: 300 }}>
+          </div>
+          <RetentionHint days={s.retention_days ?? 0} gb={s.retention_gb ?? 0} />
+          <div className="row" style={{ marginTop: 10 }}>
+            <label className="field" style={{ minWidth: 300, flex: 1 }}>
               recordings folder (empty = data/recordings; another drive or NAS share works)
               <input
                 type="text"
@@ -3954,7 +4029,52 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.recordings_dir ?? ""}
                 onChange={(e) => set({ recordings_dir: e.target.value })}
               />
+              <FolderProbe path={s.recordings_dir ?? ""} />
             </label>
+          </div>
+          <details className="adv" style={{ marginTop: 8 }}>
+            <summary>Advanced (clip length, aging, event history)</summary>
+            <div className="row" style={{ marginTop: 8 }}>
+              <label className="field">
+                segment length (s)
+                <input
+                  type="number" min="10"
+                  value={s.segment_seconds}
+                  onChange={(e) => set({ segment_seconds: num(e.target.value, s.segment_seconds) })}
+                />
+              </label>
+              <label className="field">
+                reduce quality after (days, 0 = off)
+                <input
+                  type="number" min="0"
+                  value={s.enhanced_retention_days}
+                  onChange={(e) =>
+                    set({ enhanced_retention_days: num(e.target.value, s.enhanced_retention_days) })
+                  }
+                />
+              </label>
+              <label className="field" title="Hardware video encoder for the enhanced-retention re-encode. Falls back to CPU automatically if unavailable.">
+                re-encode with
+                <select value={s.hwaccel ?? ""} onChange={(e) => set({ hwaccel: e.target.value })}>
+                  <option value="">CPU (libx264)</option>
+                  <option value="nvenc">NVIDIA NVENC</option>
+                  <option value="qsv">Intel QuickSync</option>
+                  <option value="videotoolbox">Apple VideoToolbox</option>
+                </select>
+              </label>
+              <label className="field" title="Detections (with snapshots) are kept separately from footage — the density calendar can offer days whose video is already gone.">
+                keep events (days)
+                <input
+                  type="number" min="1"
+                  value={s.event_retention_days}
+                  onChange={(e) =>
+                    set({ event_retention_days: num(e.target.value, s.event_retention_days) })
+                  }
+                />
+              </label>
+            </div>
+          </details>
+          <div className="row" style={{ marginTop: 8 }}>
             <label className="field">
               detector model file
               <input

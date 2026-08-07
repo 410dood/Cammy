@@ -125,6 +125,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/alarms/{id}/test", axum::routing::post(test_alarm_api))
         .route("/api/notify/test", axum::routing::post(notify_test_api))
         .route("/api/offsite/test", axum::routing::post(offsite_test_api))
+        .route("/api/path_probe", get(path_probe_api))
         .route("/api/genai/probe", axum::routing::post(genai_probe_api))
         .route("/api/alarms/vlm_test", axum::routing::post(vlm_test_api))
         .route("/api/alarms/stats", get(alarm_stats_api))
@@ -4665,6 +4666,59 @@ async fn notify_test_api(
         Ok(Err(e)) => Json(serde_json::json!({"ok": false, "error": e})),
         Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
     }
+}
+
+/// GET /api/path_probe?path= — docs/10 P3: the recordings-folder field is the
+/// highest-consequence typo on the Settings page (a wrong path silently
+/// records nothing an owner can find). Prove the path is a real, WRITABLE
+/// directory and report its free space so the field can show
+/// "✓ writable · 412 GB free" instead of trusting the spelling. Empty path
+/// probes the default recordings dir. Admin-gated (auth.rs): it reads
+/// arbitrary server-filesystem facts.
+async fn path_probe_api(
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let raw = q.get("path").map(|s| s.trim()).unwrap_or("");
+    let path = if raw.is_empty() {
+        st.recordings_dir_default.clone()
+    } else {
+        PathBuf::from(raw)
+    };
+    let exists = path.is_dir();
+    // Writability: only a real write proves it (readonly mounts and NAS ACLs
+    // pass metadata checks) — create + delete a marker file.
+    let writable = exists && {
+        let marker = path.join(".cammy-write-test");
+        match std::fs::write(&marker, b"ok") {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&marker);
+                true
+            }
+            Err(_) => false,
+        }
+    };
+    let free = fs2::available_space(&path).ok();
+    let message = if !exists {
+        Some(if path.exists() {
+            "that path exists but is a file, not a folder".to_string()
+        } else {
+            "that folder doesn't exist — create it first (Cammy won't create it for you)"
+                .to_string()
+        })
+    } else if !writable {
+        Some("the folder exists but Cammy can't write to it (permissions?)".to_string())
+    } else {
+        None
+    };
+    Json(serde_json::json!({
+        "ok": exists && writable,
+        "exists": exists,
+        "writable": writable,
+        "free_bytes": free,
+        "message": message,
+        "path": path.to_string_lossy(),
+    }))
 }
 
 /// POST /api/offsite/test — docs/10 P2.4: prove the SAVED S3 settings work by

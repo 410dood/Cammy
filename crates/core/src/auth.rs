@@ -176,6 +176,9 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
         // — both stay as locked-down as the settings that feed them.
         || path == "/api/offsite/test"
         || path == "/api/genai/probe"
+        // Probes arbitrary server filesystem paths (writability + free space)
+        // — Admin-only like the recordings_dir setting it validates.
+        || path == "/api/path_probe"
         || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
         // Installing/removing a license is a system-config action; a valid GET
         // (the trial countdown) stays Viewer-readable via the default below.
