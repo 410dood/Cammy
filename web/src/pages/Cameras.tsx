@@ -2,7 +2,7 @@
 import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMap } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { recordState, recordStateHint, scheduleWindow } from "../labels";
-import SizeFilterEditor from "../SizeFilterEditor";
+import SizeFilterEditor, { ChildHeightEditor } from "../SizeFilterEditor";
 import { ObjectPicker, InheritSlider, LabelChips } from "../tuning";
 import { Modal, EmptyState, TogglePill, Callout, useToast, useDialog, usePolling } from "../ui";
 import {
@@ -151,6 +151,9 @@ function TuneModal({
   });
   const [subSource, setSubSource] = useState(camera.detect_source ?? "");
   const [saving, setSaving] = useState(false);
+  // An accidental off/on of the child-height toggle shouldn't silently replace
+  // a tuned value with the seed default — remember it for the session.
+  const lastChildFrac = useRef(camera.detect_config.child_height_frac ?? 0.35);
   // Protect-style task-scoped tabs (Detection / Zones / Stream & recording)
   // instead of a scroll of disclosures. Every field's value lives in dc /
   // subSource (lifted state), so switching panels never loses an in-flight
@@ -752,31 +755,38 @@ function TuneModal({
             </Callout>
           )}
           <div className="tune-grid" style={{ marginTop: 12 }}>
-            <label
-              className="field"
-              title="Residential child calibration: a tracked person whose normalized bbox HEIGHT (0..1 of the frame) is at/below this fraction is treated as a 'child', enabling the child / child-alone zone rules. Blank disables child features. FRAGILE — bbox height depends on camera angle/distance; tune per camera and treat results as a detection aid only."
-            >
-              Child height ≤ (fraction)
-              <input
-                type="number"
-                step="0.05"
-                min="0"
-                max="1"
-                placeholder="Off"
-                value={dc.child_height_frac ?? ""}
-                onChange={(e) =>
-                  setDc({
-                    ...dc,
-                    child_height_frac:
-                      e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)),
-                  })
-                }
-              />
-              <span className="feat-help">
-                Fraction of frame height at/below which a person counts as a child (fragile — tune per
-                camera). Blank = off.
-              </span>
-            </label>
+            <div className="field span-full">
+              <div className="feat">
+                <TogglePill
+                  on={dc.child_height_frac != null}
+                  ariaLabel="Tell children apart from adults on this camera"
+                  title="Residential child calibration: a tracked person shorter than the marker counts as a 'child', enabling the child / child-alone zone rules. Assistive only — apparent height depends on camera angle and distance."
+                  onClick={() => {
+                    if (dc.child_height_frac != null) {
+                      lastChildFrac.current = dc.child_height_frac;
+                      setDc({ ...dc, child_height_frac: null });
+                    } else {
+                      setDc({ ...dc, child_height_frac: lastChildFrac.current });
+                    }
+                  }}
+                >
+                  Tell children apart from adults (assistive*)
+                </TogglePill>
+                <span className="feat-help">
+                  Needed by the child / child-alone zone rules (pool &amp; crib safety).
+                </span>
+              </div>
+              {dc.child_height_frac != null && (
+                <div style={{ marginTop: 8 }}>
+                  <ChildHeightEditor
+                    cameraId={camera.id}
+                    cameraName={camera.name}
+                    frac={dc.child_height_frac}
+                    onChange={(child_height_frac) => setDc({ ...dc, child_height_frac })}
+                  />
+                </div>
+              )}
+            </div>
             <label
               className="field"
               title="Inactivity watch (aging-in-place & pets): notify when this camera has seen NO person or pet for this many hours. One alert per quiet spell, cleared by the next sighting. Assistive only — absence of detections is not proof of absence of activity."

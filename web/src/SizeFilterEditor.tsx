@@ -18,6 +18,117 @@ const boxFromArea = (area: number) => {
 
 type Box = { hw: number; hh: number };
 
+/// Child-height calibration, graphically (docs/10 P1.9): instead of typing a
+/// "fraction of frame height", drag a marker on the camera's own frame to
+/// about how tall your child appears where they'd stand. Only the HEIGHT
+/// fraction is stored; the horizontal position is a visual aid.
+export function ChildHeightEditor({
+  cameraId,
+  cameraName,
+  frac,
+  onChange,
+}: {
+  cameraId: number;
+  cameraName: string;
+  frac: number;
+  onChange: (frac: number) => void;
+}) {
+  const [x, setX] = useState(0.5);
+  const [failed, setFailed] = useState(false);
+  const [bust, setBust] = useState(0);
+  const surface = useRef<HTMLDivElement>(null);
+
+  const drag = (mode: "height" | "move") => (e: React.PointerEvent) => {
+    e.preventDefault();
+    const el = surface.current;
+    if (!el) return;
+    const t = e.currentTarget as HTMLElement;
+    try {
+      t.setPointerCapture(e.pointerId);
+    } catch {
+      /* synthetic/released pointers can't be captured */
+    }
+    const move = (ev: PointerEvent) => {
+      const r = el.getBoundingClientRect();
+      if (mode === "height") {
+        const h = 1 - (ev.clientY - r.top) / r.height;
+        onChange(Math.min(0.95, Math.max(0.05, Number(h.toFixed(3)))));
+      } else {
+        setX(Math.min(0.95, Math.max(0.05, (ev.clientX - r.left) / r.width)));
+      }
+    };
+    const up = () => {
+      t.removeEventListener("pointermove", move);
+      t.removeEventListener("pointerup", up);
+      t.removeEventListener("pointercancel", up);
+    };
+    t.addEventListener("pointermove", move);
+    t.addEventListener("pointerup", up);
+    t.addEventListener("pointercancel", up);
+  };
+
+  return (
+    <div className="sizef">
+      <div ref={surface} className="sizef-surface">
+        <img
+          src={`/api/cameras/${cameraId}/frame.jpg?t=${bust}`}
+          alt={`Current view from ${cameraName}`}
+          draggable={false}
+          onError={() => setFailed(true)}
+          onLoad={() => setFailed(false)}
+          style={{ visibility: failed ? "hidden" : undefined }}
+        />
+        {failed && (
+          <div className="sizef-fallback">
+            <div>
+              No live picture right now — the marker still works on a blank frame, and the
+              percent field below is exact.
+              <div style={{ marginTop: 8 }}>
+                <button type="button" className="btn btn-ghost ev-act" onClick={() => setBust(Date.now())}>
+                  <IconRefresh size={14} /> retry
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        <div
+          className="childh-bar"
+          style={{ left: `${x * 100}%`, height: `${frac * 100}%` }}
+          onPointerDown={drag("move")}
+          title="Drag sideways to where your child would stand (position is just a visual aid)"
+        >
+          <span className="sizef-tag childh-tag">Shorter than this: child</span>
+          <div className="childh-top" onPointerDown={drag("height")} role="presentation" />
+        </div>
+      </div>
+      <p className="feat-help sizef-hint">
+        Drag the marker's top edge to about how tall your child appears on this camera.
+        Anyone shorter counts as a child for the zone rules; it's a rough visual aid, not an
+        exact measurement — check it against real events.
+      </p>
+      <div className="sizef-nums">
+        <label className="sizef-num">
+          Child height
+          <span>
+            <input
+              type="number"
+              min={5}
+              max={95}
+              step={1}
+              value={Math.round(frac * 100)}
+              onChange={(e) => {
+                const v = Math.min(95, Math.max(5, Number(e.target.value) || 5));
+                onChange(v / 100);
+              }}
+            />
+            % of frame height
+          </span>
+        </label>
+      </div>
+    </div>
+  );
+}
+
 export default function SizeFilterEditor({
   cameraId,
   cameraName,
