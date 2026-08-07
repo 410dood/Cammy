@@ -3,6 +3,7 @@ import { api, AlarmRule, Action, ActionKind, ArmMode, AttributesCatalog, CamEven
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
 import { prettyGesture, prettyLabel } from "../labels";
+import { DurationPicker } from "../tuning";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -1048,16 +1049,21 @@ export default function Alarms({
                 </small>
               </label>
               {confirmLabel && (
-                <label className="field" title="Time window (seconds) the confirming event must fall within.">
-                  within (s)
-                  <input
-                    type="number"
-                    min="1"
-                    step="1"
-                    style={{ width: 80 }}
-                    value={confirmWithin}
-                    onChange={(e) => setConfirmWithin(Math.max(1, Number(e.target.value) || 1))}
-                  />
+                <label className="field" title="Time window the confirming event must fall within.">
+                  within
+                  <select
+                    aria-label="Confirmation time window"
+                    value={String(confirmWithin)}
+                    onChange={(e) => setConfirmWithin(Number(e.target.value))}
+                  >
+                    {![5, 10, 30, 60].includes(confirmWithin) && (
+                      <option value={String(confirmWithin)}>{confirmWithin} seconds (custom)</option>
+                    )}
+                    <option value="5">5 seconds</option>
+                    <option value="10">10 seconds</option>
+                    <option value="30">30 seconds</option>
+                    <option value="60">1 minute</option>
+                  </select>
                 </label>
               )}
               <label
@@ -1330,12 +1336,12 @@ export default function Alarms({
           <div className="row" style={{ marginTop: 12 }}>
             <span className="muted">…anti-fatigue:</span>
             <label className="field">
-              quiet period (s)
-              <input
-                type="number" min="0" style={{ width: 90 }}
+              don't alert me again for
+              <DurationPicker
                 value={cooldown}
-                onChange={(e) => setCooldown(Math.max(0, Number(e.target.value) || 0))}
-                title="Minimum seconds between firings of this rule (debounces the whole scene)."
+                onChange={setCooldown}
+                zeroLabel="No limit — every match alerts"
+                ariaLabel="Quiet period between alerts from this rule"
               />
               <small className="muted">
                 Least time between alerts from this rule, so you aren't pinged repeatedly.

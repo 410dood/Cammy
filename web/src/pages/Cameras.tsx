@@ -3,7 +3,7 @@ import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMa
 import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { recordState, recordStateHint, scheduleWindow } from "../labels";
 import SizeFilterEditor from "../SizeFilterEditor";
-import { ObjectPicker, InheritSlider } from "../tuning";
+import { ObjectPicker, InheritSlider, LabelChips } from "../tuning";
 import { Modal, EmptyState, TogglePill, Callout, useToast, useDialog, usePolling } from "../ui";
 import {
   IconRadar,
@@ -371,24 +371,13 @@ function TuneModal({
           </div>
           {dc.package_detect && (
             <label className="field span-full" style={{ marginTop: 12 }}>
-              Package objects
-              <input
-                type="text"
-                placeholder="suitcase, backpack, handbag"
-                value={(dc.package_labels ?? []).join(", ")}
-                onChange={(e) =>
-                  setDc({
-                    ...dc,
-                    package_labels: e.target.value
-                      .split(",")
-                      .map((s) => s.trim())
-                      .filter(Boolean),
-                  })
-                }
+              What counts as a parcel
+              <LabelChips
+                value={dc.package_labels ?? []}
+                onChange={(package_labels) => setDc({ ...dc, package_labels })}
+                catalog={["suitcase", "backpack", "handbag"]}
+                emptyHint="Default: suitcase, backpack, handbag (the shapes the detector reads a parcel as)"
               />
-              <span className="feat-help">
-                Labels that count as a parcel. Blank uses the defaults: suitcase, backpack, handbag.
-              </span>
             </label>
           )}
         </section>

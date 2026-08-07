@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Camera, CrossDir, GroundCalib, PolyZone, Tripwire, ZoneKind } from "./api";
 import { IconRefresh } from "./icons";
 import { TogglePill, useDialog } from "./ui";
+import { LabelChips } from "./tuning";
 
 /// Common household zone names, offered as autocomplete on the name field so a
 /// zone gets a real name ("Pool") instead of shipping as "zone 1" — alarm rules
@@ -511,15 +512,12 @@ export default function ZoneEditor({
 
               {/* Analytics knobs with visible labels (was a title-only cram) */}
               <div className="row" style={{ marginTop: 8, gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-                <label className="field">
-                  objects
-                  <input
-                    type="text"
-                    aria-label="Objects this zone applies to"
-                    placeholder="all"
-                    style={{ width: 130 }}
-                    value={z.labels.join(", ")}
-                    onChange={(e) => upd({ labels: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+                <label className="field" style={{ minWidth: "min(100%, 340px)" }}>
+                  objects this zone applies to
+                  <LabelChips
+                    value={z.labels}
+                    onChange={(labels) => upd({ labels })}
+                    emptyHint="Any object"
                   />
                 </label>
                 <label className="field" title="Alert if someone stays in this zone longer than this many seconds. Blank = off. Needs object tracking.">
@@ -679,21 +677,16 @@ export default function ZoneEditor({
                 <option value="a_to_b">A → B only</option>
                 <option value="b_to_a">B → A only</option>
               </select>
-              <input
-                type="text"
-                placeholder="objects (all)"
-                style={{ width: 130 }}
-                value={tw.labels.join(", ")}
-                onChange={(e) =>
-                  onTripwires(
-                    tripwires.map((x, j) =>
-                      j === i
-                        ? { ...x, labels: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) }
-                        : x
-                    )
-                  )
-                }
-              />
+              <label className="field" style={{ minWidth: "min(100%, 300px)" }}>
+                objects it counts
+                <LabelChips
+                  value={tw.labels}
+                  onChange={(labels) =>
+                    onTripwires(tripwires.map((x, j) => (j === i ? { ...x, labels } : x)))
+                  }
+                  emptyHint="Any object"
+                />
+              </label>
               <label
                 className="toggle field"
                 title="One-way enforcement: a crossing against the chosen direction fires a wrong_way alert (only with a one-way direction)."

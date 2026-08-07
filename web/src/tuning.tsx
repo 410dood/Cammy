@@ -120,6 +120,128 @@ export function ObjectPicker({
   );
 }
 
+const FLAT_CATALOG = OBJECT_GROUPS.flatMap((g) => g.labels);
+
+/// Compact flat chip row for the smaller "which objects does this apply to"
+/// slots (zone cards, tripwires, package objects) where the grouped picker is
+/// too tall. Empty selection = applies to everything, and says so.
+export function LabelChips({
+  value,
+  onChange,
+  catalog = FLAT_CATALOG,
+  emptyHint = "Any object",
+}: {
+  value: string[];
+  onChange: (labels: string[]) => void;
+  catalog?: string[];
+  emptyHint?: string;
+}) {
+  const [other, setOther] = useState("");
+  const toggle = (label: string) =>
+    onChange(value.includes(label) ? value.filter((l) => l !== label) : [...value, label]);
+  const extras = value.filter((l) => !catalog.includes(l));
+  const addOther = () => {
+    const l = other.trim().toLowerCase().replace(/\s+/g, "_");
+    if (l && !value.includes(l)) onChange([...value, l]);
+    setOther("");
+  };
+  return (
+    <div className="labelchips">
+      <div className="objpick-chips">
+        {catalog.map((l) => (
+          <TogglePill key={l} on={value.includes(l)} ariaLabel={`Applies to ${l}`} onClick={() => toggle(l)}>
+            {prettyLabel(l)}
+          </TogglePill>
+        ))}
+        {extras.map((l) => (
+          <TogglePill key={l} on ariaLabel={`Stop applying to ${l}`} onClick={() => toggle(l)}>
+            {prettyLabel(l)}
+          </TogglePill>
+        ))}
+        <input
+          type="text"
+          className="labelchips-other"
+          value={other}
+          placeholder="Other…"
+          aria-label="Add another object type"
+          onChange={(e) => setOther(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addOther();
+            }
+          }}
+          onBlur={addOther}
+        />
+      </div>
+      {value.length === 0 && <span className="feat-help">{emptyHint}</span>}
+    </div>
+  );
+}
+
+const DUR_PRESETS = [0, 10, 30, 120, 600, 3600];
+const fmtDur = (s: number, zeroLabel: string) =>
+  s === 0
+    ? zeroLabel
+    : s < 60
+      ? `${s} seconds`
+      : s < 3600
+        ? `${s / 60} minute${s === 60 ? "" : "s"}`
+        : `${s / 3600} hour${s === 3600 ? "" : "s"}`;
+
+/// Duration presets instead of a bare "(s)" number box. An off-preset stored
+/// value (old installs, power users) surfaces as "Custom…" with the seconds
+/// field shown.
+export function DurationPicker({
+  value,
+  onChange,
+  zeroLabel = "No limit",
+  ariaLabel,
+}: {
+  value: number;
+  onChange: (secs: number) => void;
+  zeroLabel?: string;
+  ariaLabel: string;
+}) {
+  const [customMode, setCustomMode] = useState(false);
+  const custom = customMode || !DUR_PRESETS.includes(value);
+  return (
+    <span className="durpick">
+      <select
+        aria-label={ariaLabel}
+        value={custom ? "__custom" : String(value)}
+        onChange={(e) => {
+          if (e.target.value === "__custom") {
+            setCustomMode(true);
+          } else {
+            setCustomMode(false);
+            onChange(Number(e.target.value));
+          }
+        }}
+      >
+        {DUR_PRESETS.map((s) => (
+          <option key={s} value={String(s)}>
+            {fmtDur(s, zeroLabel)}
+          </option>
+        ))}
+        <option value="__custom">Custom…</option>
+      </select>
+      {custom && (
+        <span className="durpick-custom">
+          <input
+            type="number"
+            min={0}
+            value={value}
+            aria-label={`${ariaLabel} (seconds)`}
+            onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0))}
+          />
+          seconds
+        </span>
+      )}
+    </span>
+  );
+}
+
 /// A slider that knows about inherit-vs-custom: while inheriting it shows the
 /// live global value (disabled), and one tap forks a per-camera override. The
 /// endpoints speak outcomes ("More alerts" / "Fewer false alerts"), not floats.

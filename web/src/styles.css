@@ -1535,6 +1535,15 @@ label.file-btn:focus-within {
 .objpick-other { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 .objpick-other input { width: 130px; font-size: var(--text-sm); }
 
+/* Compact flat label chips (zone/tripwire/package "applies to" slots). */
+.labelchips { display: flex; flex-direction: column; gap: 4px; }
+.labelchips-other { width: 90px; font-size: var(--text-sm); }
+
+/* Duration presets (replaces bare "(s)" number boxes). */
+.durpick { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.durpick-custom { display: inline-flex; align-items: center; gap: 6px; color: var(--text-subtle); font-size: var(--text-xs); }
+.durpick-custom input { width: 76px; }
+
 /* Inherit-aware sliders. */
 .islider-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 14px 22px; padding: 6px 0 10px; }
 .islider { display: flex; flex-direction: column; gap: 4px; }

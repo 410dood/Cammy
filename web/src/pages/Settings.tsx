@@ -2,7 +2,7 @@ import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtSpan, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout, usePolling } from "../ui";
 import { LicensePane } from "../License";
-import { ObjectPicker, InheritSlider } from "../tuning";
+import { ObjectPicker, InheritSlider, DurationPicker } from "../tuning";
 import { prettyGesture, prettyLabel } from "../labels";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
@@ -2341,11 +2341,12 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               />
             </label>
             <label className="field">
-              time between repeat events (s)
-              <input
-                type="number" min="0"
+              don't log the same object again for
+              <DurationPicker
                 value={s.event_cooldown_secs}
-                onChange={(e) => set({ event_cooldown_secs: num(e.target.value, s.event_cooldown_secs) })}
+                onChange={(v) => set({ event_cooldown_secs: v })}
+                zeroLabel="No limit — log every sighting"
+                ariaLabel="Time between repeat events"
               />
               <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
                 Wait this long before logging the same object again, so one visitor isn't fifty
@@ -2495,20 +2496,32 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               />
             </label>
             <label className="field" style={{ flex: 1, minWidth: 300 }}>
-              armed signals (comma-separated, empty = any)
-              <input
-                type="text"
-                placeholder="open_palm, victory, thumb_up"
-                value={(s.gesture_labels ?? []).join(", ")}
-                onChange={(e) =>
-                  set({
-                    gesture_labels: e.target.value
-                      .split(",")
-                      .map((x) => x.trim())
-                      .filter(Boolean),
-                  })
-                }
-              />
+              armed signals
+              <div className="row" style={{ flexWrap: "wrap", gap: 6, marginTop: 2 }}>
+                {["open_palm", "fist", "victory", "point", "thumb_up", "thumb_down", "love", "ok", "call_me"].map((g) => {
+                  const on = (s.gesture_labels ?? []).includes(g);
+                  return (
+                    <TogglePill
+                      key={g}
+                      on={on}
+                      ariaLabel={`Arm the ${prettyGesture(g)} signal`}
+                      onClick={() => {
+                        const cur = new Set(s.gesture_labels ?? []);
+                        if (on) cur.delete(g);
+                        else cur.add(g);
+                        set({ gesture_labels: [...cur] });
+                      }}
+                    >
+                      {prettyGesture(g)}
+                    </TogglePill>
+                  );
+                })}
+              </div>
+              {(s.gesture_labels ?? []).length === 0 && (
+                <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                  None selected — any held signal fires.
+                </span>
+              )}
             </label>
             <label className="field" title="A silent panic signal: when recognized it always fires at max urgency to your phone-push topic (set under Modes & alerts), even if not in the armed list.">
               duress / help signal
