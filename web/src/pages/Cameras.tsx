@@ -1,7 +1,8 @@
 ﻿import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMap } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
-import { recordState, recordStateHint, scheduleWindow } from "../labels";
+import { prettyLabel, recordState, recordStateHint, scheduleWindow } from "../labels";
+import SizeFilterEditor from "../SizeFilterEditor";
 import { Modal, EmptyState, TogglePill, Callout, useToast, useDialog, usePolling } from "../ui";
 import {
   IconRadar,
@@ -78,6 +79,171 @@ function Feature({
         {label}
       </TogglePill>
       {help && <span className="feat-help">{help}</span>}
+    </div>
+  );
+}
+
+/// Curated detector object catalog for the chip picker — the COCO classes a
+/// homeowner actually filters on, grouped for scanning. Anything else (a custom
+/// COCO label) still round-trips: unknown labels render as removable chips.
+const OBJECT_GROUPS: { name: string; labels: string[] }[] = [
+  { name: "People", labels: ["person"] },
+  { name: "Vehicles", labels: ["car", "truck", "bus", "motorcycle", "bicycle", "boat"] },
+  { name: "Animals", labels: ["dog", "cat", "bird", "bear", "horse", "sheep", "cow"] },
+];
+const CATALOG = new Set(OBJECT_GROUPS.flatMap((g) => g.labels));
+
+/// Chip-based multi-select for "objects to detect". null = inherit the global
+/// list (shown live, so "inherit" is never a mystery); tapping any chip forks a
+/// per-camera list seeded from the global one.
+function ObjectPicker({
+  value,
+  globalLabels,
+  onChange,
+}: {
+  value: string[] | null;
+  globalLabels: string[];
+  onChange: (labels: string[] | null) => void;
+}) {
+  const [other, setOther] = useState("");
+  const effective = value ?? globalLabels;
+  const toggle = (label: string) => {
+    const next = effective.includes(label)
+      ? effective.filter((l) => l !== label)
+      : [...effective, label];
+    onChange(next);
+  };
+  const extras = effective.filter((l) => !CATALOG.has(l));
+  const addOther = () => {
+    const l = other.trim().toLowerCase().replace(/\s+/g, "_");
+    if (l && !effective.includes(l)) onChange([...effective, l]);
+    setOther("");
+  };
+  return (
+    <div className="objpick">
+      {OBJECT_GROUPS.map((g) => (
+        <div key={g.name} className="objpick-group">
+          <span className="objpick-name">{g.name}</span>
+          <div className="objpick-chips">
+            {g.labels.map((l) => (
+              <TogglePill key={l} on={effective.includes(l)} ariaLabel={`Detect ${l}`} onClick={() => toggle(l)}>
+                {prettyLabel(l)}
+              </TogglePill>
+            ))}
+          </div>
+        </div>
+      ))}
+      {extras.length > 0 && (
+        <div className="objpick-group">
+          <span className="objpick-name">Other</span>
+          <div className="objpick-chips">
+            {extras.map((l) => (
+              <TogglePill key={l} on ariaLabel={`Stop detecting ${l}`} onClick={() => toggle(l)}>
+                {prettyLabel(l)}
+              </TogglePill>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="objpick-foot">
+        {value == null ? (
+          <span className="feat-help">Using the global list from Settings — tap a chip to customize for this camera.</span>
+        ) : (
+          <>
+            <span className="feat-help">Custom list for this camera.</span>
+            <button type="button" className="btn-link" onClick={() => onChange(null)}>
+              Reset to global list
+            </button>
+          </>
+        )}
+        <span className="objpick-other">
+          <input
+            type="text"
+            value={other}
+            placeholder="Other object…"
+            aria-label="Add another object type"
+            onChange={(e) => setOther(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addOther();
+              }
+            }}
+          />
+          <button type="button" className="btn btn-ghost ev-act" onClick={addOther} disabled={!other.trim()}>
+            Add
+          </button>
+        </span>
+      </div>
+      {value != null && value.length === 0 && (
+        <Callout tone="warn">No objects selected — this camera will detect nothing.</Callout>
+      )}
+    </div>
+  );
+}
+
+/// A slider that knows about inherit-vs-custom: while inheriting it shows the
+/// live global value (disabled), and one tap forks a per-camera override. The
+/// endpoints speak outcomes ("More alerts" / "Fewer false alerts"), not floats.
+function InheritSlider({
+  label,
+  value,
+  globalValue,
+  min,
+  max,
+  step,
+  format,
+  lowHint,
+  highHint,
+  onChange,
+}: {
+  label: string;
+  value: number | null;
+  globalValue: number | null;
+  min: number;
+  max: number;
+  step: number;
+  format: (v: number) => string;
+  lowHint: string;
+  highHint: string;
+  onChange: (v: number | null) => void;
+}) {
+  const shown = value ?? globalValue ?? (min + max) / 2;
+  const inherited = value == null;
+  return (
+    <div className="islider">
+      <div className="islider-head">
+        <span className="islider-label">{label}</span>
+        <span className="islider-val">
+          {format(shown)}
+          {inherited && <span className="islider-src"> · global</span>}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={Math.min(max, Math.max(min, shown))}
+        disabled={inherited}
+        aria-label={label}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <div className="islider-hints" aria-hidden="true">
+        <span>{lowHint}</span>
+        <span>{highHint}</span>
+      </div>
+      <div className="islider-foot">
+        {inherited ? (
+          <button type="button" className="btn-link" onClick={() => onChange(shown)}>
+            Customize for this camera
+          </button>
+        ) : (
+          <button type="button" className="btn-link" onClick={() => onChange(null)}>
+            Reset to global{globalValue != null ? ` (${format(globalValue)})` : ""}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -264,8 +430,8 @@ function TuneModal({
     <Modal onClose={requestClose} title={`Detection tuning — ${camera.name}`} className="modal-wide">
       <div className="tune-body">
         <Callout tone="info">
-          Empty fields <b>inherit the global Settings value</b> — clear a field to fall back to the
-          default. Size filters and child height are simply <b>off</b> when left blank.
+          Everything here starts on the <b>global Settings defaults</b> — customize a control to
+          override it for this camera only, and reset it any time to fall back.
         </Callout>
 
         <div className="arm-bar tune-tabs" role="group" aria-label="Tuning sections">
@@ -295,83 +461,49 @@ function TuneModal({
           <h3 className="tune-h">
             <IconSliders size={15} /> Detection sensitivity
           </h3>
-          <div className="tune-grid">
-            <label className="field span-full">
-              Objects to detect
-              <input
-                type="text"
-                value={dc.labels ? dc.labels.join(", ") : ""}
-                placeholder="Inherit global"
-                onChange={(e) => {
-                  const v = e.target.value.trim();
-                  setDc({
-                    ...dc,
-                    labels: v === "" ? null : v.split(",").map((x) => x.trim()).filter(Boolean),
-                  });
-                }}
-              />
-              <span className="feat-help">Comma-separated; overrides the global object list.</span>
-            </label>
-            <label className="field">
-              Minimum score
-              <input
-                type="number" step="0.05" min="0" max="1"
-                value={dc.min_score ?? ""}
-                placeholder="Inherit global"
-                onChange={(e) =>
-                  setDc({ ...dc, min_score: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
-                }
-              />
-              {dc.min_score == null && settings && (
-                <span className="feat-help">using global: {settings.confidence}</span>
-              )}
-              <span className="feat-help">
-                How sure the AI must be (0 to 1). Higher means fewer false alerts.
-              </span>
-            </label>
-            <label className="field">
-              Motion threshold
-              <input
-                type="number" step="0.005" min="0" max="1"
-                value={dc.motion_threshold ?? ""}
-                placeholder="Inherit global"
-                onChange={(e) =>
-                  setDc({
-                    ...dc,
-                    motion_threshold: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)),
-                  })
-                }
-              />
-              {dc.motion_threshold == null && settings ? (
-                <span className="feat-help">using global: {settings.motion_threshold}</span>
-              ) : (
-                <span className="feat-help">Fraction of frame that must change to run detection.</span>
-              )}
-            </label>
-            <label className="field" title="Drop detections smaller than this fraction of the frame area (kills far-field blips).">
-              Min object size
-              <input
-                type="number" step="0.005" min="0" max="1"
-                value={dc.min_area ?? ""}
-                placeholder="Off (no limit)"
-                onChange={(e) =>
-                  setDc({ ...dc, min_area: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
-                }
-              />
-              <span className="feat-help">Fraction of frame area; drops far-field blips.</span>
-            </label>
-            <label className="field" title="Drop detections larger than this fraction of the frame area (kills whole-frame lighting flips).">
-              Max object size
-              <input
-                type="number" step="0.05" min="0" max="1"
-                value={dc.max_area ?? ""}
-                placeholder="Off (no limit)"
-                onChange={(e) =>
-                  setDc({ ...dc, max_area: e.target.value === "" ? null : Math.min(1, Math.max(0, Number(e.target.value) || 0)) })
-                }
-              />
-              <span className="feat-help">Fraction of frame area; drops whole-frame lighting flips.</span>
-            </label>
+          <div className="tune-sub">
+            <h4 className="tune-sub-h">Objects to detect</h4>
+            <ObjectPicker
+              value={dc.labels}
+              globalLabels={settings?.detect_labels ?? []}
+              onChange={(labels) => setDc({ ...dc, labels })}
+            />
+          </div>
+          <div className="islider-row">
+            <InheritSlider
+              label="How confident before alerting"
+              value={dc.min_score}
+              globalValue={settings?.confidence ?? null}
+              min={0.25}
+              max={0.95}
+              step={0.05}
+              format={(v) => `${Math.round(v * 100)}% sure`}
+              lowHint="More alerts"
+              highHint="Fewer false alerts"
+              onChange={(min_score) => setDc({ ...dc, min_score })}
+            />
+            <InheritSlider
+              label="How much motion wakes detection"
+              value={dc.motion_threshold}
+              globalValue={settings?.motion_threshold ?? null}
+              min={0.005}
+              max={0.2}
+              step={0.005}
+              format={(v) => `${(v * 100).toFixed(1)}% of frame`}
+              lowHint="Any flicker"
+              highHint="Big movement only"
+              onChange={(motion_threshold) => setDc({ ...dc, motion_threshold })}
+            />
+          </div>
+          <div className="tune-sub">
+            <h4 className="tune-sub-h">Object size filter</h4>
+            <SizeFilterEditor
+              cameraId={camera.id}
+              cameraName={camera.name}
+              minArea={dc.min_area ?? null}
+              maxArea={dc.max_area ?? null}
+              onChange={(min_area, max_area) => setDc({ ...dc, min_area, max_area })}
+            />
           </div>
           <div className="feat-grid" style={{ marginTop: 12 }}>
             <Feature

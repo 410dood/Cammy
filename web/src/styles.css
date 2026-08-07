@@ -1516,6 +1516,105 @@ label.file-btn:focus-within {
 .feat .pill { max-width: 100%; white-space: normal; text-align: left; }
 .feat-help { font-size: var(--text-xs); color: var(--text-muted); line-height: 1.45; }
 
+/* --- detection tuning: friendly controls ----------------------------------- */
+.tune-sub { padding: 4px 0 10px; }
+.tune-sub-h { margin: 0 0 8px; font-size: var(--text-sm); font-weight: 590; color: var(--text); }
+.btn-link {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--accent-text); font-size: var(--text-xs); font-weight: 510;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.btn-link:hover { color: var(--text); }
+
+/* Object picker: grouped chips over a status/footer row. */
+.objpick { display: flex; flex-direction: column; gap: 8px; }
+.objpick-group { display: flex; align-items: baseline; gap: 10px; }
+.objpick-name { flex: 0 0 64px; font-size: var(--text-xs); color: var(--text-subtle); }
+.objpick-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.objpick-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding-top: 2px; }
+.objpick-other { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.objpick-other input { width: 130px; font-size: var(--text-sm); }
+
+/* Inherit-aware sliders. */
+.islider-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 14px 22px; padding: 6px 0 10px; }
+.islider { display: flex; flex-direction: column; gap: 4px; }
+.islider-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.islider-label { font-size: var(--text-sm); color: var(--text); font-weight: 510; }
+.islider-val { font-size: var(--text-sm); color: var(--text); font-variant-numeric: tabular-nums; }
+.islider-src { color: var(--text-subtle); font-size: var(--text-xs); }
+.islider-hints { display: flex; justify-content: space-between; font-size: var(--text-xs); color: var(--text-subtle); }
+.islider-foot { min-height: 18px; }
+.islider input[type="range"]:disabled { opacity: 0.55; cursor: default; }
+
+/* Themed range slider (shared with Settings). */
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 22px; background: transparent; cursor: pointer; margin: 0;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px;
+  background: var(--surface-active);
+}
+input[type="range"]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--surface-active); }
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 16px; height: 16px; margin-top: -6px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--bg);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--bg);
+}
+input[type="range"]:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; border-radius: 4px; }
+
+/* Graphical object-size filter over the live frame. */
+.sizef { display: flex; flex-direction: column; gap: 10px; }
+.sizef-toggles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 10px 12px; }
+.sizef-surface {
+  position: relative; width: 100%; max-width: 560px; aspect-ratio: 16 / 9;
+  background: var(--n-0); border-radius: var(--radius-sm); overflow: hidden;
+  touch-action: none; user-select: none;
+}
+.sizef-surface img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.sizef-fallback {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: var(--text-subtle); font-size: var(--text-sm); padding: 12px; text-align: center;
+}
+.sizef-box { position: absolute; border-radius: 2px; }
+.sizef-min { border: 1.5px dashed var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.sizef-max { border: 1.5px dashed var(--warn); background: color-mix(in srgb, var(--warn) 6%, transparent); }
+.sizef-tag {
+  position: absolute; top: -1.5px; left: -1.5px; transform: translateY(-100%);
+  font-size: var(--text-xs); line-height: 1.3; padding: 1px 5px; border-radius: 3px 3px 0 0;
+  background: var(--overlay); color: var(--text); white-space: nowrap;
+}
+.sizef-min .sizef-tag { top: auto; bottom: -1.5px; transform: translateY(100%); border-radius: 0 0 3px 3px; }
+.sizef-handle {
+  position: absolute; right: -11px; bottom: -11px; width: 22px; height: 22px;
+  cursor: nwse-resize; display: grid; place-items: center;
+}
+.sizef-handle::after {
+  content: ""; width: 10px; height: 10px; border-radius: 50%;
+  background: var(--text); border: 2px solid var(--bg);
+}
+.sizef-min .sizef-handle::after { background: var(--accent); }
+.sizef-max .sizef-handle::after { background: var(--warn); }
+.sizef-hint { margin: 0; }
+.sizef-nums { display: flex; flex-wrap: wrap; gap: 8px 24px; }
+.sizef-num { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-xs); color: var(--text-muted); }
+.sizef-num > span { display: inline-flex; align-items: center; gap: 6px; color: var(--text-subtle); }
+.sizef-num input { width: 76px; }
+
+@media (pointer: coarse) {
+  .sizef-handle { right: -16px; bottom: -16px; width: 32px; height: 32px; }
+  .sizef-handle::after { width: 14px; height: 14px; }
+}
+@media (max-width: 560px) {
+  .objpick-group { flex-direction: column; gap: 4px; }
+  .objpick-name { flex-basis: auto; }
+  .objpick-other { margin-left: 0; }
+}
+
 /* --- chips (interactive filters) + badges (static status) ------------------ */
 .chip {
   display: inline-flex;
