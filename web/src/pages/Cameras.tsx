@@ -21,6 +21,32 @@ import {
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/// The stream engine needs a slug id, but that's OUR constraint, not the
+/// user's problem: they type "Front Door", we store front-door (previewed
+/// live under the field, enforced at submit).
+const slugifyName = (s: string) =>
+  s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+
+/// RTSP path templates for the common consumer brands, so "add manually"
+/// means picking a brand — not finding and pasting a URL with credentials in
+/// it from the camera's own web admin.
+const BRAND_TEMPLATES: { key: string; label: string; main: string; sub?: string }[] = [
+  { key: "onvif", label: "Any ONVIF camera (auto-negotiates)", main: "onvif://{auth}{host}" },
+  { key: "dahua", label: "Dahua / Amcrest / Lorex", main: "rtsp://{auth}{host}:554/cam/realmonitor?channel=1&subtype=0", sub: "rtsp://{auth}{host}:554/cam/realmonitor?channel=1&subtype=1" },
+  { key: "hikvision", label: "Hikvision / Annke / Hilook", main: "rtsp://{auth}{host}:554/Streaming/Channels/101", sub: "rtsp://{auth}{host}:554/Streaming/Channels/102" },
+  { key: "reolink", label: "Reolink", main: "rtsp://{auth}{host}:554/h264Preview_01_main", sub: "rtsp://{auth}{host}:554/h264Preview_01_sub" },
+  { key: "generic", label: "Generic RTSP", main: "rtsp://{auth}{host}:554/" },
+];
+const fillTemplate = (tpl: string, host: string, user: string, pass: string) =>
+  tpl
+    .replace("{auth}", user ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : "")
+    .replace("{host}", host.trim());
+
 /// Hide the password (and blur the username) in a displayed camera URL so a
 /// glance / screenshot / screen-share can't leak camera credentials. The full
 /// URL stays available in the edit form, where showing it is deliberate.
@@ -1038,9 +1064,14 @@ export default function Cameras({
       if (streams.length === 0) throw new Error("no streams found");
       setSource(streams[0].url);
       if (streams.length > 1) setDetectSource(streams[1].url);
-      setFound(`${streams[0].name.replace(/ stream\d+$/, "")} — ${streams.length} streams`);
+      const deviceName = streams[0].name.replace(/ stream\d+$/, "");
+      setFound(`${deviceName} — ${streams.length} stream${streams.length === 1 ? "" : "s"}`);
+      // Suggest a name from what the camera calls itself; the user can edit.
+      if (!name.trim() && deviceName) setName(deviceName);
     } catch (e) {
-      onError(`Couldn't get streams from that camera over ONVIF — check the IP, username and password. (${errMsg(e)})`);
+      onError(
+        `Couldn't get streams from that camera automatically — check the IP, username and password, or pick its brand under "Enter the address manually". (${errMsg(e)})`,
+      );
     } finally {
       setBusy(false);
     }
@@ -1080,7 +1111,7 @@ export default function Cameras({
     setBusy(true);
     try {
       await api.addCamera({
-        name: name.trim(),
+        name: slugifyName(name),
         source: source.trim(),
         detect_source: detectSource.trim() || undefined,
         group: group.trim() || undefined,
@@ -1265,22 +1296,41 @@ export default function Cameras({
       </div>
 
       <div className="card" style={{ margin: 0 }}>
-        <details ref={addFormRef} className="adv tune-sec">
+        <details
+          ref={addFormRef}
+          className="adv tune-sec"
+          onToggle={(e) => {
+            // Discovery-first: opening the panel scans the LAN right away, so
+            // the first thing the user sees is their cameras — not a URL form.
+            if ((e.currentTarget as HTMLDetailsElement).open && scanned === null && !scanning) scan();
+          }}
+        >
         <summary><IconVideo size={15} /> Add a camera</summary>
-        <div className="row" style={{ marginBottom: 10, marginTop: 8 }}>
-          <button type="button" className="btn btn-ghost" disabled={scanning} onClick={scan}>
-            {scanning ? "Scanning…" : (<><IconRadar size={15} /> Scan network for cameras</>)}
-          </button>
-          {scanned !== null && scanned.length === 0 && (
-            <span className="muted">No cameras answered the scan. You can still add one below by address.</span>
+        <div className="row" style={{ marginBottom: 10, marginTop: 8, alignItems: "center" }}>
+          {scanning ? (
+            <span className="muted"><IconRadar size={15} /> Looking for cameras on your network…</span>
+          ) : (
+            <button type="button" className="btn btn-ghost" onClick={scan}>
+              <IconRadar size={15} /> {scanned === null ? "Scan network for cameras" : "Scan again"}
+            </button>
+          )}
+          {scanned !== null && scanned.length === 0 && !scanning && (
+            <span className="muted">No cameras answered the scan. You can still add one below.</span>
+          )}
+          {scanned && scanned.length > 0 && !scanning && (
+            <span className="muted">
+              Found {scanned.length} — pick one, enter its login, and Connect:
+            </span>
           )}
           {scanned?.map((c) => (
             <TogglePill
               key={c.host}
               on={ip === c.host}
-              title="click to fill the IP field"
               ariaLabel={`Use ${c.host}${c.name ? ` (${c.name})` : ""}`}
-              onClick={() => setIp(c.host)}
+              onClick={() => {
+                setIp(c.host);
+                if (c.name && !name.trim()) setName(c.name);
+              }}
             >
               {c.host}
               {c.name ? ` — ${c.name}` : ""}
@@ -1301,10 +1351,10 @@ export default function Cameras({
             <input type="password" autoComplete="off" value={pass} onChange={(e) => setPass(e.target.value)} onKeyDown={onResolveKey} />
           </label>
           <button type="button" className="btn btn-ghost" disabled={busy || !ip.trim()} onClick={resolve}>
-            <IconSearch size={15} /> Find streams (ONVIF)
+            <IconSearch size={15} /> {busy ? "Connecting…" : "Connect"}
           </button>
           {found && (
-            <span className="save-ok"><IconCheck size={14} /> {found} (form filled below)</span>
+            <span className="save-ok"><IconCheck size={14} /> {found} — ready to add below</span>
           )}
         </div>
         <form onSubmit={add} className="row">
@@ -1312,40 +1362,46 @@ export default function Cameras({
             name
             <input
               type="text"
-              placeholder="front-door"
+              placeholder="Front door"
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
             />
+            {name.trim() !== "" && slugifyName(name) !== name.trim() && (
+              <span className="feat-help">will be saved as “{slugifyName(name) || "…"}”</span>
+            )}
           </label>
-          <label className="field" style={{ flex: 1, minWidth: 280 }}>
-            camera address (RTSP link or other source)
-            <input
-              type="text"
-              placeholder="rtsp://user:pass@192.168.1.50:554/stream1"
-              value={source}
-              onChange={(e) => setSource(e.target.value)}
-              required
-              style={{ width: "100%" }}
-            />
-            <span className="feat-help">
-              Most cameras use rtsp://… Not sure? Use Scan or Find streams above to fill this in.
+          {!source && (
+            <label className="field" style={{ minWidth: 260 }}>
+              or enter the address manually — camera brand
+              <select
+                aria-label="Camera brand (fills the address pattern)"
+                defaultValue=""
+                onChange={(e) => {
+                  const t = BRAND_TEMPLATES.find((b) => b.key === e.target.value);
+                  if (!t || !ip.trim()) return;
+                  setSource(fillTemplate(t.main, ip, user, pass));
+                  setDetectSource(t.sub ? fillTemplate(t.sub, ip, user, pass) : "");
+                }}
+              >
+                <option value="" disabled>
+                  {ip.trim() ? "pick the brand…" : "enter the IP above first"}
+                </option>
+                {BRAND_TEMPLATES.map((b) => (
+                  <option key={b.key} value={b.key} disabled={!ip.trim()}>
+                    {b.label}
+                  </option>
+                ))}
+              </select>
+              <span className="feat-help">Builds the video address from the IP + login above.</span>
+            </label>
+          )}
+          {source && (
+            <span className="save-ok" style={{ alignSelf: "center" }}>
+              <IconCheck size={14} /> video address set
+              {detectSource ? " · AI will watch the camera's smaller stream (saves CPU)" : ""}
             </span>
-          </label>
-          <label
-            className="field"
-            style={{ flex: 1, minWidth: 220 }}
-            title="A smaller copy of the video the AI analyzes to save CPU. Usually filled in automatically."
-          >
-            low-res stream for detection (optional)
-            <input
-              type="text"
-              placeholder="usually filled in automatically"
-              value={detectSource}
-              onChange={(e) => setDetectSource(e.target.value)}
-              style={{ width: "100%" }}
-            />
-          </label>
+          )}
           <label className="field" style={{ minWidth: 130 }} title="Optional: group cameras for the Live view (e.g. 'outdoor', 'downstairs').">
             group (optional)
             <input
@@ -1362,15 +1418,43 @@ export default function Cameras({
           <label className="toggle">
             <input type="checkbox" checked={record} onChange={() => setRecord(!record)} /> record
           </label>
-          <button className="btn btn-primary" disabled={busy}>
+          <button className="btn btn-primary" disabled={busy || !source.trim()} title={source.trim() ? undefined : "Connect to a camera (or pick a brand) first"}>
             Add
           </button>
+          <details className="adv" style={{ flexBasis: "100%" }}>
+            <summary>Advanced — edit the stream addresses</summary>
+            <div className="row" style={{ marginTop: 8 }}>
+              <label className="field" style={{ flex: 1, minWidth: 280 }}>
+                camera address (RTSP link or other source)
+                <input
+                  type="text"
+                  placeholder="rtsp://user:pass@192.168.1.50:554/stream1"
+                  value={source}
+                  onChange={(e) => setSource(e.target.value)}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label
+                className="field"
+                style={{ flex: 1, minWidth: 220 }}
+                title="A smaller copy of the video the AI analyzes to save CPU. Usually filled in automatically."
+              >
+                low-res stream for detection (optional)
+                <input
+                  type="text"
+                  placeholder="usually filled in automatically"
+                  value={detectSource}
+                  onChange={(e) => setDetectSource(e.target.value)}
+                  style={{ width: "100%" }}
+                />
+              </label>
+            </div>
+            <p className="muted" style={{ marginBottom: 0 }}>
+              Advanced sources (<code>ffmpeg:</code>, <code>exec:</code>…) are passed to the stream
+              engine verbatim.
+            </p>
+          </details>
         </form>
-        <p className="muted" style={{ marginBottom: 0 }}>
-          Names: lowercase letters, digits, "-", "_". Most cameras use an <code>rtsp://</code>{" "}
-          address; advanced sources (<code>ffmpeg:</code>, <code>exec:</code>…) are passed to the
-          stream engine verbatim.
-        </p>
         </details>
       </div>
 
