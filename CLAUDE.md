@@ -14,9 +14,82 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — two audit sweeps + range export, 2026-08-06
+## Current status: v0.4 — UX phase 1 (navigation) + two audit sweeps, 2026-08-06
 
-### Latest: alarm delivery moved off the detection thread, 2026-08-06
+### Latest: UX phase 1 — navigation rebuilt around the three real jobs, 2026-08-06
+
+Owner's own words: *"still not super intuitive — navigation, click paths."* Four
+prior UX passes had already fixed a11y, states, forms, mobile and tokens, so the
+problem was **structural, not polish**. Measured it live before designing:
+
+| | knows WHAT happened | knows WHEN |
+|---|---|---|
+| Events (250 controls, 200 cards) | yes | **no day picker, no timeline, no paging** |
+| Recordings (47 controls) | no — rows of "11 AM–12 PM · 47 clips" | yes |
+
+So every "find that clip" began with a decision the app should never ask —
+*which page?* — and often needed both. That is exactly the owner's two stated
+worst parts ("finding past footage", "too many places to look") in one root cause.
+
+Direction chosen by a judge panel (4 independent IA proposals → 3 judges →
+synthesis, all verified against the real tree): **Live · Recap · Find**, staged
+so nothing is deleted until a replacement earns it. Six commits, all web-only
+except the last:
+
+- **Events paging** (`6fb270c`) — anything older than the newest 200 events was
+  literally unreachable. `/api/events` already supported `before`; the page just
+  never used it. Cursor is `oldest+1` with id-dedupe because the filter is strict
+  `<` on whole seconds — measured 3 events sharing the boundary second that a
+  naive cursor would have SILENTLY SKIPPED. Live: 200 → 397, oldest "3h ago" →
+  "Jul 21".
+- **The moment route** (`e0fca11`) — `#/live/<cam>/<ts>` opens a camera already
+  scrubbed to an instant. `parseHash` had always split and DISCARDED the third
+  segment, so this is purely additive. Two bugs found by testing, not reasoning:
+  `Timeline` anchors on its RIGHT edge (playhead fell off the end — now leads by
+  a quarter window, measured at 75.04%), and dropping the `/<ts>` left playback
+  on screen so the "live" route wasn't live.
+- **DayStrip + density calendar** (`3ea9825`, `3107f00`) — the day picker Events
+  never had, in the PRIMARY row, shared with Recordings. 13-week calendar shaded
+  by detections surfaces 7/10 (1026), 7/19 (534), 7/17 (298) out of 15 active
+  days in 91. Local midnight throughout. Wiring it into Recordings exposed a real
+  bug: `/api/recordings` bounds only the top, so picking a pruned day showed a
+  DIFFERENT day's footage under the right header (Jul 10 header, 7/1 rows).
+- **The two halves connect** (`ef0d7a4`) — "See in timeline" from the event
+  viewer and "Timeline" from Recordings rows; rows now carry their detections
+  ("· 12 camera motion, 12 camera tripwire, 4 person") derived from events the
+  page already fetched. A bucket outside the fetched window renders NOTHING, not
+  "0" — a zero there would claim an hour was quiet when we simply hadn't asked.
+- **Mobile** (`e803f78`) — my own new buttons were 28px; fixed in a SECOND
+  `@media` block after the base rules (the documented specificity gotcha), and
+  the calendar popover is viewport-anchored on phones.
+
+**Result, measured end to end: job 3 ("front-door car, some day last week") is
+now 3 interactions — open calendar, click the busiest-looking day, pick the
+camera — all pointing, no typing. Previously 7–12 across two pages with a hard
+dead end.**
+
+**⚠️ FINDING THAT OUTRANKS THE UX WORK — retention is ~6 hours, not 7 days**
+(`d061880`). A deep link to that morning's footage stopped resolving mid-session
+because the video was already deleted. `retention_days = 7` is only a ceiling;
+`retention_gb = 20` against a **78 GB/day** 4K write rate binds at **~6 hours**.
+The weekly heartbeat pushed "Keeping about 7 days of footage" to the owner's
+phone regardless. `util::retention_horizon` + `humanize_days` are now the single
+shared source (stats endpoint + heartbeat), reporting the horizon AND which cap
+binds; `/api/stats` gained `retention_limit` + `oldest_segment_ts`; the figure
+moved out of the collapsed storage disclosure to sit beside the day picker.
+**Owner decision outstanding:** raise `retention_gb` (E: has ~608 GB free; 200 GB
+≈ 2.5 days), record sub-streams, or accept 6 hours knowingly. Detections are
+unaffected — 30-day event retention, which is why the density calendar offers
+days whose video is long gone (Recordings now says so explicitly).
+
+**Next (deliberately not started):** Phase 2 — `/api/search` CLIP-ranks the
+newest 20 000 events GLOBALLY with no camera/time predicate, then the client
+filters the ~48 survivors, so a correctly-scoped query can honestly return zero
+while matches sit in the window. That is the only backend change in the plan.
+Phases 3–5 (a unified Find surface, then collapsing the nav to three doors) are
+gated on Find actually becoming how footage gets reached.
+
+### Earlier: alarm delivery moved off the detection thread, 2026-08-06
 
 `b32de46`, **253 core tests**, clippy -D clean, live-validated on :8081.
 
