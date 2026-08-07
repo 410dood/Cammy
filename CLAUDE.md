@@ -16,7 +16,48 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — UX phases 1-3 + two audit sweeps, 2026-08-07
 
-### Latest: docs/10 P1 implementation — 7 of 10 P1 items shipped, 2026-08-07
+### Latest: docs/10 P2 COMPLETE + first P3 batch, 2026-08-07
+
+**P2 finished:** `0dd350c` P2.4 provider pickers + prove-it buttons — SMTP
+picks Gmail/Outlook/iCloud (URL/port/app-password gotcha prefilled), offsite
+S3 picks Backblaze/Wasabi/R2/AWS (endpoint/region prefilled, fields relabeled
+in that provider's vocabulary) + `POST /api/offsite/test` PUT+DELETEs a tiny
+object and reports the provider's error verbatim (live against real B2:
+InvalidAccessKeyId); `POST /api/genai/probe` lists an Ollama/OpenAI
+endpoint's models (tries /api/tags then /v1/models, origin-only) so the
+vision-model field is a picker with a green/red connected state (live: 7
+models from the local Ollama), and **the deferred P1.10 VLM test shipped** —
+"Test this question" on the Alarms AI-verification field dry-runs the yes/no
+gate on the camera's newest snapshot via `POST /api/alarms/vlm_test` (live:
+llava answered both ways; verdict + raw reply + tested frame shown; RBAC
+camera-scoped; scoped user with a global rule must pick a camera). The two
+server-fetch endpoints are Admin-gated in auth.rs. `aabc1d7`+`3d49ca7` P2.5
+Family wizard — each mode's prose manual became "Set up now": pick camera →
+drag a box over the crib/couch/pool on the live frame (RectZoneDraw; pool
+adds ChildHeightEditor) → the app creates the zone (required-kind
+consequences stated in-step), flips toggles, ensures the mode's audio labels
+are monitored, creates the rules on an ntfy topic (prefilled from existing
+rules or generated) → per-rule "Send a test alert" (live: Pets wizard on
+side created Couch at the dragged coords + both rules, test push delivered;
+all state then restored). Prose kept as a "Manual steps" disclosure.
+
+**P3 started:** `48992ce` retention leads with "keep footage for" chips and
+an escalating honest readout (live on this install: "400 GB really keeps
+about 2 days — not the 7 days set above; raise to ~1183 GB") — the missing
+control the `d061880` 6-hour surprise proved; segment/aging/event-history
+knobs behind Advanced; recordings folder gains `GET /api/path_probe` (Admin;
+real write-test + free space) + "Check this folder" ("✓ writable · 291 GB
+free · room for about 2 days"); audio sensitivity slider ends labeled; MQTT
+prefix/timing fields behind Advanced. `21ab921` Recordings' empty-day link
+now carries the picked day into `#/find?day=…` (was bare #/events); zone
+kinds renamed "Only watch inside this area" / "Never alert inside this area".
+**Remaining P3 (docs/10):** model downloads in ModelsCard + per-camera model
+select, Insights deep-links, FloorPlan pin-by-id + drag + FOV cones,
+package_zone drawable, import file picker, ground-calib units, hwaccel
+probe, webhook template live preview, SSO presets, Events zone filter
+promotion.
+
+### Earlier: docs/10 P1 implementation — 7 of 10 P1 items shipped, 2026-08-07
 
 Same day, second pass: `8b1631b` P1.1 zone↔alarm binding (zone picker in
 Alarms scoped to the rule's camera, live "no drawn zone matches" warning +
