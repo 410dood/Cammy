@@ -866,9 +866,9 @@ function TuneModal({
           </div>
         </div>
         <p className="muted" style={{ marginTop: 0 }}>
-          Draw polygons on the live frame. <b style={{ color: COLORS.required }}>Required</b> zones keep
-          only objects inside them; <b style={{ color: COLORS.ignore }}>ignore</b> zones drop objects
-          inside; <b style={{ color: COLORS.mask }}>privacy masks</b> are blacked out before any
+          Draw polygons on the live frame. <b style={{ color: COLORS.required }}>Watch-inside</b> zones
+          only count objects inside them; <b style={{ color: COLORS.ignore }}>never-alert</b> zones drop
+          objects inside; <b style={{ color: COLORS.mask }}>privacy masks</b> are blacked out before any
           analysis or snapshot (continuous recordings are not masked).
         </p>
         <ZoneEditor

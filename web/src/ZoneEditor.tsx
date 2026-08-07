@@ -522,15 +522,17 @@ export default function ZoneEditor({
               type="button"
               className="btn btn-ghost"
               onClick={() => setDraw({ kind: "zone", zoneKind: "required", points: [] })}
+              title="Detections of the zone's objects only count inside it — e.g. only people actually on the driveway."
             >
-              + required zone
+              + watch-inside zone
             </button>
             <button
               type="button"
               className="btn btn-ghost"
               onClick={() => setDraw({ kind: "zone", zoneKind: "ignore", points: [] })}
+              title="Detections inside it are dropped — e.g. a busy street at the edge of the frame."
             >
-              + ignore zone
+              + never-alert zone
             </button>
             <button
               type="button"
@@ -683,8 +685,8 @@ export default function ZoneEditor({
                     );
                   }}
                 >
-                  <option value="required">required</option>
-                  <option value="ignore">ignore</option>
+                  <option value="required">Only watch inside this area</option>
+                  <option value="ignore">Never alert inside this area</option>
                 </select>
                 <button
                   type="button"

@@ -413,10 +413,12 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
                 undefined,
                 { weekday: "long", month: "long", day: "numeric" },
               )}`}
-              hint="Video is deleted once it passes your recording-history limit or the disk cap, which is usually sooner than detections are. The detections from that day may still be on the Events page."
+              hint="Video is deleted once it passes your recording-history limit or the disk cap, which is usually sooner than detections are. The detections from that day are likely still in Find."
               action={
-                <a className="btn btn-ghost" href="#/events">
-                  See that day&apos;s detections → Events
+                // Carry the day the user just picked (docs/10 P3) — Find's hash
+                // schema restores it, so the link lands scoped, not on "today".
+                <a className="btn btn-ghost" href={`#/find?day=${day}&view=list`}>
+                  See that day&apos;s detections → Find
                 </a>
               }
             />
