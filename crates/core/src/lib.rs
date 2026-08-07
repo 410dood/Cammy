@@ -19,6 +19,7 @@ mod attributes;
 mod audio;
 mod auth;
 mod db;
+mod degraded;
 mod deterrence;
 mod digest;
 pub mod evidence;

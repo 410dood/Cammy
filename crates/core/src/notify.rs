@@ -245,6 +245,43 @@ fn enqueue(rule_name: &str, event_id: i64, job: Outbound) -> Option<Outbound> {
     }
 }
 
+/// Edge-triggered health for the GLOBAL webhook (`Settings.webhook_url`) — the
+/// every-event feed most installs wire into Home Assistant. Shared by all three
+/// senders (detections, analytics/residential events, hand signals) so one
+/// unreachable endpoint produces ONE notification, not one per source.
+static GLOBAL_WEBHOOK: crate::degraded::Latch = crate::degraded::Latch::new();
+
+/// POST one event to the global webhook and surface a delivery failure.
+///
+/// Every caller used to throw the error away at `debug!` (or with `let _ =`).
+/// The per-RULE webhook path was made loud in `b6b42ee`; this one — the main
+/// integration feed, which fails for exactly the same reasons — was missed, so
+/// an owner whose Home Assistant automation had silently stopped receiving
+/// anything had nothing anywhere to tell them.
+///
+/// Runs inline on the caller's thread (unchanged): this is a 3 s POST, not the
+/// 10 s snapshot PUT that made rule actions worth queueing.
+pub fn post_global_webhook(db: &Db, url: &str, body: &str) {
+    let outcome = ureq::post(url)
+        .timeout(Duration::from_secs(3))
+        .set("Content-Type", "application/json")
+        .send_string(body);
+    let err = outcome.err().map(|e| e.to_string());
+    GLOBAL_WEBHOOK.report(
+        db,
+        err.as_deref(),
+        &crate::degraded::Messages {
+            kind: "webhook_error",
+            down_title: "Webhook is not receiving events",
+            down_body: "Cammy could not reach the webhook address in Settings, so anything \
+                        listening on it — a Home Assistant automation, a script — has stopped \
+                        being told about events. Alerts set up as alarm rules are unaffected.",
+            up_title: "Webhook is receiving events again",
+            up_body: "The webhook address in Settings is reachable again.",
+        },
+    );
+}
+
 /// An owned copy of [`SmtpConfig`], so a built message can cross a thread
 /// boundary into the dispatch worker.
 #[derive(Clone)]
@@ -593,6 +630,25 @@ pub fn fire(
     suppressed: u32,
     db: &Db,
 ) -> Vec<ActionOutcome> {
+    fire_unverified(rule, ev, mqtt_tx, suppressed, db, false)
+}
+
+/// [`fire`], plus the fact that this alert was supposed to be AI-verified and
+/// could not be (the vision endpoint was unreachable).
+///
+/// The VLM gate FAILS OPEN by design — a model that cannot be reached must never
+/// swallow a real alert. But firing anyway while saying nothing lets the owner
+/// believe a check happened that did not, which is the more expensive kind of
+/// wrong. Only the VLM gate passes `true`; every other dispatch site goes
+/// through [`fire`].
+pub fn fire_unverified(
+    rule: &AlarmRule,
+    ev: &AlarmEvent,
+    mqtt_tx: &std::sync::mpsc::Sender<EventMsg>,
+    suppressed: u32,
+    db: &Db,
+    unverified: bool,
+) -> Vec<ActionOutcome> {
     tracing::info!(rule = %rule.name, event = ev.event_id, suppressed, "alarm triggered");
     let outcomes: Vec<ActionOutcome> = rule
         .effective_actions()
@@ -644,6 +700,11 @@ pub fn fire(
     }
     if suppressed > 0 {
         body.push_str(&format!(" (+{suppressed} more while muted by cooldown)"));
+    }
+    if unverified {
+        // Sent BECAUSE the check failed, not after it passed. Without this the
+        // alert is indistinguishable from a verified one.
+        body.push_str(" — sent WITHOUT the AI check (the vision model could not be reached)");
     }
     if let Err(e) = db.add_alarm_notification(
         ev.ts,

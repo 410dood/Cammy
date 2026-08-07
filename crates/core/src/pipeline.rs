@@ -1507,6 +1507,7 @@ fn run_worker(
                         );
                         if !settings.webhook_url.is_empty() {
                             post_webhook(
+                                &db,
                                 &settings.webhook_url,
                                 &settings.webhook_template,
                                 &cam.name,
@@ -2125,9 +2126,7 @@ fn emit_analytics_event(
             "ts": now,
             "snapshot": snap_url,
         });
-        let _ = ureq::post(&settings.webhook_url)
-            .timeout(Duration::from_secs(3))
-            .send_json(payload);
+        crate::notify::post_global_webhook(db, &settings.webhook_url, &payload.to_string());
     }
     let _ = mqtt_tx.send(crate::mqtt::EventMsg {
         event_id: id,
@@ -2241,6 +2240,7 @@ fn handle_tamper_event(
 /// detection, so failures are logged at debug and dropped.
 #[allow(clippy::too_many_arguments)]
 fn post_webhook(
+    db: &crate::db::Db,
     url: &str,
     template: &str,
     camera: &str,
@@ -2250,8 +2250,8 @@ fn post_webhook(
     snapshot: &str,
 ) {
     let snapshot_url = format!("/api/snapshots/{snapshot}");
-    let result = if template.is_empty() {
-        let payload = serde_json::json!({
+    let body = if template.is_empty() {
+        serde_json::json!({
             "type": "detection",
             "event_id": event_id,
             "camera": camera,
@@ -2260,10 +2260,8 @@ fn post_webhook(
             "box": [d.x1, d.y1, d.x2, d.y2],
             "ts": ts,
             "snapshot": snapshot_url,
-        });
-        ureq::post(url)
-            .timeout(Duration::from_secs(3))
-            .send_json(payload)
+        })
+        .to_string()
     } else {
         let ev = crate::notify::AlarmEvent {
             event_id,
@@ -2286,14 +2284,9 @@ fn post_webhook(
             min_push_severity: 1,
             caption: None,
         };
-        ureq::post(url)
-            .timeout(Duration::from_secs(3))
-            .set("Content-Type", "application/json")
-            .send_string(&crate::notify::render_template(template, &ev))
+        crate::notify::render_template(template, &ev)
     };
-    if let Err(e) = result {
-        tracing::debug!("webhook delivery failed: {e}");
-    }
+    crate::notify::post_global_webhook(db, url, &body);
 }
 
 /// Apply per-camera zone and object-size gating to one detection. Returns true

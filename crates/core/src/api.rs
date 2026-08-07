@@ -3197,13 +3197,7 @@ async fn record_gesture(
             } else {
                 crate::notify::render_template(&webhook_template, &ev)
             };
-            if let Err(e) = ureq::post(&webhook_url)
-                .timeout(std::time::Duration::from_secs(3))
-                .set("Content-Type", "application/json")
-                .send_string(&body)
-            {
-                tracing::debug!("gesture webhook failed: {e}");
-            }
+            crate::notify::post_global_webhook(&db, &webhook_url, &body);
         }
         for (rule, suppressed) in &rules {
             crate::notify::fire(rule, &ev, &mqtt_tx, *suppressed, &db);

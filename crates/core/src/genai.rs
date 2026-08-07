@@ -293,12 +293,18 @@ fn interpret_yes_no(text: &str) -> Option<bool> {
 /// confirmed, `Some(false)` = denied, `None` = couldn't tell (error/timeout/
 /// ambiguous). The VLM gate fails OPEN on `None`. Reuses the captioner's model +
 /// endpoint; appends a one-word-answer instruction to the rule's prompt.
-fn vlm_confirm(s: &crate::db::Settings, prompt: &str, image_b64: &str) -> Option<bool> {
+///
+/// Also returns REACHABILITY, which the old `_ => None` threw away: "the model
+/// answered something I can't parse" and "there is no model" both produced
+/// `None`, so an owner whose endpoint was down could not be told — every
+/// "AI-verified" rule just fired unverified, forever, in silence.
+fn vlm_confirm(s: &crate::db::Settings, prompt: &str, image_b64: &str) -> (Option<bool>, Outcome) {
     let full = format!("{}\nAnswer with only one word: yes or no.", prompt.trim());
     let req = build_request(&s.genai_model, &full, image_b64);
     match call_vision(&s.genai_url, &s.genai_api_key, req) {
-        Ok(Some(text)) => interpret_yes_no(&text),
-        _ => None,
+        Ok(Some(text)) => (interpret_yes_no(&text), Outcome::Reached),
+        Ok(None) => (None, Outcome::Reached),
+        Err(e) => (None, Outcome::Failed(e)),
     }
 }
 
@@ -405,16 +411,29 @@ pub fn probe_models(url: &str, api_key: &str) -> Result<(String, Vec<String>), S
 /// the detection thread). **Fails OPEN**: fires unless the model gives a clear
 /// "no", so a missing/unreachable model or an ambiguous reply never silently
 /// suppresses a real alert.
-fn vlm_gate(db: &Db, j: &VlmGateJob, mqtt_tx: &std::sync::mpsc::Sender<crate::mqtt::EventMsg>) {
+///
+/// Returns this job's endpoint reachability so the caller can raise the same
+/// edge-triggered "unavailable/recovered" notification the caption path raises.
+/// Failing open is right; failing open in SILENCE is not — it leaves the owner
+/// believing an AI check happened on every alert when none did.
+fn vlm_gate(
+    db: &Db,
+    j: &VlmGateJob,
+    mqtt_tx: &std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
+) -> Outcome {
     let s = db.settings();
-    let verdict = if s.genai_enabled && !s.genai_url.trim().is_empty() {
+    let genai_on = s.genai_enabled && !s.genai_url.trim().is_empty();
+    let mut outcome = Outcome::Skipped;
+    let verdict = if genai_on {
         match (
             std::fs::read(&j.snapshot_path),
             j.rule.vlm_prompt.as_deref(),
         ) {
             (Ok(bytes), Some(prompt)) if !prompt.trim().is_empty() => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                vlm_confirm(&s, prompt, &b64)
+                let (v, o) = vlm_confirm(&s, prompt, &b64);
+                outcome = o;
+                v
             }
             // No snapshot / no prompt → can't verify → fail open.
             _ => None,
@@ -422,9 +441,12 @@ fn vlm_gate(db: &Db, j: &VlmGateJob, mqtt_tx: &std::sync::mpsc::Sender<crate::mq
     } else {
         None // captioner/model disabled → can't verify → fail open
     };
+    // The rule ASKED for verification and the endpoint could not answer. Say so
+    // on the alert itself; anything else is a false claim of a check.
+    let unverified = matches!(outcome, Outcome::Failed(_));
     if verdict == Some(false) {
         tracing::info!(rule = %j.rule.name, event = j.event_id, "vlm gate: suppressed (model said no)");
-        return;
+        return outcome;
     }
     // P2.8b feedback learning: quiet this AI-verified fire if the event's object
     // crop looks like one the user thumbs-downed on this camera + label. The crop
@@ -440,27 +462,46 @@ fn vlm_gate(db: &Db, j: &VlmGateJob, mqtt_tx: &std::sync::mpsc::Sender<crate::mq
                 rule = %j.rule.name, event = j.event_id,
                 "vlm gate: suppressed by feedback (crop matches a thumbs-down)"
             );
-            return;
+            return outcome;
         }
     }
     // Describe-in-notification: reuse the caption the Caption job may have
     // already written, else generate one now (fail open — a model error just
     // fires a normal caption-less alert). Saved onto the event either way so
     // the UI shows what the push said.
-    let caption = (j.rule.describe && s.genai_enabled && !s.genai_url.trim().is_empty())
-        .then(|| match db.event_caption(j.event_id) {
+    let mut caption: Option<String> = None;
+    if j.rule.describe && genai_on {
+        caption = match db.event_caption(j.event_id) {
             Ok(Some(c)) => Some(c),
-            _ => std::fs::read(&j.snapshot_path).ok().and_then(|bytes| {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                let req = build_request(&s.genai_model, &prompt_for(&j.label, &j.camera), &b64);
-                let caption = call_vision(&s.genai_url, &s.genai_api_key, req)
-                    .ok()
-                    .flatten()?;
-                let _ = db.set_event_caption(j.event_id, &caption);
-                Some(caption)
-            }),
-        })
-        .flatten();
+            _ => match std::fs::read(&j.snapshot_path) {
+                Ok(bytes) => {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    let req = build_request(&s.genai_model, &prompt_for(&j.label, &j.camera), &b64);
+                    match call_vision(&s.genai_url, &s.genai_api_key, req) {
+                        Ok(text) => {
+                            // A `describe`-only rule makes no other call, so this
+                            // is where its reachability comes from — without it a
+                            // describe-only user got no signal either.
+                            if matches!(outcome, Outcome::Skipped) {
+                                outcome = Outcome::Reached;
+                            }
+                            if let Some(c) = text {
+                                let _ = db.set_event_caption(j.event_id, &c);
+                                Some(c)
+                            } else {
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            outcome = Outcome::Failed(e);
+                            None
+                        }
+                    }
+                }
+                Err(_) => None,
+            },
+        };
+    }
     let smtp = crate::notify::smtp_cfg(&s);
     let ev = crate::notify::AlarmEvent {
         event_id: j.event_id,
@@ -485,9 +526,10 @@ fn vlm_gate(db: &Db, j: &VlmGateJob, mqtt_tx: &std::sync::mpsc::Sender<crate::mq
     };
     tracing::info!(
         rule = %j.rule.name, event = j.event_id, confirmed = ?verdict,
-        described = caption.is_some(), "deferred alarm: firing"
+        described = caption.is_some(), unverified, "deferred alarm: firing"
     );
-    crate::notify::fire(&j.rule, &ev, mqtt_tx, j.suppressed, db);
+    crate::notify::fire_unverified(&j.rule, &ev, mqtt_tx, j.suppressed, db, unverified);
+    outcome
 }
 
 /// Decide the in-app notification (if any) for a caption outcome, given whether
@@ -581,7 +623,13 @@ pub fn run(
                         let outcome = caption_one(&db, &job);
                         report_reachability(&db, &outcome, &mut err_notified);
                     }
-                    Job::VlmGate(j) => vlm_gate(&db, &j, &mqtt_tx),
+                    Job::VlmGate(j) => {
+                        // Same edge-triggered surface as the caption path: a
+                        // vlm_prompt-only owner used to get NO signal that their
+                        // model was down while every rule fired unverified.
+                        let outcome = vlm_gate(&db, &j, &mqtt_tx);
+                        report_reachability(&db, &outcome, &mut err_notified);
+                    }
                 }
             }
             Err(RecvTimeoutError::Timeout) => continue,
@@ -598,7 +646,7 @@ pub fn run(
         stats.depth.fetch_sub(1, Ordering::Relaxed);
         match job {
             Job::VlmGate(j) if std::time::Instant::now() < deadline => {
-                vlm_gate(&db, &j, &mqtt_tx);
+                let _ = vlm_gate(&db, &j, &mqtt_tx);
                 fired += 1;
             }
             Job::VlmGate(_) => lost_alarms += 1,
@@ -767,6 +815,31 @@ mod tests {
         assert_eq!(backlog_transition(0, true), Some(false));
         // Recovered state stays quiet.
         assert_eq!(backlog_transition(0, false), None);
+    }
+
+    /// The VLM gate used to collapse "the model gave an unparseable answer" and
+    /// "there is no model" into the same `None`, so an unreachable endpoint could
+    /// not be reported and every AI-verified rule fired unverified in silence.
+    /// A closed local port is refused instantly, so this stays fast.
+    #[test]
+    fn vlm_confirm_reports_an_unreachable_endpoint() {
+        let s = crate::db::Settings {
+            genai_enabled: true,
+            genai_url: "http://127.0.0.1:9/api/generate".into(),
+            genai_model: "llava".into(),
+            ..Default::default()
+        };
+        let (verdict, outcome) = vlm_confirm(&s, "Is a person there?", "QUJD");
+        // Fails OPEN — the gate must not suppress on an outage…
+        assert_eq!(verdict, None);
+        // …but the outage is now REPORTABLE rather than indistinguishable from
+        // an ambiguous reply, which is what feeds err_transition.
+        assert!(
+            matches!(outcome, Outcome::Failed(_)),
+            "an unreachable endpoint must be Failed, not Reached"
+        );
+        // And that is exactly what stamps the alert as unverified.
+        assert!(matches!(outcome, Outcome::Failed(_)));
     }
 
     #[test]
