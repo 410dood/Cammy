@@ -127,11 +127,8 @@ moved out of the collapsed storage disclosure to sit beside the day picker.
 unaffected — 30-day event retention, which is why the density calendar offers
 days whose video is long gone (Recordings now says so explicitly).
 
-**Next (deliberately not started):** Phase 2 — `/api/search` CLIP-ranks the
-newest 20 000 events GLOBALLY with no camera/time predicate, then the client
-filters the ~48 survivors, so a correctly-scoped query can honestly return zero
-while matches sit in the window. That is the only backend change in the plan.
-Phases 3–5 (a unified Find surface, then collapsing the nav to three doors) are
+**Phase 2 shipped the same day** (`a5d2989` — see the top of this file). Phases
+3–5 (a unified Find surface, then collapsing the nav to three doors) remain
 gated on Find actually becoming how footage gets reached.
 
 ### Earlier: alarm delivery moved off the detection thread, 2026-08-06
