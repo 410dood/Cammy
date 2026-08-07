@@ -14,7 +14,52 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — UX phase 1 (navigation) + two audit sweeps, 2026-08-06
+## Current status: v0.4 — UX phases 1-2 + two audit sweeps, 2026-08-06
+
+### Latest: UX phase 2 — the search now answers the question you asked, 2026-08-06
+
+`a5d2989` (+ `22d01b2`), **256 core tests**, clippy -D + fmt clean, tsc+vite
+green, release-rebuilt and live-validated on :8081. This was the only backend
+change in the plan.
+
+`SearchQuery` was literally `{ q, limit }` and `search_corpus` CLIP-ranked the
+newest 20 000 events **globally** with no predicate, so the cap was spent on
+whatever happened most recently and `Events.tsx` then re-filtered the ~48
+survivors client-side. **Measured before the fix: front-door has two events
+literally labelled `car` on 2026-08-05, and `/api/search?q=car` scoped to that
+day returned 0** — the global top-48 was 38 front-door + 10 ptz-cam from other
+days. Phase 1 had just made the day picker the PRIMARY control, which turned
+that silent discard into an active lie.
+
+`SearchQuery` gained `camera_id`/`label`/`after`/`before` (all `Option`);
+`search_corpus` takes a `db::SearchScope` and appends the **same predicate
+shape `list_events` uses**, so the two surfaces can't drift. Still on the read
+pool. No schema touched, no `SCHEMA_VERSION` bump. **RBAC is unchanged and
+stays where it was** — `allowed_cameras` before, `camera_allowed` per result
+after; the new filter composes WITH it, never around it. Verified live over the
+LAN IP with a viewer scoped to camera 3 (loopback is admin, so this needed a
+real session): asking for camera 5 or 4 returns 0, unscoped returns only
+front-door.
+
+Web: Events passes the active window, and — the other half of the bug —
+**drops the client-side time re-filter that was eating the results**. The
+search re-runs when the window changes rather than showing results from a
+window you already left, and an empty scoped search says what it looked at and
+offers "Search all time, all cameras" in one click.
+
+- **The regression test was confirmed to fail against the bug** (neutered the
+  predicate; it failed) and drives the real `search_corpus`, not a copy of its
+  SQL — the exact trap a previous test in this repo fell into.
+- **`22d01b2`, found while validating, not by reading:** `exportUrl` built its
+  own params from `fromTime`/`toTime` and so **ignored the day picker** — with
+  a day selected, Export CSV downloaded ALL TIME. Now built from the shared
+  `filterArgs()`. LIVE: 7 rows for the picked day, was unbounded.
+- **Worth knowing for Phase 3:** a bare `car` never reaches `/api/search` —
+  `parseNL` resolves it to a structured `label` filter and the list serves it.
+  Only residual text hits the ranker.
+
+**Next: Phase 3** (a unified Find surface) — not started, and Phases 4-5 stay
+gated on Find actually becoming how footage gets reached.
 
 ### Latest: UX phase 1 — navigation rebuilt around the three real jobs, 2026-08-06
 

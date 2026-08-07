@@ -1,8 +1,22 @@
-> **Status note (added when this plan was filed, 2026-08-06).**
+> **Status note (added when this plan was filed, 2026-08-06; updated same day).**
 > Phase 1 is SHIPPED — commits `6fb270c`, `e0fca11`, `3ea9825`, `ef0d7a4`,
-> `3107f00`, `e803f78`. Phase 2 (scoping `/api/search`) is the next task and is
-> NOT started. Phases 3-5 are gated: do not collapse the nav until a unified
+> `3107f00`, `e803f78`. **Phase 2 is SHIPPED — `a5d2989`** (+ `22d01b2`, a CSV
+> export bug found while validating it). Phase 3 is the next task and is NOT
+> started. Phases 3-5 are gated: do not collapse the nav until a unified
 > Find surface has actually become how footage gets reached.
+>
+> Phase 2 as built matches this plan with two additions worth knowing:
+> `search_corpus` takes a `db::SearchScope` struct rather than four positional
+> options, and the empty-scoped-search state offers "Search all time, all
+> cameras" in one click (the plan asked for it in its validation steps only).
+> A third thing the plan didn't anticipate: **the search now re-runs when the
+> window changes**, because leaving results from an abandoned window on screen
+> is the same lie in a different direction.
+>
+> One thing to know before Phase 3: a bare `car` never reaches `/api/search` at
+> all — `parseNL` resolves it to a structured `label` filter and the list serves
+> it. Only the residual text hits the ranker. Any Find surface that presents
+> search as the entry point inherits that split.
 >
 > Two claims in this plan were overtaken by events and are already done:
 > the 200-event wall (fixed in `6fb270c`) and the `#/live/<cam>/<ts>` moment
