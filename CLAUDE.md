@@ -65,10 +65,18 @@ plans healed on load, repair persisted; CameraHotspots matches id-first)
 package drop spot drawn via `RectZoneDraw` (now shared in
 SizeFilterEditor.tsx) instead of curl-only. SSO card gains gateway presets
 (Authelia / Cloudflare Access / oauth2-proxy / Tailscale prefill both
-headers). **Remaining P3 (docs/10):** model downloads in ModelsCard +
-per-camera model select, import file picker, ground-calib units + known-
-length calibration, FOV cones on Map pins, "show my request headers" for
-SSO.
+headers). **Third pass:** `c9df2b8` models download themselves — `models_dl.rs` holds
+a FIXED HuggingFace catalog (every URL HEAD-verified; targets unit-test-
+pinned to the presence-check filenames), `POST /api/models/download`
+streams to `.part` + rename with a polled job board; the Models card shows
+per-file progress and flips to "installed" without a reload (live: all
+148 MB of ggml-base.en.bin streamed + done; whisper offers Fast/More
+accurate tiers; pose stays honestly non-downloadable). Plus
+`GET /api/echo_headers` + "Show my request headers" on the SSO card
+(cookie/authorization redacted server-side — verified). Both Admin-gated.
+**Remaining P3 (docs/10):** import file picker, ground-calib units +
+known-length calibration, FOV cones on Map pins, per-camera model select
+from installed models.
 
 ### Earlier: docs/10 P1 implementation — 7 of 10 P1 items shipped, 2026-08-07
 
