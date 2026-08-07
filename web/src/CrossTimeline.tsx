@@ -15,7 +15,11 @@ interface Block {
   end: number;
 }
 
-function coalesce(segs: Segment[], segmentSecs: number): Block[] {
+/** Merge per-segment rows into continuous coverage spans. Exported because
+ *  Find's film strip needs the same notion of "footage runs from here to here"
+ *  that these lanes draw — if the two disagreed, the strip and the timeline
+ *  would describe the same recording differently. */
+export function coalesce(segs: Segment[], segmentSecs: number): Block[] {
   const sorted = [...segs].sort((a, b) => a.start_ts - b.start_ts);
   const blocks: Block[] = [];
   for (const s of sorted) {
@@ -28,6 +32,83 @@ function coalesce(segs: Segment[], segmentSecs: number): Block[] {
     }
   }
   return blocks;
+}
+
+/** Most positions a lane will ever draw. A lane is ~600 px wide here, so past
+ *  a few hundred nodes the extras are painting on a pixel that is already
+ *  occupied — measured on this NVR's 07/10: the pool3 lane put 821 ticks into
+ *  112 distinct pixel columns, 38 of them on one single column. Those 38 were
+ *  not merely wasted nodes; they made the lane LIE, because the tooltip you got
+ *  when you hovered that column belonged to whichever tick happened to be last
+ *  in DOM order and gave no hint the other 37 existed. */
+const MAX_TICKS_PER_LANE = 400;
+
+/** One drawn position on a lane: either a single event (identical to what this
+ *  component always drew) or a bin standing in for several. */
+export interface Tick {
+  key: string;
+  ts: number;
+  cls: string;
+  title: string;
+  count: number;
+}
+
+/** Collapse a lane's events into at most `MAX_TICKS_PER_LANE` drawn positions.
+ *
+ *  A bin holding exactly one event keeps that event's exact timestamp, class
+ *  and tooltip, so a quiet lane renders pixel-for-pixel as it did before. A bin
+ *  holding several sits at its members' mean time, takes the class of whichever
+ *  class is commonest in it, and — the point — says how many it stands for. */
+export function binTicks(evs: CamEvent[], start: number, windowSecs: number): Tick[] {
+  if (windowSecs <= 0) return [];
+  const size = windowSecs / MAX_TICKS_PER_LANE;
+  const bins = new Map<number, CamEvent[]>();
+  for (const ev of evs) {
+    const b = Math.min(MAX_TICKS_PER_LANE - 1, Math.max(0, Math.floor((ev.ts - start) / size)));
+    const arr = bins.get(b);
+    if (arr) arr.push(ev);
+    else bins.set(b, [ev]);
+  }
+  const fmt = (ts: number) => new Date(ts * 1000).toLocaleTimeString();
+  const out: Tick[] = [];
+  for (const [b, members] of bins) {
+    if (members.length === 1) {
+      const ev = members[0];
+      out.push({
+        key: `e${ev.id}`,
+        ts: ev.ts,
+        cls: eventClass(ev.label),
+        title: `${prettyLabel(ev.label)} · ${fmt(ev.ts)}`,
+        count: 1,
+      });
+      continue;
+    }
+    const tally = new Map<string, number>();
+    const clsTally = new Map<string, number>();
+    let sum = 0;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const ev of members) {
+      sum += ev.ts;
+      if (ev.ts < lo) lo = ev.ts;
+      if (ev.ts > hi) hi = ev.ts;
+      tally.set(ev.label, (tally.get(ev.label) ?? 0) + 1);
+      const c = eventClass(ev.label);
+      clsTally.set(c, (clsTally.get(c) ?? 0) + 1);
+    }
+    const top = [...tally.entries()].sort((a, b2) => b2[1] - a[1]).slice(0, 3);
+    const cls = [...clsTally.entries()].sort((a, b2) => b2[1] - a[1])[0][0];
+    out.push({
+      key: `b${b}`,
+      ts: Math.round(sum / members.length),
+      cls,
+      title:
+        `${members.length} detections · ${fmt(lo)}${hi !== lo ? `–${fmt(hi)}` : ""}` +
+        ` · ${top.map(([l, n]) => `${n} ${prettyLabel(l)}`).join(", ")}`,
+      count: members.length,
+    });
+  }
+  return out;
 }
 
 export function eventClass(label: string): string {
@@ -61,18 +142,27 @@ export function EventLegend() {
 
 /** Protect-style activity overview: per-interval detection counts as a slim
  *  bar chart over the same time axis as a timeline, so you can see WHERE the
- *  busy periods are before you scrub. Purely informational (bars aren't
- *  clickable — the timeline right below is the interaction surface). */
+ *  busy periods are before you scrub.
+ *
+ *  With no `onPick` the bars are inert `<span>`s inside a `role="img"`, exactly
+ *  as they have always been — Recordings and the camera detail view pass
+ *  nothing and are untouched. Give it an `onPick` and each bar becomes a real
+ *  `<button>` that narrows the window to its interval, and the wrapper stops
+ *  claiming to be a single image and becomes a labelled group. Find needs that:
+ *  seeing where the busy hour is and then being unable to click it is the
+ *  point of the strip left undone. */
 export function ActivityStrip({
   events,
   windowSecs,
   nowTs,
   embedded = false,
+  onPick,
 }: {
   events: CamEvent[];
   windowSecs: number;
   nowTs: number;
   embedded?: boolean;
+  onPick?: (from: number, to: number) => void;
 }) {
   const start = nowTs - windowSecs;
   const buckets = windowSecs <= 3600 ? 12 : windowSecs <= 6 * HOUR ? 24 : 48;
@@ -86,21 +176,39 @@ export function ActivityStrip({
   if (max === 0) return null;
   const fmt = (t: number) =>
     new Date(t * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const label = (n: number, i: number) =>
+    `${n} event${n === 1 ? "" : "s"} · ${fmt(start + i * size)}–${fmt(start + (i + 1) * size)}`;
   return (
     <div
-      className={`act-strip ${embedded ? "" : "standalone"}`}
-      role="img"
-      aria-label="Detections per interval across this window"
+      className={`act-strip ${embedded ? "" : "standalone"} ${onPick ? "pickable" : ""}`}
+      role={onPick ? "group" : "img"}
+      aria-label={
+        onPick
+          ? "Detections per interval — choose one to narrow the window to it"
+          : "Detections per interval across this window"
+      }
     >
-      {counts.map((n, i) => (
-        <span
-          key={i}
-          className="act-col"
-          title={`${n} event${n === 1 ? "" : "s"} · ${fmt(start + i * size)}–${fmt(start + (i + 1) * size)}`}
-        >
-          <span className="act-bar" style={{ height: `${n === 0 ? 0 : Math.max(14, (n / max) * 100)}%` }} />
-        </span>
-      ))}
+      {counts.map((n, i) =>
+        onPick ? (
+          <button
+            key={i}
+            type="button"
+            className="act-col"
+            title={label(n, i)}
+            aria-label={`Narrow to ${label(n, i)}`}
+            // An empty interval is still a real answer ("nothing here"), but
+            // narrowing to it would strand you on a blank window.
+            disabled={n === 0}
+            onClick={() => onPick(Math.round(start + i * size), Math.round(start + (i + 1) * size))}
+          >
+            <span className="act-bar" style={{ height: `${n === 0 ? 0 : Math.max(14, (n / max) * 100)}%` }} />
+          </button>
+        ) : (
+          <span key={i} className="act-col" title={label(n, i)}>
+            <span className="act-bar" style={{ height: `${n === 0 ? 0 : Math.max(14, (n / max) * 100)}%` }} />
+          </span>
+        )
+      )}
     </div>
   );
 }
@@ -168,15 +276,20 @@ export default function CrossTimeline({
   // instead of re-coalescing/filtering inside the render map on every cursor
   // move or parent re-render.
   const laneData = useMemo(() => {
-    const m = new Map<number, { blocks: Block[]; evs: CamEvent[] }>();
+    const m = new Map<number, { blocks: Block[]; evs: CamEvent[]; ticks: Tick[] }>();
     for (const cam of cameras) {
+      // Bound the top as well as the bottom: with a window that ends in the
+      // past (Find hands this a chosen day), a later event would otherwise be
+      // drawn past the right edge of an axis that does not cover it.
+      const evs = events.filter((e) => e.camera_id === cam.id && e.ts >= start && e.ts <= nowTs);
       m.set(cam.id, {
         blocks: coalesce(segments.filter((s) => s.camera_id === cam.id), segmentSecs),
-        evs: events.filter((e) => e.camera_id === cam.id && e.ts >= start),
+        evs,
+        ticks: binTicks(evs, start, windowSecs),
       });
     }
     return m;
-  }, [cameras, segments, events, segmentSecs, start]);
+  }, [cameras, segments, events, segmentSecs, start, nowTs, windowSecs]);
 
   return (
     <div className="xtl card">
@@ -200,7 +313,7 @@ export default function CrossTimeline({
         </div>
       )}
       {cameras.map((cam) => {
-        const { blocks, evs } = laneData.get(cam.id) ?? { blocks: [], evs: [] };
+        const { blocks, evs, ticks } = laneData.get(cam.id) ?? { blocks: [], evs: [], ticks: [] };
         return (
           <div className="xtl-row" key={cam.id}>
             <div className="xtl-name" title={cam.name}>{cam.name}</div>
@@ -245,12 +358,14 @@ export default function CrossTimeline({
                   style={{ left: `${pct(b.start)}%`, width: `${Math.max(0.3, ((b.end - b.start) / windowSecs) * 100)}%` }}
                 />
               ))}
-              {evs.map((ev) => (
+              {/* Click-to-snap still searches the RAW events above, so binning
+                  changes only what is drawn, never where a click lands. */}
+              {ticks.map((t) => (
                 <div
-                  key={ev.id}
-                  className={`xtl-evt ${eventClass(ev.label)}`}
-                  style={{ left: `${pct(ev.ts)}%` }}
-                  title={`${prettyLabel(ev.label)} · ${new Date(ev.ts * 1000).toLocaleTimeString()}`}
+                  key={t.key}
+                  className={`xtl-evt ${t.cls} ${t.count > 1 ? "stack" : ""}`}
+                  style={{ left: `${pct(t.ts)}%` }}
+                  title={t.title}
                 />
               ))}
             </div>

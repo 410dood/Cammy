@@ -1725,10 +1725,28 @@ button.lastseen-item:hover { background: var(--surface-hover); }
 .xtl-evt.person { background: var(--class-person); }
 .xtl-evt.vehicle { background: var(--class-vehicle); }
 .xtl-evt.audio { background: var(--class-audio); }
+/* A tick standing in for several detections at the same position. Wider, so a
+   busy stretch reads as busy rather than as one lone detection — before this
+   the extra ticks painted invisibly on top of each other. */
+.xtl-evt.stack { width: 4px; transform: translateX(-2px); }
 /* Activity overview strip — per-interval detection counts above a timeline. */
 .act-strip { display: flex; align-items: flex-end; height: 100%; }
 .act-strip.standalone { height: 30px; margin-bottom: 4px; }
 .act-col { flex: 1; height: 100%; display: flex; align-items: flex-end; padding: 0 1px; }
+/* Interactive variant (Find): the bars become real buttons that narrow the
+   window. Reset the button chrome so a pickable strip looks identical to the
+   inert one until you point at it. */
+.act-strip.pickable .act-col {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0 1px;
+  border-radius: 3px;
+}
+.act-strip.pickable .act-col:disabled { cursor: default; }
+.act-strip.pickable .act-col:hover:not(:disabled) { background: var(--surface-3); }
+.act-strip.pickable .act-col:hover:not(:disabled) .act-bar { opacity: 0.95; }
+.act-strip.pickable .act-col:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .act-bar { width: 100%; background: var(--accent); opacity: 0.55; border-radius: 2px 2px 0 0; }
 .act-lane { background: transparent; cursor: default; }
 .xtl-row:hover .act-lane { box-shadow: none; }
