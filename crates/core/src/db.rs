@@ -4159,6 +4159,34 @@ impl Db {
             .flatten())
     }
 
+    /// The newest event that still has a snapshot on record — optionally scoped
+    /// to one camera. Feeds the Alarms builder's "Test this question" (P2.4):
+    /// a VLM dry-run needs a real frame to ask about.
+    pub fn latest_snapshot_event(&self, camera_id: Option<i64>) -> Result<Option<(i64, String)>> {
+        let conn = self.conn();
+        let row = match camera_id {
+            Some(cid) => conn
+                .query_row(
+                    "SELECT id, snapshot FROM events
+                     WHERE snapshot IS NOT NULL AND camera_id = ?1
+                     ORDER BY ts DESC LIMIT 1",
+                    [cid],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()?,
+            None => conn
+                .query_row(
+                    "SELECT id, snapshot FROM events
+                     WHERE snapshot IS NOT NULL
+                     ORDER BY ts DESC LIMIT 1",
+                    [],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()?,
+        };
+        Ok(row)
+    }
+
     /// Store a speech-to-text transcript for an event (best-effort enrichment).
     pub fn set_event_transcript(&self, event_id: i64, transcript: &str) -> Result<()> {
         self.conn().execute(

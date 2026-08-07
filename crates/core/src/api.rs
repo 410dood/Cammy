@@ -124,6 +124,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/alarms/{id}/test", axum::routing::post(test_alarm_api))
         .route("/api/notify/test", axum::routing::post(notify_test_api))
+        .route("/api/offsite/test", axum::routing::post(offsite_test_api))
+        .route("/api/genai/probe", axum::routing::post(genai_probe_api))
+        .route("/api/alarms/vlm_test", axum::routing::post(vlm_test_api))
         .route("/api/alarms/stats", get(alarm_stats_api))
         .route("/api/onvif/inspect", get(onvif_inspect))
         .route("/api/tokens", get(list_tokens).post(create_token))
@@ -2453,7 +2456,9 @@ async fn motion_probe(
             .timeout(std::time::Duration::from_secs(5))
             .call()?;
         let mut buf = Vec::new();
-        resp.into_reader().take(32 * 1024 * 1024).read_to_end(&mut buf)?;
+        resp.into_reader()
+            .take(32 * 1024 * 1024)
+            .read_to_end(&mut buf)?;
         Ok(image::load_from_memory(&buf)?)
     };
     let (b1, s1) = (base.clone(), stream.clone());
@@ -2469,7 +2474,9 @@ async fn motion_probe(
             .timeout(std::time::Duration::from_secs(5))
             .call()?;
         let mut buf = Vec::new();
-        resp.into_reader().take(32 * 1024 * 1024).read_to_end(&mut buf)?;
+        resp.into_reader()
+            .take(32 * 1024 * 1024)
+            .read_to_end(&mut buf)?;
         Ok(image::load_from_memory(&buf)?)
     };
     let second = tokio::task::spawn_blocking(move || fetch2(base, stream))
@@ -2488,7 +2495,9 @@ async fn motion_probe(
     })
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "changed": changed, "regions": regions })))
+    Ok(Json(
+        serde_json::json!({ "changed": changed, "regions": regions }),
+    ))
 }
 
 // --- events ----------------------------------------------------------------
@@ -4643,7 +4652,9 @@ async fn notify_test_api(
 ) -> Json<serde_json::Value> {
     let target = req.target.trim().to_string();
     if req.kind != "email" && !(target.starts_with("http://") || target.starts_with("https://")) {
-        return Json(serde_json::json!({"ok": false, "error": "the target must be an http(s) URL"}));
+        return Json(
+            serde_json::json!({"ok": false, "error": "the target must be an http(s) URL"}),
+        );
     }
     let kind = req.kind.clone();
     let settings = st.db.settings();
@@ -4653,6 +4664,110 @@ async fn notify_test_api(
         Ok(Ok(())) => Json(serde_json::json!({"ok": true})),
         Ok(Err(e)) => Json(serde_json::json!({"ok": false, "error": e})),
         Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+/// POST /api/offsite/test — docs/10 P2.4: prove the SAVED S3 settings work by
+/// writing then deleting a tiny object, reporting the provider's error
+/// verbatim. Admin-gated (auth.rs) like the offsite settings themselves.
+async fn offsite_test_api(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let settings = st.db.settings();
+    match tokio::task::spawn_blocking(move || crate::offsite::test_connection(&settings)).await {
+        Ok(Ok(detail)) => Json(serde_json::json!({"ok": true, "detail": detail})),
+        Ok(Err(e)) => Json(serde_json::json!({"ok": false, "error": e})),
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct GenaiProbeReq {
+    url: String,
+    /// Which saved key to send: "genai" (captions) or "ask". The key itself
+    /// never round-trips through the browser.
+    #[serde(default)]
+    kind: String,
+}
+
+/// POST /api/genai/probe — docs/10 P2.4: list the models an Ollama /
+/// OpenAI-compatible endpoint actually serves, so "vision model" can be a
+/// picker with a real connected state instead of a guess-the-spelling textbox.
+/// Admin-gated (auth.rs): it makes the server GET a caller-supplied URL.
+async fn genai_probe_api(
+    State(st): State<AppState>,
+    Json(req): Json<GenaiProbeReq>,
+) -> Json<serde_json::Value> {
+    let s = st.db.settings();
+    let key = if req.kind == "ask" {
+        s.ask_api_key.clone()
+    } else {
+        s.genai_api_key.clone()
+    };
+    match tokio::task::spawn_blocking(move || crate::genai::probe_models(&req.url, &key)).await {
+        Ok(Ok((flavor, models))) => {
+            Json(serde_json::json!({"ok": true, "flavor": flavor, "models": models}))
+        }
+        Ok(Err(e)) => Json(serde_json::json!({"ok": false, "error": e})),
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct VlmTestReq {
+    prompt: String,
+    #[serde(default)]
+    camera_id: Option<i64>,
+}
+
+/// POST /api/alarms/vlm_test — docs/10 P2.4, closing the last P1.10 carve-out:
+/// dry-run an AI-check rule's yes/no question against the camera's most recent
+/// real snapshot and show the verdict + the model's raw reply, so the question
+/// is proven against reality before the rule is saved. Uses the saved GenAI
+/// settings; nothing fires and no event is written.
+async fn vlm_test_api(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<VlmTestReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let prompt = req.prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err(bad_request("enter the yes/no question first"));
+    }
+    // Per-camera RBAC: a scoped user only tests against frames they may see.
+    let allow = allowed_cameras(&st, &p)?;
+    if let Some(cid) = req.camera_id {
+        if !camera_allowed(&allow, cid) {
+            return Err(ApiError(StatusCode::FORBIDDEN, "forbidden".into()));
+        }
+    } else if allow.is_some() {
+        // A scoped user with a global rule: don't fall through to "any camera".
+        return Err(bad_request("pick a camera to test against"));
+    }
+    let Some((event_id, snap_rel)) = st.db.latest_snapshot_event(req.camera_id)? else {
+        return Ok(Json(serde_json::json!({
+            "ok": false,
+            "error": "no event with a snapshot to test against yet — wait for a detection first"
+        })));
+    };
+    let bytes = std::fs::read(st.snapshots_dir.join(&snap_rel)).map_err(|e| {
+        ApiError(
+            StatusCode::NOT_FOUND,
+            format!("that event's snapshot is gone from disk: {e}"),
+        )
+    })?;
+    let settings = st.db.settings();
+    match tokio::task::spawn_blocking(move || crate::genai::vlm_ask(&settings, &prompt, &bytes))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    {
+        Ok((verdict, raw)) => Ok(Json(serde_json::json!({
+            "ok": true,
+            "event_id": event_id,
+            "snapshot": format!("/api/snapshots/{snap_rel}"),
+            // null = ambiguous → the live gate FAILS OPEN (still fires).
+            "verdict": verdict,
+            "raw": raw,
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({"ok": false, "error": e}))),
     }
 }
 

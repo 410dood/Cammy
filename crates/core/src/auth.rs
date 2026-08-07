@@ -171,6 +171,11 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
         // Importing offline footage creates a camera row AND reads a server-local
         // filesystem path — both are Admin-only.
         || path == "/api/import"
+        // The offsite test uses the saved (Admin-only) S3 credentials, and the
+        // GenAI probe makes the server GET a caller-supplied URL (SSRF surface)
+        // — both stay as locked-down as the settings that feed them.
+        || path == "/api/offsite/test"
+        || path == "/api/genai/probe"
         || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
         // Installing/removing a license is a system-config action; a valid GET
         // (the trial countdown) stays Viewer-readable via the default below.

@@ -330,6 +330,89 @@ fn put_object(target: &Target, key: &str, data: &[u8]) -> anyhow::Result<()> {
     }
 }
 
+/// DELETE one object (used by the connection test to clean up after itself).
+/// S3 answers 204 for a delete — including of a key that doesn't exist.
+fn delete_object(target: &Target, key: &str) -> anyhow::Result<()> {
+    let encoded_path = sigv4::encode_path(&format!("/{}/{}", target.bucket, key));
+    let url = format!("{}{}", target.endpoint, encoded_path);
+    let now = Utc::now();
+    let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let datestamp = now.format("%Y%m%d").to_string();
+    let payload_hash = sigv4::sha256_hex(b"");
+    let headers = vec![
+        ("host".to_string(), target.host.clone()),
+        ("x-amz-content-sha256".to_string(), payload_hash.clone()),
+        ("x-amz-date".to_string(), amz_date.clone()),
+    ];
+    let authz = sigv4::authorization(
+        &sigv4::Request {
+            method: "DELETE",
+            canonical_uri: &encoded_path,
+            canonical_query: "",
+            headers: &headers,
+            payload_hash_hex: &payload_hash,
+        },
+        &sigv4::Credentials {
+            access_key: &target.access_key,
+            secret_key: &target.secret_key,
+            region: &target.region,
+            service: "s3",
+        },
+        &amz_date,
+        &datestamp,
+    );
+    let resp = ureq::delete(&url)
+        .timeout(Duration::from_secs(30))
+        .set("x-amz-date", &amz_date)
+        .set("x-amz-content-sha256", &payload_hash)
+        .set("Authorization", &authz)
+        .call();
+    match resp {
+        Ok(r) if (200..300).contains(&r.status()) => Ok(()),
+        Ok(r) => anyhow::bail!("S3 DELETE unexpected status {}", r.status()),
+        Err(ureq::Error::Status(code, r)) => {
+            let body = redact(&r.into_string().unwrap_or_default(), &target.access_key);
+            anyhow::bail!("S3 DELETE {code}: {}", truncate(&body, 300))
+        }
+        Err(e) => Err(anyhow::anyhow!("S3 DELETE transport error: {e}")),
+    }
+}
+
+/// docs/10 P2.4 — the Settings "Test connection" button: prove the saved
+/// endpoint/region/bucket/credentials actually work by writing (then deleting)
+/// a tiny marker object, and report the provider's error VERBATIM (redacted +
+/// truncated) instead of letting the first real upload fail silently an hour
+/// later. Deliberately ignores `offsite_backup_enabled` so the owner can test
+/// before flipping the switch on.
+pub fn test_connection(s: &crate::db::Settings) -> Result<String, String> {
+    // Borrow Target::from_settings' validation by testing on a copy with the
+    // enable flag forced on (it returns None for a disabled config).
+    let mut probe = s.clone();
+    probe.offsite_backup_enabled = true;
+    let target = Target::from_settings(&probe).ok_or_else(|| {
+        "not configured — fill in the endpoint URL, bucket and both keys, then Save".to_string()
+    })?;
+    let key = if target.prefix.is_empty() {
+        "cammy-connection-test.txt".to_string()
+    } else {
+        format!("{}/cammy-connection-test.txt", target.prefix)
+    };
+    let body = b"Cammy connection test - safe to delete.";
+    put_object(&target, &key, body).map_err(|e| format!("{e:#}"))?;
+    // Best-effort cleanup; a delete failure is still a working *upload* target,
+    // so report it as a caveat rather than a hard failure.
+    match delete_object(&target, &key) {
+        Ok(()) => Ok(format!(
+            "uploaded and deleted a test object ({}/{key})",
+            target.bucket
+        )),
+        Err(e) => Ok(format!(
+            "upload worked, but cleanup failed — delete {}/{key} yourself ({e:#})",
+            target.bucket
+        )),
+    }
+}
+
 fn truncate(s: &str, max: usize) -> String {
     let s = s.trim();
     if s.chars().count() > max {

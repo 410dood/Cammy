@@ -7,6 +7,71 @@ import { DurationPicker } from "../tuning";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/// docs/10 P2.4 — "Test this question" for the AI-verification gate (the last
+/// P1.10 carve-out): dry-run the yes/no question against the camera's most
+/// recent real snapshot and show the model's raw answer next to what the gate
+/// would DO with it, before the rule is saved. Server-side; nothing fires.
+function VlmTestButton({ prompt, cameraId }: { prompt: string; cameraId: number | "" }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<null | {
+    verdict: boolean | null;
+    raw: string;
+    snapshot?: string;
+  }>(null);
+  // A new question invalidates the old answer.
+  useEffect(() => setRes(null), [prompt, cameraId]);
+  if (!prompt.trim()) return null;
+  return (
+    <span style={{ marginTop: 4 }}>
+      <span className="row" style={{ alignItems: "center", gap: 8 }}>
+        <button
+          type="button"
+          className="btn btn-ghost ev-act"
+          disabled={busy}
+          title="Asks the vision model this question about the camera's most recent event snapshot — no alert fires."
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const r = await api.vlmTest(prompt.trim(), cameraId === "" ? null : cameraId);
+              if (r.ok) setRes({ verdict: r.verdict ?? null, raw: r.raw ?? "", snapshot: r.snapshot });
+              else toast.error(`Test failed: ${r.error}`);
+            } catch (e) {
+              toast.error(`Test failed: ${errMsg(e)}`);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? "Asking the model…" : "Test this question"}
+        </button>
+        {res &&
+          (res.verdict === true ? (
+            <span style={{ color: "var(--success)", fontSize: "var(--text-sm)" }}>
+              Model answered “{res.raw || "yes"}” — this alert would <b>fire</b>.
+            </span>
+          ) : res.verdict === false ? (
+            <span style={{ color: "var(--warn)", fontSize: "var(--text-sm)" }}>
+              Model answered “{res.raw || "no"}” — this alert would be <b>held back</b>.
+            </span>
+          ) : (
+            <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
+              Answer was unclear{res.raw ? ` (“${res.raw}”)` : ""} — the rule fails open and
+              would still fire.
+            </span>
+          ))}
+      </span>
+      {res?.snapshot && (
+        <img
+          src={res.snapshot}
+          alt="The snapshot the question was tested against"
+          style={{ marginTop: 6, maxWidth: 220, borderRadius: 6, display: "block" }}
+        />
+      )}
+    </span>
+  );
+}
+
 /// Client-side approximation of the server's AlarmRule::matches, used for the
 /// historical "would have matched" preview and the rules-table 24h counts.
 /// Same semantics for the event-shaped conditions (exact label, substring
@@ -1279,6 +1344,7 @@ export default function Alarms({
                   before this rule fires (needs AI captions in Settings). Fails open — a model
                   outage never silences the rule. Detection events only.
                 </small>
+                <VlmTestButton prompt={vlmPrompt} cameraId={cameraId} />
               </label>
               <div
                 className="row"

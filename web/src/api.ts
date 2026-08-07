@@ -1048,6 +1048,33 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kind, target }),
     }),
+  /** Test the SAVED offsite S3 settings: PUT + DELETE a tiny object (P2.4). */
+  offsiteTest: () =>
+    req<{ ok: boolean; detail?: string; error?: string }>("/api/offsite/test", {
+      method: "POST",
+      body: "{}",
+    }),
+  /** List the models an Ollama / OpenAI-compatible endpoint serves (P2.4).
+   *  kind picks which SAVED api key rides along ("genai" | "ask"). */
+  genaiProbe: (url: string, kind: "genai" | "ask") =>
+    req<{ ok: boolean; flavor?: string; models?: string[]; error?: string }>(
+      "/api/genai/probe",
+      { method: "POST", body: JSON.stringify({ url, kind }) },
+    ),
+  /** Dry-run an AI-check rule's yes/no question against the camera's most
+   *  recent snapshot (P2.4 — the last P1.10 carve-out). */
+  vlmTest: (prompt: string, camera_id?: number | null) =>
+    req<{
+      ok: boolean;
+      verdict?: boolean | null;
+      raw?: string;
+      event_id?: number;
+      snapshot?: string;
+      error?: string;
+    }>("/api/alarms/vlm_test", {
+      method: "POST",
+      body: JSON.stringify({ prompt, camera_id: camera_id ?? null }),
+    }),
   /** Hybrid (CLIP + speech/caption) event search. `scope` narrows what the
    *  server ranks — without it the ranker spends its cap on the newest events
    *  globally, so a query about one camera or one day can come back empty while

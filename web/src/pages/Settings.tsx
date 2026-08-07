@@ -77,6 +77,236 @@ function TestSendButton({ kind, target }: { kind: "webhook" | "ntfy"; target: st
   );
 }
 
+/// docs/10 P2.4 — provider-first email setup: pick "Gmail" and the URL/port/
+/// encryption are filled in, with that provider's app-password gotcha stated
+/// up front, instead of asking a homeowner to know smtps:// vs smtp://.
+const SMTP_PROVIDERS = [
+  {
+    key: "gmail",
+    name: "Gmail / Google Workspace",
+    url: "smtps://smtp.gmail.com:465",
+    host: "smtp.gmail.com",
+    hint:
+      "Username is your full Gmail address. Gmail rejects your normal password here — create an app password (Google Account → Security → 2-Step Verification → App passwords) and use that.",
+  },
+  {
+    key: "outlook",
+    name: "Outlook.com / Hotmail",
+    url: "smtp://smtp-mail.outlook.com:587",
+    host: "smtp-mail.outlook.com",
+    hint:
+      "Username is your full address. With two-step verification on, create an app password at account.microsoft.com → Security.",
+  },
+  {
+    key: "icloud",
+    name: "iCloud Mail",
+    url: "smtp://smtp.mail.me.com:587",
+    host: "smtp.mail.me.com",
+    hint:
+      "Username is your @icloud.com address. iCloud requires an app-specific password — create one at appleid.apple.com → Sign-In and Security.",
+  },
+] as const;
+
+function smtpProviderFor(url: string): string {
+  const p = SMTP_PROVIDERS.find((p) => url.includes(p.host));
+  if (p) return p.key;
+  return url.trim() ? "other" : "";
+}
+
+/// docs/10 P2.4 — provider-first S3 setup: pick the storage service and the
+/// endpoint/region come pre-filled, and the credential fields speak that
+/// provider's vocabulary (Backblaze says "keyID", not "access key ID").
+const S3_PROVIDERS = [
+  {
+    key: "b2",
+    name: "Backblaze B2",
+    endpoint: "https://s3.us-west-004.backblazeb2.com",
+    region: "us-west-004",
+    access: "keyID",
+    secret: "applicationKey",
+    hint:
+      "Backblaze → App Keys → Add a New Application Key (scope it to the bucket). Your bucket page shows the real endpoint — s3.<region>.backblazeb2.com; make the region below match it.",
+  },
+  {
+    key: "wasabi",
+    name: "Wasabi",
+    endpoint: "https://s3.us-east-1.wasabisys.com",
+    region: "us-east-1",
+    access: "access key",
+    secret: "secret key",
+    hint:
+      "Wasabi console → Access Keys. Change us-east-1 in both fields to your bucket's region if it lives elsewhere.",
+  },
+  {
+    key: "r2",
+    name: "Cloudflare R2",
+    endpoint: "https://<account-id>.r2.cloudflarestorage.com",
+    region: "auto",
+    access: "access key ID",
+    secret: "secret access key",
+    hint:
+      "Cloudflare dashboard → R2 → Manage R2 API Tokens → Create API Token (Object Read & Write). Replace <account-id> with your account ID (shown on the R2 overview page). Region stays \"auto\".",
+  },
+  {
+    key: "aws",
+    name: "Amazon S3",
+    endpoint: "https://s3.us-east-1.amazonaws.com",
+    region: "us-east-1",
+    access: "access key ID",
+    secret: "secret access key",
+    hint:
+      "IAM → Users → Security credentials → Create access key. Set both fields to your bucket's region (the endpoint is s3.<region>.amazonaws.com).",
+  },
+] as const;
+
+function s3ProviderFor(endpoint: string): string {
+  if (endpoint.includes("backblazeb2.com")) return "b2";
+  if (endpoint.includes("wasabisys.com")) return "wasabi";
+  if (endpoint.includes("r2.cloudflarestorage.com")) return "r2";
+  if (endpoint.includes("amazonaws.com")) return "aws";
+  return endpoint.trim() ? "other" : "";
+}
+
+/// "Test connection" for the offsite card (P2.4): PUT + DELETE a tiny object
+/// with the SAVED settings and report the provider's answer verbatim.
+function OffsiteTestButton({ configured }: { configured: boolean }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  return (
+    <span style={{ marginTop: 4 }}>
+      <button
+        type="button"
+        className="btn btn-ghost ev-act"
+        disabled={busy || !configured}
+        title={
+          configured
+            ? "Uploads then deletes a tiny test object using the last SAVED settings — save your changes first."
+            : "Fill in the endpoint, bucket and keys first."
+        }
+        onClick={async () => {
+          setBusy(true);
+          try {
+            const r = await api.offsiteTest();
+            if (r.ok) toast.success(`Connection works — ${r.detail}`);
+            else toast.error(`Connection test failed: ${r.error}`);
+          } catch (e) {
+            toast.error(`Connection test failed: ${errMsg(e)}`);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "Testing…" : "Test connection"}
+      </button>
+    </span>
+  );
+}
+
+/// P2.4 — the "vision model" / "model" field with a real connected state: a
+/// "Check connection" probe asks the endpoint what models it actually serves
+/// (server-side GET of /api/tags or /v1/models), turning the guess-the-spelling
+/// textbox into a picker with a green/red dot.
+function AiModelField({
+  label,
+  url,
+  kind,
+  model,
+  placeholder,
+  onModel,
+}: {
+  label: string;
+  url: string;
+  kind: "genai" | "ask";
+  model: string;
+  placeholder: string;
+  onModel: (m: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [probe, setProbe] = useState<
+    | null
+    | { ok: true; flavor: string; models: string[] }
+    | { ok: false; error: string }
+  >(null);
+  // A different endpoint means the last probe's model list no longer applies.
+  useEffect(() => setProbe(null), [url]);
+  const models = probe && probe.ok ? probe.models : null;
+  // Ollama treats a bare name as name:latest — don't call "llava" missing when
+  // "llava:latest" is installed.
+  const installed = (m: string) =>
+    !!models && (models.includes(m) || models.includes(`${m}:latest`));
+  return (
+    <label className="field" style={{ minWidth: 220 }}>
+      {label}
+      {models && models.length > 0 ? (
+        <select
+          value={model}
+          onChange={(e) => {
+            if (e.target.value === "__other__") setProbe(null);
+            else onModel(e.target.value);
+          }}
+        >
+          {!models.includes(model) && (
+            <option value={model}>
+              {!model
+                ? "— pick a model —"
+                : installed(model)
+                  ? model
+                  : `${model} (not installed there)`}
+            </option>
+          )}
+          {models.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+          <option value="__other__">Type a name instead…</option>
+        </select>
+      ) : (
+        <input
+          type="text"
+          placeholder={placeholder}
+          value={model}
+          onChange={(e) => onModel(e.target.value)}
+        />
+      )}
+      <span className="row" style={{ alignItems: "center", gap: 8, marginTop: 4 }}>
+        <button
+          type="button"
+          className="btn btn-ghost ev-act"
+          disabled={busy || !url.trim()}
+          title="Asks the server address above which models it serves."
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const r = await api.genaiProbe(url.trim(), kind);
+              if (r.ok) setProbe({ ok: true, flavor: r.flavor ?? "", models: r.models ?? [] });
+              else setProbe({ ok: false, error: r.error ?? "unknown error" });
+            } catch (e) {
+              setProbe({ ok: false, error: errMsg(e) });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? "Checking…" : "Check connection"}
+        </button>
+        {probe &&
+          (probe.ok ? (
+            <span style={{ color: "var(--success)", fontSize: "var(--text-sm)" }}>
+              ● Connected — {probe.models.length === 0
+                ? "no models installed yet"
+                : `${probe.models.length} model${probe.models.length === 1 ? "" : "s"} found`}
+            </span>
+          ) : (
+            <span style={{ color: "var(--danger)", fontSize: "var(--text-sm)" }}>
+              ● {probe.error}
+            </span>
+          ))}
+      </span>
+    </label>
+  );
+}
+
 /// The modes schedule is a transition list ("Away at 08:00 Mon–Fri…"), which
 /// forces the user to mentally simulate rows to answer "what mode am I in on
 /// Saturday at 3 PM?". The week grid paints the ANSWER; transitions are
@@ -2782,15 +3012,14 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(e) => set({ genai_url: e.target.value })}
               />
             </label>
-            <label className="field">
-              vision model
-              <input
-                type="text"
-                placeholder="llava"
-                value={s.genai_model ?? ""}
-                onChange={(e) => set({ genai_model: e.target.value })}
-              />
-            </label>
+            <AiModelField
+              label="vision model"
+              url={s.genai_url ?? ""}
+              kind="genai"
+              model={s.genai_model ?? ""}
+              placeholder="llava"
+              onModel={(m) => set({ genai_model: m })}
+            />
             <label className="field" style={{ minWidth: 220 }}>
               API key (cloud only; blank for local)
               <input
@@ -2842,15 +3071,14 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 Ollama OpenAI shim. The model needs tool-calling support.
               </small>
             </label>
-            <label className="field">
-              model
-              <input
-                type="text"
-                placeholder="llama3.1"
-                value={s.ask_model ?? ""}
-                onChange={(e) => set({ ask_model: e.target.value })}
-              />
-            </label>
+            <AiModelField
+              label="model"
+              url={s.ask_endpoint ?? ""}
+              kind="ask"
+              model={s.ask_model ?? ""}
+              placeholder="llama3.1"
+              onModel={(m) => set({ ask_model: m })}
+            />
             <label className="field" style={{ minWidth: 220 }}>
               API key (blank for local)
               <input
@@ -3165,6 +3393,35 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             clips are always backed up.
           </p>
           <div className="row">
+            <label className="field" style={{ minWidth: 220 }}>
+              storage provider
+              <select
+                value={s3ProviderFor(s.offsite_endpoint)}
+                onChange={(e) => {
+                  const p = S3_PROVIDERS.find((p) => p.key === e.target.value);
+                  if (p) set({ offsite_endpoint: p.endpoint, offsite_region: p.region });
+                  else if (e.target.value === "") set({ offsite_endpoint: "" });
+                }}
+              >
+                <option value="">— choose —</option>
+                {S3_PROVIDERS.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.name}
+                  </option>
+                ))}
+                <option value="other">Other S3-compatible (MinIO, NAS, …)</option>
+              </select>
+            </label>
+          </div>
+          {(() => {
+            const p = S3_PROVIDERS.find((p) => p.key === s3ProviderFor(s.offsite_endpoint));
+            return p ? (
+              <p className="muted" style={{ margin: "0 0 8px", fontSize: "var(--text-sm)" }}>
+                {p.hint}
+              </p>
+            ) : null;
+          })()}
+          <div className="row">
             <label className="field" style={{ flex: 1, minWidth: 300 }}>
               endpoint URL
               <input
@@ -3206,7 +3463,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           </div>
           <div className="row">
             <label className="field" style={{ flex: 1, minWidth: 200 }}>
-              access key ID
+              {S3_PROVIDERS.find((p) => p.key === s3ProviderFor(s.offsite_endpoint))?.access ??
+                "access key ID"}
               <input
                 type="text"
                 autoComplete="off"
@@ -3215,7 +3473,8 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               />
             </label>
             <label className="field" style={{ flex: 1, minWidth: 200 }}>
-              secret access key
+              {S3_PROVIDERS.find((p) => p.key === s3ProviderFor(s.offsite_endpoint))?.secret ??
+                "secret access key"}
               <input
                 type="password"
                 autoComplete="new-password"
@@ -3225,6 +3484,13 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               />
             </label>
           </div>
+          <OffsiteTestButton
+            configured={
+              s.offsite_endpoint.trim() !== "" &&
+              s.offsite_bucket.trim() !== "" &&
+              s.offsite_access_key.trim() !== ""
+            }
+          />
           <OffsiteStatusReadout />
         </div>
 
@@ -3322,9 +3588,39 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           <h2>Email (SMTP)</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Send alarm emails with the snapshot attached — add an <b>email</b> action to any Alarm
-            rule. Use <code>smtps://host:465</code> for implicit TLS or <code>smtp://host:587</code>{" "}
-            for STARTTLS. The password is write-only (never sent back; leave blank to keep it).
+            rule. Pick your email provider and the server details fill themselves in. The password
+            is write-only (never sent back; leave blank to keep it).
           </p>
+          <div className="row">
+            <label className="field" style={{ minWidth: 220 }}>
+              email provider
+              <select
+                value={smtpProviderFor(s.smtp_url)}
+                onChange={(e) => {
+                  const p = SMTP_PROVIDERS.find((p) => p.key === e.target.value);
+                  if (p) set({ smtp_url: p.url });
+                  else if (e.target.value === "") set({ smtp_url: "" });
+                  // "other": keep whatever URL is there and let them edit it.
+                }}
+              >
+                <option value="">— choose —</option>
+                {SMTP_PROVIDERS.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.name}
+                  </option>
+                ))}
+                <option value="other">Other (enter the server yourself)</option>
+              </select>
+            </label>
+          </div>
+          {(() => {
+            const p = SMTP_PROVIDERS.find((p) => p.key === smtpProviderFor(s.smtp_url));
+            return p ? (
+              <p className="muted" style={{ margin: "0 0 8px", fontSize: "var(--text-sm)" }}>
+                {p.hint}
+              </p>
+            ) : null;
+          })()}
           <div className="row">
             <label className="field" style={{ flex: 1, minWidth: 280 }}>
               SMTP server URL
@@ -3334,6 +3630,12 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.smtp_url}
                 onChange={(e) => set({ smtp_url: e.target.value })}
               />
+              {smtpProviderFor(s.smtp_url) === "other" && (
+                <small className="muted">
+                  <code>smtps://host:465</code> for implicit TLS, <code>smtp://host:587</code> for
+                  STARTTLS.
+                </small>
+              )}
             </label>
             <label className="field">
               username

@@ -205,6 +205,105 @@ fn vlm_confirm(s: &crate::db::Settings, prompt: &str, image_b64: &str) -> Option
     }
 }
 
+/// docs/10 P2.4 — the Alarms builder's "Test this question" (the last P1.10
+/// carve-out): run a rule's yes/no question against one snapshot NOW,
+/// synchronously, and hand back both the interpreted verdict and the model's
+/// raw one-word reply so the user sees exactly what the gate will do.
+pub fn vlm_ask(
+    s: &crate::db::Settings,
+    prompt: &str,
+    image: &[u8],
+) -> Result<(Option<bool>, String), String> {
+    if !s.genai_enabled || s.genai_url.trim().is_empty() {
+        return Err(
+            "AI captions are off — enable them and set the AI server address in \
+             Settings → AI event captions first"
+                .to_string(),
+        );
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(image);
+    let full = format!("{}\nAnswer with only one word: yes or no.", prompt.trim());
+    let req = build_request(&s.genai_model, &full, &b64);
+    match call_vision(&s.genai_url, &s.genai_api_key, req)? {
+        Some(text) => {
+            let verdict = interpret_yes_no(&text);
+            Ok((verdict, text))
+        }
+        None => Ok((None, String::new())),
+    }
+}
+
+/// docs/10 P2.4 — probe an AI endpoint for its installed models so the
+/// "vision model" field can become a picker with a real connected state.
+/// Tries the Ollama shape first (`GET {origin}/api/tags` → `models[].name`),
+/// then the OpenAI-compatible shape (`GET {origin}/v1/models` → `data[].id`).
+/// Only the ORIGIN of the pasted URL is used, so it works whether the user
+/// pasted `…/api/generate`, `…/v1`, or a bare host:port.
+pub fn probe_models(url: &str, api_key: &str) -> Result<(String, Vec<String>), String> {
+    let url = url.trim();
+    let origin = {
+        let (scheme, rest) = if let Some(r) = url.strip_prefix("https://") {
+            ("https", r)
+        } else if let Some(r) = url.strip_prefix("http://") {
+            ("http", r)
+        } else {
+            return Err("the address must start with http:// or https://".to_string());
+        };
+        let authority = rest.split('/').next().unwrap_or(rest);
+        if authority.is_empty() || authority.chars().any(char::is_control) {
+            return Err("that address has no host".to_string());
+        }
+        format!("{scheme}://{authority}")
+    };
+    let get = |path: &str| -> Result<serde_json::Value, String> {
+        let mut call = ureq::get(&format!("{origin}{path}")).timeout(Duration::from_secs(6));
+        if !api_key.trim().is_empty() {
+            call = call.set("Authorization", &format!("Bearer {}", api_key.trim()));
+        }
+        match call.call() {
+            Ok(resp) => resp
+                .into_json::<serde_json::Value>()
+                .map_err(|e| format!("{path}: response not JSON: {e}")),
+            Err(ureq::Error::Status(code, _)) => Err(format!("{path}: HTTP {code}")),
+            Err(e) => Err(format!("{e}")),
+        }
+    };
+    // Ollama native.
+    let ollama_err = match get("/api/tags") {
+        Ok(body) => {
+            if let Some(models) = body.get("models").and_then(|m| m.as_array()) {
+                let names: Vec<String> = models
+                    .iter()
+                    .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
+                    .map(|s| s.to_string())
+                    .collect();
+                return Ok(("ollama".to_string(), names));
+            }
+            "unexpected /api/tags shape".to_string()
+        }
+        Err(e) => e,
+    };
+    // OpenAI-compatible (LM Studio, llama.cpp server, shims).
+    match get("/v1/models") {
+        Ok(body) => {
+            if let Some(data) = body.get("data").and_then(|m| m.as_array()) {
+                let names: Vec<String> = data
+                    .iter()
+                    .filter_map(|m| m.get("id").and_then(|n| n.as_str()))
+                    .map(|s| s.to_string())
+                    .collect();
+                return Ok(("openai".to_string(), names));
+            }
+            Err(format!(
+                "{origin} answered, but not like Ollama or an OpenAI-compatible server"
+            ))
+        }
+        Err(openai_err) => Err(format!(
+            "could not reach an AI server at {origin} ({ollama_err}; {openai_err})"
+        )),
+    }
+}
+
 /// VLM-verify a matched alarm and fire it if confirmed. Runs in the worker (off
 /// the detection thread). **Fails OPEN**: fires unless the model gives a clear
 /// "no", so a missing/unreachable model or an ambiguous reply never silently
