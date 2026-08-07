@@ -3377,10 +3377,10 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.notify_min_severity ?? 1}
                 onChange={(e) => set({ notify_min_severity: Number(e.target.value) })}
               >
-                <option value={1}>everything (default)</option>
-                <option value={2}>normal and up (skip routine wildlife)</option>
-                <option value={3}>high & critical only</option>
-                <option value={4}>critical only</option>
+                <option value={1}>Everything (default)</option>
+                <option value={2}>Skip ambient wildlife and pet sightings</option>
+                <option value={3}>Only strangers, hand signals, packages &amp; watched zones — skip routine people/vehicles</option>
+                <option value={4}>Only safety &amp; security: falls, child alone, tamper, glass break, screams</option>
               </select>
               <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
                 Quiets phone push & email only — webhooks, MQTT and duress alerts always deliver.

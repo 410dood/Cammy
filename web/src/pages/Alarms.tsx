@@ -62,9 +62,8 @@ const LABELS = [
   // ZoneEditor). Scope to a specific instance with "zone contains" (zone_like).
   "zone_open", "zone_closed",
 ];
-// Friendly names for the non-obvious analytics / residential event labels, shown
-// in the dropdowns. The raw token is kept in parentheses (and as the option
-// `value`) so it still matches what the Family page and docs refer to.
+// Friendly names for the non-obvious analytics / residential event labels shown
+// in the dropdowns; the raw token survives only as the option `value`.
 const LABEL_PRETTY: Record<string, string> = {
   camera_person: "Camera: person",
   camera_vehicle: "Camera: vehicle",
@@ -84,19 +83,23 @@ const LABEL_PRETTY: Record<string, string> = {
   zone_open: "Zone became open*",
   zone_closed: "Zone became closed*",
 };
-const labelText = (l: string) => (LABEL_PRETTY[l] ? `${LABEL_PRETTY[l]} (${l})` : l);
+// Friendly name only — the raw snake_case token was a debugging affordance
+// that made every dropdown read half-developer ("Child alone (child_alone)").
+const labelText = (l: string) => LABEL_PRETTY[l] ?? prettyLabel(l);
 const GESTURES = ["open_palm", "fist", "victory", "point", "thumb_up", "thumb_down", "love", "ok", "call_me"];
 const ARM_OPTS: { id: ArmMode; label: string }[] = [
   { id: "home", label: "Home" },
   { id: "away", label: "Away" },
   { id: "disarmed", label: "Disarmed" },
 ];
+// Homeowner-first ordering: phone push and email lead; webhook/MQTT are the
+// integrator's tools and read like it.
 const ACTION_KINDS: { id: ActionKind; label: string }[] = [
-  { id: "webhook", label: "POST webhook" },
-  { id: "mqtt", label: "publish MQTT" },
   { id: "ntfy", label: "push to phone (ntfy app)" },
   { id: "email", label: "send email" },
   { id: "deterrence", label: "trigger siren/light (ONVIF relay)" },
+  { id: "webhook", label: "POST webhook (integrations)" },
+  { id: "mqtt", label: "publish MQTT (integrations)" },
 ];
 const targetHint = (kind: ActionKind) =>
   kind === "webhook"
@@ -162,7 +165,7 @@ export default function Alarms({
   const [attrLike, setAttrLike] = useState("");
   const [attrCatalog, setAttrCatalog] = useState<AttributesCatalog | null>(null);
   const [faceUnknown, setFaceUnknown] = useState(false);
-  const [actions, setActions] = useState<Action[]>([{ kind: "webhook", target: "", priority: 0 }]);
+  const [actions, setActions] = useState<Action[]>([{ kind: "ntfy", target: "", priority: 0 }]);
   const [modes, setModes] = useState<ArmMode[]>([]);
   const [cooldown, setCooldown] = useState(0);
   const [days, setDays] = useState<number[]>([]);
@@ -408,7 +411,7 @@ export default function Alarms({
     setName("");
     setCameraId("");
     setLabel("");
-    setActions([{ kind: "webhook", target: "", priority: 0 }]);
+    setActions([{ kind: "ntfy", target: "", priority: 0 }]);
     setModes([]);
     setFaceLike("");
     setPlateLike("");
@@ -643,7 +646,7 @@ export default function Alarms({
           ? `Email → ${a.target || "default recipient"}`
           : a.kind === "deterrence"
             ? `Siren/light → relay ${a.target}`
-            : `Push (ntfy)${a.priority ? ` · priority ${a.priority}` : ""}`;
+            : `Push (ntfy)${a.priority ? ` · ${["", "silent", "quiet", "normal", "important", "urgent"][a.priority] ?? a.priority}` : ""}`;
 
   const ruleActions = (r: AlarmRule): Action[] =>
     r.actions && r.actions.length > 0
@@ -1448,14 +1451,14 @@ export default function Alarms({
                   <select
                     value={a.priority}
                     onChange={(e) => updateAction(i, { priority: Number(e.target.value) })}
-                    title="ntfy push priority"
+                    title="How loudly your phone treats this push"
                   >
-                    <option value={0}>default</option>
-                    <option value={1}>1 · min</option>
-                    <option value={2}>2 · low</option>
-                    <option value={3}>3 · normal</option>
-                    <option value={4}>4 · high</option>
-                    <option value={5}>5 · urgent</option>
+                    <option value={0}>Normal</option>
+                    <option value={1}>Silent (no sound or vibration)</option>
+                    <option value={2}>Quiet (no sound)</option>
+                    <option value={3}>Normal (explicit)</option>
+                    <option value={4}>Important (louder, pops up)</option>
+                    <option value={5}>Urgent (repeats, breaks through Do Not Disturb)</option>
                   </select>
                 )}
                 <button

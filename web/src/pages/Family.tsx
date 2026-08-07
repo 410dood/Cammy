@@ -31,7 +31,7 @@ const MODES: Mode[] = [
       "On the nursery camera (Cameras page) turn on “body pose monitoring” and “audio detection”.",
       "In that camera’s zone editor, draw a zone over the crib and name it (e.g. “Crib”).",
       "Posture and fall alerts need a one-time extra download (the pose model). Get it from the models list in the README, then point Settings, Models & capabilities at the file.",
-      "On the Alarms page add rules: “Standing (standing)” in zone “Crib”, “Covered face (covered_face)” in zone “Crib”, and a “Baby cry” sound alarm. Pick how you want to be notified.",
+      "On the Alarms page add rules: “Standing — crib climb-out” in zone “Crib”, “Covered face” in zone “Crib”, and a “Baby cry” sound alarm. Pick how you want to be notified.",
     ],
     safety:
       "Assistive only. This is NOT a breathing, oxygen, or SIDS monitor and cannot guarantee detection. Always follow safe-sleep practices and check on your baby in person.",
@@ -62,7 +62,7 @@ const MODES: Mode[] = [
     setup: [
       "On the pool camera, draw a zone over the pool/deck. Tick “enter” for a presence alert, “alone” for the child-with-no-adult alert, and “water” for the motionless-in-water hint.",
       "For the child alerts, set “child height ≤” on that camera (Cameras page) so it can tell children from adults — tune it once for your view.",
-      "On the Alarms page add rules: “Child alone (child_alone)” in your pool zone (and optionally “Motionless in water (still_water)”).",
+      "On the Alarms page add rules: “Child alone” in your pool zone (and optionally “Motionless in water”).",
     ],
     safety:
       "This is a supplement, NOT a replacement for a pool fence and active supervision. It is NOT drowning detection — an above-water camera cannot see a submerged child, and the child/adult guess can be wrong. Never rely on it alone.",
