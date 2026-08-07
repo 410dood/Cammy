@@ -2,7 +2,7 @@
 import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMap } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { recordState, recordStateHint, scheduleWindow } from "../labels";
-import SizeFilterEditor, { ChildHeightEditor, MotionTuner } from "../SizeFilterEditor";
+import SizeFilterEditor, { ChildHeightEditor, MotionTuner, RectZoneDraw } from "../SizeFilterEditor";
 import { ObjectPicker, InheritSlider, LabelChips } from "../tuning";
 import { Modal, EmptyState, TogglePill, Callout, useToast, useDialog, usePolling } from "../ui";
 import {
@@ -292,7 +292,7 @@ function TuneModal({
       label: "Package detection",
       help: "Alert when a parcel appears or is taken (porch piracy).",
       title:
-        "Porch-piracy alerts: fire a 'package' event when a parcel-like object sits in view for a while, and 'package_removed' when it's taken. Watches the whole frame (a package zone is API-settable). Make alarm rules with label 'package' / 'package_removed'.",
+        "Porch-piracy alerts: fire a 'package' event when a parcel-like object sits in view for a while, and 'package_removed' when it's taken. Draw the drop spot below, or watch the whole frame. Make alarm rules with label 'package' / 'package_removed'.",
       on: dc.package_detect ?? false,
       toggle: () => setDc({ ...dc, package_detect: !dc.package_detect }),
     },
@@ -411,6 +411,53 @@ function TuneModal({
               />
             ))}
           </div>
+          {dc.package_detect && (
+            <label className="field span-full" style={{ marginTop: 12 }}>
+              Where parcels get left (optional)
+              {/* docs/10 P3: the package zone was API-settable while the UI
+                  claimed whole-frame only — now it's drawn like everything else. */}
+              <RectZoneDraw
+                cameraId={camera.id}
+                cameraName={camera.name}
+                label="Package drop spot"
+                rect={
+                  dc.package_zone && dc.package_zone.length >= 3
+                    ? [
+                        Math.min(...dc.package_zone.map((p) => p[0])),
+                        Math.min(...dc.package_zone.map((p) => p[1])),
+                        Math.max(...dc.package_zone.map((p) => p[0])),
+                        Math.max(...dc.package_zone.map((p) => p[1])),
+                      ]
+                    : null
+                }
+                onRect={(r) =>
+                  setDc({
+                    ...dc,
+                    package_zone: [
+                      [r[0], r[1]],
+                      [r[2], r[1]],
+                      [r[2], r[3]],
+                      [r[0], r[3]],
+                    ],
+                  })
+                }
+              />
+              {dc.package_zone ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost ev-act"
+                  style={{ alignSelf: "flex-start", marginTop: 4 }}
+                  onClick={() => setDc({ ...dc, package_zone: null })}
+                >
+                  Watch the whole frame instead
+                </button>
+              ) : (
+                <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                  No spot drawn — the whole frame is watched for parcels.
+                </span>
+              )}
+            </label>
+          )}
           {dc.package_detect && (
             <label className="field span-full" style={{ marginTop: 12 }}>
               What counts as a parcel

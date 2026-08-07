@@ -112,6 +112,103 @@ const boxFromArea = (area: number) => {
 
 type Box = { hw: number; hh: number };
 
+export type Rect = [number, number, number, number]; // x1,y1,x2,y2 frame fractions
+
+/// Drag one rectangle over the camera's live frame — the shared building block
+/// for wizard zones (P2.5) and the package zone (P3). Not the full ZoneEditor:
+/// one box, no vertices, presets over precision.
+export function RectZoneDraw({
+  cameraId,
+  cameraName,
+  label,
+  rect,
+  onRect,
+}: {
+  cameraId: number;
+  cameraName: string;
+  label: string;
+  rect: Rect | null;
+  onRect: (r: Rect) => void;
+}) {
+  const surface = useRef<HTMLDivElement>(null);
+  const [failed, setFailed] = useState(false);
+  const [bust, setBust] = useState(0);
+  const start = (e: React.PointerEvent) => {
+    const el = surface.current;
+    if (!el) return;
+    e.preventDefault();
+    const r0 = el.getBoundingClientRect();
+    const clamp = (v: number) => Math.min(1, Math.max(0, v));
+    const sx = clamp((e.clientX - r0.left) / r0.width);
+    const sy = clamp((e.clientY - r0.top) / r0.height);
+    const move = (ev: PointerEvent) => {
+      const x = clamp((ev.clientX - r0.left) / r0.width);
+      const y = clamp((ev.clientY - r0.top) / r0.height);
+      onRect([Math.min(sx, x), Math.min(sy, y), Math.max(sx, x), Math.max(sy, y)]);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+  return (
+    <div className="sizef">
+      <div
+        ref={surface}
+        className="sizef-surface"
+        style={{ touchAction: "none", cursor: "crosshair" }}
+        onPointerDown={start}
+      >
+        <img
+          src={`/api/cameras/${cameraId}/frame.jpg?t=${bust}`}
+          alt={`Current view from ${cameraName}`}
+          draggable={false}
+          onError={() => setFailed(true)}
+          onLoad={() => setFailed(false)}
+          style={{ visibility: failed ? "hidden" : undefined }}
+        />
+        {failed && (
+          <div className="sizef-fallback">
+            <div>
+              No live picture right now — you can still drag a box on the blank frame.
+              <div style={{ marginTop: 8 }}>
+                <button type="button" className="btn btn-ghost ev-act" onClick={() => setBust(Date.now())}>
+                  <IconRefresh size={14} /> retry
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {rect && (
+          <div
+            style={{
+              position: "absolute",
+              left: `${rect[0] * 100}%`,
+              top: `${rect[1] * 100}%`,
+              width: `${(rect[2] - rect[0]) * 100}%`,
+              height: `${(rect[3] - rect[1]) * 100}%`,
+              border: "2px solid var(--accent)",
+              background: "color-mix(in oklab, var(--accent) 18%, transparent)",
+              borderRadius: 4,
+              pointerEvents: "none",
+            }}
+          >
+            <span className="sizef-tag" style={{ position: "absolute", top: 2, left: 4 }}>{label}</span>
+          </div>
+        )}
+      </div>
+      <p className="feat-help sizef-hint">
+        Drag a box over the {label.toLowerCase()} on the picture — you can redraw it until it
+        looks right.
+      </p>
+    </div>
+  );
+}
+
 /// Child-height calibration, graphically (docs/10 P1.9): instead of typing a
 /// "fraction of frame height", drag a marker on the camera's own frame to
 /// about how tall your child appears where they'd stand. Only the HEIGHT
