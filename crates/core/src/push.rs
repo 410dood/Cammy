@@ -30,27 +30,80 @@ use crate::webpush::{self, SendError};
 const TICK: Duration = Duration::from_secs(5);
 const TTL: u32 = 24 * 3600;
 const BATCH: u32 = 50;
+/// VAPID key retry schedule. Key setup fails on transient local problems (a
+/// locked or full database, a keygen hiccup), so it is retried rather than
+/// treated as a permanent verdict — but with backoff, so a genuinely broken
+/// install doesn't hammer the DB every tick.
+const KEY_RETRY_MIN: Duration = Duration::from_secs(30);
+const KEY_RETRY_MAX: Duration = Duration::from_secs(15 * 60);
+
+/// Next retry delay after a failure. Pure → unit-tested.
+fn next_backoff(cur: Duration) -> Duration {
+    (cur * 2).min(KEY_RETRY_MAX)
+}
 
 pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
     // Start at the current tip so a freshly-subscribed browser isn't flooded
     // with the entire backlog.
     let mut last = db.max_notification_id();
-    let keys = match webpush::vapid_keys(&db) {
-        Ok(k) => k,
-        Err(e) => {
-            tracing::warn!("WebPush disabled (no VAPID key): {e:#}");
-            return;
-        }
-    };
+    // VAPID keys are needed for PUSH ONLY. This used to `return` on the first
+    // error, which ended the worker for the life of the process: no push ever
+    // again, no per-user EMAIL either (it is delivered from this same loop), and
+    // no signal anywhere — the subscribe/Test UI kept reporting success into a
+    // void. Now the failure is retried, survivable, and SAID OUT LOUD.
+    let mut keys: Option<webpush::VapidKeys> = None;
+    let mut key_notified = false;
+    let mut key_retry_at = std::time::Instant::now();
+    let mut key_backoff = KEY_RETRY_MIN;
 
     while !shutdown.load(Ordering::Relaxed) {
         crate::util::sleep_interruptible(TICK, &shutdown);
         if shutdown.load(Ordering::Relaxed) {
             break;
         }
+        if keys.is_none() && std::time::Instant::now() >= key_retry_at {
+            match webpush::vapid_keys(&db) {
+                Ok(k) => {
+                    keys = Some(k);
+                    key_backoff = KEY_RETRY_MIN;
+                    if key_notified {
+                        key_notified = false;
+                        tracing::info!("WebPush recovered: VAPID key available");
+                        let _ = db.add_notification(
+                            chrono::Utc::now().timestamp(),
+                            "push_unavailable",
+                            "Phone notifications working again",
+                            Some("Cammy can send notifications to your subscribed devices again."),
+                            None,
+                        );
+                    }
+                }
+                Err(e) => {
+                    key_retry_at = std::time::Instant::now() + key_backoff;
+                    key_backoff = next_backoff(key_backoff);
+                    if !key_notified {
+                        key_notified = true;
+                        tracing::warn!("WebPush unavailable (no VAPID key): {e:#}");
+                        let _ = db.add_notification(
+                            chrono::Utc::now().timestamp(),
+                            "push_unavailable",
+                            "Phone notifications are not being sent",
+                            Some(&format!(
+                                "Cammy could not set up the key it needs to push notifications to \
+                                 your devices ({}). Alerts are still recorded and still shown here, \
+                                 but nothing is reaching your phone. Cammy keeps retrying.",
+                                format!("{e:#}").chars().take(200).collect::<String>()
+                            )),
+                            None,
+                        );
+                    }
+                }
+            }
+        }
         // No push subscribers AND no email recipients → keep the cursor at the tip
         // and skip the work (matches the pre-P2.11 self-gating on subscriptions).
-        let have_push = db.count_push_subscriptions() > 0;
+        // Without keys there is no push, but EMAIL must keep flowing.
+        let have_push = keys.is_some() && db.count_push_subscriptions() > 0;
         let have_email = db.any_user_email();
         if !have_push && !have_email {
             last = db.max_notification_id();
@@ -99,7 +152,7 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
             let human_ok = severity_allows(n.severity, min_sev);
 
             // --- PUSH ---------------------------------------------------------
-            if human_ok {
+            if human_ok && keys.is_some() {
                 let payload = json!({
                     "title": clamp(&n.title, 200),
                     "body": n.body.as_deref().map(|b| clamp(b, 600)),
@@ -142,7 +195,8 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
                     if !deliver {
                         continue;
                     }
-                    match webpush::send(&keys, sub, payload.as_bytes(), TTL) {
+                    let Some(keys) = keys.as_ref() else { break };
+                    match webpush::send(keys, sub, payload.as_bytes(), TTL) {
                         Ok(()) => {}
                         Err(SendError::Gone) => {
                             let _ = db.delete_push_subscription(&sub.endpoint);
@@ -212,7 +266,27 @@ fn clamp(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::severity_allows;
+    use super::{next_backoff, severity_allows, KEY_RETRY_MAX, KEY_RETRY_MIN};
+
+    /// A VAPID setup failure used to end the push worker forever. It now retries
+    /// on a backoff that grows but is bounded, so a transient failure recovers
+    /// within a tick or two and a permanent one never becomes a hot loop.
+    #[test]
+    fn vapid_retry_backoff_grows_and_caps() {
+        let mut d = KEY_RETRY_MIN;
+        let mut steps = 0;
+        while d < KEY_RETRY_MAX {
+            let next = next_backoff(d);
+            assert!(next > d, "backoff must grow");
+            d = next;
+            steps += 1;
+            assert!(steps < 32, "backoff must reach the cap");
+        }
+        assert_eq!(d, KEY_RETRY_MAX);
+        // …and stay there rather than growing without bound.
+        assert_eq!(next_backoff(d), KEY_RETRY_MAX);
+        assert_eq!(next_backoff(KEY_RETRY_MAX * 4), KEY_RETRY_MAX);
+    }
 
     #[test]
     fn severity_gate_quiets_human_channels_below_the_bar() {
