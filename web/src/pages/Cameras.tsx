@@ -115,6 +115,8 @@ function TuneModal({
   settings,
   poseModelMissing,
   openvinoAvailable,
+  clipAvailable,
+  audioAvailable,
   onClose,
   onSaved,
   onError,
@@ -130,6 +132,10 @@ function TuneModal({
   /** True when the OpenVINO EP actually runs in this build — the Accelerator
    *  dropdown enables its OpenVINO option only then (honest gating). */
   openvinoAvailable: boolean;
+  /** CLIP models present — gates zone open/closed classification honestly. */
+  clipAvailable: boolean;
+  /** YAMNet present — the audio-detection toggle says so when it can't run. */
+  audioAvailable: boolean;
   onClose: () => void;
   onSaved: () => void;
   onError: (e: string) => void;
@@ -238,7 +244,9 @@ function TuneModal({
     },
     {
       label: "Audio detection",
-      help: "Listen for sounds (baby cry, bark, glass, smoke alarm…). Also required for speech-to-text — turn on transcription in Settings → Detection & AI to see what was said on event cards.",
+      help: audioAvailable
+        ? "Listen for sounds (baby cry, bark, glass, smoke alarm…). Also required for speech-to-text — turn on transcription in Settings → Detection & AI to see what was said on event cards."
+        : "⚠ Audio model (yamnet.onnx) not downloaded — this can't run until it's added (Settings → Models & capabilities).",
       on: dc.audio_detect,
       toggle: () => setDc({ ...dc, audio_detect: !dc.audio_detect }),
     },
@@ -867,6 +875,9 @@ function TuneModal({
           onChange={(zones, masks) => setDc({ ...dc, zones, privacy_masks: masks })}
           onTripwires={(tripwires) => setDc({ ...dc, tripwires })}
           onCalib={(ground_calib) => setDc({ ...dc, ground_calib })}
+          clipAvailable={clipAvailable}
+          childCalibrated={dc.child_height_frac != null}
+          onNeedChildCalib={() => setTab("detect")}
         />
           </>
         )}
@@ -998,6 +1009,11 @@ export default function Cameras({
   // per-camera Accelerator dropdown offers it only when it works (never a silent
   // no-op) — false out-of-the-box.
   const [openvinoAvailable, setOpenvinoAvailable] = useState(false);
+  // Honest gating (docs/10 P2.1): features whose backing model is absent say
+  // so at the toggle, not in a silent no-op. Default true so a failed
+  // capabilities fetch never false-alarms.
+  const [clipAvailable, setClipAvailable] = useState(true);
+  const [audioAvailable, setAudioAvailable] = useState(true);
 
   usePolling(() => api.status().then(setStatus).catch(() => {}), 5000);
   useEffect(() => {
@@ -1008,6 +1024,8 @@ export default function Cameras({
       .then((r) => {
         setPoseModelMissing(!(r.features.find((f) => f.key === "pose")?.present ?? true));
         setOpenvinoAvailable(!!r.openvino);
+        setClipAvailable(r.features.find((f) => f.key === "smart_search")?.present ?? true);
+        setAudioAvailable(r.features.find((f) => f.key === "audio")?.present ?? true);
       })
       .catch(() => {});
   }, []);
@@ -1513,6 +1531,8 @@ export default function Cameras({
           settings={settings}
           poseModelMissing={poseModelMissing}
           openvinoAvailable={openvinoAvailable}
+          clipAvailable={clipAvailable}
+          audioAvailable={audioAvailable}
           onClose={() => setTuning(null)}
           onSaved={onChange}
           onError={onError}

@@ -53,6 +53,9 @@ export default function ZoneEditor({
   onChange,
   onTripwires,
   onCalib,
+  clipAvailable,
+  childCalibrated,
+  onNeedChildCalib,
 }: {
   camera: Camera;
   zones: PolyZone[];
@@ -62,6 +65,14 @@ export default function ZoneEditor({
   onChange: (zones: PolyZone[], masks: Mask[]) => void;
   onTripwires: (t: Tripwire[]) => void;
   onCalib: (c: GroundCalib | null) => void;
+  /** CLIP models present (docs/10 P2.1 honest gating). Undefined = unknown,
+   *  treated as available so a failed capabilities fetch never false-alarms. */
+  clipAvailable?: boolean;
+  /** Whether this camera has child-height calibration — the child / alone
+   *  zone rules silently never fire without it. */
+  childCalibrated?: boolean;
+  /** Jump the parent modal to the tab holding the child-height control. */
+  onNeedChildCalib?: () => void;
 }) {
   const [draw, setDraw] = useState<Draw>(null);
   const dialog = useDialog();
@@ -749,12 +760,31 @@ export default function ZoneEditor({
                       <input type="checkbox" checked={!!z.water} onChange={(e) => upd({ water: e.target.checked })} /> water*
                     </label>
                   </div>
+                  {(z.child_watch || z.supervise) && childCalibrated === false && (
+                    <div className="feat-help" style={{ color: "var(--warn)", marginTop: 4 }}>
+                      Child rules need this camera's child height set — without it they never
+                      fire.{" "}
+                      {onNeedChildCalib && (
+                        <button type="button" className="btn-link" onClick={onNeedChildCalib}>
+                          Set child height (Detection tab)
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* P3.5 zero-shot zone-state classifier (experimental). Independent
                   of the zone kind — it just reads the region's picture. */}
               <div style={{ marginTop: 10 }}>
+                {clipAvailable === false && !z.state_classify ? (
+                  // Honest gating: without CLIP this toggle would enable a
+                  // feature that silently never fires. Say so instead.
+                  <span className="feat-help">
+                    Open/closed classification needs the smart-search (CLIP) models — add them
+                    under Settings → Models &amp; capabilities to enable it here.
+                  </span>
+                ) : (
                 <TogglePill
                   on={!!z.state_classify}
                   ariaLabel={`Classify open/closed state for zone ${z.name}`}
@@ -762,6 +792,13 @@ export default function ZoneEditor({
                 >
                   classify open/closed state (experimental)
                 </TogglePill>
+                )}
+                {clipAvailable === false && z.state_classify && (
+                  <span className="feat-help" style={{ display: "block", color: "var(--warn)" }}>
+                    The smart-search (CLIP) models aren't installed, so this does nothing right
+                    now — no events will fire until they're added.
+                  </span>
+                )}
                 {z.state_classify && (
                   <>
                     <div className="row" style={{ marginTop: 8, gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
