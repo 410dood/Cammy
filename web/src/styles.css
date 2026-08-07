@@ -2809,3 +2809,15 @@ img.identity-thumb { background: var(--n-0); }
   /* Thumbnails carry the scanning, so give them more of a narrow screen. */
   .film-row { padding: 8px; gap: 12px; }
 }
+
+/* Inline key hints in body copy (Find's shortcut line). The palette and the
+   lightbox already style their own; this is the plain-prose variant. */
+.muted kbd {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--text-muted);
+}

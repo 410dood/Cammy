@@ -103,6 +103,15 @@ const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
 // The URL hash mirrors the current page, so a refresh keeps your place, the
 // browser Back/Forward buttons work, and pages are bookmarkable. `#/events/<id>`
 // is a deep link that opens a specific event (e.g. from a notification).
+/** `YYYY-MM-DD` for `offset` days ago, in LOCAL time — `toISOString()` is UTC
+ *  and would hand the palette the wrong day for anyone west of Greenwich. */
+function ymd(offset: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 10);
+}
+
 function pageHash(p: Page): string {
   return `#/${p.toLowerCase()}`;
 }
@@ -450,6 +459,33 @@ export default function App() {
       icon: <IconSearch size={16} />,
       run: () => go("Events"),
     },
+    // Find carries its whole scope in the URL, so the palette can jump straight
+    // to a scoped window instead of dropping you on a blank one.
+    {
+      id: "find-today",
+      label: "Find — today",
+      group: "Actions",
+      keywords: "find footage today search when",
+      icon: <IconSearch size={16} />,
+      run: () => { window.location.hash = `#/find?day=${ymd(0)}`; },
+    },
+    {
+      id: "find-yesterday",
+      label: "Find — yesterday",
+      group: "Actions",
+      keywords: "find footage yesterday search when",
+      icon: <IconSearch size={16} />,
+      run: () => { window.location.hash = `#/find?day=${ymd(-1)}`; },
+    },
+    ...cameras.map((c) => ({
+      id: `find-cam-${c.id}`,
+      label: `Find — ${c.name}, today`,
+      hint: "Scoped to this camera",
+      group: "Actions",
+      keywords: `find footage camera ${c.name} when`,
+      icon: <IconSearch size={16} />,
+      run: () => { window.location.hash = `#/find?day=${ymd(0)}&cam=${c.id}`; },
+    })),
     {
       id: "action-arm-home",
       label: "Arm — Home",

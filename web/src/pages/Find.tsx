@@ -19,7 +19,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, CamEvent, Camera, Me, Segment } from "../api";
 import CrossTimeline, { ActivityStrip } from "../CrossTimeline";
 import Timeline from "../Timeline";
-import DayStrip, { dayStart, DayWindow, windowForDay } from "../DayStrip";
+import DayStrip, { dayStart, DayWindow, fromDateInput, toDateInput, windowForDay } from "../DayStrip";
 import { goToMoment } from "../moment";
 import { prettyLabel } from "../labels";
 import { Callout, EmptyState, ErrorState, TogglePill, useToast } from "../ui";
@@ -40,18 +40,60 @@ const GRID_PAGE = 150;
 const clock = (ts: number) =>
   new Date(ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
+/** Find's whole state lives in the URL: `#/find?day=…&cam=…&label=…&view=…`.
+ *
+ *  Without this, following a result into a moment and pressing Back dropped you
+ *  on a fresh Find — measured: "Yesterday + front-door" came back as "Today +
+ *  All cameras". That breaks the actual browse loop (check one, go back, check
+ *  the next), which would make Find WORSE than the pages it means to replace.
+ *  The plan called this non-negotiable for Events; Events never got it either.
+ *
+ *  Self-contained, like Settings' `#/settings/<group>`: `parseHash` already
+ *  strips the query string before routing, so none of this reaches the router. */
+function readHash(): {
+  day: DayWindow;
+  cameraId: number | null;
+  label: string | null;
+  view: "grid" | "list";
+  zoom: { from: number; to: number } | null;
+} {
+  const q = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+  const rawDay = q.get("day");
+  const parsed = rawDay ? fromDateInput(rawDay) : null;
+  const day: DayWindow =
+    rawDay === "all" ? null
+    : parsed != null ? windowForDay(parsed)
+    : windowForDay(dayStart(Math.floor(Date.now() / 1000)));
+  const cam = Number(q.get("cam"));
+  const z = (q.get("z") ?? "").split("-").map(Number);
+  return {
+    day,
+    cameraId: Number.isFinite(cam) && cam > 0 ? cam : null,
+    label: q.get("label") || null,
+    view: q.get("view") === "list" ? "list" : "grid",
+    zoom: z.length === 2 && z.every((n) => Number.isFinite(n) && n > 0) ? { from: z[0], to: z[1] } : null,
+  };
+}
+
 export default function Find({ cameras }: { cameras: Camera[] }) {
   const toast = useToast();
   const live = useMemo(() => cameras.filter((c) => c.enabled), [cameras]);
 
   // ── the window ────────────────────────────────────────────────────────────
   // A day, optionally narrowed to one interval by clicking the activity strip.
-  const [day, setDay] = useState<DayWindow>(() => windowForDay(dayStart(Math.floor(Date.now() / 1000))));
-  const [zoom, setZoom] = useState<{ from: number; to: number } | null>(null);
-  const [cameraId, setCameraId] = useState<number | null>(null);
-  const [label, setLabel] = useState<string | null>(null);
+  const seed = useRef(readHash()).current;
+  const [day, setDay] = useState<DayWindow>(seed.day);
+  const [zoom, setZoom] = useState<{ from: number; to: number } | null>(seed.zoom);
+  const [cameraId, setCameraId] = useState<number | null>(seed.cameraId);
+  const [label, setLabel] = useState<string | null>(seed.label);
+  // The URL wins when it says something; otherwise fall back to the last view
+  // this browser chose, so a bare `#/find` still opens the way you left it.
   const [view, setView] = useState<"grid" | "list">(() =>
-    localStorage.getItem("cammy-find-view") === "list" ? "list" : "grid"
+    window.location.hash.includes("view=")
+      ? seed.view
+      : localStorage.getItem("cammy-find-view") === "list"
+        ? "list"
+        : "grid"
   );
   const pickView = (v: "grid" | "list") => {
     setView(v);
@@ -87,6 +129,72 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
   // away your search results because a minute passed is not something the clock
   // gets to do.
   const scopeKey = `${day?.from ?? "all"}|${zoom?.from ?? ""}-${zoom?.to ?? ""}|${cameraId ?? "all"}`;
+
+  // Mirror the scope back into the URL. replaceState, not push: a filter change
+  // is not a place you navigated TO, and pushing one entry per chip click would
+  // make Back mean "undo my last click" instead of "leave this page".
+  useEffect(() => {
+    if (!window.location.hash.startsWith("#/find")) return; // navigated away mid-render
+    const q = new URLSearchParams();
+    q.set("day", day ? toDateInput(day.from) : "all");
+    if (cameraId != null) q.set("cam", String(cameraId));
+    if (label) q.set("label", label);
+    if (view === "list") q.set("view", "list");
+    if (zoom) q.set("z", `${zoom.from}-${zoom.to}`);
+    const next = `#/find?${q}`;
+    if (window.location.hash !== next) window.history.replaceState(null, "", next);
+  }, [day, cameraId, label, view, zoom]);
+
+  // A hash change while Find is already mounted has to re-seed the state, or
+  // the URL and the view disagree. Measured: the palette's "Find — front-door,
+  // today" set the URL correctly and the page went on showing Jul 10, because
+  // the seed is read once at mount and nothing remounts when you are already
+  // here. `replaceState` never fires hashchange, so our own writes cannot loop.
+  useEffect(() => {
+    const onHash = () => {
+      if (!window.location.hash.startsWith("#/find")) return;
+      const h = readHash();
+      setDay(h.day);
+      setZoom(h.zoom);
+      setCameraId(h.cameraId);
+      setLabel(h.label);
+      // Same rule as the seed: the URL only overrides the remembered view when
+      // it actually names one.
+      if (window.location.hash.includes("view=")) setView(h.view);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  // Keyboard. Find is meant to become how footage gets reached, and reaching it
+  // was mouse-only. Every handler bails when you are typing, and when something
+  // nearer the event already claimed the key — the cross-timeline lanes are
+  // role="slider" and take the arrows for scrubbing, and they preventDefault,
+  // so `defaultPrevented` is what keeps the two from fighting.
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return;
+      const stepDay = (days: number) => {
+        const today = dayStart(Math.floor(Date.now() / 1000));
+        const base = day ? dayStart(day.from) : today;
+        const next = Math.min(dayStart(base + days * DAY), today);
+        setDay(windowForDay(next));
+        setZoom(null);
+      };
+      if (e.key === "ArrowLeft") { e.preventDefault(); stepDay(-1); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); stepDay(1); }
+      else if (e.key === "/") { e.preventDefault(); searchRef.current?.focus(); }
+      else if (e.key === "g") { e.preventDefault(); pickView("grid"); }
+      else if (e.key === "l") { e.preventDefault(); pickView("list"); }
+      else if (e.key === "Escape" && zoom) { e.preventDefault(); setZoom(null); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [day, zoom]);
 
   // ── data ──────────────────────────────────────────────────────────────────
   const [events, setEvents] = useState<CamEvent[]>([]);
@@ -263,7 +371,10 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
       <h1>Find</h1>
       <p className="muted" style={{ marginTop: -8 }}>
         Pick when and where, then scan what happened and what was recorded together. Anything you
-        click opens that camera&apos;s timeline at that moment.
+        click opens that camera&apos;s timeline at that moment.{" "}
+        <span className="muted">
+          Arrow keys step days, <kbd>/</kbd> searches, <kbd>G</kbd>/<kbd>L</kbd> switch view.
+        </span>
       </p>
 
       {/* ── band 1: when and where ── */}
@@ -368,6 +479,7 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
             <label className="field" style={{ flex: "1 1 240px" }}>
               <span className="sr-only">Appearance search within this window</span>
               <input
+                ref={searchRef}
                 type="search"
                 value={q}
                 placeholder="Find by appearance — “red car”, “hi-vis jacket”"
