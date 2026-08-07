@@ -179,6 +179,12 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
         // Probes arbitrary server filesystem paths (writability + free space)
         // — Admin-only like the recordings_dir setting it validates.
         || path == "/api/path_probe"
+        // Writes model files beside the executable (fixed catalog, but still a
+        // server-filesystem write) — Admin like the model-path settings.
+        || path == "/api/models/download"
+        // Reveals what the reverse proxy injects into requests (SSO debugging)
+        // — Admin-only; header values can identify the proxy topology.
+        || path == "/api/echo_headers"
         || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
         // Installing/removing a license is a system-config action; a valid GET
         // (the trial countdown) stays Viewer-readable via the default below.

@@ -601,6 +601,46 @@ function WebhookTemplateField({ value, onChange }: { value: string; onChange: (v
   );
 }
 
+/// docs/10 P3 — SSO's "show me my current request headers": forward-auth setup
+/// is guessing which header the proxy sets until you can see the request as
+/// Cammy sees it. Cookie/authorization are redacted server-side.
+function HeaderEchoButton() {
+  const [headers, setHeaders] = useState<Record<string, string> | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button
+        type="button"
+        className="btn btn-ghost ev-act"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            setHeaders(await api.echoHeaders());
+          } catch (e) {
+            setHeaders({ error: errMsg(e) });
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "Fetching…" : headers ? "Refresh my request headers" : "Show my request headers"}
+      </button>
+      {headers && (
+        <div className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 6 }}>
+          This request arrived with (secrets redacted) — if your proxy's user header isn't in
+          this list, Cammy will never see it:
+          <code style={{ display: "block", whiteSpace: "pre-wrap", wordBreak: "break-all", marginTop: 4 }}>
+            {Object.entries(headers)
+              .map(([k, v]) => `${k}: ${v}`)
+              .join("\n")}
+          </code>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /// docs/10 P3 — the re-encode dropdown used to list every hardware encoder
 /// unprobed, and a wrong pick silently fell back to CPU. Now the server test-
 /// encodes 3 frames with each and unavailable ones are disabled with a reason.
@@ -2703,26 +2743,72 @@ function TranscriptionReadiness({ enabled }: { enabled: boolean }) {
   );
 }
 
+/// Which capabilities the server can fetch itself, and how the button reads.
+/// Feature keys mirror models_dl::catalog; transcription offers two tiers.
+const DOWNLOADABLE: Record<string, { label: string; feature: string }[]> = {
+  smart_search: [{ label: "Download (~150 MB)", feature: "smart_search" }],
+  audio: [{ label: "Download (~17 MB)", feature: "audio" }],
+  lpr: [{ label: "Download (~130 MB)", feature: "lpr" }],
+  face: [{ label: "Download (~180 MB)", feature: "face" }],
+  transcription: [
+    { label: "Fast (75 MB)", feature: "transcription" },
+    { label: "More accurate (142 MB)", feature: "transcription_base" },
+  ],
+};
+
 function ModelsCard() {
+  const toast = useToast();
   const [caps, setCaps] = useState<Capability[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  useEffect(() => {
+  const [jobs, setJobs] = useState<Awaited<ReturnType<typeof api.modelDownloadStatus>>>({});
+  const refresh = () => {
     api
       .capabilities()
       .then((r) => setCaps(r.features))
       .catch((e) => setErr(String(e)));
-  }, []);
+  };
+  useEffect(refresh, []);
+  // Poll the job board only while something is running; refresh the capability
+  // list when a job finishes so "installed" flips without a reload.
+  const anyRunning = Object.values(jobs).some((j) => j.state === "running");
+  useEffect(() => {
+    if (!anyRunning) return;
+    const t = setInterval(async () => {
+      try {
+        const next = await api.modelDownloadStatus();
+        setJobs(next);
+        if (!Object.values(next).some((j) => j.state === "running")) refresh();
+      } catch {
+        /* transient poll failure — keep trying */
+      }
+    }, 1500);
+    return () => clearInterval(t);
+  }, [anyRunning]);
+  const start = async (feature: string) => {
+    try {
+      const r = await api.modelDownload(feature);
+      if (!r.ok) return toast.error(`Download failed to start: ${r.error}`);
+      setJobs(await api.modelDownloadStatus());
+    } catch (e) {
+      toast.error(`Download failed to start: ${errMsg(e)}`);
+    }
+  };
+  // The transcription_base tier reports under its own key — fold it into the
+  // transcription row's status.
+  const jobFor = (capKey: string) =>
+    jobs[capKey]?.state === "running" || jobs[capKey]?.state === "failed"
+      ? jobs[capKey]
+      : capKey === "transcription"
+        ? jobs["transcription_base"]
+        : undefined;
   return (
     <div className="card" data-settings-group="detection">
       <h2>Models &amp; capabilities</h2>
       <p className="muted" style={{ marginTop: -4 }}>
-        Optional AI features only run when their model file is in the app directory. The
-        Windows installer bundles the core models; a feature marked "not downloaded" needs
-        its model added — see the{" "}
-        <a href="https://github.com/410dood/Cammy#optional-ai-models" target="_blank" rel="noreferrer">
-          model download guide
-        </a>
-        . Models are picked up within a minute of being added.
+        Optional AI features only run when their model file is present. The Windows installer
+        bundles the core models; anything marked "not downloaded" can be fetched right here —
+        the server downloads it to the right place with the right name, and it's picked up
+        within a minute.
       </p>
       {err ? (
         <p className="muted">Couldn't load the AI feature list: {err}</p>
@@ -2756,15 +2842,54 @@ function ModelsCard() {
                 <span className="badge ok" style={{ whiteSpace: "nowrap" }}>
                   <IconCheck size={13} /> installed
                 </span>
-              ) : (
-                <span
-                  className={`badge ${c.required ? "danger" : "warn"}`}
-                  style={{ whiteSpace: "nowrap" }}
-                  title="Model file not found — this feature will not run until the model is downloaded to the app directory."
-                >
-                  not downloaded
-                </span>
-              )}
+              ) : (() => {
+                const job = jobFor(c.key);
+                if (job?.state === "running") {
+                  return (
+                    <span className="badge accent" style={{ whiteSpace: "nowrap" }} role="status">
+                      downloading {job.file}
+                      {job.bytes > 0 ? ` · ${fmtBytes(job.bytes)}` : ""} ({job.done_files}/
+                      {job.total_files})
+                    </span>
+                  );
+                }
+                return (
+                  <span className="row" style={{ alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    {job?.state === "failed" && (
+                      <span
+                        className="badge danger"
+                        style={{ whiteSpace: "nowrap" }}
+                        title={job.error ?? undefined}
+                      >
+                        failed — {(job.error ?? "").slice(0, 60)}
+                      </span>
+                    )}
+                    {(DOWNLOADABLE[c.key] ?? []).map((d) => (
+                      <button
+                        key={d.feature}
+                        type="button"
+                        className="btn btn-ghost ev-act"
+                        onClick={() => start(d.feature)}
+                      >
+                        <IconDownload size={13} /> {d.label}
+                      </button>
+                    ))}
+                    {!DOWNLOADABLE[c.key] && (
+                      <span
+                        className={`badge ${c.required ? "danger" : "warn"}`}
+                        style={{ whiteSpace: "nowrap" }}
+                        title={
+                          c.key === "pose"
+                            ? "The pose model must be exported locally (yolo export model=yolov8n-pose.pt format=onnx imgsz=640 opset=12) — there is no official download."
+                            : "Model file not found — this feature will not run until the model is added to the app directory."
+                        }
+                      >
+                        not downloaded
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
             </div>
           ))}
         </div>
@@ -3989,6 +4114,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               </select>
             </label>
           </div>
+          <HeaderEchoButton />
         </div>
 
         <div className="card" data-settings-group="modes">

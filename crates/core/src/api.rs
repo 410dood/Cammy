@@ -127,6 +127,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/offsite/test", axum::routing::post(offsite_test_api))
         .route("/api/path_probe", get(path_probe_api))
         .route("/api/hwaccel_probe", get(hwaccel_probe_api))
+        .route(
+            "/api/models/download",
+            axum::routing::post(model_download_api),
+        )
+        .route("/api/echo_headers", get(echo_headers_api))
+        .route(
+            "/api/models/download_status",
+            get(model_download_status_api),
+        )
         .route("/api/genai/probe", axum::routing::post(genai_probe_api))
         .route("/api/alarms/vlm_test", axum::routing::post(vlm_test_api))
         .route("/api/alarms/stats", get(alarm_stats_api))
@@ -4667,6 +4676,50 @@ async fn notify_test_api(
         Ok(Err(e)) => Json(serde_json::json!({"ok": false, "error": e})),
         Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
     }
+}
+
+/// GET /api/echo_headers — docs/10 P3: "show me my current request headers",
+/// the SSO card's debugging aid. Configuring forward-auth means guessing which
+/// header the proxy actually sets; this shows the request as Cammy sees it.
+/// Credential-bearing headers are REDACTED (the echo must never turn into a
+/// copy-my-session-cookie widget). Admin-gated (auth.rs).
+async fn echo_headers_api(headers: axum::http::HeaderMap) -> Json<serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    for (name, value) in headers.iter() {
+        let n = name.as_str().to_ascii_lowercase();
+        let v = if matches!(
+            n.as_str(),
+            "cookie" | "authorization" | "proxy-authorization"
+        ) {
+            "[redacted]".to_string()
+        } else {
+            value.to_str().unwrap_or("[non-text]").to_string()
+        };
+        out.insert(n, serde_json::Value::String(v));
+    }
+    Json(serde_json::Value::Object(out))
+}
+
+#[derive(serde::Deserialize)]
+struct ModelDownloadReq {
+    feature: String,
+}
+
+/// POST /api/models/download — docs/10 P3: fetch an optional feature's model
+/// files server-side from the FIXED catalog (the same sources the README
+/// documents), instead of sending the owner to hand-download files into the
+/// right directory with the right names. Admin-gated (auth.rs): it writes
+/// files beside the executable.
+async fn model_download_api(Json(req): Json<ModelDownloadReq>) -> Json<serde_json::Value> {
+    match crate::models_dl::start(&req.feature) {
+        Ok(()) => Json(serde_json::json!({"ok": true})),
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e})),
+    }
+}
+
+/// GET /api/models/download_status — poll the in-process download job board.
+async fn model_download_status_api() -> Json<serde_json::Value> {
+    Json(serde_json::json!(crate::models_dl::all_status()))
 }
 
 /// GET /api/hwaccel_probe — docs/10 P3: which hardware H.264 encoders REALLY

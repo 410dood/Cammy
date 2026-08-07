@@ -1062,6 +1062,29 @@ export const api = {
       message?: string | null;
       path: string;
     }>(`/api/path_probe?path=${encodeURIComponent(path)}`),
+  /** Echo this request's headers as the server sees them (SSO debugging;
+   *  cookie/authorization redacted server-side). */
+  echoHeaders: () => req<Record<string, string>>("/api/echo_headers"),
+  /** Server-side optional-model download from the fixed catalog (P3). */
+  modelDownload: (feature: string) =>
+    req<{ ok: boolean; error?: string }>("/api/models/download", {
+      method: "POST",
+      body: JSON.stringify({ feature }),
+    }),
+  modelDownloadStatus: () =>
+    req<
+      Record<
+        string,
+        {
+          state: "running" | "done" | "failed";
+          file: string;
+          done_files: number;
+          total_files: number;
+          bytes: number;
+          error?: string | null;
+        }
+      >
+    >("/api/models/download_status"),
   /** Which hardware H.264 encoders actually work on this machine (P3). */
   hwaccelProbe: () =>
     req<{ ok: boolean; nvenc?: boolean; qsv?: boolean; videotoolbox?: boolean; error?: string }>(

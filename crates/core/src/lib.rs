@@ -31,6 +31,7 @@ mod import;
 mod lens;
 mod licensing;
 pub mod lpr;
+mod models_dl;
 mod mqtt;
 mod notify;
 mod offsite;
