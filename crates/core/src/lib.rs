@@ -205,7 +205,10 @@ pub async fn run(
     // Shared per-rule cooldown clock across pipeline / audio / API dispatch.
     let alarm_throttle: notify::AlarmThrottle = Arc::new(std::sync::Mutex::new(Default::default()));
     // GenAI worker channel (pipeline -> captioner + VLM alarm verification).
-    let (genai_tx, genai_rx) = std::sync::mpsc::channel::<genai::Job>();
+    // Bounded by an explicit depth counter (see `genai::Queue`): this queue
+    // carries deferred ALARM FIRES, so it is capped, counted, and reported at
+    // `/api/metrics` rather than growing without limit in silence.
+    let (genai_tx, genai_rx, genai_stats) = genai::Queue::new();
     let det_thread = std::thread::Builder::new().name("detector".into()).spawn({
         let (db, go2rtc, dir, stop) = (
             db.clone(),
@@ -219,7 +222,8 @@ pub async fn run(
     })?;
     let genai_thread = std::thread::Builder::new().name("genai".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
-        move || genai::run(db, genai_rx, mqtt_tx_genai, stop)
+        let stats = genai_stats.clone();
+        move || genai::run(db, genai_rx, stats, mqtt_tx_genai, stop)
     })?;
     // Speech-to-text worker (audio event -> capture -> bundled whisper.cpp).
     let (transcribe_tx, transcribe_rx) = std::sync::mpsc::channel::<transcribe::TranscribeJob>();
@@ -294,7 +298,7 @@ pub async fn run(
     // a 10 s timeout, so one unreachable target used to stall detection for
     // EVERY camera. Started before the pipeline so no early firing can miss it;
     // joined at shutdown below so queued alerts drain rather than vanish.
-    let dispatch_thread = notify::start_dispatch(workers_stop.clone());
+    let dispatch_thread = notify::start_dispatch(db.clone(), workers_stop.clone());
     // #70: offsite/cloud backup of recordings to S3-compatible storage. Opt-in
     // (gated on Settings.offsite_backup_enabled), re-reads live config each tick.
     let offsite_thread = std::thread::Builder::new().name("offsite".into()).spawn({
@@ -405,6 +409,7 @@ pub async fn run(
         alarm_throttle,
         onvif_inspector,
         events_tx: events_bcast_tx,
+        genai_stats,
     };
     let ui =
         ServeDir::new(&cfg.ui_dir).not_found_service(ServeFile::new(cfg.ui_dir.join("index.html")));

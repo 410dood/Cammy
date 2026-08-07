@@ -42,6 +42,44 @@ struct Dispatch {
     /// from the worker carries the same context the inline path did.
     tx: std::sync::mpsc::Sender<(String, i64, Outbound)>,
     depth: Arc<std::sync::atomic::AtomicUsize>,
+    /// Alerts thrown away because the queue was saturated. A `warn!` was the
+    /// only trace of these, which means the one person who needs to know an
+    /// alert never arrived — the owner, who is not reading the log — never did.
+    dropped: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// KV key holding the lifetime dropped-alert count, so the number survives a
+/// restart instead of resetting to zero and looking healthy.
+const KV_ALARM_DROPS: &str = "alarm_drops_total";
+
+/// Live alarm-delivery queue counters `(depth, dropped)`, or `None` when no
+/// dispatcher is running (unit tests, `--verify`). Exported at `/api/metrics`.
+pub fn dispatch_stats() -> Option<(usize, usize)> {
+    use std::sync::atomic::Ordering;
+    let d = DISPATCH.get()?;
+    Some((
+        d.depth.load(Ordering::Relaxed),
+        d.dropped.load(Ordering::Relaxed),
+    ))
+}
+
+/// Decide the in-app notification (if any) for the drop counter, given how many
+/// drops have already been reported and whether we are currently latched.
+/// Edge-triggered like the offsite/health latches: one notification when alerts
+/// start being dropped, one when the queue has drained. Pure → unit-tested.
+fn drop_transition(
+    dropped: usize,
+    acknowledged: usize,
+    depth: usize,
+    notified: bool,
+) -> Option<bool> {
+    if !notified {
+        (dropped > acknowledged).then_some(true)
+    } else {
+        // Recovery is "the backlog is gone", not "no drop in the last tick" —
+        // a target that is still saturating the queue has not recovered.
+        (depth == 0).then_some(false)
+    }
 }
 
 /// Process-global and set-once, so `fire` needs no extra parameter at any of
@@ -57,12 +95,16 @@ static DISPATCH: std::sync::OnceLock<Dispatch> = std::sync::OnceLock::new();
 /// Until this is called (unit tests, the `--verify` CLI) every delivery happens
 /// inline exactly as before, so nothing silently no-ops in a context that has no
 /// worker.
-pub fn start_dispatch(shutdown: Arc<std::sync::atomic::AtomicBool>) -> std::thread::JoinHandle<()> {
+pub fn start_dispatch(
+    db: crate::db::Db,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<()> {
     use std::sync::atomic::Ordering;
     let (tx, rx) = std::sync::mpsc::channel::<(String, i64, Outbound)>();
     let depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let worker_depth = depth.clone();
-    if DISPATCH.set(Dispatch { tx, depth }).is_err() {
+    let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (worker_depth, worker_dropped) = (depth.clone(), dropped.clone());
+    if DISPATCH.set(Dispatch { tx, depth, dropped }).is_err() {
         tracing::warn!("alarm dispatch already started");
     }
     std::thread::Builder::new()
@@ -74,12 +116,66 @@ pub fn start_dispatch(shutdown: Arc<std::sync::atomic::AtomicBool>) -> std::thre
             // minutes, right when the user is waiting for it to close.
             const SHUTDOWN_DRAIN: Duration = Duration::from_secs(5);
             let mut deadline: Option<std::time::Instant> = None;
+            // Edge-triggered drop reporting. `acknowledged` is the drop total the
+            // owner has already been told about, so a continuing outage doesn't
+            // re-ring the bell and a NEW outage after recovery does.
+            let mut acknowledged: usize = 0;
+            let mut drop_notified = false;
             loop {
                 if deadline.is_none() && shutdown.load(Ordering::Relaxed) {
                     deadline = Some(std::time::Instant::now() + SHUTDOWN_DRAIN);
                 }
                 if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
                     break;
+                }
+                let dropped_now = worker_dropped.load(Ordering::Relaxed);
+                if let Some(state) = drop_transition(
+                    dropped_now,
+                    acknowledged,
+                    worker_depth.load(Ordering::Relaxed),
+                    drop_notified,
+                ) {
+                    let now = chrono::Utc::now().timestamp();
+                    if state {
+                        let n = dropped_now - acknowledged;
+                        // Lifetime total, persisted so a restart can't make a
+                        // history of dropped alerts look like a clean slate.
+                        let lifetime = db
+                            .get_kv(KV_ALARM_DROPS)
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(0)
+                            + n;
+                        let _ = db.set_kv(KV_ALARM_DROPS, &lifetime.to_string());
+                        tracing::warn!(dropped = n, lifetime, "alerts dropped: delivery queue full");
+                        let _ = db.add_notification(
+                            now,
+                            "alarm_undelivered",
+                            &format!(
+                                "{n} alert{} could not be delivered",
+                                if n == 1 { "" } else { "s" }
+                            ),
+                            Some(&format!(
+                                "The alert delivery queue filled up, so {n} alert{} {} thrown away \
+                                 without being sent. This means a webhook, push or email target is \
+                                 not responding — check the targets on your alarm rules. \
+                                 ({lifetime} dropped in total since this install began.)",
+                                if n == 1 { "" } else { "s" },
+                                if n == 1 { "was" } else { "were" }
+                            )),
+                            None,
+                        );
+                    } else {
+                        tracing::info!("alert delivery queue drained");
+                        let _ = db.add_notification(
+                            now,
+                            "alarm_undelivered",
+                            "Alert delivery caught up",
+                            Some("The alert delivery queue has drained; alerts are being sent again."),
+                            None,
+                        );
+                    }
+                    acknowledged = dropped_now;
+                    drop_notified = state;
                 }
                 // Wake periodically rather than blocking forever, so shutdown is
                 // noticed even while the queue is idle.
@@ -127,6 +223,9 @@ fn enqueue(rule_name: &str, event_id: i64, job: Outbound) -> Option<Outbound> {
     use std::sync::atomic::Ordering;
     let d = DISPATCH.get()?;
     if d.depth.load(Ordering::Relaxed) >= DISPATCH_CAP {
+        // Counted, not just logged: the worker turns this into ONE in-app
+        // notification per outage so the owner learns an alert never arrived.
+        d.dropped.fetch_add(1, Ordering::Relaxed);
         tracing::warn!(
             rule = %rule_name, kind = job.kind(),
             "alarm delivery queue is full ({DISPATCH_CAP}) — dropping this one; \
@@ -1056,8 +1155,11 @@ mod tests {
     /// action was reported as queued rather than delivered.
     #[test]
     fn a_firing_rule_does_not_block_the_caller_on_the_network() {
+        let dir = std::env::temp_dir().join(format!("cammy-dispatch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = crate::db::Db::open(&dir.join("t.db")).expect("test db");
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker = start_dispatch(stop.clone());
+        let worker = start_dispatch(db.clone(), stop.clone());
 
         let mut r = rule(1, 0, 0);
         r.action = "ntfy".into();
@@ -1069,9 +1171,6 @@ mod tests {
         // flaky on a loaded machine.
         r.target = "http://127.0.0.1:9/closed".into();
         let (tx, _rx) = std::sync::mpsc::channel::<EventMsg>();
-        let dir = std::env::temp_dir().join(format!("cammy-dispatch-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = crate::db::Db::open(&dir.join("t.db")).expect("test db");
         let ev = AlarmEvent {
             event_id: 42, // non-zero: a real detection, so it must be queued
             camera: "cam",
@@ -1114,6 +1213,29 @@ mod tests {
 
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = worker.join();
+    }
+
+    /// A dropped alert used to leave a `warn!` and nothing else — invisible to
+    /// the only person who needs it. The notification must fire ONCE per outage
+    /// (not per dropped alert, which would be a second flood), and again for a
+    /// NEW outage after the queue has recovered.
+    #[test]
+    fn dropped_alerts_notify_once_per_outage() {
+        // Nothing dropped → silence.
+        assert_eq!(drop_transition(0, 0, 0, false), None);
+        assert_eq!(drop_transition(0, 0, 300, false), None);
+        // First drop → notify + latch.
+        assert_eq!(drop_transition(1, 0, DISPATCH_CAP, false), Some(true));
+        // More drops while latched → no spam (caller has set acknowledged = 1).
+        assert_eq!(drop_transition(50, 1, DISPATCH_CAP, true), None);
+        // A still-backlogged queue has NOT recovered, even if drops paused.
+        assert_eq!(drop_transition(50, 50, 17, true), None);
+        // Drained → recovery notice, latch off.
+        assert_eq!(drop_transition(50, 50, 0, true), Some(false));
+        // A LATER outage speaks again rather than staying quiet forever.
+        assert_eq!(drop_transition(51, 50, DISPATCH_CAP, false), Some(true));
+        // …but the same total does not.
+        assert_eq!(drop_transition(50, 50, DISPATCH_CAP, false), None);
     }
 
     fn rule(id: i64, cooldown: i64, snooze: i64) -> AlarmRule {

@@ -160,7 +160,7 @@ pub fn run(
     status: StatusBoard,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
     throttle: crate::notify::AlarmThrottle,
-    genai_tx: std::sync::mpsc::Sender<crate::genai::Job>,
+    genai_tx: crate::genai::Queue,
     shutdown: Arc<AtomicBool>,
 ) {
     let num_workers = db.settings().detect_workers.clamp(1, 8) as usize;
@@ -243,7 +243,7 @@ fn run_worker(
     status: StatusBoard,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
     throttle: crate::notify::AlarmThrottle,
-    genai_tx: std::sync::mpsc::Sender<crate::genai::Job>,
+    genai_tx: crate::genai::Queue,
     shutdown: Arc<AtomicBool>,
 ) {
     // One detector session per (model, force_cpu, conf, iou) combination, so
@@ -1664,7 +1664,7 @@ fn run_worker(
                                 .is_some_and(|p| !p.trim().is_empty())
                                 || (rule.describe && settings.genai_enabled);
                             if deferred {
-                                let _ = genai_tx.send(crate::genai::Job::VlmGate(Box::new(
+                                let queued = genai_tx.send(crate::genai::Job::VlmGate(Box::new(
                                     crate::genai::VlmGateJob {
                                         rule: rule.clone(),
                                         event_id: id,
@@ -1681,6 +1681,15 @@ fn run_worker(
                                         suppressed,
                                     },
                                 )));
+                                if !queued {
+                                    // Nothing retries this: `ready` already
+                                    // stamped the cooldown and `take_suppressed`
+                                    // already drained the burst counter above.
+                                    tracing::warn!(
+                                        rule = %rule.name, event = id,
+                                        "AI queue full — this alert was NOT delivered"
+                                    );
+                                }
                             } else {
                                 crate::notify::fire(rule, &alarm_ev, &mqtt_tx, suppressed, &db);
                             }
@@ -1726,7 +1735,10 @@ fn run_worker(
             // off-thread so the LLM call never stalls detection.
             if settings.genai_enabled {
                 if let Some(&first) = new_event_ids.first() {
-                    let _ = genai_tx.send(crate::genai::Job::Caption(crate::genai::CaptionJob {
+                    // A shed caption costs a sentence of description and is
+                    // logged by the queue; it is shed long before an alarm fire
+                    // would be, which is the point of the split cap.
+                    genai_tx.send(crate::genai::Job::Caption(crate::genai::CaptionJob {
                         event_id: first,
                         snapshot_path: snap_abs.clone(),
                         label: wanted[0].label.to_string(),

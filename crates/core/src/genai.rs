@@ -62,6 +62,103 @@ pub enum Job {
     VlmGate(Box<VlmGateJob>),
 }
 
+impl Job {
+    fn kind(&self) -> &'static str {
+        match self {
+            Job::Caption(_) => "caption",
+            Job::VlmGate(_) => "vlm_gate",
+        }
+    }
+    /// Whether losing this job loses an ALERT. A `VlmGate` job is a rule that
+    /// has already matched and already had its cooldown stamped + burst counter
+    /// drained (`notify::ready` / `take_suppressed` run at the dispatch site,
+    /// BEFORE the hand-off) — so nothing retries it and no later event repeats
+    /// it. A `Caption` job is a sentence of description.
+    fn is_alarm(&self) -> bool {
+        matches!(self, Job::VlmGate(_))
+    }
+}
+
+/// Queued captions allowed before new ones are shed. Deliberately far below
+/// [`ALARM_CAP`] so a camera producing captions faster than the model can answer
+/// can never crowd out an alarm fire.
+const CAPTION_CAP: usize = 64;
+/// Hard ceiling on the whole queue. Reaching it means the vision endpoint has
+/// been unresponsive for a very long time; the alternative to shedding is
+/// unbounded RAM growth and alerts that arrive hours late, which is not a
+/// better outcome — but it is loud (warn! + an in-app notification), never silent.
+const ALARM_CAP: usize = 512;
+
+/// Whether a job may be queued at the current depth. Pure → unit-tested.
+fn admits(is_alarm: bool, depth: usize) -> bool {
+    depth < if is_alarm { ALARM_CAP } else { CAPTION_CAP }
+}
+
+/// Live queue counters, shared with `/api/metrics` (`AppState`) so a backlog is
+/// observable from outside the process instead of only inferable from late alerts.
+#[derive(Clone, Default)]
+pub struct QueueStats {
+    depth: Arc<std::sync::atomic::AtomicUsize>,
+    shed: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl QueueStats {
+    /// Jobs waiting for the worker right now.
+    pub fn depth(&self) -> usize {
+        self.depth.load(Ordering::Relaxed)
+    }
+    /// Jobs dropped since startup because the queue was saturated.
+    pub fn shed(&self) -> usize {
+        self.shed.load(Ordering::Relaxed)
+    }
+}
+
+/// The producer half. The channel stays UNBOUNDED with an explicit depth counter
+/// (the shape `notify::enqueue` uses) rather than a `sync_channel`: a bounded
+/// `send` BLOCKS, and blocking here would stall the detection thread — the exact
+/// failure the whole deferred-fire design exists to prevent.
+#[derive(Clone)]
+pub struct Queue {
+    tx: std::sync::mpsc::Sender<Job>,
+    stats: QueueStats,
+}
+
+impl Queue {
+    pub fn new() -> (Queue, Receiver<Job>, QueueStats) {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let stats = QueueStats::default();
+        (
+            Queue {
+                tx,
+                stats: stats.clone(),
+            },
+            rx,
+            stats,
+        )
+    }
+
+    /// Hand a job to the worker. `false` = shed (the caller should say so; for a
+    /// `VlmGate` job that means an alert will never be delivered).
+    pub fn send(&self, job: Job) -> bool {
+        let depth = self.stats.depth.load(Ordering::Relaxed);
+        if !admits(job.is_alarm(), depth) {
+            self.stats.shed.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                kind = job.kind(),
+                depth,
+                "AI queue is saturated — dropping this job; the vision model is not keeping up"
+            );
+            return false;
+        }
+        self.stats.depth.fetch_add(1, Ordering::Relaxed);
+        if self.tx.send(job).is_err() {
+            self.stats.depth.fetch_sub(1, Ordering::Relaxed);
+            return false; // worker gone
+        }
+        true
+    }
+}
+
 /// The captioning prompt for a detection.
 fn prompt_for(label: &str, camera: &str) -> String {
     format!(
@@ -418,31 +515,130 @@ fn err_transition(outcome: &Outcome, notified: bool) -> Option<(bool, &'static s
     }
 }
 
+/// Decide the "AI queue backed up" notification (if any) for the current depth,
+/// given whether we've already said so. Hysteresis on purpose: a queue that
+/// hovers at the trigger must not toggle the bell. Pure → unit-tested.
+fn backlog_transition(depth: usize, notified: bool) -> Option<bool> {
+    // At CAPTION_CAP we are already shedding captions — that is the moment the
+    // backlog stops being invisible slowness and starts costing work.
+    if !notified && depth >= CAPTION_CAP {
+        Some(true)
+    } else if notified && depth <= CAPTION_CAP / 4 {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// How long shutdown will keep firing QUEUED ALARMS before giving up. Captions
+/// are abandoned immediately — they are cosmetic and each can cost 60 s.
+const SHUTDOWN_DRAIN: Duration = Duration::from_secs(5);
+
 pub fn run(
     db: Db,
     rx: Receiver<Job>,
+    stats: QueueStats,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
     shutdown: Arc<AtomicBool>,
 ) {
     // Edge-triggered failure surface: notify once when the endpoint goes
     // unreachable, once when it recovers.
     let mut err_notified = false;
+    let mut backlog_notified = false;
     while !shutdown.load(Ordering::Relaxed) {
+        // Report a backlog before taking the next job, so a queue that is
+        // filling gets said out loud rather than only inferred from late alerts.
+        if let Some(state) = backlog_transition(stats.depth(), backlog_notified) {
+            let now = chrono::Utc::now().timestamp();
+            let (title, body) = if state {
+                (
+                    "AI queue backed up",
+                    format!(
+                        "{} AI jobs are waiting and {} have been dropped. The vision model is \
+                         answering slower than events arrive, so captions are being skipped and \
+                         AI-verified alerts are late. Check the AI server in Settings.",
+                        stats.depth(),
+                        stats.shed()
+                    ),
+                )
+            } else {
+                (
+                    "AI queue caught up",
+                    "The vision model is keeping up again.".to_string(),
+                )
+            };
+            let _ = db.add_notification(now, "genai_backlog", title, Some(&body), None);
+            if state {
+                tracing::warn!(depth = stats.depth(), shed = stats.shed(), "{title}");
+            }
+            backlog_notified = state;
+        }
         match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(Job::Caption(job)) => {
-                let outcome = caption_one(&db, &job);
-                if let Some((new_state, title, body)) = err_transition(&outcome, err_notified) {
-                    let now = chrono::Utc::now().timestamp();
-                    let _ = db.add_notification(now, "genai_error", title, Some(&body), None);
-                    err_notified = new_state;
-                    if new_state {
-                        tracing::warn!("genai captioner endpoint unreachable: {title}");
+            Ok(job) => {
+                stats.depth.fetch_sub(1, Ordering::Relaxed);
+                match job {
+                    Job::Caption(job) => {
+                        let outcome = caption_one(&db, &job);
+                        report_reachability(&db, &outcome, &mut err_notified);
                     }
+                    Job::VlmGate(j) => vlm_gate(&db, &j, &mqtt_tx),
                 }
             }
-            Ok(Job::VlmGate(j)) => vlm_gate(&db, &j, &mqtt_tx),
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+    // Shutdown: what is still queued includes ALARM FIRES that nothing will ever
+    // retry (the rule's cooldown was stamped at dispatch). Spend a bounded moment
+    // delivering those; count and SAY what could not be delivered — the loop used
+    // to just exit and drop the whole backlog in silence.
+    let deadline = std::time::Instant::now() + SHUTDOWN_DRAIN;
+    let (mut fired, mut lost_alarms, mut lost_captions) = (0usize, 0usize, 0usize);
+    while let Ok(job) = rx.try_recv() {
+        stats.depth.fetch_sub(1, Ordering::Relaxed);
+        match job {
+            Job::VlmGate(j) if std::time::Instant::now() < deadline => {
+                vlm_gate(&db, &j, &mqtt_tx);
+                fired += 1;
+            }
+            Job::VlmGate(_) => lost_alarms += 1,
+            Job::Caption(_) => lost_captions += 1,
+        }
+    }
+    if lost_alarms > 0 {
+        tracing::warn!(
+            lost_alarms,
+            lost_captions,
+            fired,
+            "genai worker stopped with alarm verifications still queued — those alerts were NOT delivered"
+        );
+        let now = chrono::Utc::now().timestamp();
+        let _ = db.add_notification(
+            now,
+            "genai_backlog",
+            "Some alerts were not delivered",
+            Some(&format!(
+                "{lost_alarms} AI-verified alert(s) were still waiting on the vision model when \
+                 Cammy shut down and could not be sent. The events themselves were recorded."
+            )),
+            None,
+        );
+    } else if fired > 0 || lost_captions > 0 {
+        tracing::info!(fired, lost_captions, "genai worker drained on shutdown");
+    }
+}
+
+/// Edge-triggered endpoint-reachability notification, shared by the caption path
+/// and the VLM gate (an owner who uses only `vlm_prompt` rules used to get no
+/// signal at all that their model was down — every "AI-verified" rule fired
+/// unverified).
+fn report_reachability(db: &Db, outcome: &Outcome, notified: &mut bool) {
+    if let Some((new_state, title, body)) = err_transition(outcome, *notified) {
+        let now = chrono::Utc::now().timestamp();
+        let _ = db.add_notification(now, "genai_error", title, Some(&body), None);
+        *notified = new_state;
+        if new_state {
+            tracing::warn!("genai endpoint unreachable: {title}");
         }
     }
 }
@@ -492,6 +688,85 @@ mod tests {
         assert_eq!(interpret_yes_no("yes and no"), Some(true));
         // A mid-sentence lone polarity with no leading answer word.
         assert_eq!(interpret_yes_no("definitely false"), Some(false));
+    }
+
+    #[test]
+    fn captions_are_shed_long_before_alarm_fires_are() {
+        // A caption is a sentence; a VlmGate job is an alert nothing will retry.
+        // Under the caption flood the alarm path must still have room.
+        assert!(admits(false, CAPTION_CAP - 1));
+        assert!(!admits(false, CAPTION_CAP));
+        assert!(admits(true, CAPTION_CAP)); // …the alarm still gets in
+        assert!(admits(true, ALARM_CAP - 1));
+        assert!(!admits(true, ALARM_CAP));
+        // The whole point of the split: an alarm arriving at a queue full of
+        // captions is admitted, not dropped. Guarded at compile time so nobody
+        // "tidies" the two caps into equality.
+        const _: () = assert!(CAPTION_CAP < ALARM_CAP);
+    }
+
+    #[test]
+    fn queue_sheds_captions_and_counts_them() {
+        let (q, rx, stats) = Queue::new();
+        let caption = || {
+            Job::Caption(CaptionJob {
+                event_id: 1,
+                snapshot_path: PathBuf::from("x.jpg"),
+                label: "person".into(),
+                camera: "cam".into(),
+            })
+        };
+        for _ in 0..CAPTION_CAP {
+            assert!(q.send(caption()));
+        }
+        assert_eq!(stats.depth(), CAPTION_CAP);
+        // Captions now shed…
+        assert!(!q.send(caption()));
+        assert_eq!(stats.shed(), 1);
+        // …while the alarm path is unaffected.
+        // Minimal rule: every other AlarmRule field carries `#[serde(default)]`.
+        let rule: crate::db::AlarmRule = serde_json::from_value(serde_json::json!({
+            "name": "r", "camera_id": null, "label": null,
+            "face_like": null, "plate_like": null,
+        }))
+        .expect("minimal rule");
+        assert!(q.send(Job::VlmGate(Box::new(VlmGateJob {
+            rule,
+            event_id: 7,
+            camera: "cam".into(),
+            camera_id: 1,
+            label: "person".into(),
+            score: 0.9,
+            ts: 0,
+            snapshot_url: String::new(),
+            snapshot_path: PathBuf::from("x.jpg"),
+            face: None,
+            plate: None,
+            severity: 2,
+            suppressed: 0,
+        }))));
+        assert_eq!(stats.depth(), CAPTION_CAP + 1);
+        assert_eq!(stats.shed(), 1);
+        drop(rx);
+    }
+
+    #[test]
+    fn backlog_notification_is_edge_triggered_with_hysteresis() {
+        // Quiet below the trigger.
+        assert_eq!(backlog_transition(0, false), None);
+        assert_eq!(backlog_transition(CAPTION_CAP - 1, false), None);
+        // Fires once on entry…
+        assert_eq!(backlog_transition(CAPTION_CAP, false), Some(true));
+        // …and not again while latched, even as it grows.
+        assert_eq!(backlog_transition(CAPTION_CAP, true), None);
+        assert_eq!(backlog_transition(ALARM_CAP, true), None);
+        // Hysteresis: draining just under the trigger does NOT declare recovery,
+        // so a queue hovering at the line can't toggle the bell.
+        assert_eq!(backlog_transition(CAPTION_CAP - 1, true), None);
+        assert_eq!(backlog_transition(CAPTION_CAP / 4, true), Some(false));
+        assert_eq!(backlog_transition(0, true), Some(false));
+        // Recovered state stays quiet.
+        assert_eq!(backlog_transition(0, false), None);
     }
 
     #[test]

@@ -50,6 +50,10 @@ pub struct AppState {
     /// P3.3 — live event broadcast for the SSE feed (`GET /api/events/stream`).
     /// The MQTT worker taps every EventMsg here; each SSE client `subscribe()`s.
     pub events_tx: tokio::sync::broadcast::Sender<crate::mqtt::EventMsg>,
+    /// Depth/shed counters for the GenAI work queue, exported at
+    /// `/api/metrics`. That queue carries deferred alarm fires, so a backlog is
+    /// late (or lost) ALERTS — it needs to be visible from outside the process.
+    pub genai_stats: crate::genai::QueueStats,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -6753,6 +6757,8 @@ fn render_metrics(
     disk_free: u64,
     cams: &[CamMetric],
     backup: &BackupMetric,
+    genai: (usize, usize),
+    alarm_queue: Option<(usize, usize)>,
 ) -> String {
     let online = cams.iter().filter(|c| c.online).count();
     let mut out = String::new();
@@ -6949,6 +6955,43 @@ fn render_metrics(
             esc_label(cam)
         ));
     }
+
+    // GenAI work queue (docs/11 P0.2). This queue carries deferred ALARM FIRES,
+    // so a rising depth is late alerts and a rising shed count is lost ones.
+    let (depth, shed) = genai;
+    family(
+        &mut out,
+        "zoomy_genai_queue_depth",
+        "AI jobs (captions + deferred alarm verifications) waiting on the vision model.",
+        "gauge",
+    );
+    out.push_str(&format!("zoomy_genai_queue_depth {depth}\n"));
+    family(
+        &mut out,
+        "zoomy_genai_jobs_shed_total",
+        "AI jobs dropped since startup because the queue was saturated.",
+        "counter",
+    );
+    out.push_str(&format!("zoomy_genai_jobs_shed_total {shed}\n"));
+
+    // Alarm delivery queue (docs/11 P0.3). A non-zero drop count is alerts the
+    // owner was never sent.
+    if let Some((qdepth, qdropped)) = alarm_queue {
+        family(
+            &mut out,
+            "zoomy_alarm_queue_depth",
+            "Alarm deliveries (webhook/ntfy/email) waiting to be sent.",
+            "gauge",
+        );
+        out.push_str(&format!("zoomy_alarm_queue_depth {qdepth}\n"));
+        family(
+            &mut out,
+            "zoomy_alarm_drops_total",
+            "Alerts thrown away because the delivery queue was full.",
+            "counter",
+        );
+        out.push_str(&format!("zoomy_alarm_drops_total {qdropped}\n"));
+    }
     out
 }
 
@@ -7027,6 +7070,8 @@ async fn metrics(
         disk_free,
         &cams,
         &backup,
+        (st.genai_stats.depth(), st.genai_stats.shed()),
+        crate::notify::dispatch_stats(),
     );
     Ok((
         [(
@@ -7969,7 +8014,7 @@ mod tests {
             gaveup: 0,
             per_camera: vec![("porch".into(), 4096)],
         };
-        let m = render_metrics("0.1.0", 42, 9999, &cams, &backup);
+        let m = render_metrics("0.1.0", 42, 9999, &cams, &backup, (7, 2), Some((3, 5)));
         // Global gauges.
         assert!(m.contains("zoomy_build_info{version=\"0.1.0\"} 1\n"));
         assert!(m.contains("\nzoomy_cameras 2\n"));
@@ -8000,6 +8045,20 @@ mod tests {
         assert!(m.contains("zoomy_camera_record_paused{camera=\"a\\\"b\\\\c\"} 1\n"));
         // The offline camera has no inference/last-frame lines (None skipped).
         assert!(!m.contains("zoomy_camera_inference_ms{camera=\"a\\\"b\\\\c\"}"));
+        // GenAI queue (docs/11 P0.2): a backlog here is late alerts, a shed
+        // count is lost ones, so both are scrapeable.
+        assert!(m.contains("# TYPE zoomy_genai_queue_depth gauge\n"));
+        assert!(m.contains("\nzoomy_genai_queue_depth 7\n"));
+        assert!(m.contains("# TYPE zoomy_genai_jobs_shed_total counter\n"));
+        assert!(m.contains("\nzoomy_genai_jobs_shed_total 2\n"));
+        // Alarm delivery queue (docs/11 P0.3): a non-zero drop count is alerts
+        // that were never sent.
+        assert!(m.contains("\nzoomy_alarm_queue_depth 3\n"));
+        assert!(m.contains("\nzoomy_alarm_drops_total 5\n"));
+        // With no dispatcher running (unit tests, --verify) the family is
+        // omitted rather than reported as a healthy zero.
+        let none = render_metrics("0.1.0", 42, 9999, &cams, &backup, (0, 0), None);
+        assert!(!none.contains("zoomy_alarm_queue_depth"));
     }
 
     #[test]
