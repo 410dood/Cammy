@@ -429,16 +429,14 @@ async fn camera_status(
     let window = crate::status::freshness_window(st.db.settings().poll_ms);
     let allow = allowed_cameras(&st, &p)?;
     let mut out = serde_json::Map::new();
+    // One snapshot for the whole response: this used to clone the entire board
+    // once per camera.
+    let board = st.status.snapshot();
     for cam in st.db.list_cameras()? {
         if !camera_allowed(&allow, cam.id) {
             continue;
         }
-        let h = st
-            .status
-            .snapshot()
-            .get(&cam.id)
-            .cloned()
-            .unwrap_or_default();
+        let h = board.get(&cam.id).cloned().unwrap_or_default();
         let online = h.is_online(cam.detect, now, window);
         out.insert(
             cam.id.to_string(),
@@ -452,6 +450,10 @@ async fn camera_status(
                 "accelerator": h.accelerator,
                 "model": h.model,
                 "tamper": h.tamper,
+                // A model that would not load. Separate from `online`/`last_error`
+                // (which are about the STREAM) because the two need different
+                // fixes and used to be reported as the same thing.
+                "detector_error": h.detector_error,
             }),
         );
     }

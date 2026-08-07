@@ -591,6 +591,10 @@ export interface CamStatus {
   model: string | null;
   /** Active tamper kind (blackout/defocus/scene_change) if compromised (#63). */
   tamper?: string | null;
+  /** Why the AI model could not be loaded for this camera. A SEPARATE axis from
+   *  `online`: the camera can be perfectly reachable with a broken model, and
+   *  used to read as "offline" when it was. */
+  detector_error?: string | null;
   /** Last detection event on this camera (unix secs) — drives the Live activity sort. */
   last_detection_ts?: number | null;
 }

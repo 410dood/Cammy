@@ -1415,6 +1415,17 @@ export default function Cameras({
                             <IconAlert size={11} /> error
                           </span>
                         )}
+                        {/* A broken model is not an offline camera. Say which one
+                            it is, so nobody goes hunting for a network fault. */}
+                        {s?.detector_error && (
+                          <span
+                            className="badge danger"
+                            style={{ marginLeft: 6, whiteSpace: "nowrap" }}
+                            title={`The AI model could not be loaded, so nothing is being detected on this camera. The camera itself is fine. Details: ${s.detector_error}`}
+                          >
+                            <IconAlert size={11} /> Model failed to load
+                          </span>
+                        )}
                         {/* Online but not writing footage. "Paused" is the
                             camera's own schedule doing its job; "not recording"
                             means footage is being lost right now. */}

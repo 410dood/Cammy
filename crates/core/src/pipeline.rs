@@ -252,6 +252,10 @@ fn run_worker(
     let mut global_detect_key = String::new();
     // Per-camera sample-interval cap (FPS governance).
     let mut last_poll: HashMap<i64, Instant> = HashMap::new();
+    // Last detector-load failure reported per camera, so a broken model is
+    // logged + published once rather than once per frame (this loop runs ~1 Hz
+    // per camera), and a recovery is noticed.
+    let mut detector_errs: HashMap<i64, String> = HashMap::new();
     let mut face_engine: Option<facerec::FaceEngine> = None;
     let mut face_key = String::new();
     let mut clip: Option<crate::smart::ImageEmbedder> = None;
@@ -345,6 +349,21 @@ fn run_worker(
             tamper_gates.retain(|k, _| live.contains(k));
             gait_states.retain(|k, _| live.contains(k));
             alerted_tracks.retain(|k, _| live.contains(k));
+            // Also drop the flag for a camera that stopped detecting (disabled, or
+            // `detect` turned off) — the loop below never visits it again, so a
+            // stale "model failed to load" badge would otherwise stick forever.
+            let detecting: std::collections::HashSet<i64> = cameras
+                .iter()
+                .filter(|c| c.enabled && c.detect)
+                .map(|c| c.id)
+                .collect();
+            detector_errs.retain(|k, _| {
+                let keep = detecting.contains(k);
+                if !keep {
+                    status.set_detector_error(*k, None);
+                }
+                keep
+            });
             // Zone-state maps are keyed by (camera id, zone name). Prune by the
             // CURRENT set of state-classify zones — not just camera liveness — so
             // turning a zone's classify off (or renaming the zone) drops its stale
@@ -477,6 +496,15 @@ fn run_worker(
                 "{model}|{accel}|{}|{}",
                 settings.confidence, settings.nms_iou
             );
+            // A model that will not load is NOT a camera outage, and used to be
+            // reported as one: this block `continue`d before the frame fetch
+            // below, so `last_frame_ts` never got stamped and the camera read
+            // "offline" — sending the owner after a network fault while the real
+            // problem was a missing/corrupt `.onnx` or a failed EP init. Now the
+            // failure is recorded on its own axis and the loop carries on to the
+            // frame fetch (so reachability, tamper detection and the motion gate
+            // all keep working); only the detector run itself is skipped.
+            let mut detector_failed = false;
             if !detectors.contains_key(&dkey) {
                 match Detector::new(&model, accel, settings.confidence, settings.nms_iou) {
                     Ok(d) => {
@@ -484,10 +512,24 @@ fn run_worker(
                         detectors.insert(dkey.clone(), d);
                     }
                     Err(e) => {
-                        tracing::debug!(camera = %cam.name, "detector unavailable: {e:#}");
-                        continue;
+                        detector_failed = true;
+                        // This loop runs ~1 Hz per camera, so speak once per
+                        // distinct failure rather than once per frame.
+                        let msg = format!("{e:#}");
+                        if detector_errs.get(&cam.id) != Some(&msg) {
+                            tracing::warn!(
+                                camera = %cam.name, model = %model, accelerator = %accel,
+                                "detector unavailable — object detection is OFF for this camera: {msg}"
+                            );
+                            status.set_detector_error(cam.id, Some(msg.clone()));
+                            detector_errs.insert(cam.id, msg);
+                        }
                     }
                 }
+            }
+            if !detector_failed && detector_errs.remove(&cam.id).is_some() {
+                tracing::info!(camera = %cam.name, model = %model, "detector recovered");
+                status.set_detector_error(cam.id, None);
             }
             let accelerator = accel_label(accel);
 
@@ -791,6 +833,12 @@ fn run_worker(
             // (delivered) and later vanish (removed).
             let package_on = cam.detect_config.package_detect;
             if !verdict.is_motion() && !tracker_on && !package_on {
+                continue;
+            }
+            // Model broken (recorded + surfaced above): everything that does not
+            // need it has already run for this frame; object detection is what we
+            // skip.
+            if detector_failed {
                 continue;
             }
             tracing::debug!(camera = %cam.name, ?verdict, "running detector");

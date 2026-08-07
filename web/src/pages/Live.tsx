@@ -357,8 +357,23 @@ export default function Live({
           const tamper = s?.tamper || null;
           const stale =
             !!s && s.online && !tamper && !!s.last_frame_ts && serverNow - s.last_frame_ts > STALE_SECS;
-          const dotCls = !s ? "" : !s.online ? "off" : tamper || stale ? "warn" : "on";
-          const alert = tamper ? TAMPER_LABEL[tamper] ?? "Tampered" : stale ? "No signal" : null;
+          // A model that won't load leaves the camera perfectly watchable and
+          // completely un-watched. It is its own state, not an offline camera.
+          const modelBroken = s?.detector_error || null;
+          const dotCls = !s
+            ? ""
+            : !s.online
+              ? "off"
+              : tamper || stale || modelBroken
+                ? "warn"
+                : "on";
+          const alert = tamper
+            ? TAMPER_LABEL[tamper] ?? "Tampered"
+            : stale
+              ? "No signal"
+              : modelBroken
+                ? "Model failed to load"
+                : null;
           // A camera set to record but not recording used to render exactly like
           // one that is recording nothing on purpose: no chip at all. Say which.
           const rec = recordState(cam, s);
@@ -384,7 +399,16 @@ export default function Live({
                 )}
               </div>
               {alert && (
-                <div className="tile-alert" title={tamper ? "Possible camera tampering. The view changed abruptly (covered, moved, or defocused)." : "Stream frozen. The camera is online but isn't sending new video."}>
+                <div
+                  className="tile-alert"
+                  title={
+                    tamper
+                      ? "Possible camera tampering. The view changed abruptly (covered, moved, or defocused)."
+                      : stale
+                        ? "Stream frozen. The camera is online but isn't sending new video."
+                        : `The AI model could not be loaded, so nothing is being detected on this camera. The picture is fine — the model is not. Details: ${modelBroken}`
+                  }
+                >
                   <IconAlert size={13} /> {alert}
                 </div>
               )}

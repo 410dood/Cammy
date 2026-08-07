@@ -44,6 +44,17 @@ pub struct CamHealth {
     /// Last time this camera recorded a detection event (unix secs) — drives the
     /// Live grid's activity sort (cameras with something happening float up).
     pub last_detection_ts: Option<i64>,
+    /// Why the object detector could not be loaded for this camera (missing or
+    /// corrupt `.onnx`, execution-provider init failure). `None` = the model
+    /// loaded, or the camera doesn't detect.
+    ///
+    /// This is a SEPARATE axis from reachability on purpose. The frame fetch and
+    /// the model load fail for completely different reasons and need completely
+    /// different fixes, but until this existed a failed model load skipped the
+    /// frame fetch entirely — so the camera read **offline** and the owner went
+    /// looking for a network fault that wasn't there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detector_error: Option<String>,
 }
 
 /// Seconds within which a camera must have delivered a frame to count as
@@ -121,6 +132,12 @@ impl StatusBoard {
         self.write().entry(camera_id).or_default().tamper = kind;
     }
 
+    /// Publish why the camera's object detector could not be loaded (`None` once
+    /// it loads). Never conflated with `last_error`, which is about the *stream*.
+    pub fn set_detector_error(&self, camera_id: i64, err: Option<String>) {
+        self.write().entry(camera_id).or_default().detector_error = err;
+    }
+
     /// Stamp that the camera just recorded a detection event.
     pub fn detection(&self, camera_id: i64, ts: i64) {
         self.write().entry(camera_id).or_default().last_detection_ts = Some(ts);
@@ -149,6 +166,25 @@ mod tests {
         let s = b.snapshot();
         assert_eq!(s[&1].last_frame_ts, Some(123));
         assert!(s[&1].last_error.is_none());
+    }
+
+    #[test]
+    fn detector_error_is_independent_of_stream_health() {
+        let b = StatusBoard::default();
+        // A model that won't load must not disturb reachability: a camera whose
+        // frames arrive is ONLINE with a broken model, and says so.
+        b.set_detector_error(1, Some("no such file: bad.onnx".into()));
+        b.frame_ok(1, 500);
+        let s = b.snapshot();
+        assert_eq!(
+            s[&1].detector_error.as_deref(),
+            Some("no such file: bad.onnx")
+        );
+        assert!(s[&1].is_online(true, 505, 20));
+        // frame_ok clears the STREAM error only — the model is still broken.
+        assert!(s[&1].last_error.is_none());
+        b.set_detector_error(1, None);
+        assert!(b.snapshot()[&1].detector_error.is_none());
     }
 
     #[test]
