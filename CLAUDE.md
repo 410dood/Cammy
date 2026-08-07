@@ -50,8 +50,13 @@ dropped, alarm actions homeowner-first (ntfy default, priorities in words);
 webhook/health-ntfy URLs (256 tests, NVR release-restarted — **must start
 with `--port 8081`; a python process owns 8080**); `6aa7655` P2.7
 onboarding Alerts step (generate ntfy topic, test push, starter person
-rule). **Remaining P2: P2.2 live motion tuner, P2.4 provider pickers
-(SMTP/S3/Ollama + VLM test), P2.5 Family wizard.**
+rule). `37492ad` P2.2 live motion tuner (GET
+/api/cameras/{id}/motion_probe: two frames 0.7 s apart through a stateless
+MotionGate; the modal draws amber changed-regions and a verdict line that
+tracks the threshold slider live) + email test kind (send_built transport,
+"Send a test email" on the SMTP card, uses SAVED settings). **Remaining
+P2: P2.4 provider pickers (SMTP/S3/Ollama presets + probe endpoints + the
+VLM-question test), P2.5 Family setup wizard.**
 
 ### Earlier: tuning controls speak homeowner + the control-UX backlog, 2026-08-07
 
