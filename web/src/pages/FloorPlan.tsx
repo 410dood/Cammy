@@ -29,7 +29,9 @@ export default function FloorPlanPage({
   const toast = useToast();
   const [plan, setPlan] = useState<FloorPlan>({ image: "", pins: [] });
   const [editing, setEditing] = useState(false);
-  const [placing, setPlacing] = useState("");
+  const [placing, setPlacing] = useState<number | "">("");
+  // Suppresses the click-to-remove that follows a drag's pointerup.
+  const draggedRef = useRef(false);
   const [status, setStatus] = useState<StatusMap>({});
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -44,7 +46,27 @@ export default function FloorPlanPage({
         setLoadError(null);
         if (s.floorplan) {
           try {
-            setPlan(JSON.parse(s.floorplan));
+            const p = JSON.parse(s.floorplan) as FloorPlan;
+            // P3 heal: pins used to key by camera NAME, so a rename orphaned
+            // the pin (and the hotspots derived from it). Stamp the stable id
+            // from the name, and refresh stale names from the id, persisting
+            // the repair so every name-based consumer sees current names.
+            let changed = false;
+            const pins = p.pins.map((pin) => {
+              const cam =
+                (pin.camera_id != null && cameras.find((c) => c.id === pin.camera_id)) ||
+                cameras.find((c) => c.name === pin.camera);
+              if (!cam || (pin.camera_id === cam.id && pin.camera === cam.name)) return pin;
+              changed = true;
+              return { ...pin, camera_id: cam.id, camera: cam.name };
+            });
+            const healed = { ...p, pins };
+            setPlan(healed);
+            if (changed) {
+              const updated = { ...s, floorplan: JSON.stringify(healed) };
+              settingsRef.current = updated;
+              api.saveSettings(updated).catch(() => {});
+            }
           } catch {
             /* ignore malformed */
           }
@@ -56,8 +78,10 @@ export default function FloorPlanPage({
 
   useEffect(() => {
     loadPlan();
+    // Re-run when the camera list arrives/changes so the name↔id heal can see
+    // real cameras (the first render's list is often still empty).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [cameras.length]);
   // The Map's whole value is live online/offline dots — poll status (paused when
   // the tab is hidden) so a camera dropping while the Map is open doesn't show a
   // stale green dot indefinitely.
@@ -93,13 +117,71 @@ export default function FloorPlanPage({
   };
 
   const onMapClick = (e: MouseEvent<HTMLDivElement>) => {
-    if (!editing || !placing || !wrapRef.current) return;
+    if (!editing || placing === "" || !wrapRef.current) return;
+    const cam = cameras.find((c) => c.id === placing);
+    if (!cam) return;
     const rect = wrapRef.current.getBoundingClientRect();
     const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
-    save({ ...plan, pins: [...plan.pins.filter((p) => p.camera !== placing), { camera: placing, x, y }] });
+    save({
+      ...plan,
+      pins: [
+        ...plan.pins.filter((p) => !pinIsFor(p, cam)),
+        { camera: cam.name, camera_id: cam.id, x, y },
+      ],
+    });
     setPlacing("");
   };
+
+  const pinIsFor = (p: FloorPlan["pins"][number], c: Camera) =>
+    p.camera_id != null ? p.camera_id === c.id : p.camera === c.name;
+
+  /// P3 drag-to-move: press a pin in edit mode and drag it; a press that never
+  /// really moves stays a click (= remove, the existing gesture).
+  const startDrag = (pinKey: string) => (e: React.PointerEvent) => {
+    if (!editing || !wrapRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = wrapRef.current.getBoundingClientRect();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let moved = false;
+    let last: { x: number; y: number } | null = null;
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
+      moved = true;
+      const x = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+      const y = Math.min(1, Math.max(0, (ev.clientY - rect.top) / rect.height));
+      last = { x, y };
+      // Live visual feedback without a save per mousemove.
+      setPlan((cur) => ({
+        ...cur,
+        pins: cur.pins.map((p) => (pinDomKey(p) === pinKey ? { ...p, x, y } : p)),
+      }));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      if (moved && last) {
+        draggedRef.current = true; // swallow the click that follows this pointerup
+        setPlan((cur) => {
+          const next = {
+            ...cur,
+            pins: cur.pins.map((p) => (pinDomKey(p) === pinKey ? { ...p, ...last! } : p)),
+          };
+          void save(next);
+          return next;
+        });
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+
+  const pinDomKey = (p: FloorPlan["pins"][number]) =>
+    p.camera_id != null ? `id:${p.camera_id}` : `name:${p.camera}`;
 
   return (
     <>
@@ -142,15 +224,22 @@ export default function FloorPlanPage({
               {cameras.map((c) => (
                 <TogglePill
                   key={c.id}
-                  on={placing === c.name}
+                  on={placing === c.id}
                   ariaLabel={`Place ${c.name} on the floor plan`}
-                  onClick={() => setPlacing(placing === c.name ? "" : c.name)}
+                  onClick={() => setPlacing(placing === c.id ? "" : c.id)}
                 >
                   {c.name}
-                  {plan.pins.some((p) => p.camera === c.name) && <IconCheck size={12} />}
+                  {plan.pins.some((p) => pinIsFor(p, c)) && <IconCheck size={12} />}
                 </TogglePill>
               ))}
-              {placing && <span className="muted">click the map to place “{placing}” (or a marker to remove it)</span>}
+              {placing !== "" && (
+                <span className="muted">
+                  click the map to place “{cameras.find((c) => c.id === placing)?.name}”
+                </span>
+              )}
+              {placing === "" && (
+                <span className="muted">drag a marker to move it · click a marker to remove it</span>
+              )}
             </div>
           )}
           <div
@@ -161,23 +250,38 @@ export default function FloorPlanPage({
           >
             <img src={plan.image} alt="floor plan" className="fp-img" />
             {plan.pins.map((pin) => {
-              const cam = cameras.find((c) => c.name === pin.camera);
+              const cam =
+                (pin.camera_id != null && cameras.find((c) => c.id === pin.camera_id)) ||
+                cameras.find((c) => c.name === pin.camera) ||
+                null;
+              const name = cam?.name ?? pin.camera;
               const online = cam && status[String(cam.id)]?.online;
+              const key = pinDomKey(pin);
               return (
                 <button
-                  key={pin.camera}
+                  key={key}
                   className="fp-pin"
-                  style={{ left: `${pin.x * 100}%`, top: `${pin.y * 100}%` }}
-                  title={editing ? `Remove ${pin.camera}` : `Open ${pin.camera}`}
+                  style={{
+                    left: `${pin.x * 100}%`,
+                    top: `${pin.y * 100}%`,
+                    touchAction: editing ? "none" : undefined,
+                    cursor: editing ? "grab" : undefined,
+                  }}
+                  title={editing ? `Drag to move · click to remove ${name}` : `Open ${name}`}
+                  onPointerDown={editing ? startDrag(key) : undefined}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (editing) save({ ...plan, pins: plan.pins.filter((p) => p.camera !== pin.camera) });
+                    if (draggedRef.current) {
+                      draggedRef.current = false; // that was a drag, not a click
+                      return;
+                    }
+                    if (editing) save({ ...plan, pins: plan.pins.filter((p) => pinDomKey(p) !== key) });
                     else if (cam) onOpenCamera(cam);
                   }}
                 >
                   <span className={`fp-dot ${online ? "on" : "off"}`} />
                   <IconVideo size={13} />
-                  <span className="fp-label">{pin.camera}</span>
+                  <span className="fp-label">{name}</span>
                 </button>
               );
             })}

@@ -792,7 +792,10 @@ export interface Liveview {
 
 export interface FloorPlan {
   image: string; // data URL or /api path
-  pins: { camera: string; x: number; y: number }[];
+  /** `camera` is the display name; `camera_id` (P3) is the stable key — a
+   *  rename must not orphan a pin. Older plans lack the id; the Map page heals
+   *  them on load (id stamped from the name, names refreshed from the id). */
+  pins: { camera: string; camera_id?: number; x: number; y: number }[];
 }
 
 export type Role = "viewer" | "operator" | "admin";

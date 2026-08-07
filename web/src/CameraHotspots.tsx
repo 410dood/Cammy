@@ -24,7 +24,11 @@ export default function CameraHotspots({
 }) {
   // The current camera must itself be placed on the plan to have a position to
   // measure adjacency from. No pin → nothing to anchor against.
-  const self = pins.find((p) => p.camera === camera.name);
+  // Pins key by camera_id when present (P3 — rename-proof), name as fallback
+  // for plans drawn before the id existed.
+  const isFor = (p: FloorPlan["pins"][number], c: Camera) =>
+    p.camera_id != null ? p.camera_id === c.id : p.camera === c.name;
+  const self = pins.find((p) => isFor(p, camera));
   if (!self) return null;
 
   // Nearest pinned neighbors by Euclidean distance in the 0..1 plane. Each must
@@ -32,9 +36,9 @@ export default function CameraHotspots({
   // camera the viewer can't see, or one deleted since the plan was drawn, must
   // NOT become a clickable dead link (RBAC + existence guard).
   const neighbors = pins
-    .filter((p) => p.camera !== camera.name)
+    .filter((p) => !isFor(p, camera))
     .map((p) => ({
-      cam: cameras.find((c) => c.name === p.camera),
+      cam: cameras.find((c) => isFor(p, c)),
       dist: Math.hypot(p.x - self.x, p.y - self.y),
     }))
     .filter((n): n is { cam: Camera; dist: number } => !!n.cam)
