@@ -1535,6 +1535,14 @@ label.file-btn:focus-within {
 .objpick-other { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 .objpick-other input { width: 130px; font-size: var(--text-sm); }
 
+/* Live motion tuner: amber changed-region boxes over the frame. */
+.mtuner { padding: 4px 0 10px; }
+.mtuner-region {
+  position: absolute; border: 1.5px solid var(--warn); border-radius: 2px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  pointer-events: none;
+}
+
 /* AI-watch "Test this description" hits: thumbnail + similarity badge. */
 .aitest-hit { position: relative; display: inline-block; }
 .aitest-score {

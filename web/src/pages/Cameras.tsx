@@ -2,7 +2,7 @@
 import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMap } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { recordState, recordStateHint, scheduleWindow } from "../labels";
-import SizeFilterEditor, { ChildHeightEditor } from "../SizeFilterEditor";
+import SizeFilterEditor, { ChildHeightEditor, MotionTuner } from "../SizeFilterEditor";
 import { ObjectPicker, InheritSlider, LabelChips } from "../tuning";
 import { Modal, EmptyState, TogglePill, Callout, useToast, useDialog, usePolling } from "../ui";
 import {
@@ -368,6 +368,11 @@ function TuneModal({
               onChange={(motion_threshold) => setDc({ ...dc, motion_threshold })}
             />
           </div>
+          <MotionTuner
+            cameraId={camera.id}
+            cameraName={camera.name}
+            threshold={dc.motion_threshold ?? settings?.motion_threshold ?? 0.02}
+          />
           <div className="tune-sub">
             <h4 className="tune-sub-h">Object size filter</h4>
             <SizeFilterEditor

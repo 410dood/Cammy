@@ -13,6 +13,39 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 type SchedRow = { days: number[]; hhmm: string; mode: ArmMode };
 
+/// "Send a test email" for the SMTP card: a wrong password or port used to
+/// surface only when a real alarm silently failed to mail. Uses the SAVED
+/// settings (the server builds the transport from them), so it reflects what
+/// alarms will actually do — save first, then test.
+function EmailTestButton({ to, configured }: { to: string; configured: boolean }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  return (
+    <span style={{ marginTop: 4 }}>
+      <button
+        type="button"
+        className="btn btn-ghost ev-act"
+        disabled={busy || !configured}
+        title={configured ? "Sends using the last SAVED settings — save your changes first." : "Set the SMTP server URL first."}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            const r = await api.notifyTest("email", to.trim());
+            if (r.ok) toast.success("Test email sent — check the inbox (and spam)");
+            else toast.error(`Email test failed: ${r.error}`);
+          } catch (e) {
+            toast.error(`Email test failed: ${errMsg(e)}`);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "Sending…" : "Send a test email"}
+      </button>
+    </span>
+  );
+}
+
 /// "Send a test" beside a notification-target URL field (docs/10 P2.3): prove
 /// delivery works while configuring, instead of learning at the first missed
 /// alert. Reports the transport error verbatim on failure.
@@ -3343,6 +3376,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.smtp_to}
                 onChange={(e) => set({ smtp_to: e.target.value })}
               />
+              <EmailTestButton to={s.smtp_to} configured={s.smtp_url.trim() !== ""} />
             </label>
           </div>
         </div>

@@ -270,8 +270,30 @@ impl Outbound {
 /// P2.3): a wrong URL should fail loudly at configuration time, not at the
 /// first real alarm. Returns the transport error verbatim. Blocking — call
 /// from a handler via `spawn_blocking`.
-pub fn test_target(kind: &str, target: &str) -> Result<(), String> {
+pub fn test_target(kind: &str, target: &str, settings: &crate::db::Settings) -> Result<(), String> {
     match kind {
+        "email" => {
+            let cfg = smtp_cfg(settings).ok_or_else(|| {
+                "SMTP isn't configured — set the server URL under Settings → Email first"
+                    .to_string()
+            })?;
+            let to = if target.trim().is_empty() { cfg.to } else { target };
+            if to.trim().is_empty() {
+                return Err("no recipient — enter an address, or set a default recipient".into());
+            }
+            let from = cfg
+                .from
+                .trim()
+                .parse()
+                .map_err(|e| format!("bad from address {:?}: {e}", cfg.from))?;
+            let msg = lettre::Message::builder()
+                .from(from)
+                .to(to.trim().parse().map_err(|e| format!("bad recipient: {e}"))?)
+                .subject("Cammy test email")
+                .body("Test email from Cammy — alarm emails will arrive like this.".to_string())
+                .map_err(|e| format!("building the message: {e}"))?;
+            send_built(&cfg, msg)
+        }
         "webhook" => Outbound::Webhook {
             url: target.to_string(),
             body: r#"{"test":true,"source":"cammy","message":"Test delivery — your alarm webhooks will POST here."}"#.to_string(),

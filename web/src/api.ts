@@ -1036,8 +1036,14 @@ export const api = {
   patchAlarm: (id: number, patch: { enabled?: boolean; snooze_secs?: number }) =>
     req<void>(`/api/alarms/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteAlarm: (id: number) => req<void>(`/api/alarms/${id}`, { method: "DELETE" }),
+  /** Live motion-tuner probe: diff two fresh frames ~0.7 s apart and report
+   *  the changed fraction (0..1) + region boxes, like the pipeline's gate. */
+  motionProbe: (cameraId: number) =>
+    req<{ changed: number; regions: [number, number, number, number][] }>(
+      `/api/cameras/${cameraId}/motion_probe`,
+    ),
   /** Synchronous delivery test for a notification target ("Send a test"). */
-  notifyTest: (kind: "webhook" | "ntfy", target: string) =>
+  notifyTest: (kind: "webhook" | "ntfy" | "email", target: string) =>
     req<{ ok: boolean; error?: string }>("/api/notify/test", {
       method: "POST",
       body: JSON.stringify({ kind, target }),

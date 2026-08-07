@@ -1,6 +1,100 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { api } from "./api";
 import { TogglePill } from "./ui";
 import { IconRefresh } from "./icons";
+
+/// Live motion test (docs/10 P2.2, the Frigate Motion Tuner lesson): watch
+/// what the motion gate ACTUALLY measures, live, while moving the threshold
+/// slider — no more guess-save-wait. Each probe diffs two fresh frames ~0.7 s
+/// apart server-side; nothing here touches the running pipeline.
+export function MotionTuner({
+  cameraId,
+  cameraName,
+  threshold,
+}: {
+  cameraId: number;
+  cameraName: string;
+  /** The effective threshold (camera override or global) to compare against. */
+  threshold: number;
+}) {
+  const [on, setOn] = useState(false);
+  const [probe, setProbe] = useState<null | { changed: number; regions: [number, number, number, number][] }>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!on) {
+      setProbe(null);
+      setErr(null);
+      return;
+    }
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const run = async () => {
+      try {
+        const r = await api.motionProbe(cameraId);
+        if (!live) return;
+        setProbe(r);
+        setErr(null);
+        setTick((t) => t + 1);
+      } catch (e) {
+        if (live) setErr(e instanceof Error ? e.message : String(e));
+      }
+      if (live) timer = setTimeout(run, 1200);
+    };
+    run();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [on, cameraId]);
+  const wouldTrip = probe != null && probe.changed >= threshold;
+  return (
+    <div className="mtuner">
+      <div className="feat">
+        <TogglePill on={on} ariaLabel="Live motion test" onClick={() => setOn(!on)}>
+          Live motion test
+        </TogglePill>
+        <span className="feat-help">
+          Walk the scene (or watch the trees) and see what would wake detection at the
+          current threshold — tune it against reality instead of guessing.
+        </span>
+      </div>
+      {on && (
+        <>
+          <div className="sizef-surface" style={{ marginTop: 8 }}>
+            <img
+              src={`/api/cameras/${cameraId}/frame.jpg?t=${tick}`}
+              alt={`Current view from ${cameraName}`}
+              draggable={false}
+            />
+            {probe?.regions.map(([x1, y1, x2, y2], i) => (
+              <div
+                key={i}
+                className="mtuner-region"
+                style={{
+                  left: `${x1 * 100}%`,
+                  top: `${y1 * 100}%`,
+                  width: `${(x2 - x1) * 100}%`,
+                  height: `${(y2 - y1) * 100}%`,
+                }}
+              />
+            ))}
+          </div>
+          <p className="feat-help" style={{ margin: "6px 0 0" }} role="status">
+            {err
+              ? `No measurement — ${err}`
+              : probe == null
+                ? "Measuring…"
+                : `${(probe.changed * 100).toFixed(1)}% of the frame just changed — ` +
+                  (wouldTrip
+                    ? `WOULD wake detection (threshold ${(threshold * 100).toFixed(1)}%).`
+                    : `stays asleep (threshold ${(threshold * 100).toFixed(1)}%).`)}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
 
 /// Graphical object-size filter (Blue Iris / UniFi style): two resizable boxes
 /// drawn over the camera's own live frame. Anything smaller than the inner box

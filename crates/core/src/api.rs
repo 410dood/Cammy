@@ -71,6 +71,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cameras/{id}/ptz", get(ptz_caps).post(ptz_command))
         .route("/api/cameras/{id}/deter", get(deter_probe).post(deter_test))
         .route("/api/cameras/{id}/frame.jpg", get(camera_frame))
+        .route("/api/cameras/{id}/motion_probe", get(motion_probe))
         .route(
             "/api/cameras/{id}/timelapse",
             axum::routing::post(create_timelapse),
@@ -2427,6 +2428,69 @@ async fn camera_frame(
     Ok(([(axum::http::header::CONTENT_TYPE, "image/jpeg")], bytes).into_response())
 }
 
+/// GET /api/cameras/{id}/motion_probe — the live motion tuner's measurement
+/// (docs/10 P2.2, the Frigate-motion-tuner lesson): grab two frames ~0.7 s
+/// apart from the camera's DETECTION stream, diff them exactly like the
+/// pipeline's gate, and report the changed fraction + region boxes. The
+/// client compares the fraction against the threshold slider live, so tuning
+/// stops being guess-save-wait. Stateless — never touches the pipeline's gate.
+async fn motion_probe(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
+    // Same source precedence as the pipeline: the sub-stream when configured.
+    let stream = match cam.detect_source.as_deref().filter(|s| !s.is_empty()) {
+        Some(_) => format!("{}_sub", cam.name),
+        None => cam.name.clone(),
+    };
+    let base = st.go2rtc.api_base();
+    let fetch = move |base: String, stream: String| -> anyhow::Result<image::DynamicImage> {
+        use std::io::Read as _;
+        let resp = ureq::get(&format!("{base}/api/frame.jpeg?src={stream}"))
+            .timeout(std::time::Duration::from_secs(5))
+            .call()?;
+        let mut buf = Vec::new();
+        resp.into_reader().take(32 * 1024 * 1024).read_to_end(&mut buf)?;
+        Ok(image::load_from_memory(&buf)?)
+    };
+    let (b1, s1) = (base.clone(), stream.clone());
+    let f1 = tokio::task::spawn_blocking(move || fetch(b1, s1));
+    let first = f1
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let fetch2 = move |base: String, stream: String| -> anyhow::Result<image::DynamicImage> {
+        use std::io::Read as _;
+        let resp = ureq::get(&format!("{base}/api/frame.jpeg?src={stream}"))
+            .timeout(std::time::Duration::from_secs(5))
+            .call()?;
+        let mut buf = Vec::new();
+        resp.into_reader().take(32 * 1024 * 1024).read_to_end(&mut buf)?;
+        Ok(image::load_from_memory(&buf)?)
+    };
+    let second = tokio::task::spawn_blocking(move || fetch2(base, stream))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
+    let (changed, regions) = tokio::task::spawn_blocking(move || {
+        let mut gate = motion::MotionGate::new(0.0);
+        gate.update(&first);
+        let v = gate.update(&second);
+        let changed = match v {
+            motion::Verdict::Motion { changed } | motion::Verdict::Still { changed } => changed,
+            motion::Verdict::Baseline => 0.0,
+        };
+        (changed, gate.motion_regions())
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "changed": changed, "regions": regions })))
+}
+
 // --- events ----------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -4573,13 +4637,19 @@ struct NotifyTestReq {
 /// webhook / health-push URL fields (docs/10 P2.3): prove the target works at
 /// configuration time instead of failing silently at the first real alert.
 /// Operator-tier like the per-rule alarm Test, which fires the same channels.
-async fn notify_test_api(Json(req): Json<NotifyTestReq>) -> Json<serde_json::Value> {
+async fn notify_test_api(
+    State(st): State<AppState>,
+    Json(req): Json<NotifyTestReq>,
+) -> Json<serde_json::Value> {
     let target = req.target.trim().to_string();
-    if !(target.starts_with("http://") || target.starts_with("https://")) {
+    if req.kind != "email" && !(target.starts_with("http://") || target.starts_with("https://")) {
         return Json(serde_json::json!({"ok": false, "error": "the target must be an http(s) URL"}));
     }
     let kind = req.kind.clone();
-    match tokio::task::spawn_blocking(move || crate::notify::test_target(&kind, &target)).await {
+    let settings = st.db.settings();
+    match tokio::task::spawn_blocking(move || crate::notify::test_target(&kind, &target, &settings))
+        .await
+    {
         Ok(Ok(())) => Json(serde_json::json!({"ok": true})),
         Ok(Err(e)) => Json(serde_json::json!({"ok": false, "error": e})),
         Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
