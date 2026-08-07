@@ -74,6 +74,60 @@ CameraDetail open, playing, playhead on its timeline.
   axis collided **9 of 10** labels on Find and **5 of 6 on Recordings today**.
   Now 0 collisions on both; desktop untouched.
 
+**Then a UX audit pass** (`a045ab8`, `1c3d26b`, `a7b6716`) — an `impeccable`
+critique/audit of the new surface. Deterministic detector: **zero findings**.
+A11y probe: 179 focusables, **zero without an accessible name**, zero images
+missing `alt`. Heuristics 32/40. What it did find:
+
+- **Tablet had never been checked.** The app had exactly ONE layout breakpoint
+  (768 px), so every 769–1024 px device — every iPad in portrait — fell through
+  to the desktop treatment. Measured at 820 px: **11 of 12 axis labels
+  overlapping**, the name gutter eating 21% of the row (vs 10% on desktop),
+  12 px-wide activity bars on a touch screen, and the film row's "details →"
+  affordance at **opacity 0 under `hover: none`** — permanently unreachable.
+  Touch fixes are keyed on **`pointer: coarse`, not width**: an 820 px tablet is
+  wide enough to be served the desktop layout, so every width-keyed touch rule
+  missed it. The interactive strip also drops 48 → 24 bars (the inert one is a
+  picture; the pickable one is a row of targets).
+- **Two bugs I had shipped earlier in the phase.** (1) The mobile axis rule set
+  `.xtl-name { width }`, but that is a flex item with `flex: 0 0 110px`, which a
+  bare width silently loses to — the gutter never moved while the axis did, so
+  **phone axis labels sat 10 px out of alignment with the lanes they label**.
+  Both blocks now override `flex` and set the axis margin to gutter + the row's
+  10 px gap (which is why the desktop base is 120 for a 110 gutter). (2) The
+  Find CSS used **`--surface-2`/`--surface-3`, which do not exist** — those
+  rules resolved to nothing, so the event-vs-quiet row distinction was invisible
+  and the clickable bars had no hover state at all.
+- **Two activity strips.** Find rendered a standalone one AND a CrossTimeline
+  that draws its own Activity lane — the same histogram twice, at two scales
+  (24 bars over 577 px, 48 over 441 px), with only the misaligned copy
+  clickable. `CrossTimeline` gained `onPickWindow`; Recordings/CameraDetail pass
+  nothing and are verified unchanged (`role="img"`, SPAN bars).
+- **Find lost your investigation on Back** (`a7b6716`) — the one that outranks
+  the rest. Measured: "Yesterday + front-door" → open a moment → Back →
+  **"Today + All cameras"**. The browse loop (check one, go back, check the
+  next) reset every time. The plan called hash-mirrored filters
+  **non-negotiable** for exactly this; **Events never shipped it either**.
+  `#/find?day=…&cam=…&label=…&view=…&z=…` now carries the scope, self-contained
+  like `#/settings/<group>` (`parseHash` already strips the query string — its
+  comment anticipates `#/events?day=…` by name). `replaceState`, not push. A
+  cold load of `#/find?day=2026-07-10&cam=3&label=car&view=list` in a fresh tab
+  restores everything: **job 3 is now a bookmarkable URL.** A `hashchange`
+  listener re-seeds on same-page navigation (the palette set the URL and the
+  page kept showing the old day until that was added).
+- **Keyboard** — the weakest heuristic (2/4): the surface meant to become how
+  footage is reached was mouse-only. Arrows step days, `/` searches, G/L switch
+  view, Escape clears a narrowing. The lanes are `role="slider"` and take arrows
+  for scrubbing; they `preventDefault`, and the page handler bails on
+  `defaultPrevented` — verified live that a focused lane scrubs without also
+  stepping the day. Palette gains "Find — today/yesterday/&lt;camera&gt;, today"
+  (local-time dates; `toISOString()` would be the wrong day west of Greenwich).
+
+**Deliberately NOT changed:** em dashes (the skill bans them; this tree has ~200
+and it is the house voice — piecemeal removal trades a style win for a
+consistency loss) and the 10.3 px filter chips (`--text-xs`, the system's own
+smallest token, used app-wide).
+
 **Next: Phase 4 is GATED and the gate is real** — if Find has not become how the
 owner actually reaches footage, Phases 1–3 stand alone and the nav must not
 collapse. Nav is temporarily 13 entries; Find took Recordings' mobile tab slot

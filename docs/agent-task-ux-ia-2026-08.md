@@ -38,6 +38,21 @@
 > Also fixed in passing, pre-existing and shared: at 390 px the cross-timeline's
 > axis collided **9 of 10** labels on Find and **5 of 6 on Recordings today**.
 >
+> **A UX audit pass followed** (`a045ab8`, `1c3d26b`, `a7b6716`). Two findings
+> change what a future phase should assume:
+>
+> 6. **This plan's own "non-negotiable" was cut, twice.** Phase 1 required
+>    mirroring day/camera/label into the hash so Back from a moment restores the
+>    list, and warned that without it the phase makes browsing WORSE. Events
+>    never got it, and Find shipped without it. Measured: "Yesterday +
+>    front-door" → open a moment → Back → "Today + All cameras". Find has it now
+>    (`#/find?day=…&cam=…&label=…&view=…&z=…`); **Events still does not.**
+> 7. **The 768px breakpoint was the whole responsive story.** Every 769–1024px
+>    device got the desktop layout unchecked; at 820px the cross-timeline had
+>    11 of 12 axis labels overlapping. Touch sizing is now keyed on
+>    `pointer: coarse`, because a tablet that wide is served the desktop layout
+>    and no width-keyed rule reaches it.
+>
 > **Before starting Phase 4, read its gate literally.** It is not a schedule
 > item. If Find has not become how the owner actually reaches footage, Phases
 > 1–3 stand on their own and the collapse should not follow.
