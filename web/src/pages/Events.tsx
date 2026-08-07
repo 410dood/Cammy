@@ -167,6 +167,14 @@ export default function Events({
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<CamEvent[] | null>(null);
   const [searching, setSearching] = useState(false);
+  /// The residual (non-structured) text of the search currently on screen, ""
+  /// when none. It is state rather than a local because the search is scoped to
+  /// the active window server-side: changing the day/camera must re-ask, not
+  /// silently keep showing results from the window you just left.
+  const [activeSearch, setActiveSearch] = useState("");
+  /// Bumped on every explicit Search press so re-submitting an unchanged query
+  /// under unchanged filters still re-runs.
+  const [searchNonce, setSearchNonce] = useState(0);
   // P2.5 attribute facets: the catalog (fetched once) + the active facet chip.
   const [attrCatalog, setAttrCatalog] = useState<AttributesCatalog | null>(null);
   const [attrKey, setAttrKey] = useState<string | null>(null);
@@ -250,26 +258,49 @@ export default function Events({
 
     if (!p.residual) {
       // Fully structured query — let the filters drive the server-side list.
+      setActiveSearch("");
       setSearchResults(null);
       setSearching(false);
       return;
     }
-    setSearching(true);
-    try {
-      const r = await api.search(p.residual, 48);
-      setSearchResults(r.results.map((x) => x.event));
-    } catch (e) {
-      // null (not []) falls back to the normal event list instead of showing a
-      // false "no events match" — and the toast says why the search didn't run.
-      toast.error(`Search failed: ${errMsg(e)}`);
-      setSearchResults(null);
-    } finally {
-      setSearching(false);
-    }
+    // The fetch itself is the effect below, so it always runs against the
+    // filters parseNL just set (state updates batch) and re-runs when the
+    // window changes. Setting the filters here and the scope there can't drift.
+    setActiveSearch(p.residual);
+    setSearchNonce((n) => n + 1);
   };
+
+  // Run (and re-run) the active search against the active window. The server
+  // ranks only what's inside the scope; before this, it ranked the newest 20 000
+  // events globally and the client threw away everything outside the window —
+  // so a scoped query could honestly return zero with matches sitting in it.
+  const searchToken = useRef(0);
+  useEffect(() => {
+    if (!activeSearch) return;
+    const token = ++searchToken.current;
+    setSearching(true);
+    api
+      .search(activeSearch, 48, searchScope())
+      .then((r) => {
+        if (token !== searchToken.current) return; // a newer search won
+        setSearchResults(r.results.map((x) => x.event));
+      })
+      .catch((e) => {
+        if (token !== searchToken.current) return;
+        // null (not []) falls back to the normal event list instead of showing a
+        // false "no events match" — and the toast says why the search didn't run.
+        toast.error(`Search failed: ${errMsg(e)}`);
+        setSearchResults(null);
+      })
+      .finally(() => {
+        if (token === searchToken.current) setSearching(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSearch, searchNonce, cameraId, label, day?.from, day?.to, fromTime, toTime]);
 
   const clearSearch = () => {
     setQuery("");
+    setActiveSearch("");
     setSearchResults(null);
     setInterpreted([]);
     setAttrKey(null);
@@ -290,6 +321,9 @@ export default function Events({
     }
     setAttrKey(key);
     setQuery("");
+    // A facet result set is not a text search — stop the scoped-search effect
+    // from re-running underneath it and replacing these results.
+    setActiveSearch("");
     setInterpreted([]);
     setSearching(true);
     try {
@@ -788,6 +822,15 @@ export default function Events({
     tag: tagFilter || undefined,
   });
 
+  /// The window a search must be asked about — the same camera / day / object
+  /// the list is showing, so the ranker spends its cap inside it. `flagged` and
+  /// `tag` have no search-endpoint equivalent and never narrowed search results
+  /// before either; that is unchanged.
+  const searchScope = () => {
+    const f = filterArgs();
+    return { camera_id: f.camera_id, label: f.label, after: f.after, before: f.before };
+  };
+
   const load = () => {
     setNoOlder(false);
     api
@@ -907,17 +950,21 @@ export default function Events({
     if (highOnly) s = s.filter((e) => (e.severity ?? 2) >= 3);
     if (plateFilter.trim())
       s = s.filter((e) => (e.plate ?? "").toUpperCase().includes(plateFilter.trim().toUpperCase()));
-    // Apply the time window client-side too, so it also narrows smart-search
-    // results (the server only time-filters the plain list, not the search).
-    const afterTs = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
-    const beforeTs = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
-    if (afterTs != null) s = s.filter((e) => e.ts >= afterTs);
-    if (beforeTs != null) s = s.filter((e) => e.ts < beforeTs);
+    // No client-side time re-filter: both the list and the search are scoped
+    // server-side to the same window now. Re-filtering here is what used to
+    // discard search hits — the ranker returned the newest 48 matches globally
+    // and this line silently deleted the ones outside the day being asked about.
     return s;
   }, [
     searchResults, review, events, alertLabels, faceFilter, gestureFilter, zoneFilter,
-    highOnly, plateFilter, fromTime, toTime,
+    highOnly, plateFilter,
   ]);
+
+  // True when a search ran against a narrowed window — so an empty result can
+  // say honestly *what* it looked at and offer the widening in one click,
+  // rather than reading as "Cammy never saw it".
+  const searchWindowed =
+    !!activeSearch && !!(day || fromTime || toTime || cameraId !== "" || label);
 
   // A3: optionally collapse runs of detections into activity clusters.
   const list = useMemo<{ ev: CamEvent; cluster?: Cluster }[]>(
@@ -973,6 +1020,7 @@ export default function Events({
           onChange={(e) => {
             setQuery(e.target.value);
             if (e.target.value.trim() === "") {
+              setActiveSearch("");
               setSearchResults(null);
               setAttrKey(null);
             }
@@ -1290,8 +1338,34 @@ export default function Events({
         ) : searchResults || interpreted.length > 0 ? (
           <EmptyState
             icon={<IconSparkles />}
-            title={query ? `No events match “${query}”` : "No events match these filters"}
-            hint="Try a broader search, a different camera, or clearing the active filters."
+            title={
+              query
+                ? searchWindowed
+                  ? `Nothing matches “${query}” in this window`
+                  : `No events match “${query}”`
+                : "No events match these filters"
+            }
+            hint={
+              searchWindowed
+                ? "The search only looked inside the day, camera and object you picked — so this is a real answer about that window, not a truncated one."
+                : "Try a broader search, a different camera, or clearing the active filters."
+            }
+            action={
+              searchWindowed ? (
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setDay(null);
+                    setFromTime("");
+                    setToTime("");
+                    setCameraId("");
+                    setLabel("");
+                  }}
+                >
+                  Search all time, all cameras
+                </button>
+              ) : undefined
+            }
           />
         ) : (
           <EmptyState

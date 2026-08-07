@@ -4669,6 +4669,12 @@ struct SearchQuery {
     q: String,
     #[serde(default = "default_search_limit")]
     limit: usize,
+    /// Narrow what gets ranked, mirroring the event-list filters. All optional:
+    /// omitting every one is the old whole-database ranking.
+    camera_id: Option<i64>,
+    label: Option<String>,
+    after: Option<i64>,
+    before: Option<i64>,
 }
 
 fn default_search_limit() -> usize {
@@ -4687,6 +4693,15 @@ async fn smart_search(
         return Err(bad_request("empty query"));
     }
     let allow = allowed_cameras(&st, &p)?;
+    // Scope the corpus to the window the caller is looking at. This narrows what
+    // gets *ranked*; it does NOT stand in for RBAC — `allow` is still applied to
+    // every materialized result below, exactly as before.
+    let scope = crate::db::SearchScope {
+        camera_id: q.camera_id,
+        label: q.label.clone().filter(|s| !s.trim().is_empty()),
+        after_ts: q.after,
+        before_ts: q.before,
+    };
     // Hybrid search: CLIP visual similarity on the snapshot (when the models are
     // present) PLUS a text match on the event's transcript + caption — so you
     // can search what was *said* / described, not only what was seen. With no
@@ -4711,7 +4726,7 @@ async fn smart_search(
     let query_score = query.clone();
     let mut scored: Vec<(f32, bool, i64)> =
         tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(f32, bool, i64)>> {
-            let corpus = db.search_corpus(clip, SEARCH_CORPUS_CAP)?;
+            let corpus = db.search_corpus(clip, SEARCH_CORPUS_CAP, &scope)?;
             Ok(corpus
                 .into_iter()
                 .map(|row| {

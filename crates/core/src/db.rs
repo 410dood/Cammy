@@ -559,6 +559,19 @@ pub struct SearchRow {
     pub embedding: Option<Vec<f32>>,
 }
 
+/// Optional narrowing for [`Db::search_corpus`] — the same camera / label / time
+/// predicate `list_events` uses, so a search can be asked about the window the
+/// user is actually looking at instead of ranking the whole database and letting
+/// the client throw away everything outside it. `Default` is "everything", which
+/// is the pre-scoping behavior exactly.
+#[derive(Clone, Debug, Default)]
+pub struct SearchScope {
+    pub camera_id: Option<i64>,
+    pub label: Option<String>,
+    pub after_ts: Option<i64>,
+    pub before_ts: Option<i64>,
+}
+
 /// A named API access token for headless/automation callers. The raw token is
 /// only ever shown once at creation; only its hash is stored, so this struct
 /// never carries the secret.
@@ -4317,27 +4330,59 @@ impl Db {
     /// so a busy long-retention deployment doesn't scan + BLOB-decode the entire
     /// events table (holding the DB mutex) on every query; ORDER BY ts DESC keeps
     /// recent recall. The embedding column (and JOIN) is skipped in text-only mode.
-    pub fn search_corpus(&self, with_embeddings: bool, limit: usize) -> Result<Vec<SearchRow>> {
+    ///
+    /// `scope` narrows the corpus **before** the cap, which is the whole point:
+    /// unscoped, the cap is spent on the newest events globally, so a search
+    /// asking about one camera or one day can rank nothing inside the window it
+    /// asked about and honestly return zero while matches sit there. RBAC is NOT
+    /// applied here — the caller filters by `allowed_cameras` after scoring, and
+    /// this scope composes with that, never replaces it.
+    pub fn search_corpus(
+        &self,
+        with_embeddings: bool,
+        limit: usize,
+        scope: &SearchScope,
+    ) -> Result<Vec<SearchRow>> {
         let conn = self.read();
+        // Same predicate shape as `list_events`, so the two surfaces can't drift
+        // about what "this camera / this day / this object" means.
+        const WHERE: &str = "WHERE (?2 IS NULL OR e.camera_id = ?2)
+               AND (?3 IS NULL OR e.label = ?3)
+               AND (?4 IS NULL OR e.ts >= ?4)
+               AND (?5 IS NULL OR e.ts < ?5)";
         let sql = if with_embeddings {
-            "SELECT e.id, e.transcript, e.caption, em.embedding
-             FROM events e LEFT JOIN event_embeddings em ON em.event_id = e.id
-             ORDER BY e.ts DESC, e.id DESC LIMIT ?1"
+            format!(
+                "SELECT e.id, e.transcript, e.caption, em.embedding
+                 FROM events e LEFT JOIN event_embeddings em ON em.event_id = e.id
+                 {WHERE}
+                 ORDER BY e.ts DESC, e.id DESC LIMIT ?1"
+            )
         } else {
-            "SELECT e.id, e.transcript, e.caption, NULL
-             FROM events e ORDER BY e.ts DESC, e.id DESC LIMIT ?1"
+            format!(
+                "SELECT e.id, e.transcript, e.caption, NULL
+                 FROM events e {WHERE} ORDER BY e.ts DESC, e.id DESC LIMIT ?1"
+            )
         };
-        let mut stmt = conn.prepare(sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
-            .query_map([limit as i64], |r| {
-                let emb: Option<Vec<u8>> = r.get(3)?;
-                Ok(SearchRow {
-                    id: r.get(0)?,
-                    transcript: r.get(1)?,
-                    caption: r.get(2)?,
-                    embedding: emb.map(bytes_to_f32),
-                })
-            })?
+            .query_map(
+                params![
+                    limit as i64,
+                    scope.camera_id,
+                    scope.label.as_deref(),
+                    scope.after_ts,
+                    scope.before_ts
+                ],
+                |r| {
+                    let emb: Option<Vec<u8>> = r.get(3)?;
+                    Ok(SearchRow {
+                        id: r.get(0)?,
+                        transcript: r.get(1)?,
+                        caption: r.get(2)?,
+                        embedding: emb.map(bytes_to_f32),
+                    })
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -5276,6 +5321,110 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("zoomy-db-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(format!("t-{:?}.db", std::time::Instant::now()))
+    }
+
+    /// The bug Phase 2 exists to kill: `search_corpus` caps at the newest N
+    /// *globally*, so a search asked about one camera / one day used to rank
+    /// nothing inside that window and honestly return zero while the match sat
+    /// there. Measured on the live install before the fix: 2 events labelled
+    /// `car` on 2026-08-05 and `/api/search?q=car` returned 0 for that day,
+    /// because the global top-48 was all other days.
+    ///
+    /// This drives the real `search_corpus`, not a local copy of its SQL — the
+    /// unscoped assertion below is what fails if the scope is ever dropped.
+    #[test]
+    fn search_corpus_scope_reaches_past_the_global_cap() {
+        let db = mem_db();
+        let a = db.add_camera("a", "rtsp://a", None, true, true).unwrap().id;
+        let b = db.add_camera("b", "rtsp://b", None, true, true).unwrap().id;
+        let bbox = [0.0, 0.0, 1.0, 1.0];
+        // The target: an old `car` on camera A.
+        let target = db
+            .add_event(a, 1_000, "car", 0.9, bbox, None, None, None, None, None)
+            .unwrap();
+        // Newer noise on camera B, more than the cap we'll ask for.
+        for i in 0..20 {
+            db.add_event(
+                b,
+                2_000 + i,
+                "person",
+                0.9,
+                bbox,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        let ids = |rows: Vec<SearchRow>| rows.into_iter().map(|r| r.id).collect::<Vec<_>>();
+
+        // Unscoped: the cap is spent on the newer camera-B events; the target is
+        // unreachable. This is the pre-fix behavior, asserted so it stays a
+        // deliberate property of the cap and not a silent regression.
+        let all = ids(db
+            .search_corpus(false, 10, &SearchScope::default())
+            .unwrap());
+        assert_eq!(all.len(), 10);
+        assert!(
+            !all.contains(&target),
+            "unscoped cap should miss the target"
+        );
+
+        // Each predicate on its own reaches it, with the same cap.
+        for scope in [
+            SearchScope {
+                camera_id: Some(a),
+                ..Default::default()
+            },
+            SearchScope {
+                label: Some("car".into()),
+                ..Default::default()
+            },
+            SearchScope {
+                before_ts: Some(1_500),
+                ..Default::default()
+            },
+            SearchScope {
+                after_ts: Some(500),
+                before_ts: Some(1_001),
+                ..Default::default()
+            },
+        ] {
+            let got = ids(db.search_corpus(false, 10, &scope).unwrap());
+            assert_eq!(got, vec![target], "scope {scope:?} should reach the target");
+        }
+
+        // Half-open time window, same as `list_events`: `after` inclusive,
+        // `before` exclusive — so `before == ts` excludes the event.
+        let excl = SearchScope {
+            before_ts: Some(1_000),
+            ..Default::default()
+        };
+        assert!(ids(db.search_corpus(false, 10, &excl).unwrap()).is_empty());
+        let incl = SearchScope {
+            after_ts: Some(1_000),
+            before_ts: Some(1_001),
+            ..Default::default()
+        };
+        assert_eq!(
+            ids(db.search_corpus(false, 10, &incl).unwrap()),
+            vec![target]
+        );
+        let past = SearchScope {
+            after_ts: Some(1_001),
+            before_ts: Some(1_002),
+            ..Default::default()
+        };
+        assert!(db.search_corpus(false, 10, &past).unwrap().is_empty());
+
+        // A scope that matches nothing returns nothing (not a fallback to all).
+        let none = SearchScope {
+            camera_id: Some(9_999),
+            ..Default::default()
+        };
+        assert!(db.search_corpus(false, 10, &none).unwrap().is_empty());
     }
 
     #[test]

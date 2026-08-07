@@ -1036,10 +1036,22 @@ export const api = {
   patchAlarm: (id: number, patch: { enabled?: boolean; snooze_secs?: number }) =>
     req<void>(`/api/alarms/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteAlarm: (id: number) => req<void>(`/api/alarms/${id}`, { method: "DELETE" }),
-  search: (q: string, limit = 24) =>
-    req<{ results: { similarity: number; event: CamEvent }[] }>(
-      `/api/search?q=${encodeURIComponent(q)}&limit=${limit}`
-    ),
+  /** Hybrid (CLIP + speech/caption) event search. `scope` narrows what the
+   *  server ranks — without it the ranker spends its cap on the newest events
+   *  globally, so a query about one camera or one day can come back empty while
+   *  matches sit inside the window. Pass the same window the list is showing. */
+  search: (
+    q: string,
+    limit = 24,
+    scope: { camera_id?: number; label?: string; after?: number; before?: number } = {},
+  ) => {
+    const p = new URLSearchParams({ q, limit: String(limit) });
+    if (scope.camera_id != null) p.set("camera_id", String(scope.camera_id));
+    if (scope.label) p.set("label", scope.label);
+    if (scope.after != null) p.set("after", String(scope.after));
+    if (scope.before != null) p.set("before", String(scope.before));
+    return req<{ results: { similarity: number; event: CamEvent }[] }>(`/api/search?${p}`);
+  },
   // Upload-a-reference-photo appearance search (UniFi "Find Anything"): POST the
   // raw image bytes; the server CLIP-embeds it and ranks the crop corpus.
   searchByImage: (file: File | Blob, limit = 24) =>
