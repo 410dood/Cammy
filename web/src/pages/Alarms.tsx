@@ -130,6 +130,10 @@ export default function Alarms({
   const [gestureLike, setGestureLike] = useState("");
   const [transcriptLike, setTranscriptLike] = useState("");
   const [zoneLike, setZoneLike] = useState("");
+  // The zone condition is a picker of zones the user actually drew; this flag
+  // opts into the legacy free-text substring for power users (and for an
+  // existing rule whose zone_like matches no drawn zone).
+  const [zoneCustomMode, setZoneCustomMode] = useState(false);
   const [confirmLabel, setConfirmLabel] = useState("");
   const [confirmWithin, setConfirmWithin] = useState(10);
   const [vlmPrompt, setVlmPrompt] = useState("");
@@ -297,6 +301,21 @@ export default function Alarms({
   // "New rule" can sit below a long rules list — when the builder opens via
   // the button, bring it into view and focus its first input.
   const builderRef = useRef<HTMLDivElement | null>(null);
+  /// Names of zones actually drawn on the cameras a rule can see (its scoped
+  /// camera, or all of them). The alarm's zone condition should offer these,
+  /// not ask the user to retype a name from memory.
+  const zoneNames = (camId: number | "" | null | undefined) => {
+    const cams = camId == null || camId === "" ? cameras : cameras.filter((c) => c.id === camId);
+    const seen = new Set<string>();
+    for (const c of cams)
+      for (const z of c.detect_config?.zones ?? []) if (z.name.trim()) seen.add(z.name.trim());
+    return [...seen].sort((a, b) => a.localeCompare(b));
+  };
+  /// Mirrors the server's zone_ok semantics (case-insensitive substring) so the
+  /// dead-rule warning can't disagree with what actually fires.
+  const zoneCouldMatch = (like: string, camId: number | "" | null | undefined) =>
+    zoneNames(camId).some((n) => n.toLowerCase().includes(like.toLowerCase()));
+
   const openBuilder = () => {
     setCreating(true);
     requestAnimationFrame(() => {
@@ -318,6 +337,30 @@ export default function Alarms({
     setName(q.length > 40 ? `Watch: ${q.slice(0, 40)}…` : `Watch: ${q}`);
     setAdvOpen(true);
     openBuilder();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Bridge from ZoneEditor's "Alert on this zone": prefill a rule scoped to
+  // the camera + zone the user was just looking at, closing the two-page
+  // retype-the-name-from-memory loop.
+  useEffect(() => {
+    const raw = sessionStorage.getItem("cammy-alarm-zone");
+    if (!raw) return;
+    sessionStorage.removeItem("cammy-alarm-zone");
+    try {
+      const { camera_id, zone } = JSON.parse(raw) as { camera_id?: number; zone?: string };
+      resetBuilder();
+      if (camera_id != null) setCameraId(camera_id);
+      if (zone) {
+        setZoneLike(zone);
+        setName(`Person in ${zone}`);
+      }
+      setLabel("person");
+      setAdvOpen(true);
+      openBuilder();
+    } catch {
+      /* stale/garbled stash — start a blank rule instead of crashing */
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -353,6 +396,7 @@ export default function Alarms({
     setGestureLike("");
     setTranscriptLike("");
     setZoneLike("");
+    setZoneCustomMode(false);
     setConfirmLabel("");
     setConfirmWithin(10);
     setVlmPrompt("");
@@ -670,6 +714,17 @@ export default function Alarms({
                         ))}
                       </div>
                     )}
+                    {r.zone_like && !zoneCouldMatch(r.zone_like, r.camera_id) && (
+                      <div
+                        className="ev-chips"
+                        style={{ marginTop: 4 }}
+                        title="The zone condition is matched against zone names drawn on the camera. Nothing currently drawn matches, so detections can't satisfy this rule."
+                      >
+                        <span className="badge" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>
+                          no zone named “{r.zone_like}” — may never fire
+                        </span>
+                      </div>
+                    )}
                   </td>
                   <td className="muted">
                     {ruleActions(r).map((a, i) => (
@@ -927,14 +982,55 @@ export default function Alarms({
                   </small>
                 )}
               </label>
-              <label className="field" title="Fire only when the object is inside a named detection zone (substring, case-insensitive) — e.g. a 'Pool' zone for 'person in the Pool'. Draw zones on the camera's detect config.">
+              <label className="field" title="Fire only when the object is inside a zone you've drawn — e.g. the Pool zone for 'person in the Pool'.">
                 in zone (optional)
-                <input
-                  type="text"
-                  value={zoneLike}
-                  onChange={(e) => setZoneLike(e.target.value)}
-                  placeholder='e.g. "Pool"'
-                />
+                {(() => {
+                  const names = zoneNames(cameraId);
+                  const customActive = zoneCustomMode || (zoneLike !== "" && !names.includes(zoneLike));
+                  return (
+                    <>
+                      <select
+                        value={customActive ? "__custom" : zoneLike}
+                        onChange={(e) => {
+                          if (e.target.value === "__custom") {
+                            setZoneCustomMode(true);
+                          } else {
+                            setZoneCustomMode(false);
+                            setZoneLike(e.target.value);
+                          }
+                        }}
+                      >
+                        <option value="">any zone</option>
+                        {names.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                        <option value="__custom">match text…</option>
+                      </select>
+                      {customActive && (
+                        <input
+                          type="text"
+                          value={zoneLike}
+                          onChange={(e) => setZoneLike(e.target.value)}
+                          placeholder="matches zone names containing this"
+                          aria-label="Zone name text match"
+                        />
+                      )}
+                      {customActive && zoneLike.trim() !== "" && !zoneCouldMatch(zoneLike.trim(), cameraId) && (
+                        <small style={{ color: "var(--warn)" }} role="status">
+                          No drawn zone matches “{zoneLike.trim()}” — this rule won't fire until one
+                          does. Check the spelling against Cameras → Tune → Zones.
+                        </small>
+                      )}
+                      {names.length === 0 && !customActive && (
+                        <small className="muted">
+                          No zones drawn yet — draw one in Cameras → Tune → Zones &amp; privacy.
+                        </small>
+                      )}
+                    </>
+                  );
+                })()}
               </label>
               <label className="field" title="Cross-modal confirmation: only fire when an event of THIS label also happened on the same camera recently — e.g. a Glass sound confirmed by a 'person' (glass-vs-dishes). Fails open (fires) on any error, so don't use it to gate a life-safety rule.">
                 confirmed by (optional)

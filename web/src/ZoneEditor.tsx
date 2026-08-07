@@ -1,7 +1,24 @@
 import { useState } from "react";
 import { Camera, CrossDir, GroundCalib, PolyZone, Tripwire, ZoneKind } from "./api";
 import { IconRefresh } from "./icons";
-import { TogglePill } from "./ui";
+import { TogglePill, useDialog } from "./ui";
+
+/// Common household zone names, offered as autocomplete on the name field so a
+/// zone gets a real name ("Pool") instead of shipping as "zone 1" — alarm rules
+/// match zones by name, so an unnamed zone is an unalarmable zone.
+const ZONE_NAME_PRESETS = [
+  "Pool",
+  "Driveway",
+  "Front door",
+  "Porch",
+  "Yard",
+  "Garage",
+  "Gate",
+  "Crib",
+  "Stairs",
+  "Couch",
+  "Mailbox",
+];
 
 type Mask = [number, number][];
 type Draw =
@@ -46,6 +63,7 @@ export default function ZoneEditor({
   onCalib: (c: GroundCalib | null) => void;
 }) {
   const [draw, setDraw] = useState<Draw>(null);
+  const dialog = useDialog();
   // Keyboard drawing: a crosshair (0..1) the arrows move; Enter places a point.
   const [kbCursor, setKbCursor] = useState<[number, number]>([0.5, 0.5]);
   // Frame loading is resilient: go2rtc may be mid-restart or waiting for a
@@ -409,6 +427,11 @@ export default function ZoneEditor({
 
       {(zones.length > 0 || masks.length > 0) && (
         <div style={{ marginTop: 10 }}>
+          <datalist id="zone-name-presets">
+            {ZONE_NAME_PRESETS.map((n) => (
+              <option key={n} value={n} />
+            ))}
+          </datalist>
           {zones.map((z, i) => {
             const upd = (patch: Partial<PolyZone>) =>
               onChange(zones.map((x, j) => (j === i ? { ...x, ...patch } : x)), masks);
@@ -421,10 +444,37 @@ export default function ZoneEditor({
                   type="text"
                   aria-label="Zone name"
                   placeholder="zone name"
+                  list="zone-name-presets"
                   style={{ flex: 1, minWidth: 110 }}
                   value={z.name}
                   onChange={(e) => upd({ name: e.target.value })}
                 />
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  title="Create an alert rule scoped to this camera and zone — opens the Alarms builder prefilled."
+                  onClick={async () => {
+                    // Navigating away unmounts the tuning modal WITHOUT its
+                    // discard prompt, so unsaved zone edits (likely, if the
+                    // zone was just drawn) would vanish and the new rule would
+                    // point at a zone that doesn't exist yet. Say so.
+                    const ok = await dialog.confirm({
+                      title: `Alert on “${z.name || "this zone"}”?`,
+                      body:
+                        "This opens the Alarms page with a rule prefilled for this camera and zone. " +
+                        "Save your tuning changes first if you just drew or renamed the zone — leaving discards unsaved edits.",
+                      confirmLabel: "Open Alarms",
+                    });
+                    if (!ok) return;
+                    sessionStorage.setItem(
+                      "cammy-alarm-zone",
+                      JSON.stringify({ camera_id: camera.id, zone: z.name }),
+                    );
+                    location.hash = "#/alarms";
+                  }}
+                >
+                  Alert on this zone
+                </button>
                 <select
                   aria-label="Zone type"
                   value={z.kind}
@@ -451,6 +501,13 @@ export default function ZoneEditor({
                   remove
                 </button>
               </div>
+
+              {/^zone \d+$/i.test(z.name.trim()) && (
+                <p className="muted" style={{ fontSize: "var(--text-xs)", margin: "6px 0 0" }}>
+                  Give this zone a real name (Pool, Driveway…) — alarms and event filters find
+                  zones by name.
+                </p>
+              )}
 
               {/* Analytics knobs with visible labels (was a title-only cram) */}
               <div className="row" style={{ marginTop: 8, gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
