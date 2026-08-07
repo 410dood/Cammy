@@ -35,8 +35,15 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
   const [loaded, setLoaded] = useState(false);
   // Tapped/focused bar readout — the chart's touch + keyboard + SR alternative
   // to the hover-only tooltip (which never appears on a phone).
-  const [selDay, setSelDay] = useState<string | null>(null);
+  const [selDay, setSelDay] = useState<{ readout: string; iso: string } | null>(null);
   const [selHour, setSelHour] = useState<string | null>(null);
+
+  // Local-date ISO (yyyy-mm-dd) for Find's `day=` param — toISOString() would
+  // name the wrong day west of Greenwich.
+  const isoOf = (ts: number) => {
+    const d = new Date(ts * 1000);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
 
   const load = () => {
     setLoaded(false);
@@ -108,7 +115,15 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
             <Stat label="Average / day" value={avgPerDay.toLocaleString()} />
             <Stat
               label="Busiest day"
-              value={busiestDay ? busiestDay.day : "—"}
+              value={
+                busiestDay ? (
+                  <a href={`#/find?day=${isoOf(busiestDay.ts)}&view=list`} title="Open that day in Find">
+                    {busiestDay.day}
+                  </a>
+                ) : (
+                  "—"
+                )
+              }
               sub={busiestDay ? `${busiestDay.count.toLocaleString()} detections` : undefined}
             />
             <Stat label="Peak hour" value={hourLabel(busiestHour)} sub={`${data.by_hour[busiestHour].toLocaleString()} detections`} />
@@ -126,8 +141,8 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
                     className="chart-bar"
                     title={readout}
                     aria-label={readout}
-                    aria-pressed={selDay === readout}
-                    onClick={() => setSelDay(readout)}
+                    aria-pressed={selDay?.readout === readout}
+                    onClick={() => setSelDay({ readout, iso: isoOf(d.ts) })}
                     style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }}
                   >
                     <div
@@ -143,7 +158,15 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
               })}
             </div>
             <div className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 6, minHeight: "1.2em" }} aria-live="polite">
-              {selDay ?? "Tap a bar for its count."}
+              {selDay ? (
+                <>
+                  {selDay.readout}{" "}
+                  {/* docs/10 P3: stats deep-link instead of dead-ending. */}
+                  <a href={`#/find?day=${selDay.iso}&view=list`}>Open that day in Find →</a>
+                </>
+              ) : (
+                "Tap a bar for its count."
+              )}
             </div>
             <div style={{ display: "flex", gap: 3, marginTop: 6 }}>
               {data.days.map((d, i) => (
@@ -165,9 +188,13 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
               ) : (
                 data.by_label.map(([label, n]) => (
                   <div key={label} style={{ display: "flex", alignItems: "center", gap: 10, margin: "7px 0" }}>
-                    <div style={{ width: 96, textAlign: "right", textTransform: "capitalize", fontSize: "var(--text-sm)" }}>
+                    <a
+                      href={`#/find?label=${encodeURIComponent(label)}&view=list`}
+                      title={`See today's ${prettyLabel(label)} detections in Find`}
+                      style={{ width: 96, textAlign: "right", textTransform: "capitalize", fontSize: "var(--text-sm)" }}
+                    >
                       {prettyLabel(label)}
-                    </div>
+                    </a>
                     <div style={{ flex: 1, height: 18, background: "var(--surface-hover)", borderRadius: "var(--radius-xs)", overflow: "hidden" }}>
                       <div
                         title={`${n.toLocaleString()} detections`}

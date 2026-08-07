@@ -1059,6 +1059,11 @@ export const api = {
       message?: string | null;
       path: string;
     }>(`/api/path_probe?path=${encodeURIComponent(path)}`),
+  /** Which hardware H.264 encoders actually work on this machine (P3). */
+  hwaccelProbe: () =>
+    req<{ ok: boolean; nvenc?: boolean; qsv?: boolean; videotoolbox?: boolean; error?: string }>(
+      "/api/hwaccel_probe",
+    ),
   /** Test the SAVED offsite S3 settings: PUT + DELETE a tiny object (P2.4). */
   offsiteTest: () =>
     req<{ ok: boolean; detail?: string; error?: string }>("/api/offsite/test", {

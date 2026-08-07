@@ -1,5 +1,5 @@
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtSpan, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, CamEvent, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtSpan, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout, usePolling } from "../ui";
 import { LicensePane } from "../License";
 import { ObjectPicker, InheritSlider, DurationPicker } from "../tuning";
@@ -499,6 +499,146 @@ function RetentionHint({ days, gb }: { days: number; gb: number }) {
       At your current {fmtBytes(rate)}/day this keeps <b>{fmtSpan(effective)}</b> of footage —
       the day limit binds first, so there is disk headroom to spare.
     </span>
+  );
+}
+
+/// The exact placeholder set `notify::render_template` substitutes, in its
+/// order. Clicking a chip inserts the token at the cursor.
+const WEBHOOK_PLACEHOLDERS = [
+  "camera", "label", "score", "snapshot", "face", "plate",
+  "gesture", "transcript", "caption", "severity", "event_id", "ts", "speed",
+] as const;
+
+/// docs/10 P3 — the webhook template was a bare textarea with a prose list of
+/// placeholders. Now: clickable placeholder chips (insert at cursor) + a live
+/// preview rendered against the LATEST REAL EVENT, mirroring the server's
+/// substitution (same JSON-escaping, same score format), so what you see is
+/// what the webhook will POST.
+function WebhookTemplateField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const [ev, setEv] = useState<CamEvent | null>(null);
+  useEffect(() => {
+    api.events({ limit: 1 }).then((d) => setEv(d[0] ?? null)).catch(() => {});
+  }, []);
+  const insert = (token: string) => {
+    const ta = taRef.current;
+    const tok = `{{${token}}}`;
+    if (!ta) return onChange(value + tok);
+    const start = ta.selectionStart ?? value.length;
+    const end = ta.selectionEnd ?? value.length;
+    onChange(value.slice(0, start) + tok + value.slice(end));
+    requestAnimationFrame(() => {
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = start + tok.length;
+    });
+  };
+  // Mirror notify::render_template: JSON-escape strings, "%.3f" score, blanks
+  // for absent values, unknown placeholders untouched.
+  const esc = (s: string) => JSON.stringify(s).slice(1, -1);
+  const preview = (() => {
+    if (!value.trim() || !ev) return null;
+    const fields: Record<string, string> = {
+      event_id: String(ev.id),
+      camera: esc(ev.camera ?? ""),
+      label: esc(ev.label ?? ""),
+      score: (ev.score ?? 0).toFixed(3),
+      ts: String(ev.ts),
+      snapshot: esc(ev.snapshot ?? ""),
+      face: esc(ev.face ?? ""),
+      plate: esc(ev.plate ?? ""),
+      gesture: esc(ev.gesture ?? ""),
+      transcript: esc(ev.transcript ?? ""),
+      speed: ev.speed != null ? String(Math.round(ev.speed)) : "",
+      caption: esc(ev.caption ?? ""),
+      severity: String(ev.severity ?? 1),
+    };
+    let out = value;
+    for (const [k, v] of Object.entries(fields)) out = out.split(`{{${k}}}`).join(v);
+    return out;
+  })();
+  return (
+    <label className="field" style={{ flex: 1, minWidth: 420 }}>
+      webhook body template (empty = default JSON)
+      <textarea
+        ref={taRef}
+        rows={2}
+        placeholder='{"text":"{{label}} on {{camera}} ({{score}})"}'
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ width: "100%", fontFamily: "monospace" }}
+      />
+      <span className="row" style={{ gap: 4, flexWrap: "wrap", marginTop: 6 }}>
+        {WEBHOOK_PLACEHOLDERS.map((p) => (
+          <button
+            key={p}
+            type="button"
+            className="btn btn-ghost ev-act"
+            style={{ fontFamily: "monospace" }}
+            title={`Insert {{${p}}} at the cursor`}
+            onClick={() => insert(p)}
+          >
+            {`{{${p}}}`}
+          </button>
+        ))}
+      </span>
+      {preview !== null && (
+        <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 6 }}>
+          With your latest event ({ev ? `${prettyLabel(ev.label)} on ${ev.camera}` : ""}), this
+          webhook would POST:
+          <code
+            style={{ display: "block", marginTop: 4, whiteSpace: "pre-wrap", wordBreak: "break-all" }}
+          >
+            {preview}
+          </code>
+        </span>
+      )}
+      {value.trim() !== "" && !ev && (
+        <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+          No events yet to preview against — the placeholders fill in with each event's values.
+        </span>
+      )}
+    </label>
+  );
+}
+
+/// docs/10 P3 — the re-encode dropdown used to list every hardware encoder
+/// unprobed, and a wrong pick silently fell back to CPU. Now the server test-
+/// encodes 3 frames with each and unavailable ones are disabled with a reason.
+function HwaccelSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [probe, setProbe] = useState<Awaited<ReturnType<typeof api.hwaccelProbe>> | null>(null);
+  useEffect(() => {
+    api.hwaccelProbe().then(setProbe).catch(() => setProbe({ ok: false }));
+  }, []);
+  const opt = (val: string, name: string, avail: boolean | undefined) => {
+    // Unknown (probe failed / still loading) = selectable — never lock the user
+    // out on a probe hiccup; the re-encode itself still falls back safely.
+    const known = probe?.ok === true;
+    const off = known && avail === false && value !== val;
+    return (
+      <option value={val} disabled={off}>
+        {name}
+        {known ? (avail ? "" : " — not available on this machine") : ""}
+      </option>
+    );
+  };
+  return (
+    <label
+      className="field"
+      title="Hardware video encoder for the enhanced-retention re-encode. Each option was really test-encoded on this machine; CPU always works."
+    >
+      re-encode with
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">CPU (libx264) — always works</option>
+        {opt("nvenc", "NVIDIA NVENC", probe?.nvenc)}
+        {opt("qsv", "Intel QuickSync", probe?.qsv)}
+        {opt("videotoolbox", "Apple VideoToolbox", probe?.videotoolbox)}
+      </select>
+      {probe?.ok === true && value && probe[value as "nvenc" | "qsv" | "videotoolbox"] === false && (
+        <span style={{ color: "var(--warn)", fontSize: "var(--text-sm)", marginTop: 4 }}>
+          This encoder didn't work when tested — re-encodes will silently use the CPU instead.
+        </span>
+      )}
+    </label>
   );
 }
 
@@ -3958,19 +4098,10 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             Cammy Home Assistant custom component under <code>integrations/homeassistant/cammy</code>.
           </p>
           <div className="row" style={{ marginTop: 10 }}>
-            <label className="field" style={{ flex: 1, minWidth: 420 }}>
-              webhook body template (empty = default JSON)
-              <textarea
-                rows={2}
-                placeholder='{"text":"{{label}} on {{camera}} ({{score}})"}'
-                value={s.webhook_template ?? ""}
-                onChange={(e) => set({ webhook_template: e.target.value })}
-                style={{ width: "100%", fontFamily: "monospace" }}
-              />
-              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                Placeholders: {"{{camera}} {{label}} {{score}} {{snapshot}} {{face}} {{plate}} {{transcript}} {{caption}} {{severity}}"} — each is replaced with the event's value when the webhook fires.
-              </span>
-            </label>
+            <WebhookTemplateField
+              value={s.webhook_template ?? ""}
+              onChange={(v) => set({ webhook_template: v })}
+            />
           </div>
         </div>
 
@@ -4053,15 +4184,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                   }
                 />
               </label>
-              <label className="field" title="Hardware video encoder for the enhanced-retention re-encode. Falls back to CPU automatically if unavailable.">
-                re-encode with
-                <select value={s.hwaccel ?? ""} onChange={(e) => set({ hwaccel: e.target.value })}>
-                  <option value="">CPU (libx264)</option>
-                  <option value="nvenc">NVIDIA NVENC</option>
-                  <option value="qsv">Intel QuickSync</option>
-                  <option value="videotoolbox">Apple VideoToolbox</option>
-                </select>
-              </label>
+              <HwaccelSelect value={s.hwaccel ?? ""} onChange={(v) => set({ hwaccel: v })} />
               <label className="field" title="Detections (with snapshots) are kept separately from footage — the density calendar can offer days whose video is already gone.">
                 keep events (days)
                 <input

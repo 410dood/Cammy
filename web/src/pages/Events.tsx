@@ -200,7 +200,7 @@ export default function Events({
   const [moreFilters, setMoreFilters] = useState(false);
   // Filters that live inside the disclosure (the time range counts as one).
   const hiddenFilters =
-    [gestureFilter, zoneFilter, fromTime || toTime, plateFilter.trim()].filter(Boolean).length;
+    [gestureFilter, fromTime || toTime, plateFilter.trim()].filter(Boolean).length;
   const anyHiddenFilter = hiddenFilters > 0;
   useEffect(() => {
     if (anyHiddenFilter) setMoreFilters(true);
@@ -1163,6 +1163,18 @@ export default function Events({
             </option>
           ))}
         </select>
+        {/* docs/10 P3: the zone filter is a primary narrowing control (it's the
+            one Alarms' zone binding mirrors) — promoted out of "More filters". */}
+        {zones.length > 0 && (
+          <select value={zoneFilter} onChange={(e) => setZoneFilter(e.target.value)} aria-label="Filter by zone">
+            <option value="">any zone</option>
+            {zones.map((z) => (
+              <option key={z} value={z}>
+                {z}
+              </option>
+            ))}
+          </select>
+        )}
         <span className="muted count" style={{ marginLeft: "auto" }}>{shown.length} events · auto-refreshing</span>
         <a
           className="btn btn-ghost"
@@ -1182,7 +1194,7 @@ export default function Events({
         onToggle={(e) => setMoreFilters(e.currentTarget.open)}
       >
         <summary>
-          More filters: hand signal, zone, time range, plate
+          More filters: hand signal, time range, plate
           {anyHiddenFilter && (
             <span className="badge accent" style={{ marginLeft: 8 }}>
               {hiddenFilters} active
@@ -1196,16 +1208,6 @@ export default function Events({
               {gestures.map((g) => (
                 <option key={g} value={g}>
                   {prettyGesture(g)}
-                </option>
-              ))}
-            </select>
-          )}
-          {zones.length > 0 && (
-            <select value={zoneFilter} onChange={(e) => setZoneFilter(e.target.value)} aria-label="Filter by zone">
-              <option value="">any zone</option>
-              {zones.map((z) => (
-                <option key={z} value={z}>
-                  {z}
                 </option>
               ))}
             </select>

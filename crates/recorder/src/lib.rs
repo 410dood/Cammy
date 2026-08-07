@@ -225,6 +225,32 @@ fn codec_args(hwaccel: &str) -> &'static [&'static str] {
     }
 }
 
+/// docs/10 P3 — does this box's ffmpeg ACTUALLY have a working hardware
+/// encoder? `-encoders` only proves it was compiled in; encoding three
+/// generated frames proves the driver/hardware path works too, which is what
+/// the Settings dropdown needs to know before offering it.
+pub fn probe_encoder(ffmpeg: &Path, encoder: &str) -> bool {
+    let status = Command::new(ffmpeg)
+        .args([
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:size=320x240:rate=30",
+            "-frames:v",
+            "3",
+            "-c:v",
+            encoder,
+            "-f",
+            "null",
+            "-",
+        ])
+        .no_console()
+        .status();
+    matches!(status, Ok(s) if s.success())
+}
+
 /// Run one re-encode attempt with the given encoder. Returns whether it
 /// succeeded (a clean exit producing the temp file).
 fn run_reencode(ffmpeg: &Path, path: &Path, tmp: &Path, hwaccel: &str) -> bool {

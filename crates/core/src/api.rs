@@ -126,6 +126,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/notify/test", axum::routing::post(notify_test_api))
         .route("/api/offsite/test", axum::routing::post(offsite_test_api))
         .route("/api/path_probe", get(path_probe_api))
+        .route("/api/hwaccel_probe", get(hwaccel_probe_api))
         .route("/api/genai/probe", axum::routing::post(genai_probe_api))
         .route("/api/alarms/vlm_test", axum::routing::post(vlm_test_api))
         .route("/api/alarms/stats", get(alarm_stats_api))
@@ -4666,6 +4667,33 @@ async fn notify_test_api(
         Ok(Err(e)) => Json(serde_json::json!({"ok": false, "error": e})),
         Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
     }
+}
+
+/// GET /api/hwaccel_probe — docs/10 P3: which hardware H.264 encoders REALLY
+/// work here (a 3-frame test encode each, not just "compiled in"), so the
+/// re-encode dropdown can disable what would silently fall back to CPU.
+/// Probed once per process (encoders don't change while running).
+async fn hwaccel_probe_api(State(st): State<AppState>) -> Json<serde_json::Value> {
+    static CACHE: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    if let Some(v) = CACHE.get() {
+        return Json(v.clone());
+    }
+    let ffmpeg_bin = st.ffmpeg_bin.clone();
+    let v = tokio::task::spawn_blocking(move || {
+        let Ok(ffmpeg) = recorder::locate_ffmpeg(ffmpeg_bin.as_deref()) else {
+            return serde_json::json!({"ok": false, "error": "ffmpeg not found"});
+        };
+        serde_json::json!({
+            "ok": true,
+            "nvenc": recorder::probe_encoder(&ffmpeg, "h264_nvenc"),
+            "qsv": recorder::probe_encoder(&ffmpeg, "h264_qsv"),
+            "videotoolbox": recorder::probe_encoder(&ffmpeg, "h264_videotoolbox"),
+        })
+    })
+    .await
+    .unwrap_or_else(|e| serde_json::json!({"ok": false, "error": e.to_string()}));
+    let _ = CACHE.set(v.clone());
+    Json(v)
 }
 
 /// GET /api/path_probe?path= — docs/10 P3: the recordings-folder field is the
