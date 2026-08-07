@@ -32,10 +32,12 @@ export default function FilmStrip({ items, resetKey }: { items: StripItem[]; res
       {visible.map((it, i) => {
         switch (it.kind) {
           case "marker":
+            // h2, not h3: the page's only other heading is its h1, and skipping
+            // a level makes a screen reader announce a gap that isn't there.
             return (
-              <h3 className="film-hour" key={`m${it.ts}-${i}`}>
+              <h2 className="film-hour" key={`m${it.ts}-${i}`}>
                 {it.label}
-              </h3>
+              </h2>
             );
 
           case "event": {

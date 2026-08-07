@@ -1744,7 +1744,7 @@ button.lastseen-item:hover { background: var(--surface-hover); }
   border-radius: 3px;
 }
 .act-strip.pickable .act-col:disabled { cursor: default; }
-.act-strip.pickable .act-col:hover:not(:disabled) { background: var(--surface-3); }
+.act-strip.pickable .act-col:hover:not(:disabled) { background: var(--surface-hover); }
 .act-strip.pickable .act-col:hover:not(:disabled) .act-bar { opacity: 0.95; }
 .act-strip.pickable .act-col:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .act-bar { width: 100%; background: var(--accent); opacity: 0.55; border-radius: 2px 2px 0 0; }
@@ -2691,14 +2691,14 @@ img.identity-thumb { background: var(--n-0); }
   align-items: center;
   gap: 10px;
   padding: 6px;
-  border-radius: var(--radius-md, 10px);
-  background: var(--surface-2);
+  border-radius: var(--radius);
+  background: var(--surface);
   border: 1px solid var(--border);
   color: inherit;
   text-decoration: none;
-  transition: background var(--dur-fast, 120ms) ease, border-color var(--dur-fast, 120ms) ease;
+  transition: background var(--dur-1) ease, border-color var(--dur-1) ease;
 }
-.film-row:hover { background: var(--surface-3); border-color: var(--accent); }
+.film-row:hover { background: var(--surface-hover); border-color: var(--accent); }
 .film-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* A quiet stretch is real footage but not an event — quieter chrome so a page
    of them never out-shouts the detections between them. */
@@ -2708,9 +2708,9 @@ img.identity-thumb { background: var(--n-0); }
   flex: 0 0 auto;
   width: 108px;
   height: 61px;
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  background: var(--surface-3);
+  background: var(--n-0);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2740,12 +2740,12 @@ img.identity-thumb { background: var(--n-0); }
    haven't looked" are completely different claims. */
 .film-band {
   padding: 7px 10px;
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   font-size: 0.78rem;
   border: 1px dashed var(--border);
 }
 .film-gap { color: var(--text-muted); }
-.film-unknown { color: var(--text-muted); border-style: dotted; background: var(--surface-2); }
+.film-unknown { color: var(--text-muted); border-style: dotted; background: var(--surface); }
 .film-more { align-self: center; margin-top: 8px; }
 
 @media (max-width: 768px) {
@@ -2766,6 +2766,46 @@ img.identity-thumb { background: var(--n-0); }
      orient you. */
   .xtl-axis-label { font-size: 0.58rem; }
   .xtl-axis-label:nth-child(even) { display: none; }
-  .xtl-name { width: 74px; min-width: 74px; }
-  .xtl-axis { margin-left: 74px; }
+  /* `flex` too, not just `width`: .xtl-name is a flex item with a fixed
+     `flex: 0 0 110px` basis, which a bare width silently loses to — and then
+     the axis below, which IS movable, slides out of alignment with the lanes
+     it labels. */
+  .xtl-name { width: 74px; min-width: 74px; flex: 0 0 74px; }
+  /* gutter + the row's 10px gap, which is why the desktop base is 120 for a
+     110 gutter. Drop the gap and the axis labels sit 10px left of the lanes
+     they label. */
+  .xtl-axis { margin-left: 84px; }
+}
+
+/* ── Tablet, and touch devices that get the desktop layout ─────────────────
+   The app had exactly one layout breakpoint (768px), so every 769-1024px
+   device — every iPad in portrait, most Android tablets — fell through to the
+   full desktop treatment and was never checked. Measured on an 820px viewport:
+   the cross-timeline drew 12 axis labels with ELEVEN of them overlapping, and
+   its fixed 110px name gutter ate 21% of the row against 10% on a desktop. */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .xtl-name { width: 92px; min-width: 92px; flex: 0 0 92px; }
+  .xtl-axis { margin-left: 102px; }   /* gutter + the row's 10px gap */
+  .xtl-axis-label { font-size: 0.62rem; }
+  .xtl-axis-label:nth-child(even) { display: none; }
+  .find-grid { grid-template-columns: repeat(auto-fill, minmax(144px, 1fr)); }
+}
+
+/* Capability, not width. A touch tablet at 820px is wide enough to be served
+   the desktop layout, so every touch rule keyed on `max-width` misses it
+   entirely — which is how the film row's "details →" affordance ended up at
+   opacity 0 on a device with no hover to reveal it, and how the chips stayed
+   at 21-22px tall under a finger. `pointer: coarse` is the question actually
+   being asked. */
+@media (pointer: coarse) {
+  /* Hover-revealed hints have no trigger on touch: show them. */
+  .film-side { opacity: 1; }
+  .act-strip.pickable .act-col { min-height: 44px; }
+  /* Chips and segmented controls are the primary filters here; 22px is a
+     mouse target, not a finger one. */
+  .find-controls .pill { padding: 8px 12px; }
+  .arm-bar button { padding: 7px 12px; }
+  .daystrip .btn { min-height: 40px; }
+  /* Thumbnails carry the scanning, so give them more of a narrow screen. */
+  .film-row { padding: 8px; gap: 12px; }
 }

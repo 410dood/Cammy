@@ -142,7 +142,14 @@ export function ActivityStrip({
   onPick?: (from: number, to: number) => void;
 }) {
   const start = nowTs - windowSecs;
-  const buckets = windowSecs <= 3600 ? 12 : windowSecs <= 6 * HOUR ? 24 : 48;
+  // The inert strip is a picture, so 48 slivers over a day read fine. The
+  // pickable one is a row of TARGETS, and 48 of them across a tablet lane came
+  // out 12px wide — measured on an 820px touch viewport, where this app serves
+  // the desktop layout and no width-keyed rule reaches it. Halving the buckets
+  // doubles the target and lands on exactly the granularity this control is
+  // for: on a day window, one bar is one hour.
+  const maxBuckets = onPick ? 24 : 48;
+  const buckets = windowSecs <= 3600 ? 12 : windowSecs <= 6 * HOUR ? 24 : maxBuckets;
   const size = windowSecs / buckets;
   const counts = new Array<number>(buckets).fill(0);
   for (const e of events) {
@@ -198,6 +205,7 @@ export default function CrossTimeline({
   segmentSecs,
   nowTs,
   onSeek,
+  onPickWindow,
 }: {
   cameras: Camera[];
   segments: Segment[];
@@ -206,6 +214,9 @@ export default function CrossTimeline({
   segmentSecs: number;
   nowTs: number;
   onSeek: (cameraId: number, ts: number) => void;
+  /** Makes the Activity lane's bars clickable, narrowing to that interval.
+   *  Omitted by Recordings, so its lane stays exactly as inert as it was. */
+  onPickWindow?: (from: number, to: number) => void;
 }) {
   const start = nowTs - windowSecs;
   const pct = (ts: number) => ((ts - start) / windowSecs) * 100;
@@ -285,7 +296,13 @@ export default function CrossTimeline({
             Activity
           </div>
           <div className="xtl-lane act-lane">
-            <ActivityStrip events={events} windowSecs={windowSecs} nowTs={nowTs} embedded />
+            <ActivityStrip
+              events={events}
+              windowSecs={windowSecs}
+              nowTs={nowTs}
+              embedded
+              onPick={onPickWindow}
+            />
           </div>
         </div>
       )}

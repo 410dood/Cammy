@@ -295,14 +295,20 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
         <ErrorState what="this window" message={error} onRetry={() => setDay((d) => (d ? { ...d } : d))} />
       ) : (
         <>
-          {/* Click an hour to narrow to it — seeing where the busy stretch is
-              and being unable to click it is the strip left half-built. */}
-          <ActivityStrip
-            events={events}
-            windowSecs={win.to - win.from}
-            nowTs={win.to}
-            onPick={(from, to) => setZoom({ from, to })}
-          />
+          {/* Exactly ONE activity row. CrossTimeline already draws an Activity
+              lane aligned with the camera lanes, so rendering a standalone
+              strip beside it put the same histogram on screen twice, at two
+              different scales, with only the misaligned copy clickable. When a
+              single camera is selected there is no CrossTimeline, so the
+              standalone strip is the only one and carries the interaction. */}
+          {cameraId != null && (
+            <ActivityStrip
+              events={events}
+              windowSecs={win.to - win.from}
+              nowTs={win.to}
+              onPick={(from, to) => setZoom({ from, to })}
+            />
+          )}
 
           {/* ── band 2: the index ── */}
           {lanes.length > 0 &&
@@ -315,6 +321,7 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
                 segmentSecs={segmentSecs}
                 nowTs={win.to}
                 onSeek={goToMoment}
+                onPickWindow={(from, to) => setZoom({ from, to })}
               />
             ) : (
               <Timeline
@@ -337,7 +344,9 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
                 {prettyLabel(l)} <span className="muted">{n}</span>
               </TogglePill>
             ))}
-            <span style={{ flex: 1 }} />
+          </div>
+
+          <div className="row find-controls">
             <div className="arm-bar" role="group" aria-label="How to show results">
               <button
                 type="button"
@@ -356,15 +365,12 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
                 <IconFilm size={13} /> Everything, in order
               </button>
             </div>
-          </div>
-
-          <div className="row find-controls">
-            <label className="field" style={{ flex: "1 1 260px" }}>
+            <label className="field" style={{ flex: "1 1 240px" }}>
               <span className="sr-only">Appearance search within this window</span>
               <input
                 type="search"
                 value={q}
-                placeholder="Look for something by appearance — “red car”, “person in a hi-vis jacket”"
+                placeholder="Find by appearance — “red car”, “hi-vis jacket”"
                 onChange={(e) => setQ(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && runSearch()}
                 aria-label="Appearance search within this window"
