@@ -447,6 +447,12 @@ export interface Stats {
   days_until_full: number | null;
   est_full_ts: number | null;
   retention_horizon_days: number | null;
+  /** Which cap actually binds: "disk" (byte budget recycles footage first),
+   *  "age" (retention_days), or "none". Lets the UI explain WHY history is
+   *  as short as it is rather than just stating a number. */
+  retention_limit?: "disk" | "age" | "none";
+  /** Oldest footage still on disk — observed reality beside the forecast. */
+  oldest_segment_ts?: number | null;
 }
 
 export interface DiscoveredCam {
@@ -1291,6 +1297,21 @@ export const capacityTone = (days: number | null | undefined): "danger" | "warn"
 
 /** Human copy for a days-until-full estimate ("under a day", "~3 days"). */
 export const fmtDaysLeft = (days: number) => (days < 1 ? "under a day" : `~${Math.round(days)} days`);
+
+/** A span in plain language, mirroring the server's `humanize_days`.
+ *
+ *  `fmtDaysLeft` collapses everything under a day to "under a day", which is
+ *  useless for the number that matters most here: on a multi-camera 4K install
+ *  the byte cap can hold only a few HOURS of footage, and "under a day" reads as
+ *  "nearly a day" rather than "gone by dinner". */
+export function fmtSpan(days: number): string {
+  if (!Number.isFinite(days) || days <= 0) return "no footage";
+  const unit = (n: number, word: string) =>
+    `about ${Math.round(n)} ${word}${Math.round(n) === 1 ? "" : "s"}`;
+  if (days < 1 / 24) return unit(Math.max(1, days * 1440), "minute");
+  if (days < 1) return unit(days * 24, "hour");
+  return unit(days, "day");
+}
 
 export const fmtBytes = (b: number) =>
   b > 1e12

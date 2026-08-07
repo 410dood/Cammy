@@ -5655,15 +5655,15 @@ async fn stats(
         // otherwise project past i64::MAX and overflow (panic in debug/tests).
         now.saturating_add((d.min(36_500.0) * 86_400.0) as i64)
     });
-    // Where retention caps history first: min(retention_days, the GB budget at
-    // the current write rate).
-    let by_days = (settings.retention_days > 0).then_some(settings.retention_days as f64);
-    let by_gb = (settings.retention_gb > 0 && write_per_day > 0)
-        .then(|| settings.retention_gb as f64 * 1e9 / write_per_day as f64);
-    let retention_horizon_days = match (by_days, by_gb) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
+    // Where retention caps history first. Shared with the health heartbeat so the
+    // storage card and the phone push can never disagree about how far back
+    // footage reaches — and so both report the limit that actually binds rather
+    // than the configured `retention_days` ceiling.
+    let (retention_horizon_days, retention_limit) = crate::util::retention_horizon(
+        settings.retention_days,
+        settings.retention_gb,
+        write_per_day,
+    );
 
     Ok(Json(serde_json::json!({
         "cameras": cameras,
@@ -5676,6 +5676,17 @@ async fn stats(
         "days_until_full": days_until_full,
         "est_full_ts": est_full_ts,
         "retention_horizon_days": retention_horizon_days,
+        // Which cap binds: "disk" (the byte budget recycles footage first),
+        // "age" (`retention_days`), or "none". Lets the UI explain WHY the
+        // history is as short as it is instead of just stating a number.
+        "retention_limit": match retention_limit {
+            crate::util::RetentionLimit::Disk => "disk",
+            crate::util::RetentionLimit::Age => "age",
+            crate::util::RetentionLimit::Unbounded => "none",
+        },
+        // Oldest footage actually on disk, so the UI can show observed reality
+        // beside the forecast.
+        "oldest_segment_ts": cameras.iter().filter_map(|c| c.oldest_ts).min(),
     })))
 }
 

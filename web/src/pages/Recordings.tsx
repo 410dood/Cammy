@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
-import { api, CamEvent, Camera, capacityTone, ExportPreview, fmtBytes, fmtDaysLeft, fmtTime, MotionHit, Segment, Stats } from "../api";
+import { api, CamEvent, Camera, capacityTone, ExportPreview, fmtBytes, fmtDaysLeft, fmtSpan, fmtTime, MotionHit, Segment, Stats } from "../api";
 import Timeline from "../Timeline";
 import CrossTimeline, { ActivityStrip } from "../CrossTimeline";
 import { IconPlay, IconFilm, IconAlert, IconChevronDown, IconChevronRight, IconChevronLeft, IconX } from "../icons";
@@ -612,7 +612,11 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
         </>
       )}
       {stats.retention_horizon_days != null && (
-        <> · recordings older than {fmtDaysLeft(stats.retention_horizon_days)} are removed</>
+        <>
+          {" · footage goes back "}
+          {fmtSpan(stats.retention_horizon_days)}
+          {stats.retention_limit === "disk" && " (limited by the storage cap, not the day setting)"}
+        </>
       )}
       <span style={{ opacity: 0.7 }}> · estimated</span>
     </>
@@ -667,6 +671,22 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
             if (w) setWindowSecs(24 * 3600);
           }}
         />
+        {/* Say how far back footage reaches, right where days are chosen. The
+            number lived only inside the collapsed storage disclosure, so the
+            day picker cheerfully offered weeks that hold no video at all. */}
+        {stats?.retention_horizon_days != null && stats.retention_horizon_days < 2 && (
+          <span
+            className="muted"
+            title={
+              stats.retention_limit === "disk"
+                ? "The storage cap fills before the day limit is reached, so it is what decides how far back you can look. Raise it in Settings › Recording, or record a lower-resolution sub-stream."
+                : "Set by your recording-history limit in Settings › Recording."
+            }
+          >
+            footage goes back {fmtSpan(stats.retention_horizon_days)}
+            {stats.retention_limit === "disk" && " · storage cap"}
+          </span>
+        )}
         {cameraId !== "" && (
           <button
             className={`btn ${scrub ? "btn-primary" : "btn-ghost"}`}

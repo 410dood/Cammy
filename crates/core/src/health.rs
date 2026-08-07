@@ -225,6 +225,32 @@ pub fn run(db: Db, status: StatusBoard, shutdown: Arc<AtomicBool>) {
     }
 }
 
+/// Measured write rate -> how far back footage really reaches, and which cap is
+/// binding. Same basis as `/api/stats`, so the phone push and the storage card
+/// can never disagree. `None` when it isn't measurable yet (a fresh install).
+fn retention_estimate(
+    db: &Db,
+    settings: &crate::db::Settings,
+) -> Option<(f64, crate::util::RetentionLimit)> {
+    let stats = db.storage_stats().ok()?;
+    let mut per_day = 0.0f64;
+    for c in &stats {
+        if let (Some(o), Some(n)) = (c.oldest_ts, c.newest_ts) {
+            let span_days = (n - o) as f64 / 86_400.0;
+            // Need at least an hour of span before a rate means anything.
+            if span_days >= 1.0 / 24.0 {
+                per_day += c.bytes as f64 / span_days;
+            }
+        }
+    }
+    let (days, limit) = crate::util::retention_horizon(
+        settings.retention_days,
+        settings.retention_gb,
+        per_day.round() as u64,
+    );
+    days.map(|d| (d, limit))
+}
+
 /// Weekly "everything's healthy" reassurance. KV-persisted so a restart doesn't
 /// re-send, and seeded (not sent) on first ever run so a fresh install doesn't
 /// immediately buzz. Opt-out via `Settings.health_heartbeat`.
@@ -270,13 +296,25 @@ fn maybe_heartbeat(
         .iter()
         .filter(|c| c.record && board.get(&c.id).map(|h| h.recording).unwrap_or(false))
         .count();
-    let retain = if settings.retention_days > 0 {
-        format!(
-            " Keeping about {} days of footage.",
-            settings.retention_days
-        )
-    } else {
-        String::new()
+    // Report how far back footage ACTUALLY reaches, not the configured ceiling.
+    // `retention_days` is only an upper bound; the byte cap normally binds first
+    // and on a multi-camera 4K install it binds hard — measured here, a
+    // configured "7 days" against a 20 GB cap and 78.8 GB/day is really about
+    // six hours. Pushing "about 7 days" to the owner's phone told them they
+    // could go back and find footage that had already been recycled, which is
+    // the most damaging thing a reassurance message can get wrong.
+    let retain = match retention_estimate(db, settings) {
+        Some((days, limit)) => {
+            let because = match limit {
+                crate::util::RetentionLimit::Disk => " (limited by the storage cap)",
+                _ => "",
+            };
+            format!(
+                " Keeping {} of footage{because}.",
+                crate::util::humanize_days(days)
+            )
+        }
+        None => String::new(),
     };
     let (title, msg) = if online == total {
         (
