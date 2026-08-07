@@ -185,6 +185,9 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
         // Reveals what the reverse proxy injects into requests (SSO debugging)
         // — Admin-only; header values can identify the proxy topology.
         || path == "/api/echo_headers"
+        // Enumerates the server's filesystem for the import-footage browser —
+        // the same trust level as /api/import itself.
+        || path == "/api/fs_list"
         || (path.starts_with("/api/tokens") && matches!(*method, Method::POST | Method::DELETE))
         // Installing/removing a license is a system-config action; a valid GET
         // (the trial countdown) stays Viewer-readable via the default below.

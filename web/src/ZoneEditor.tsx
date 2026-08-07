@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Camera, CrossDir, GroundCalib, PolyZone, Tripwire, ZoneKind } from "./api";
 import { IconRefresh } from "./icons";
 import { TogglePill, useDialog } from "./ui";
@@ -76,6 +76,14 @@ export default function ZoneEditor({
 }) {
   const [draw, setDraw] = useState<Draw>(null);
   const dialog = useDialog();
+  // Calibration display unit (P3). Stored values are ALWAYS metres; this only
+  // converts at the edges. Sticky per browser.
+  const [unit, setUnit] = useState<"m" | "ft">(
+    () => (localStorage.getItem("cammy-calib-unit") as "m" | "ft") ?? "m",
+  );
+  useEffect(() => localStorage.setItem("cammy-calib-unit", unit), [unit]);
+  const fromM = (m: number) => (unit === "m" ? m : Math.round(m * 3.28084 * 10) / 10);
+  const toM = (v: number) => (unit === "m" ? v : Math.round((v / 3.28084) * 100) / 100);
   // Keyboard drawing: a crosshair (0..1) the arrows move; Enter places a point.
   const [kbCursor, setKbCursor] = useState<[number, number]>([0.5, 0.5]);
   // Frame loading is resilient: go2rtc may be mid-restart or waiting for a
@@ -943,32 +951,47 @@ export default function ZoneEditor({
           </div>
           <div className="row" style={{ alignItems: "center" }}>
             <span className="dot" style={{ background: COLORS.calib }} />
+            {/* docs/10 P3: metres were hard-coded; feet is the natural unit for
+                most US driveways. Stored value stays metres — only display
+                converts, so nothing downstream changes. */}
             <label className="field">
-              real width (m)
+              real width ({unit})
               <input
                 type="number"
                 min="0.1"
                 step="0.5"
                 style={{ width: 90 }}
-                value={calib.width_m}
-                onChange={(e) => onCalib({ ...calib, width_m: Number(e.target.value) })}
+                value={fromM(calib.width_m)}
+                onChange={(e) => onCalib({ ...calib, width_m: toM(Number(e.target.value)) })}
               />
             </label>
             <label className="field">
-              real length (m)
+              real length ({unit})
               <input
                 type="number"
                 min="0.1"
                 step="0.5"
                 style={{ width: 90 }}
-                value={calib.height_m}
-                onChange={(e) => onCalib({ ...calib, height_m: Number(e.target.value) })}
+                value={fromM(calib.height_m)}
+                onChange={(e) => onCalib({ ...calib, height_m: toM(Number(e.target.value)) })}
               />
+            </label>
+            <label className="field">
+              units
+              <select value={unit} onChange={(e) => setUnit(e.target.value as "m" | "ft")}>
+                <option value="m">metres</option>
+                <option value="ft">feet</option>
+              </select>
             </label>
             <button type="button" className="btn btn-danger" onClick={() => onCalib(null)}>
               remove
             </button>
           </div>
+          <p className="feat-help" style={{ margin: "4px 0 0" }}>
+            Tip: measure something you know — a parking space is about 2.5 × 5 m (8 × 16 ft), a
+            car about 4.5 m (15 ft) long. Drag the four corners onto a flat ground rectangle of
+            that size.
+          </p>
         </div>
       )}
     </div>

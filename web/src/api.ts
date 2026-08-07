@@ -1062,6 +1062,18 @@ export const api = {
       message?: string | null;
       path: string;
     }>(`/api/path_probe?path=${encodeURIComponent(path)}`),
+  /** Browse a server-side folder (dirs + video files) for import (P3). */
+  fsList: (path: string) =>
+    req<{
+      ok: boolean;
+      path: string;
+      parent?: string | null;
+      dirs: string[];
+      files: { name: string; size: number }[];
+      error?: string;
+    }>(`/api/fs_list?path=${encodeURIComponent(path)}`),
+  /** Detector .onnx files present in the app directory (P3). */
+  modelsInstalled: () => req<{ models: string[] }>("/api/models/installed"),
   /** Echo this request's headers as the server sees them (SSO debugging;
    *  cookie/authorization redacted server-side). */
   echoHeaders: () => req<Record<string, string>>("/api/echo_headers"),

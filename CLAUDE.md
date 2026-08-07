@@ -74,9 +74,14 @@ per-file progress and flips to "installed" without a reload (live: all
 accurate tiers; pose stays honestly non-downloadable). Plus
 `GET /api/echo_headers` + "Show my request headers" on the SSO card
 (cookie/authorization redacted server-side — verified). Both Admin-gated.
-**Remaining P3 (docs/10):** import file picker, ground-calib units +
-known-length calibration, FOV cones on Map pins, per-camera model select
-from installed models.
+**Fourth pass:** import footage gains Browse… over a new
+`GET /api/fs_list` (Admin; drive roots / folders / video files only,
+capped at 500 entries); the per-camera model override is a select of the
+installed detector `.onnx` files (`GET /api/models/installed`, non-
+detector models filtered, "Other…" escape hatch); ground calibration gets
+a sticky m/ft display toggle (stored values stay metres) + a known-
+lengths tip. **P3 is COMPLETE except FOV cones on Map pins** (needs
+per-pin direction data — a small design decision, deferred).
 
 ### Earlier: docs/10 P1 implementation — 7 of 10 P1 items shipped, 2026-08-07
 

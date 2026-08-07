@@ -19,6 +19,133 @@ import {
   IconZone,
 } from "../icons";
 
+/// docs/10 P3 — the per-camera model override was a spell-the-filename
+/// textbox; now it's a select of the detector `.onnx` files actually present
+/// in the app directory (a custom path stays possible via "Other…").
+function ModelOverrideField({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (m: string | null) => void;
+}) {
+  const [installed, setInstalled] = useState<string[] | null>(null);
+  const [custom, setCustom] = useState(false);
+  useEffect(() => {
+    api.modelsInstalled().then((r) => setInstalled(r.models)).catch(() => setInstalled(null));
+  }, []);
+  const showSelect = installed !== null && !custom && (value === null || installed.includes(value));
+  return (
+    <label className="field" title="Per-camera detector model. Inherit uses the global model; the list is what's actually installed.">
+      Model override
+      {showSelect ? (
+        <select
+          value={value ?? ""}
+          onChange={(e) => {
+            if (e.target.value === "__other__") setCustom(true);
+            else onChange(e.target.value || null);
+          }}
+        >
+          <option value="">Inherit global</option>
+          {installed.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+          <option value="__other__">Other (type a path)…</option>
+        </select>
+      ) : (
+        <input
+          type="text"
+          placeholder="Inherit global"
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value.trim() || null)}
+        />
+      )}
+    </label>
+  );
+}
+
+/// docs/10 P3 — a minimal server-side folder browser for "Import footage":
+/// walk drives/folders and pick a video file instead of hand-typing an
+/// absolute path. Lists only folders + video files (server-filtered).
+function FileBrowser({ onPick, onClose }: { onPick: (path: string) => void; onClose: () => void }) {
+  const [listing, setListing] = useState<Awaited<ReturnType<typeof api.fsList>> | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const open = (path: string) => {
+    api
+      .fsList(path)
+      .then((r) => {
+        if (r.ok) {
+          setListing(r);
+          setErr(null);
+        } else setErr(r.error ?? "couldn't open that folder");
+      })
+      .catch((e) => setErr(String(e)));
+  };
+  useEffect(() => open(""), []);
+  const join = (dir: string) => {
+    if (!listing?.path) return dir; // a root like "E:\"
+    const sep = listing.path.includes("\\") ? "\\" : "/";
+    return listing.path.endsWith(sep) ? `${listing.path}${dir}` : `${listing.path}${sep}${dir}`;
+  };
+  return (
+    <Modal title="Pick a video file on the Cammy server" onClose={onClose}>
+      <div style={{ minWidth: "min(560px, 84vw)", maxHeight: "60vh", overflowY: "auto", padding: "2px 4px" }}>
+        {err && <p style={{ color: "var(--danger)" }}>{err}</p>}
+        {!listing ? (
+          <span className="skeleton" style={{ height: 80, width: "100%" }} />
+        ) : (
+          <>
+            <div className="muted" style={{ fontSize: "var(--text-sm)", marginBottom: 8 }}>
+              {listing.path || "This computer"}
+            </div>
+            {listing.path && (
+              <button type="button" className="btn btn-ghost ev-act" onClick={() => open(listing.parent ?? "")}>
+                ← Up
+              </button>
+            )}
+            <ul style={{ listStyle: "none", margin: "8px 0 0", padding: 0 }}>
+              {listing.dirs.map((d) => (
+                <li key={d}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost ev-act"
+                    style={{ width: "100%", justifyContent: "flex-start" }}
+                    onClick={() => open(join(d))}
+                  >
+                    📁 {d}
+                  </button>
+                </li>
+              ))}
+              {listing.files.map((f) => (
+                <li key={f.name}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost ev-act"
+                    style={{ width: "100%", justifyContent: "flex-start" }}
+                    onClick={() => onPick(join(f.name))}
+                  >
+                    <IconFilm size={13} /> {f.name}{" "}
+                    <span className="muted" style={{ marginLeft: "auto", fontSize: "var(--text-xs)" }}>
+                      {(f.size / 1e6).toFixed(1)} MB
+                    </span>
+                  </button>
+                </li>
+              ))}
+              {listing.dirs.length === 0 && listing.files.length === 0 && (
+                <li className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                  No subfolders or video files here.
+                </li>
+              )}
+            </ul>
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /// The stream engine needs a slug id, but that's OUR constraint, not the
@@ -491,15 +618,7 @@ function TuneModal({
               />
               <span className="feat-help">Low-res stream to run detection on; empty = detect on the main stream.</span>
             </label>
-            <label className="field" title="Per-camera model override (e.g. a specialized .onnx). Empty inherits the global model.">
-              Model override
-              <input
-                type="text"
-                placeholder="Inherit global"
-                value={dc.model ?? ""}
-                onChange={(e) => setDc({ ...dc, model: e.target.value.trim() || null })}
-              />
-            </label>
+            <ModelOverrideField value={dc.model ?? null} onChange={(model) => setDc({ ...dc, model })} />
             <label className="field" title="Which processor runs this camera's detector. Inherit uses the global setting.">
               Accelerator
               <select
@@ -1109,6 +1228,7 @@ export default function Cameras({
   // P3.10 offline footage import (Admin-only surface; server enforces the gate).
   const [isAdmin, setIsAdmin] = useState(false);
   const [importPath, setImportPath] = useState("");
+  const [browsing, setBrowsing] = useState(false);
   const [importName, setImportName] = useState("");
   const [importBusy, setImportBusy] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
@@ -1545,14 +1665,19 @@ export default function Cameras({
         <form onSubmit={runImport} className="row" style={{ marginTop: 10 }}>
           <label className="field" style={{ flex: 1, minWidth: 320 }}>
             video file path (on the Cammy server)
-            <input
-              type="text"
-              placeholder="C:\\Users\\me\\Videos\\dashcam.mp4"
-              value={importPath}
-              onChange={(e) => setImportPath(e.target.value)}
-              required
-              style={{ width: "100%" }}
-            />
+            <span className="row" style={{ gap: 6 }}>
+              <input
+                type="text"
+                placeholder="C:\\Users\\me\\Videos\\dashcam.mp4"
+                value={importPath}
+                onChange={(e) => setImportPath(e.target.value)}
+                required
+                style={{ flex: 1 }}
+              />
+              <button type="button" className="btn btn-ghost" onClick={() => setBrowsing(true)}>
+                Browse…
+              </button>
+            </span>
             <span className="feat-help">Sampled at about one frame per second, so a long clip takes a while.</span>
           </label>
           <label className="field" style={{ minWidth: 180 }}>
@@ -1571,6 +1696,15 @@ export default function Cameras({
         </form>
         {importResult && (
           <span className="save-ok" style={{ marginTop: 8 }}><IconCheck size={14} /> {importResult}</span>
+        )}
+        {browsing && (
+          <FileBrowser
+            onClose={() => setBrowsing(false)}
+            onPick={(p) => {
+              setImportPath(p);
+              setBrowsing(false);
+            }}
+          />
         )}
         </details>
       </div>

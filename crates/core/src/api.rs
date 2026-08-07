@@ -132,6 +132,8 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(model_download_api),
         )
         .route("/api/echo_headers", get(echo_headers_api))
+        .route("/api/fs_list", get(fs_list_api))
+        .route("/api/models/installed", get(models_installed_api))
         .route(
             "/api/models/download_status",
             get(model_download_status_api),
@@ -4676,6 +4678,103 @@ async fn notify_test_api(
         Ok(Err(e)) => Json(serde_json::json!({"ok": false, "error": e})),
         Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
     }
+}
+
+/// GET /api/fs_list?path= — docs/10 P3: a minimal server-side folder browser
+/// so "Import footage" stops demanding a hand-typed absolute path. Lists
+/// subfolders + video files only. Empty path = the drive roots (Windows) or
+/// `/`. Admin-gated (auth.rs): it enumerates the server's filesystem — the
+/// same trust level as /api/import, which reads any path outright.
+async fn fs_list_api(
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    const VIDEO_EXT: [&str; 7] = ["mp4", "mkv", "avi", "mov", "m4v", "ts", "webm"];
+    let raw = q.get("path").map(|s| s.trim()).unwrap_or("");
+    if raw.is_empty() {
+        // Roots: on Windows, the drives that exist; elsewhere, "/".
+        let roots: Vec<String> = if cfg!(windows) {
+            (b'A'..=b'Z')
+                .map(|c| format!("{}:\\", c as char))
+                .filter(|d| std::path::Path::new(d).exists())
+                .collect()
+        } else {
+            vec!["/".to_string()]
+        };
+        return Json(serde_json::json!({
+            "ok": true, "path": "", "parent": null, "dirs": roots,
+            "files": Vec::<serde_json::Value>::new(),
+        }));
+    }
+    let path = PathBuf::from(raw);
+    if !path.is_dir() {
+        return Json(serde_json::json!({"ok": false, "error": "not a folder"}));
+    }
+    let mut dirs: Vec<String> = Vec::new();
+    let mut files: Vec<serde_json::Value> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&path) {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                dirs.push(name);
+            } else {
+                let ext = std::path::Path::new(&name)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if VIDEO_EXT.contains(&ext.as_str()) {
+                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    files.push(serde_json::json!({"name": name, "size": size}));
+                }
+            }
+        }
+    }
+    dirs.sort_by_key(|d| d.to_lowercase());
+    files.sort_by_key(|f| f["name"].as_str().unwrap_or("").to_lowercase());
+    // Cap the listing so a giant directory can't balloon the response.
+    dirs.truncate(500);
+    files.truncate(500);
+    let parent = path.parent().map(|p| p.to_string_lossy().to_string());
+    Json(serde_json::json!({
+        "ok": true,
+        "path": path.to_string_lossy(),
+        "parent": parent,
+        "dirs": dirs,
+        "files": files,
+    }))
+}
+
+/// GET /api/models/installed — the `.onnx` files actually present in the app
+/// directory, so the per-camera "model override" can be a select of real
+/// choices instead of a spell-the-filename textbox. Non-detector models
+/// (CLIP / plates / faces / audio) are filtered out by their known names.
+async fn models_installed_api() -> Json<serde_json::Value> {
+    let known_non_detector = [
+        crate::smart::VISION_MODEL,
+        crate::smart::TEXT_MODEL,
+        crate::audio::MODEL,
+        crate::lpr::DET_MODEL,
+        crate::lpr::REC_MODEL,
+        "det_10g.onnx",
+        "w600k_r50.onnx",
+    ];
+    let mut models: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(".") {
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.to_ascii_lowercase().ends_with(".onnx")
+                && !known_non_detector.contains(&name.as_str())
+            {
+                models.push(name);
+            }
+        }
+    }
+    models.sort();
+    Json(serde_json::json!({ "models": models }))
 }
 
 /// GET /api/echo_headers — docs/10 P3: "show me my current request headers",
