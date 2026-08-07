@@ -2821,3 +2821,6 @@ img.identity-thumb { background: var(--n-0); }
   background: var(--surface);
   color: var(--text-muted);
 }
+/* Keyboard hints are noise on a device with no keyboard — and on a phone they
+   were eating two lines of the most valuable space on the screen. */
+@media (pointer: coarse) { .kbd-hint { display: none; } }

@@ -372,7 +372,7 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
       <p className="muted" style={{ marginTop: -8 }}>
         Pick when and where, then scan what happened and what was recorded together. Anything you
         click opens that camera&apos;s timeline at that moment.{" "}
-        <span className="muted">
+        <span className="muted kbd-hint">
           Arrow keys step days, <kbd>/</kbd> searches, <kbd>G</kbd>/<kbd>L</kbd> switch view.
         </span>
       </p>
