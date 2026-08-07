@@ -16,7 +16,32 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — UX phases 1-3 + two audit sweeps, 2026-08-07
 
-### Latest: docs/10 P2 COMPLETE + first P3 batch, 2026-08-07
+### Latest: second priority sweep → docs/11, 2026-08-07
+
+With docs/10 fully shipped, a 3-agent audit (fresh control-UX pass over
+web/src · capability-vs-surface + silent-failure sweep of crates/core ·
+full deferred-item inventory) produced
+**`docs/11-priorities-2026-08b.md`** — the new ranked backlog. Headline:
+the biggest remaining risks are RUN-TIME TRUST failures, not config
+polish. P0 = the alert-losing cluster: detector load failure is invisible
+and mis-reads as "camera offline" (pipeline.rs:487); the GenAI queue is
+unbounded and carries deferred ALARM FIRES (lib.rs:208); alarm-dispatch
+drops are log-only; WebPush exits permanently on a VAPID error; the
+global every-event webhook still fails at debug! (the per-rule path was
+fixed, this one was missed); VLM-gated rules fail open with no notice; 19
+worker threads have zero liveness monitoring; /api/capabilities proves
+file presence not loadability; MQTT state is asserted, never observed.
+P1 = control-UX misses: alert_labels still raw comma-text, no per-action
+alarm Test, min_score hard-coded 0 in the builder, MQTT has no Test,
+sub-stream raw RTSP box, zone-state prompts have no Test, global model
+path vs ModelOverrideField, pose_model outside ModelsCard, two competing
+plate stores, go2rtc_api_port has no UI. Then P2 (trust surfacing +
+mechanical picker swaps), P3 (System-health pane over the curl-only
+/api/metrics, ONVIF inspector UI, SSE consumption), and the full
+classified deferred inventory (owner actions / needs-data / features /
+design). Start at docs/11's sequencing section.
+
+### Earlier: docs/10 P2 COMPLETE + first P3 batch, 2026-08-07
 
 **P2 finished:** `0dd350c` P2.4 provider pickers + prove-it buttons — SMTP
 picks Gmail/Outlook/iCloud (URL/port/app-password gotcha prefilled), offsite
