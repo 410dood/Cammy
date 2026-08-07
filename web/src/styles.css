@@ -1535,6 +1535,28 @@ label.file-btn:focus-within {
 .objpick-other { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 .objpick-other input { width: 130px; font-size: var(--text-sm); }
 
+/* Weekly mode grid: paint the week instead of programming transitions. */
+.wkgrid-wrap { max-width: 560px; }
+.wkgrid {
+  display: grid; grid-template-columns: 44px repeat(7, 1fr); gap: 1px;
+  background: var(--surface-active); border: 1px solid var(--surface-active);
+  border-radius: var(--radius-sm); overflow: hidden; touch-action: none; user-select: none;
+}
+.wkgrid-corner, .wkgrid-day, .wkgrid-hour { background: var(--surface); }
+.wkgrid-day { font-size: var(--text-xs); color: var(--text-muted); text-align: center; padding: 3px 0; }
+.wkgrid-hour {
+  font-size: 0.625rem; color: var(--text-subtle); text-align: right; padding-right: 5px;
+  display: flex; align-items: center; justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+.wkgrid-cell {
+  display: block; width: 100%; height: 13px; border: 0; padding: 0; margin: 0;
+  background: transparent; cursor: pointer; border-radius: 0;
+}
+.wkgrid-cell:hover { outline: 1.5px solid var(--text); outline-offset: -1.5px; }
+.wkgrid-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; vertical-align: -1px; }
+@media (pointer: coarse) { .wkgrid-cell { height: 17px; } }
+
 /* Child-height marker: a person-height bar standing on the frame's bottom. */
 .childh-bar {
   position: absolute; bottom: 0; width: 36px; transform: translateX(-50%);

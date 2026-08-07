@@ -11,6 +11,141 @@ import {
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+type SchedRow = { days: number[]; hhmm: string; mode: ArmMode };
+
+/// The modes schedule is a transition list ("Away at 08:00 Mon–Fri…"), which
+/// forces the user to mentally simulate rows to answer "what mode am I in on
+/// Saturday at 3 PM?". The week grid paints the ANSWER; transitions are
+/// derived from it. hh:mm rows land on their hour cell for display; painting
+/// writes :00 transitions (the list view below keeps exact minutes).
+const MODE_COLORS: Record<ArmMode, string> = {
+  home: "var(--success)",
+  away: "var(--accent)",
+  disarmed: "var(--n-6, #6b7280)",
+};
+const MODE_LABEL: Record<ArmMode, string> = { home: "Home", away: "Away", disarmed: "Disarmed" };
+
+function scheduleToGrid(rows: SchedRow[]): (ArmMode | null)[][] {
+  const grid: (ArmMode | null)[][] = Array.from({ length: 7 }, () => Array(24).fill(null));
+  const pts: { t: number; mode: ArmMode }[] = [];
+  for (const r of rows) {
+    const [hh, mm] = r.hhmm.split(":").map(Number);
+    const days = r.days.length ? r.days : [0, 1, 2, 3, 4, 5, 6];
+    for (const d of days) pts.push({ t: d * 1440 + (hh || 0) * 60 + (mm || 0), mode: r.mode });
+  }
+  if (pts.length === 0) return grid;
+  pts.sort((a, b) => a.t - b.t);
+  // The week wraps: the mode at Sunday 00:00 is whatever the LAST transition
+  // of the week set (steady state after one full cycle).
+  let cur = pts[pts.length - 1].mode;
+  let pi = 0;
+  for (let d = 0; d < 7; d++)
+    for (let h = 0; h < 24; h++) {
+      const t = d * 1440 + h * 60;
+      while (pi < pts.length && pts[pi].t <= t) cur = pts[pi++].mode;
+      grid[d][h] = cur;
+    }
+  return grid;
+}
+
+function gridToSchedule(grid: ArmMode[][]): SchedRow[] {
+  const raw: SchedRow[] = [];
+  for (let d = 0; d < 7; d++)
+    for (let h = 0; h < 24; h++) {
+      const prev = h === 0 ? grid[(d + 6) % 7][23] : grid[d][h - 1];
+      if (grid[d][h] !== prev)
+        raw.push({ days: [d], hhmm: `${String(h).padStart(2, "0")}:00`, mode: grid[d][h] });
+    }
+  if (raw.length === 0) {
+    // A uniform week still expresses intent ("always Home") — keep one
+    // anchoring transition rather than silently turning automation off.
+    return [{ days: [], hhmm: "00:00", mode: grid[0][0] }];
+  }
+  // Merge identical time+mode across days so the derived list stays readable.
+  const merged = new Map<string, SchedRow>();
+  for (const r of raw) {
+    const k = `${r.hhmm}|${r.mode}`;
+    const m = merged.get(k);
+    if (m) m.days = [...m.days, r.days[0]].sort((a, b) => a - b);
+    else merged.set(k, { ...r, days: [...r.days] });
+  }
+  return [...merged.values()];
+}
+
+function WeekModeGrid({ rows, onChange }: { rows: SchedRow[]; onChange: (rows: SchedRow[]) => void }) {
+  const [brush, setBrush] = useState<ArmMode>("away");
+  const grid = scheduleToGrid(rows);
+  const paint = (d: number, h: number) => {
+    // First paint on an empty grid seeds the whole week as Home, so every
+    // hour has a defined mode (unpainted time = Home, stated in the hint).
+    const full: ArmMode[][] =
+      grid[0][0] == null
+        ? Array.from({ length: 7 }, () => Array(24).fill("home" as ArmMode))
+        : (grid.map((r) => [...r]) as ArmMode[][]);
+    if (full[d][h] === brush) return;
+    full[d][h] = brush;
+    onChange(gridToSchedule(full));
+  };
+  return (
+    <div className="wkgrid-wrap">
+      <div className="row" style={{ gap: 6, alignItems: "center", marginBottom: 8 }}>
+        <span className="muted" style={{ fontSize: "var(--text-xs)" }}>Paint with:</span>
+        {(Object.keys(MODE_LABEL) as ArmMode[]).map((m) => (
+          <TogglePill key={m} on={brush === m} ariaLabel={`Paint ${MODE_LABEL[m]}`} onClick={() => setBrush(m)}>
+            <span className="wkgrid-swatch" style={{ background: MODE_COLORS[m] }} /> {MODE_LABEL[m]}
+          </TogglePill>
+        ))}
+      </div>
+      <div className="wkgrid" role="grid" aria-label="Weekly mode schedule — drag to paint">
+        <div className="wkgrid-corner" />
+        {DAY_NAMES.map((d) => (
+          <div key={d} className="wkgrid-day">
+            {d}
+          </div>
+        ))}
+        {Array.from({ length: 24 }, (_, h) => (
+          <div key={h} className="wkgrid-hrow" style={{ display: "contents" }}>
+            <div className="wkgrid-hour">{h % 3 === 0 ? `${h}:00` : ""}</div>
+            {Array.from({ length: 7 }, (_, d) => {
+              const m = grid[d][h];
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  role="gridcell"
+                  className="wkgrid-cell"
+                  aria-label={`${DAY_NAMES[d]} ${h}:00 — ${m ? MODE_LABEL[m] : "no schedule"}`}
+                  title={`${DAY_NAMES[d]} ${h}:00 — ${m ? MODE_LABEL[m] : "no schedule; click to paint"}`}
+                  style={{ background: m ? MODE_COLORS[m] : "transparent", opacity: m === "disarmed" ? 0.45 : 1 }}
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    // Touch pointers implicitly capture on the pressed cell,
+                    // which would swallow the pointerenter drag-paint events —
+                    // release so a finger can sweep across the week.
+                    try {
+                      (e.target as Element).releasePointerCapture(e.pointerId);
+                    } catch {
+                      /* not captured */
+                    }
+                    paint(d, h);
+                  }}
+                  onPointerEnter={(e) => {
+                    if (e.buttons & 1) paint(d, h);
+                  }}
+                />
+              );
+            })}
+          </div>
+        ))}
+      </div>
+      <small className="muted" style={{ display: "block", marginTop: 6 }}>
+        Unpainted time counts as <b>Home</b>. Painting uses whole hours — the list below takes
+        exact minutes.
+      </small>
+    </div>
+  );
+}
+
 /// Measured write rate, fetched once per session (several retention fields want
 /// the same number). `null` = not measurable yet on a fresh install.
 let writeRateCache: Promise<number | null> | null = null;
@@ -2756,6 +2891,9 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             alarm rules fire, so this also cuts daytime false alerts. Empty = no automation;
             you can still change the mode manually any time.
           </p>
+          <WeekModeGrid rows={s.arm_schedule ?? []} onChange={(arm_schedule) => set({ arm_schedule })} />
+          <details className="adv" style={{ marginTop: 10 }}>
+            <summary>Edit as a list (exact minutes)</summary>
           {(s.arm_schedule ?? []).map((row, i) => (
             <div
               className="row"
@@ -2832,6 +2970,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
           <small className="muted" style={{ display: "block", marginTop: 8 }}>
             No days selected = every day. The change applies at the start of the matching minute.
           </small>
+          </details>
         </div>
 
         <div className="card" data-settings-group="modes">
