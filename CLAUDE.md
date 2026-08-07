@@ -16,7 +16,27 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — UX phases 1-3 + two audit sweeps, 2026-08-07
 
-### Latest: tuning controls speak homeowner + the control-UX backlog, 2026-08-07
+### Latest: docs/10 P1 implementation — 7 of 10 P1 items shipped, 2026-08-07
+
+Same day, second pass: `8b1631b` P1.1 zone↔alarm binding (zone picker in
+Alarms scoped to the rule's camera, live "no drawn zone matches" warning +
+table badge with the server's exact substring semantics, ZoneEditor name
+presets + "Alert on this zone" → prefilled builder via sessionStorage
+`cammy-alarm-zone`); `f217d9f` P1.2 global Settings detection card on the
+shared `tuning.tsx` components (+ fixed the picker's empty-state lie — empty
+list = detect EVERYTHING per pipeline.rs); `deca04d` P1.8+P1.5 `LabelChips`
+into zone/tripwire/package objects + `DurationPicker` for cooldowns +
+gesture chips; `719d515` P1.6 face/plate pickers from enrolled People +
+plate library; `9d7339f` P1.7 draggable zone/mask/tripwire/calib vertex
+handles + double-click-delete + rubber-band + rectangle preset; `c642da9`
+P1.9 `ChildHeightEditor` (drag a person-height bar on the frame). All
+web-only, every one live-validated on :8081 then state restored.
+**Remaining P1: P1.3 discover-first camera wizard, P1.4 week-grid
+schedules, P1.10 AI-watch/verification test buttons (needs small API
+additions). Then P2 (honest gating, live motion tuner, provider pickers,
+Family wizard).**
+
+### Earlier: tuning controls speak homeowner + the control-UX backlog, 2026-08-07
 
 Owner directive: config controls must be graphical/intuitive like Blue Iris &
 UniFi, "this is the stuff I really want to improve upon". Shipped `6ba188b`
