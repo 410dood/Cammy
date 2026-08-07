@@ -433,8 +433,8 @@ function ModeWizard({
   };
 
   return (
-    <Modal title={`Set up ${mode.title}`} onClose={onClose}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: "min(560px, 86vw)" }}>
+    <Modal title={`Set up ${mode.title}`} onClose={onClose} className="modal-wide">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "4px 6px 8px" }}>
         {!created && (
           <div className="muted" style={{ fontSize: "var(--text-sm)" }}>
             Step {stepIx + 1} of {steps.length}
