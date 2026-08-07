@@ -1,4 +1,8 @@
-import { CamEvent } from "./api";
+// `import type`, not a plain import: this module is pulled into `find/strip.ts`,
+// which is unit-tested outside any bundler. A value-shaped import of a
+// type-only symbol survives into the runtime graph and would drag the whole API
+// client along with it.
+import type { CamEvent } from "./api";
 
 // --- A3: smart-detection grouping --------------------------------------------
 // Collapse a run of same-camera, same-label detections that happen close in

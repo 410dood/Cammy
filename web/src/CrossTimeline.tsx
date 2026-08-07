@@ -5,34 +5,11 @@
 
 import { useMemo, useState } from "react";
 import { CamEvent, Camera, Segment } from "./api";
+import { Block, coalesce } from "./coverage";
 import { prettyLabel } from "./labels";
 
 const HOUR = 3600;
 const VEHICLES = ["car", "truck", "bus", "motorcycle", "bicycle"];
-
-interface Block {
-  start: number;
-  end: number;
-}
-
-/** Merge per-segment rows into continuous coverage spans. Exported because
- *  Find's film strip needs the same notion of "footage runs from here to here"
- *  that these lanes draw — if the two disagreed, the strip and the timeline
- *  would describe the same recording differently. */
-export function coalesce(segs: Segment[], segmentSecs: number): Block[] {
-  const sorted = [...segs].sort((a, b) => a.start_ts - b.start_ts);
-  const blocks: Block[] = [];
-  for (const s of sorted) {
-    const end = s.start_ts + segmentSecs;
-    const last = blocks[blocks.length - 1];
-    if (last && s.start_ts - last.end <= segmentSecs * 1.5) {
-      last.end = Math.max(last.end, end);
-    } else {
-      blocks.push({ start: s.start_ts, end });
-    }
-  }
-  return blocks;
-}
 
 /** Most positions a lane will ever draw. A lane is ~600 px wide here, so past
  *  a few hundred nodes the extras are painting on a pixel that is already

@@ -10,7 +10,13 @@
     "noUnusedParameters": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    // Lets the few pure modules that `node --test` loads directly import each
+    // other with an explicit `.ts` extension. Node needs the extension to
+    // resolve them without a bundler; Vite accepts it; nothing is emitted, so
+    // it costs nothing. Everything else in the tree keeps importing without
+    // extensions.
+    "allowImportingTsExtensions": true
   },
   "include": ["src"]
 }

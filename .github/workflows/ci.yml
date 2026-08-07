@@ -70,5 +70,11 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
         working-directory: web
+      # Pure-logic unit tests on plain `node --test` — Node strips the types, so
+      # there is no test framework and no runtime dependency to install. The
+      # explicit --experimental-strip-types is for Node 22, where stripping is
+      # only on by default from 22.18; on 24 the flag is a no-op.
+      - run: npm test
+        working-directory: web
       - run: npm run build
         working-directory: web
