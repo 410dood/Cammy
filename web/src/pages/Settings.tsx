@@ -2,6 +2,7 @@ import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtSpan, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout, usePolling } from "../ui";
 import { LicensePane } from "../License";
+import { ObjectPicker, InheritSlider } from "../tuning";
 import { prettyGesture, prettyLabel } from "../labels";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
@@ -2273,22 +2274,57 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
         <ModelsCard />
         <div className="card" data-settings-group="detection">
           <h2>Detection</h2>
+          <div className="tune-sub" style={{ marginBottom: 4 }}>
+            <h4 className="tune-sub-h">Objects to detect (every camera's default)</h4>
+            <ObjectPicker
+              variant="global"
+              value={s.detect_labels}
+              globalLabels={[]}
+              onChange={(labels) => set({ detect_labels: labels ?? [] })}
+            />
+          </div>
+          <div className="islider-row">
+            <InheritSlider
+              label="How confident before logging an object"
+              value={s.confidence}
+              globalValue={null}
+              resettable={false}
+              min={0.25}
+              max={0.95}
+              step={0.05}
+              format={(v) => `${Math.round(v * 100)}% sure`}
+              lowHint="More alerts"
+              highHint="Fewer false alerts"
+              onChange={(v) => v != null && set({ confidence: v })}
+            />
+            <InheritSlider
+              label="How much motion wakes detection"
+              value={s.motion_threshold}
+              globalValue={null}
+              resettable={false}
+              min={0.005}
+              max={0.2}
+              step={0.005}
+              format={(v) => `${(v * 100).toFixed(1)}% of frame`}
+              lowHint="Any flicker"
+              highHint="Big movement only"
+              onChange={(v) => v != null && set({ motion_threshold: v })}
+            />
+            <InheritSlider
+              label="How often the AI looks at each camera"
+              value={Math.min(5000, Math.max(100, s.poll_ms))}
+              globalValue={null}
+              resettable={false}
+              min={100}
+              max={5000}
+              step={100}
+              format={(v) => (v >= 1000 ? `every ${(v / 1000).toFixed(1).replace(/\.0$/, "")} s` : `every ${v} ms`)}
+              lowHint="Reacts fastest"
+              highHint="Lightest on your machine"
+              onChange={(v) => v != null && set({ poll_ms: v })}
+            />
+          </div>
           <div className="row">
-            <label className="field" style={{ flex: 1, minWidth: "min(380px, 100%)" }}>
-              objects (comma-separated, empty = all)
-              <input
-                type="text"
-                value={s.detect_labels.join(", ")}
-                onChange={(e) =>
-                  set({
-                    detect_labels: e.target.value
-                      .split(",")
-                      .map((x) => x.trim())
-                      .filter(Boolean),
-                  })
-                }
-              />
-            </label>
             <label className="field">
               alert objects (shown in the Alerts review tab)
               <input
@@ -2303,42 +2339,6 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                   })
                 }
               />
-            </label>
-            <label className="field">
-              min confidence (0-1)
-              <input
-                type="number" step="0.05" min="0" max="1"
-                value={s.confidence}
-                onChange={(e) => set({ confidence: num(e.target.value, s.confidence) })}
-              />
-              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                How sure the AI must be before logging an object (0 to 1). Higher means fewer
-                false alerts but more misses. 0.4 is a good start.
-              </span>
-            </label>
-            <label className="field">
-              motion threshold (0-1)
-              <input
-                type="number" step="0.005" min="0" max="1"
-                value={s.motion_threshold}
-                onChange={(e) => set({ motion_threshold: num(e.target.value, s.motion_threshold) })}
-              />
-              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                Fraction of the frame that must change before the AI looks for objects. Lower is
-                more sensitive.
-              </span>
-            </label>
-            <label className="field">
-              sample interval (ms)
-              <input
-                type="number" step="100" min="100"
-                value={s.poll_ms}
-                onChange={(e) => set({ poll_ms: num(e.target.value, s.poll_ms) })}
-              />
-              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                Milliseconds between analyzed frames. Higher is easier on your machine but reacts
-                slower.
-              </span>
             </label>
             <label className="field">
               time between repeat events (s)
@@ -2431,18 +2431,21 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={() => set({ face_recognition: !s.face_recognition })}
               />
             </label>
-            <label className="field">
-              face match threshold (0-1)
-              <input
-                type="number" step="0.05" min="0" max="1"
+            <div style={{ flex: "1 1 260px", maxWidth: 420 }}>
+              <InheritSlider
+                label="Face match strictness"
                 value={s.face_match_threshold}
-                onChange={(e) => set({ face_match_threshold: num(e.target.value, s.face_match_threshold) })}
+                globalValue={null}
+                resettable={false}
+                min={0.2}
+                max={0.7}
+                step={0.05}
+                format={(v) => `${Math.round(v * 100)}% match`}
+                lowHint="Names more faces, some wrong"
+                highHint="Only confident matches"
+                onChange={(v) => v != null && set({ face_match_threshold: v })}
               />
-              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                How closely a face must match a saved person to count. Higher is stricter and
-                gives fewer wrong names.
-              </span>
-            </label>
+            </div>
             <label className="field" style={{ flex: 1, minWidth: 280 }} title="Plates (or partials) of interest — a match fires a guaranteed high-priority push.">
               plate deny-list (vehicles of interest, comma-separated)
               <input
