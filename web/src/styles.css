@@ -1535,6 +1535,20 @@ label.file-btn:focus-within {
 .objpick-other { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 .objpick-other input { width: 130px; font-size: var(--text-sm); }
 
+/* Zone editor vertex handles: draggable corner dots over the frame. */
+.ze-handle {
+  position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+  border-radius: 50%; cursor: grab; touch-action: none;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  border: 2.5px solid var(--text);
+  box-sizing: border-box;
+}
+.ze-handle:active { cursor: grabbing; }
+.ze-handle:hover { background: var(--bg); }
+@media (pointer: coarse) {
+  .ze-handle { width: 26px; height: 26px; margin: -13px 0 0 -13px; }
+}
+
 /* Compact flat label chips (zone/tripwire/package "applies to" slots). */
 .labelchips { display: flex; flex-direction: column; gap: 4px; }
 .labelchips-other { width: 90px; font-size: var(--text-sm); }

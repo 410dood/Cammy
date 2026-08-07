@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Camera, CrossDir, GroundCalib, PolyZone, Tripwire, ZoneKind } from "./api";
 import { IconRefresh } from "./icons";
 import { TogglePill, useDialog } from "./ui";
@@ -120,6 +120,39 @@ export default function ZoneEditor({
     placePoint((e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
   };
 
+  // Drag-to-edit: every saved vertex renders as a handle you can drag (and
+  // double-click to delete) — misplacing point 2 of 8 no longer means redrawing
+  // the whole shape. Handles show only when not drawing.
+  const surfRef = useRef<HTMLDivElement>(null);
+  const dragPoint = (apply: (x: number, y: number) => void) => (e: React.PointerEvent) => {
+    if (!e.isPrimary || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const el = surfRef.current;
+    if (!el) return;
+    const t = e.currentTarget as HTMLElement;
+    try {
+      t.setPointerCapture(e.pointerId);
+    } catch {
+      /* synthetic/released pointers can't be captured — drag still works */
+    }
+    const move = (ev: PointerEvent) => {
+      const r = el.getBoundingClientRect();
+      apply(
+        Number(clamp01((ev.clientX - r.left) / r.width).toFixed(4)),
+        Number(clamp01((ev.clientY - r.top) / r.height).toFixed(4)),
+      );
+    };
+    const up = () => {
+      t.removeEventListener("pointermove", move);
+      t.removeEventListener("pointerup", up);
+      t.removeEventListener("pointercancel", up);
+    };
+    t.addEventListener("pointermove", move);
+    t.addEventListener("pointerup", up);
+    t.addEventListener("pointercancel", up);
+  };
+
   // Keyboard drawing: arrows nudge the crosshair, Enter/Space drops a point,
   // Backspace removes the last one.
   const onCanvasKey = (e: React.KeyboardEvent) => {
@@ -182,7 +215,16 @@ export default function ZoneEditor({
   return (
     <div>
       <div
+        ref={surfRef}
         onPointerDown={addPoint}
+        onPointerMove={(e) => {
+          // Live rubber-band: track the pointer while drawing so the next
+          // segment (and the closing edge) preview under the cursor. Shares
+          // kbCursor with keyboard drawing, so the crosshair stays in sync.
+          if (!draw) return;
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          setKbCursor([clamp01((e.clientX - rect.left) / rect.width), clamp01((e.clientY - rect.top) / rect.height)]);
+        }}
         onKeyDown={onCanvasKey}
         tabIndex={draw ? 0 : undefined}
         aria-label={
@@ -330,6 +372,31 @@ export default function ZoneEditor({
                 strokeDasharray="4 3"
                 vectorEffect="non-scaling-stroke"
               />
+              {/* Rubber-band: the segment being drawn follows the pointer, and
+                  polygons preview their closing edge, so the shape is legible
+                  BEFORE Finish instead of after. */}
+              <line
+                x1={draw.points[draw.points.length - 1][0]}
+                y1={draw.points[draw.points.length - 1][1]}
+                x2={kbCursor[0]}
+                y2={kbCursor[1]}
+                stroke="#fff"
+                strokeOpacity={0.7}
+                strokeWidth={0.004}
+                strokeDasharray="0.012 0.008"
+              />
+              {draw.kind !== "tripwire" && draw.points.length >= 2 && (
+                <line
+                  x1={kbCursor[0]}
+                  y1={kbCursor[1]}
+                  x2={draw.points[0][0]}
+                  y2={draw.points[0][1]}
+                  stroke="#fff"
+                  strokeOpacity={0.35}
+                  strokeWidth={0.004}
+                  strokeDasharray="0.012 0.008"
+                />
+              )}
               {draw.points.map((p, i) => (
                 // Radius is in viewBox units (0..1 frame-fraction) — like the
                 // tripwire markers. A pixel-scale r here (e.g. 4) is 4× the
@@ -340,6 +407,94 @@ export default function ZoneEditor({
             </>
           )}
         </svg>
+        {/* Drag handles for every saved shape (hidden while drawing a new one). */}
+        {!draw &&
+          zones.map((z, zi) =>
+            z.points.map((p, pi) => (
+              <div
+                key={`hz${zi}-${pi}`}
+                className="ze-handle"
+                style={{ left: `${p[0] * 100}%`, top: `${p[1] * 100}%`, borderColor: COLORS[z.kind] }}
+                title="Drag to reshape · double-click to remove this corner"
+                onPointerDown={dragPoint((x, y) =>
+                  onChange(
+                    zones.map((zz, j) =>
+                      j === zi
+                        ? { ...zz, points: zz.points.map((pp, k) => (k === pi ? ([x, y] as [number, number]) : pp)) }
+                        : zz,
+                    ),
+                    masks,
+                  ),
+                )}
+                onDoubleClick={() => {
+                  if (z.points.length > 3)
+                    onChange(
+                      zones.map((zz, j) => (j === zi ? { ...zz, points: zz.points.filter((_, k) => k !== pi) } : zz)),
+                      masks,
+                    );
+                }}
+              />
+            )),
+          )}
+        {!draw &&
+          masks.map((m, mi) =>
+            m.map((p, pi) => (
+              <div
+                key={`hm${mi}-${pi}`}
+                className="ze-handle"
+                style={{ left: `${p[0] * 100}%`, top: `${p[1] * 100}%`, borderColor: COLORS.mask }}
+                title="Drag to reshape · double-click to remove this corner"
+                onPointerDown={dragPoint((x, y) =>
+                  onChange(
+                    zones,
+                    masks.map((mm, j) => (j === mi ? mm.map((pp, k) => (k === pi ? ([x, y] as [number, number]) : pp)) : mm)),
+                  ),
+                )}
+                onDoubleClick={() => {
+                  if (m.length > 3)
+                    onChange(
+                      zones,
+                      masks.map((mm, j) => (j === mi ? mm.filter((_, k) => k !== pi) : mm)),
+                    );
+                }}
+              />
+            )),
+          )}
+        {!draw &&
+          tripwires.map((tw, ti) =>
+            (["a", "b"] as const).map((end) => (
+              <div
+                key={`ht${ti}-${end}`}
+                className="ze-handle"
+                style={{ left: `${tw[end][0] * 100}%`, top: `${tw[end][1] * 100}%`, borderColor: COLORS.tripwire }}
+                title="Drag to move this end of the line"
+                onPointerDown={dragPoint((x, y) =>
+                  onTripwires(tripwires.map((t, j) => (j === ti ? { ...t, [end]: [x, y] } : t))),
+                )}
+              />
+            )),
+          )}
+        {!draw &&
+          calib &&
+          calib.points.map((p, pi) => (
+            <div
+              key={`hc${pi}`}
+              className="ze-handle"
+              style={{ left: `${p[0] * 100}%`, top: `${p[1] * 100}%`, borderColor: COLORS.calib }}
+              title="Drag to move this ground corner"
+              onPointerDown={dragPoint((x, y) =>
+                onCalib({
+                  ...calib,
+                  points: calib.points.map((pp, k) => (k === pi ? ([x, y] as [number, number]) : pp)) as [
+                    [number, number],
+                    [number, number],
+                    [number, number],
+                    [number, number],
+                  ],
+                }),
+              )}
+            />
+          ))}
         {draw && (
           <div
             className="ze-cursor"
@@ -365,6 +520,32 @@ export default function ZoneEditor({
               onClick={() => setDraw({ kind: "zone", zoneKind: "ignore", points: [] })}
             >
               + ignore zone
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              title="Most zones are rectangles — drop one in the middle and drag its corners into place."
+              onClick={() =>
+                onChange(
+                  [
+                    ...zones,
+                    {
+                      name: `zone ${zones.length + 1}`,
+                      points: [
+                        [0.25, 0.25],
+                        [0.75, 0.25],
+                        [0.75, 0.75],
+                        [0.25, 0.75],
+                      ],
+                      kind: "required",
+                      labels: [],
+                    },
+                  ],
+                  masks,
+                )
+              }
+            >
+              + rectangle (drag corners)
             </button>
             <button type="button" className="btn btn-ghost" onClick={() => setDraw({ kind: "mask", points: [] })}>
               + privacy mask
