@@ -61,8 +61,7 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
   // A window must never run past now. Today's day window ends at midnight, and
   // without this the strip reported the REST OF TODAY as "No footage · 14h 50m
   // — nothing was recording", which is a claim about time that has not happened
-  // yet. Ticks once a minute, so today stays current; for a past day the clamp
-  // never bites and the window is stable, so nothing refetches.
+  // yet. Ticks once a minute so today stays current.
   const [nowTick, setNowTick] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
     const t = setInterval(() => setNowTick(Math.floor(Date.now() / 1000)), 60_000);
@@ -71,11 +70,23 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
 
   // The whole day when nothing is zoomed; "all time" falls back to the last 24h
   // so the timeline always has a real axis to draw.
-  const win = useMemo(() => {
-    if (zoom) return { from: zoom.from, to: Math.min(zoom.to, nowTick) };
-    if (day) return { from: day.from, to: Math.min(day.to, nowTick) };
-    return { from: nowTick - DAY, to: nowTick };
-  }, [day, zoom, nowTick]);
+  //
+  // Memoised on the NUMBERS, not on `nowTick`. Keying the memo on the tick
+  // handed out a fresh object every minute even when the two values were
+  // identical, and everything downstream keys off this object: measured on a
+  // PAST day, whose window cannot change, one tick fired two event refetches
+  // and collapsed the film strip from 361 revealed items back to 121 — yanking
+  // you to the top of the list every 60 seconds.
+  const rawFrom = zoom ? zoom.from : day ? day.from : nowTick - DAY;
+  const rawTo = Math.min(zoom ? zoom.to : day ? day.to : nowTick, nowTick);
+  const win = useMemo(() => ({ from: rawFrom, to: rawTo }), [rawFrom, rawTo]);
+
+  // What the USER chose, as a stable key. Today's window legitimately advances
+  // with the clock, so `win` alone cannot distinguish "you picked a new window"
+  // from "a minute passed" — and resetting your scroll position or throwing
+  // away your search results because a minute passed is not something the clock
+  // gets to do.
+  const scopeKey = `${day?.from ?? "all"}|${zoom?.from ?? ""}-${zoom?.to ?? ""}|${cameraId ?? "all"}`;
 
   // ── data ──────────────────────────────────────────────────────────────────
   const [events, setEvents] = useState<CamEvent[]>([]);
@@ -96,9 +107,18 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
   }, []);
 
   const token = useRef(0);
+  // Which scope the on-screen data belongs to. Today's window advances with the
+  // clock, so this effect re-runs once a minute on the SAME scope — and showing
+  // the loading skeleton for that unmounted the film strip, taking its reveal
+  // state with it (measured: 146 items revealed collapsed to 121 mid-read).
+  // A background refresh swaps the data underneath; only a scope you actually
+  // chose is allowed to blank the page.
+  const loadedScope = useRef<string | null>(null);
   useEffect(() => {
     const mine = ++token.current;
-    setLoading(true);
+    const freshScope = loadedScope.current !== scopeKey;
+    loadedScope.current = scopeKey;
+    if (freshScope) setLoading(true);
     setError(null);
     const scope = cameraId == null ? {} : { camera_id: cameraId };
 
@@ -152,6 +172,9 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
         setError(errMsg(e));
         setLoading(false);
       });
+    // scopeKey is derived from these same inputs; it is read through a ref so
+    // it cannot itself trigger a fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [win, cameraId]);
 
   // ── appearance search (a refinement, never the entry) ─────────────────────
@@ -179,8 +202,9 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
       setSearching(false);
     }
   };
-  // A ranking of a window you have left is a ranking of nothing.
-  useEffect(() => setRanked(null), [win, cameraId]);
+  // A ranking of a window you have LEFT is a ranking of nothing — but a
+  // ranking of the window you are still looking at survives the clock.
+  useEffect(() => setRanked(null), [scopeKey]);
 
   // ── derived ───────────────────────────────────────────────────────────────
   const labelCounts = useMemo(() => {
@@ -199,7 +223,7 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
   // replace — the exact way this plan said the new surface could lose. Events
   // holds 200 cards; this holds fewer until you ask for more.
   const [gridShown, setGridShown] = useState(GRID_PAGE);
-  useEffect(() => setGridShown(GRID_PAGE), [win, cameraId, label, ranked]);
+  useEffect(() => setGridShown(GRID_PAGE), [scopeKey, label, ranked]);
   const gridEvents = shownEvents.slice(0, gridShown);
 
   const strip = useMemo(
@@ -390,7 +414,7 @@ export default function Find({ cameras }: { cameras: Camera[] }) {
               }
             />
           ) : view === "list" ? (
-            <FilmStrip items={strip} />
+            <FilmStrip items={strip} resetKey={`${scopeKey}|${label ?? ""}`} />
           ) : shownEvents.length === 0 ? (
             <EmptyState
               icon={<IconRadar />}

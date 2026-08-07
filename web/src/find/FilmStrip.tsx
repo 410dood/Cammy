@@ -18,10 +18,13 @@ const PAGE = 120;
  *  stretches are rendered, not skipped: knowing there is nothing between two
  *  detections is most of the value of scanning a day.
  */
-export default function FilmStrip({ items }: { items: StripItem[] }) {
+export default function FilmStrip({ items, resetKey }: { items: StripItem[]; resetKey?: string }) {
   const [shown, setShown] = useState(PAGE);
-  // A new window is a new strip — start at the top again.
-  useEffect(() => setShown(PAGE), [items]);
+  // Start at the top again when the USER picks a new window — never merely
+  // because `items` is a new array. buildStrip returns a fresh array on every
+  // refetch, and today's window refetches on the clock, so keying this on
+  // `items` collapsed the reveal under the reader once a minute.
+  useEffect(() => setShown(PAGE), [resetKey]);
   const visible = items.slice(0, shown);
 
   return (
