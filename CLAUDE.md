@@ -51,11 +51,24 @@ free · room for about 2 days"); audio sensitivity slider ends labeled; MQTT
 prefix/timing fields behind Advanced. `21ab921` Recordings' empty-day link
 now carries the picked day into `#/find?day=…` (was bare #/events); zone
 kinds renamed "Only watch inside this area" / "Never alert inside this area".
-**Remaining P3 (docs/10):** model downloads in ModelsCard + per-camera model
-select, Insights deep-links, FloorPlan pin-by-id + drag + FOV cones,
-package_zone drawable, import file picker, ground-calib units, hwaccel
-probe, webhook template live preview, SSO presets, Events zone filter
-promotion.
+**P3 continued (same day, second pass):** `59f468b` hwaccel — new
+`GET /api/hwaccel_probe` really test-encodes 3 frames per encoder (cached
+per process) and the re-encode dropdown disables what failed (this box:
+NVENC works, QSV/VideoToolbox disabled); webhook template gains clickable
+placeholder chips + a live preview against the LATEST REAL EVENT mirroring
+`render_template`'s escaping exactly; Insights day bars / busiest-day /
+top-object rows deep-link into `#/find?day=…` / `?label=…` (local-time
+dates); Events' zone filter promoted to the primary row. `34d2eb2`
+FloorPlan pins now carry `camera_id` as the stable key (rename-proof; old
+plans healed on load, repair persisted; CameraHotspots matches id-first)
++ drag-to-move in edit mode (small press still = remove). `07adce1`
+package drop spot drawn via `RectZoneDraw` (now shared in
+SizeFilterEditor.tsx) instead of curl-only. SSO card gains gateway presets
+(Authelia / Cloudflare Access / oauth2-proxy / Tailscale prefill both
+headers). **Remaining P3 (docs/10):** model downloads in ModelsCard +
+per-camera model select, import file picker, ground-calib units + known-
+length calibration, FOV cones on Map pins, "show my request headers" for
+SSO.
 
 ### Earlier: docs/10 P1 implementation — 7 of 10 P1 items shipped, 2026-08-07
 

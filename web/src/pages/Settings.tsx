@@ -3921,6 +3921,44 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             </div>
           </div>
           <div className="row">
+            {/* docs/10 P3: gateway presets — nobody should have to know their
+                proxy's exact header spelling by heart. */}
+            <label className="field" style={{ minWidth: 200 }}>
+              auth gateway
+              <select
+                value={
+                  s.auth_proxy_header === "Remote-User" && s.auth_proxy_role_header === "Remote-Groups"
+                    ? "authelia"
+                    : s.auth_proxy_header === "Cf-Access-Authenticated-User-Email"
+                      ? "cloudflare"
+                      : s.auth_proxy_header === "X-Auth-Request-User"
+                        ? "oauth2proxy"
+                        : s.auth_proxy_header === "Tailscale-User-Login"
+                          ? "tailscale"
+                          : s.auth_proxy_header.trim()
+                            ? "other"
+                            : ""
+                }
+                onChange={(e) => {
+                  const presets: Record<string, [string, string]> = {
+                    authelia: ["Remote-User", "Remote-Groups"],
+                    cloudflare: ["Cf-Access-Authenticated-User-Email", ""],
+                    oauth2proxy: ["X-Auth-Request-User", "X-Auth-Request-Groups"],
+                    tailscale: ["Tailscale-User-Login", ""],
+                  };
+                  const p = presets[e.target.value];
+                  if (p) set({ auth_proxy_header: p[0], auth_proxy_role_header: p[1] });
+                  else if (e.target.value === "") set({ auth_proxy_header: "", auth_proxy_role_header: "" });
+                }}
+              >
+                <option value="">— off —</option>
+                <option value="authelia">Authelia</option>
+                <option value="cloudflare">Cloudflare Access</option>
+                <option value="oauth2proxy">oauth2-proxy</option>
+                <option value="tailscale">Tailscale Serve</option>
+                <option value="other">Other (enter headers yourself)</option>
+              </select>
+            </label>
             <label className="field" style={{ flex: 1, minWidth: 220 }}>
               user header (blank = off)
               <input
