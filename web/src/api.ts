@@ -1036,6 +1036,12 @@ export const api = {
   patchAlarm: (id: number, patch: { enabled?: boolean; snooze_secs?: number }) =>
     req<void>(`/api/alarms/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteAlarm: (id: number) => req<void>(`/api/alarms/${id}`, { method: "DELETE" }),
+  /** Synchronous delivery test for a notification target ("Send a test"). */
+  notifyTest: (kind: "webhook" | "ntfy", target: string) =>
+    req<{ ok: boolean; error?: string }>("/api/notify/test", {
+      method: "POST",
+      body: JSON.stringify({ kind, target }),
+    }),
   /** Hybrid (CLIP + speech/caption) event search. `scope` narrows what the
    *  server ranks — without it the ranker spends its cap on the newest events
    *  globally, so a query about one camera or one day can come back empty while

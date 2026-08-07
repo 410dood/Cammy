@@ -122,6 +122,7 @@ pub fn router(state: AppState) -> Router {
                 .delete(delete_alarm_api),
         )
         .route("/api/alarms/{id}/test", axum::routing::post(test_alarm_api))
+        .route("/api/notify/test", axum::routing::post(notify_test_api))
         .route("/api/alarms/stats", get(alarm_stats_api))
         .route("/api/onvif/inspect", get(onvif_inspect))
         .route("/api/tokens", get(list_tokens).post(create_token))
@@ -4562,6 +4563,29 @@ async fn delete_alarm_api(
 }
 
 /// Fire a rule's actions once with a synthetic TEST event (UniFi Alarm Manager
+#[derive(serde::Deserialize)]
+struct NotifyTestReq {
+    kind: String,
+    target: String,
+}
+
+/// POST /api/notify/test — synchronous test delivery for the Settings page's
+/// webhook / health-push URL fields (docs/10 P2.3): prove the target works at
+/// configuration time instead of failing silently at the first real alert.
+/// Operator-tier like the per-rule alarm Test, which fires the same channels.
+async fn notify_test_api(Json(req): Json<NotifyTestReq>) -> Json<serde_json::Value> {
+    let target = req.target.trim().to_string();
+    if !(target.starts_with("http://") || target.starts_with("https://")) {
+        return Json(serde_json::json!({"ok": false, "error": "the target must be an http(s) URL"}));
+    }
+    let kind = req.kind.clone();
+    match tokio::task::spawn_blocking(move || crate::notify::test_target(&kind, &target)).await {
+        Ok(Ok(())) => Json(serde_json::json!({"ok": true})),
+        Ok(Err(e)) => Json(serde_json::json!({"ok": false, "error": e})),
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
 /// "test" button) — verifies the webhook URL / ntfy topic / SMTP end-to-end
 /// without waiting for a real detection. Bypasses schedule/mode/cooldown gates
 /// and the severity knob (a test the user just clicked must always deliver);

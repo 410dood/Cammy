@@ -266,6 +266,33 @@ impl Outbound {
     }
 }
 
+/// Synchronous test delivery for the Settings "Send a test" buttons (docs/10
+/// P2.3): a wrong URL should fail loudly at configuration time, not at the
+/// first real alarm. Returns the transport error verbatim. Blocking — call
+/// from a handler via `spawn_blocking`.
+pub fn test_target(kind: &str, target: &str) -> Result<(), String> {
+    match kind {
+        "webhook" => Outbound::Webhook {
+            url: target.to_string(),
+            body: r#"{"test":true,"source":"cammy","message":"Test delivery — your alarm webhooks will POST here."}"#.to_string(),
+            content_type: "application/json",
+        }
+        .deliver(),
+        "ntfy" => Outbound::Ntfy {
+            url: target.to_string(),
+            title: "Cammy test".to_string(),
+            tags: "white_check_mark",
+            priority: 0,
+            actions: None,
+            message: "Test push from Cammy — alerts to this topic will arrive like this."
+                .to_string(),
+            snapshot: None,
+        }
+        .deliver(),
+        _ => Err(format!("unknown test kind '{kind}'")),
+    }
+}
+
 /// Borrow an SmtpConfig from Settings when SMTP is configured (URL set), for the
 /// `smtp` field of an AlarmEvent at each dispatch site. `None` = email off.
 pub fn smtp_cfg(s: &crate::db::Settings) -> Option<SmtpConfig<'_>> {

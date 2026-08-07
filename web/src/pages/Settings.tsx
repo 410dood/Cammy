@@ -13,6 +13,37 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 type SchedRow = { days: number[]; hhmm: string; mode: ArmMode };
 
+/// "Send a test" beside a notification-target URL field (docs/10 P2.3): prove
+/// delivery works while configuring, instead of learning at the first missed
+/// alert. Reports the transport error verbatim on failure.
+function TestSendButton({ kind, target }: { kind: "webhook" | "ntfy"; target: string }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  return (
+    <span style={{ marginTop: 4 }}>
+      <button
+        type="button"
+        className="btn btn-ghost ev-act"
+        disabled={busy || !target.trim()}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            const r = await api.notifyTest(kind, target.trim());
+            if (r.ok) toast.success(kind === "ntfy" ? "Test push sent — check your phone" : "Test delivered — the endpoint answered");
+            else toast.error(`Test failed: ${r.error}`);
+          } catch (e) {
+            toast.error(`Test failed: ${errMsg(e)}`);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "Sending…" : "Send a test"}
+      </button>
+    </span>
+  );
+}
+
 /// The modes schedule is a transition list ("Away at 08:00 Mon–Fri…"), which
 /// forces the user to mentally simulate rows to answer "what mode am I in on
 /// Saturday at 3 PM?". The week grid paints the ANSWER; transitions are
@@ -3394,6 +3425,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.webhook_url}
                 onChange={(e) => set({ webhook_url: e.target.value })}
               />
+              <TestSendButton kind="webhook" target={s.webhook_url} />
             </label>
             <label className="field" style={{ flex: 1, minWidth: 320 }}>
               camera health push — ntfy topic URL (offline/online alerts; empty = off)
@@ -3403,6 +3435,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.health_ntfy_url ?? ""}
                 onChange={(e) => set({ health_ntfy_url: e.target.value })}
               />
+              <TestSendButton kind="ntfy" target={s.health_ntfy_url ?? ""} />
             </label>
             <label className="field" style={{ flex: 1, minWidth: 320 }}>
               public base URL (adds tap-through clip/snapshot links to pushes)
