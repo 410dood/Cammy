@@ -877,15 +877,19 @@ export default function Events({
   // Download the current filter set as a CSV (server streams it with the same
   // filters the list uses).
   const exportUrl = () => {
+    // Built from `filterArgs` — the same source the list and "Load older" use —
+    // so the download can't disagree with what's on screen. It used to read
+    // `fromTime`/`toTime` directly and so ignored the day picker entirely:
+    // with a day selected it exported ALL TIME under a label that said
+    // otherwise.
+    const f = filterArgs();
     const p = new URLSearchParams();
-    if (cameraId !== "") p.set("camera_id", String(cameraId));
-    if (label) p.set("label", label);
-    const after = fromTime ? Math.floor(new Date(fromTime).getTime() / 1000) : undefined;
-    const before = toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined;
-    if (after != null) p.set("after", String(after));
-    if (before != null) p.set("before", String(before));
-    if (flaggedOnly) p.set("flagged", "true");
-    if (tagFilter) p.set("tag", tagFilter);
+    if (f.camera_id != null) p.set("camera_id", String(f.camera_id));
+    if (f.label) p.set("label", f.label);
+    if (f.after != null) p.set("after", String(f.after));
+    if (f.before != null) p.set("before", String(f.before));
+    if (f.flagged) p.set("flagged", "true");
+    if (f.tag) p.set("tag", f.tag);
     return `/api/events/export.csv?${p}`;
   };
 
