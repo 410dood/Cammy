@@ -16,7 +16,27 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — UX phases 1-3 + two audit sweeps, 2026-08-07
 
-### Latest: UX phase 3 — Find, the surface that stops asking "which page?", 2026-08-07
+### Latest: tuning controls speak homeowner + the control-UX backlog, 2026-08-07
+
+Owner directive: config controls must be graphical/intuitive like Blue Iris &
+UniFi, "this is the stuff I really want to improve upon". Shipped `6ba188b`
+(web-only, live-validated on :8081): the Detection tuning modal's
+comma-separated object textbox → grouped chips (`ObjectPicker`), raw 0–1
+confidence/motion decimals → `InheritSlider` (outcome-labeled endpoints,
+global-vs-custom explicit), min/max size fractions → `SizeFilterEditor`, a
+Blue-Iris-style drag-two-boxes-on-the-live-frame editor with percent fields as
+the precise path. All three components are reusable and are the app-wide idiom
+now. Then a 3-agent sweep (competitor control-UX research + Settings/Alarms +
+monitor-surface audits) produced **`docs/10-control-ux-priorities-2026-08.md`**
+— the ranked backlog. Headline: the zone↔alarm free-text join silently produces
+rules that never fire (P1.1, fix first); the global Settings detection card
+still has the exact fields just fixed per-camera (P1.2, same components); then
+picker/preset swaps, discover-first camera wizard, ZoneEditor vertex editing,
+graphical child-height. Rule going forward: chips over free text, presets over
+raw numbers, draw-on-frame over fractions, Test buttons over silent saves,
+never "empty = off".
+
+### Earlier: UX phase 3 — Find, the surface that stops asking "which page?", 2026-08-07
 
 `2c1960e`, `1abb032`, `7b1eede`, `5dfe5b2`. **Web-only** (zero Rust touched),
 **256 core tests unchanged**, `cargo fmt` clean, tsc + vite green, and the web
