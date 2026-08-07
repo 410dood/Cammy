@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, DiscoveredCam } from "./api";
 import { useToast, useFocusTrap } from "./ui";
-import { IconShield, IconRadar, IconVideo, IconCheck, IconLock } from "./icons";
+import { IconShield, IconRadar, IconVideo, IconCheck, IconLock, IconBell } from "./icons";
 
 const SEEN_KEY = "zoomy-onboarded";
 
@@ -29,6 +29,11 @@ export default function Onboarding({
   const [saving, setSaving] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [found, setFound] = useState<DiscoveredCam[] | null>(null);
+  // Alerts step: an ntfy topic + the starter rule that makes this a security
+  // system, not just a recorder.
+  const [ntfy, setNtfy] = useState("");
+  const [testBusy, setTestBusy] = useState(false);
+  const [creatingRule, setCreatingRule] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   useFocusTrap(cardRef);
   useEffect(() => {
@@ -70,7 +75,7 @@ export default function Onboarding({
     <div className="modal-bg">
       <div ref={cardRef} tabIndex={-1} className="onb" role="dialog" aria-modal="true" aria-label="Welcome to Cammy">
         <div className="onb-steps">
-          {["Welcome", "Security", "Cameras"].map((s, i) => (
+          {["Welcome", "Security", "Alerts", "Cameras"].map((s, i) => (
             <span key={s} className={`onb-step ${i === step ? "active" : ""} ${i < step ? "done" : ""}`}>
               <span className="onb-dot">{i < step ? <IconCheck size={12} /> : i + 1}</span>
               {s}
@@ -127,6 +132,109 @@ export default function Onboarding({
         )}
 
         {step === 2 && (
+          <div className="onb-body">
+            <span className="onb-hero"><IconBell size={26} /></span>
+            <h2>Get alerts on your phone</h2>
+            <p className="muted">
+              Without this, Cammy records but never tells you anything. Install the free{" "}
+              <b>ntfy</b> app (App Store / Play Store), generate a private topic below, and
+              subscribe to it in the app — alerts arrive as instant pushes with a snapshot.
+            </p>
+            <div className="row" style={{ width: "100%" }}>
+              <input
+                type="text"
+                placeholder="https://ntfy.sh/your-private-topic"
+                value={ntfy}
+                onChange={(e) => setNtfy(e.target.value)}
+                style={{ flex: 1 }}
+                aria-label="ntfy topic URL"
+              />
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => {
+                  const b = new Uint8Array(8);
+                  crypto.getRandomValues(b);
+                  setNtfy(`https://ntfy.sh/cammy-${[...b].map((x) => x.toString(16).padStart(2, "0")).join("")}`);
+                }}
+              >
+                Generate a private topic
+              </button>
+            </div>
+            {ntfy.trim() !== "" && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={testBusy}
+                onClick={async () => {
+                  setTestBusy(true);
+                  try {
+                    const r = await api.notifyTest("ntfy", ntfy.trim());
+                    if (r.ok) toast.success("Test push sent — check the ntfy app on your phone");
+                    else toast.error(`Test failed: ${r.error}`);
+                  } catch (e) {
+                    toast.error(String(e));
+                  } finally {
+                    setTestBusy(false);
+                  }
+                }}
+              >
+                {testBusy ? "Sending…" : "Send a test push"}
+              </button>
+            )}
+            <div className="onb-actions">
+              <button className="btn btn-ghost" onClick={() => setStep(3)}>Skip</button>
+              <button
+                className="btn btn-primary"
+                disabled={creatingRule || ntfy.trim() === ""}
+                onClick={async () => {
+                  // A DVR becomes a security system here: one starter rule so
+                  // the first person a camera sees actually reaches the phone.
+                  setCreatingRule(true);
+                  try {
+                    const t = ntfy.trim();
+                    await api.addAlarm({
+                      name: "Person spotted (starter rule)",
+                      enabled: true,
+                      camera_id: null,
+                      label: "person",
+                      face_like: null,
+                      plate_like: null,
+                      gesture_like: null,
+                      transcript_like: null,
+                      face_unknown: false,
+                      zone_like: null,
+                      confirm_label: null,
+                      confirm_within_secs: null,
+                      vlm_prompt: null,
+                      min_score: 0,
+                      action: "ntfy",
+                      target: t,
+                      days: [],
+                      start_hhmm: null,
+                      end_hhmm: null,
+                      cooldown_secs: 120,
+                      priority: 0,
+                      snooze_until: 0,
+                      modes: [],
+                      actions: [{ kind: "ntfy", target: t, priority: 0 }],
+                    });
+                    toast.success("Starter rule created — any person on any camera pushes to your phone (2 min quiet gap; tune it on Alarms)");
+                    setStep(3);
+                  } catch (e) {
+                    toast.error(String(e));
+                  } finally {
+                    setCreatingRule(false);
+                  }
+                }}
+              >
+                {creatingRule ? "Creating…" : "Alert me about people"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 3 && (
           <div className="onb-body">
             <span className="onb-hero"><IconRadar size={26} /></span>
             <h2>Add your first camera</h2>
