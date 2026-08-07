@@ -2668,6 +2668,11 @@ img.identity-thumb { background: var(--n-0); }
   gap: 8px;
   margin-top: 10px;
 }
+/* .scrub-tile was written as a <button>; here each tile is a real link to a
+   moment (so middle-click and "open in new tab" work). Strip the anchor's
+   underline/colour so it reads as the same tile it does on Recordings. */
+.find-grid a.scrub-tile { color: inherit; text-decoration: none; }
+.find-grid a.scrub-tile .scrub-cap { text-decoration: none; }
 
 /* The film strip: one ordered list of a window, detections interleaved with
    the quiet stretches between them. A row is always a link to a moment. */
