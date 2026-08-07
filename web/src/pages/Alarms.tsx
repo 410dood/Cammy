@@ -128,6 +128,17 @@ export default function Alarms({
   const [label, setLabel] = useState("");
   const [faceLike, setFaceLike] = useState("");
   const [plateLike, setPlateLike] = useState("");
+  // Face/plate conditions are pickers of people and plates the app already
+  // knows (People page enrollments, plate library) — free text stays as an
+  // explicit "match text…" mode for partials.
+  const [faceCustomMode, setFaceCustomMode] = useState(false);
+  const [plateCustomMode, setPlateCustomMode] = useState(false);
+  const [enrolledFaces, setEnrolledFaces] = useState<string[]>([]);
+  const [knownPlates, setKnownPlates] = useState<{ plate: string; name: string }[]>([]);
+  useEffect(() => {
+    api.faces().then((f) => setEnrolledFaces(f.enrolled.map((e) => e.name))).catch(() => {});
+    api.plates().then((p) => setKnownPlates(p.map(({ plate, name }) => ({ plate, name })))).catch(() => {});
+  }, []);
   const [gestureLike, setGestureLike] = useState("");
   const [transcriptLike, setTranscriptLike] = useState("");
   const [zoneLike, setZoneLike] = useState("");
@@ -398,6 +409,8 @@ export default function Alarms({
     setTranscriptLike("");
     setZoneLike("");
     setZoneCustomMode(false);
+    setFaceCustomMode(false);
+    setPlateCustomMode(false);
     setConfirmLabel("");
     setConfirmWithin(10);
     setVlmPrompt("");
@@ -914,18 +927,82 @@ export default function Alarms({
               )}
             </label>
             <label className="field">
-              face contains (optional)
-              <input
-                type="text"
-                value={faceLike}
-                onChange={(e) => setFaceLike(e.target.value)}
-                placeholder="any face name"
-                disabled={faceUnknown}
-              />
+              person recognized as (optional)
+              {(() => {
+                const custom = faceCustomMode || (faceLike !== "" && !enrolledFaces.includes(faceLike));
+                return (
+                  <>
+                    <select
+                      disabled={faceUnknown}
+                      value={custom ? "__custom" : faceLike}
+                      onChange={(e) => {
+                        if (e.target.value === "__custom") setFaceCustomMode(true);
+                        else {
+                          setFaceCustomMode(false);
+                          setFaceLike(e.target.value);
+                        }
+                      }}
+                    >
+                      <option value="">anyone</option>
+                      {enrolledFaces.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                      <option value="__custom">match text…</option>
+                    </select>
+                    {custom && !faceUnknown && (
+                      <input
+                        type="text"
+                        value={faceLike}
+                        onChange={(e) => setFaceLike(e.target.value)}
+                        placeholder="matches face names containing this"
+                        aria-label="Face name text match"
+                      />
+                    )}
+                    {enrolledFaces.length === 0 && !custom && !faceUnknown && (
+                      <small className="muted">No people enrolled yet — add them on the People page.</small>
+                    )}
+                  </>
+                );
+              })()}
             </label>
             <label className="field">
-              plate contains (optional)
-              <input type="text" value={plateLike} onChange={(e) => setPlateLike(e.target.value)} placeholder="any plate" />
+              vehicle plate (optional)
+              {(() => {
+                const custom = plateCustomMode || (plateLike !== "" && !knownPlates.some((p) => p.plate === plateLike));
+                return (
+                  <>
+                    <select
+                      value={custom ? "__custom" : plateLike}
+                      onChange={(e) => {
+                        if (e.target.value === "__custom") setPlateCustomMode(true);
+                        else {
+                          setPlateCustomMode(false);
+                          setPlateLike(e.target.value);
+                        }
+                      }}
+                    >
+                      <option value="">any plate</option>
+                      {knownPlates.map((p) => (
+                        <option key={p.plate} value={p.plate}>
+                          {p.name ? `${p.name} (${p.plate})` : p.plate}
+                        </option>
+                      ))}
+                      <option value="__custom">partial plate…</option>
+                    </select>
+                    {custom && (
+                      <input
+                        type="text"
+                        value={plateLike}
+                        onChange={(e) => setPlateLike(e.target.value.toUpperCase())}
+                        placeholder="matches plates containing this"
+                        aria-label="Plate text match"
+                      />
+                    )}
+                  </>
+                );
+              })()}
             </label>
           </div>
           <details
