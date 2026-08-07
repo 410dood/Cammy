@@ -14,9 +14,72 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — UX phases 1-2 + two audit sweeps, 2026-08-06
+## Current status: v0.4 — UX phases 1-3 + two audit sweeps, 2026-08-07
 
-### Latest: UX phase 2 — the search now answers the question you asked, 2026-08-06
+### Latest: UX phase 3 — Find, the surface that stops asking "which page?", 2026-08-07
+
+`2c1960e`, `1abb032`, `7b1eede`, `5dfe5b2`. **Web-only** (zero Rust touched),
+**256 core tests unchanged**, `cargo fmt` clean, tsc + vite green, and the web
+tree now has **its first unit tests** — 14, on plain `node --test`.
+
+`#/find` ships **beside** the living pages. Nothing deleted; `#/events` and
+`#/recordings` are untouched and still primary. Revert = delete one nav entry.
+
+**Job 3 measured end to end** ("front-door car, some day last week"): open the
+calendar → click the darkest day (7/10, 1026 detections) → click front-door →
+click "car 18". **4 interactions, 0 characters typed, one page**, vs 7–12 across
+two pages with a hard dead end. Clicking a result lands on `#/live/3/<ts>` with
+CameraDetail open, playing, playhead on its timeline.
+
+- **The unbinned ticks were a correctness bug, not a perf ceiling** (`1abb032`).
+  Measured on 07/10: the pool3 lane put **821 ticks into 112 distinct pixel
+  columns, 38 stacked on ONE pixel**. 86% painted invisibly, and the tooltip you
+  got was whichever was last in DOM order — no hint the other 37 existed.
+  `binTicks` caps a lane at 400 drawn positions; a 1-event bin keeps its exact
+  ts/class/tooltip (quiet lanes unchanged), a multi bin **says its count**.
+  Page went **1000 → 145 ticks, 1142 → 287 nodes, worst stack 38 → 2**.
+  Click-to-snap still searches the RAW events, so binning changed only what is
+  drawn. `ActivityStrip` gained an optional `onPick` — **without it the bars stay
+  inert spans in a `role="img"`**, verified live, so Recordings/CameraDetail are
+  byte-identical.
+- **`buildStrip` + 14 tests** (`7b1eede`). Interleaves detections with the QUIET
+  STRETCHES between them, each carrying a real keyframe — scanning quiet time is
+  most of what finding a clip is, and it's the one thing neither old page does.
+  **Every test was checked against the bug it guards** by breaking the code 13
+  ways; the sweep **found 3 vacuous tests on the first pass** (one compared item
+  kinds that duplicates don't change; one asserted "no two headings in a row",
+  which a heading before *every* item also satisfies; one used 60s segments where
+  the guard it tested is unreachable). `npm test` is wired into CI.
+- **`gap` vs `unknown` — the load-bearing honesty split.** `/api/recordings`
+  bounds only the top and caps at 1000 rows, and **1000 rows is ~2 hours** of
+  five-camera footage here (measured by paging: one page spanned 06:39–08:39).
+  A day cannot be fetched in one request, so drawing the unfetched part as "no
+  footage" would claim a fully-recorded day held no video. Live, the strip reads
+  *"5:04 AM–7:14 AM not checked"*.
+- **The under-fill line is not hypothetical.** With a temp camera-scoped viewer
+  (created for the test, deleted after): front-door really had **129** detections
+  on 07/10, the viewer's request returned **107**, and `length === limit` was
+  **false** — nothing in the response revealed the truncation. Find says so, and
+  **the advice it gives was verified to work**: narrowing to 4-hour slices
+  recovered all 129. The frontend can't see `allowed_cameras`, so the trigger is
+  `me.named && role !== admin` — a superset, deliberately over-warning.
+- **Two bugs I created and caught by looking, not reading:** the first cut
+  bounded the lanes then rendered all 1026 detections as tiles (4738 nodes) —
+  the same unbounded-list problem one band lower; bounded to 150 + "Show more"
+  (1235 nodes, re-render 149–259 ms → **75–100 ms**). And a day window ending at
+  midnight made the strip report the rest of today as *"No footage · 14h 50m ·
+  nothing was recording"* — a claim about time that hasn't happened yet. Windows
+  now clamp to now.
+- **Pre-existing mobile bug fixed for both pages:** at 390 px the cross-timeline
+  axis collided **9 of 10** labels on Find and **5 of 6 on Recordings today**.
+  Now 0 collisions on both; desktop untouched.
+
+**Next: Phase 4 is GATED and the gate is real** — if Find has not become how the
+owner actually reaches footage, Phases 1–3 stand alone and the nav must not
+collapse. Nav is temporarily 13 entries; Find took Recordings' mobile tab slot
+(Recordings stays in More).
+
+### Earlier: UX phase 2 — the search now answers the question you asked, 2026-08-06
 
 `a5d2989` (+ `22d01b2`), **256 core tests**, clippy -D + fmt clean, tsc+vite
 green, release-rebuilt and live-validated on :8081. This was the only backend
@@ -61,7 +124,7 @@ offers "Search all time, all cameras" in one click.
 **Next: Phase 3** (a unified Find surface) — not started, and Phases 4-5 stay
 gated on Find actually becoming how footage gets reached.
 
-### Latest: UX phase 1 — navigation rebuilt around the three real jobs, 2026-08-06
+### Earlier: UX phase 1 — navigation rebuilt around the three real jobs, 2026-08-06
 
 Owner's own words: *"still not super intuitive — navigation, click paths."* Four
 prior UX passes had already fixed a11y, states, forms, mobile and tokens, so the

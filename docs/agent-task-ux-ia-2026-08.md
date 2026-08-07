@@ -1,9 +1,46 @@
-> **Status note (added when this plan was filed, 2026-08-06; updated same day).**
+> **Status note (added when this plan was filed, 2026-08-06; updated 2026-08-07).**
 > Phase 1 is SHIPPED — commits `6fb270c`, `e0fca11`, `3ea9825`, `ef0d7a4`,
 > `3107f00`, `e803f78`. **Phase 2 is SHIPPED — `a5d2989`** (+ `22d01b2`, a CSV
-> export bug found while validating it). Phase 3 is the next task and is NOT
-> started. Phases 3-5 are gated: do not collapse the nav until a unified
-> Find surface has actually become how footage gets reached.
+> export bug found while validating it). **Phase 3 is SHIPPED, 2026-08-07 —
+> `2c1960e`, `1abb032`, `7b1eede`, `5dfe5b2`.** Phases 4-5 remain GATED: do not
+> collapse the nav until Find has actually become how footage gets reached.
+>
+> **Phase 3, what actually happened.** Built as specified — `#/find` beside the
+> living pages, nothing deleted, `recordings/` lifted, `buildStrip` unit-tested,
+> ticks binned. Five things the plan did not anticipate:
+>
+> 1. **The unbinned ticks are a correctness bug, not just a perf ceiling.**
+>    Measured on 07/10: the pool3 lane put 821 ticks into 112 distinct pixel
+>    columns, **38 stacked on one pixel**. The tooltip you got was whichever tick
+>    was last in DOM order, with no hint the other 37 existed. Binning took the
+>    page 1000 → 145 drawn ticks and made each bin *state its count*.
+> 2. **`gap` had to be split into `gap` and `unknown`.** `/api/recordings` bounds
+>    only the top and caps at 1000 rows, and 1000 rows is **~2 hours** of
+>    five-camera footage here (measured by paging: one page spanned 06:39–08:39).
+>    A day cannot be fetched in one request, so drawing the unfetched part as
+>    "no footage" would claim a fully-recorded day held no video.
+> 3. **The under-fill line is not hypothetical.** With a camera-scoped viewer:
+>    front-door really had **129** detections on 07/10, the viewer's request
+>    returned **107**, and `results.length === limit` was **false** — nothing in
+>    the response revealed the truncation. The plan's trigger list was right to
+>    include "the principal is camera-scoped" as its own condition. The frontend
+>    can't see `allowed_cameras`, so the check is `me.named && role !== admin` —
+>    a superset, deliberately over-warning. The advice it gives was verified to
+>    work: narrowing to 4-hour slices recovered all 129.
+> 4. **Find can rebuild the very problem it just fixed, one band lower.** The
+>    first cut bounded the lanes and then rendered all 1026 detections as tiles
+>    (4738 DOM nodes). Bounded to 150 + "Show more": 1235 nodes, re-render
+>    149–259 ms → 75–100 ms.
+> 5. **A day window must clamp to now.** Today's window ends at midnight, so the
+>    strip reported the rest of today as "No footage · 14h 50m · nothing was
+>    recording" — a claim about time that has not happened yet.
+>
+> Also fixed in passing, pre-existing and shared: at 390 px the cross-timeline's
+> axis collided **9 of 10** labels on Find and **5 of 6 on Recordings today**.
+>
+> **Before starting Phase 4, read its gate literally.** It is not a schedule
+> item. If Find has not become how the owner actually reaches footage, Phases
+> 1–3 stand on their own and the collapse should not follow.
 >
 > Phase 2 as built matches this plan with two additions worth knowing:
 > `search_corpus` takes a `db::SearchScope` struct rather than four positional
