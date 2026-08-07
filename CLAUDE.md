@@ -39,10 +39,19 @@ transitions (list view kept for exact minutes); + P1.10 "Test this
 description" on AI-watch rules via the existing scoped `/api/search`
 (24 h thumbnails; scores ≥1 are labeled "caption match", not "203%").
 **P1 COMPLETE except the VLM yes/no-question test button (needs a live
-vision model to test against — do with P2's provider-picker work). Next: P2
-— honest capability gating everywhere, live motion tuner, per-kind alert
-actions + Send-a-test, provider pickers (SMTP/S3/Ollama), Family wizard,
-outcome-named notification tiers.**
+vision model to test against — do with P2's provider-picker work).**
+
+**P2 progress (same day):** `04fd197` P2.1 honest gating (CLIP zone-state
+refuses to enable without models, child rules warn + jump to the height
+marker, audio toggle admits a missing YAMNet); `eae9c9e` P2.6+P2.9
+outcome-named severity tiers per severity.rs, raw-token parentheticals
+dropped, alarm actions homeowner-first (ntfy default, priorities in words);
+`37202bb` P2.3 `POST /api/notify/test` + "Send a test" beside the Settings
+webhook/health-ntfy URLs (256 tests, NVR release-restarted — **must start
+with `--port 8081`; a python process owns 8080**); `6aa7655` P2.7
+onboarding Alerts step (generate ntfy topic, test push, starter person
+rule). **Remaining P2: P2.2 live motion tuner, P2.4 provider pickers
+(SMTP/S3/Ollama + VLM test), P2.5 Family wizard.**
 
 ### Earlier: tuning controls speak homeowner + the control-UX backlog, 2026-08-07
 
