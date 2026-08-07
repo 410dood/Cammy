@@ -15,6 +15,7 @@ const Alarms = lazy(() => import("./pages/Alarms"));
 const Signals = lazy(() => import("./pages/Signals"));
 const Faces = lazy(() => import("./pages/Faces"));
 const Recordings = lazy(() => import("./pages/Recordings"));
+const Find = lazy(() => import("./pages/Find"));
 const FloorPlanPage = lazy(() => import("./pages/FloorPlan"));
 const Family = lazy(() => import("./pages/Family"));
 const Insights = lazy(() => import("./pages/Insights"));
@@ -46,7 +47,7 @@ import {
 import CommandPalette, { Command } from "./CommandPalette";
 import { getTheme, toggleTheme, Theme } from "./theme";
 
-const PAGES = ["Home", "Live", "Events", "Family", "Signals", "Recordings", "People", "Insights", "Alarms", "Cameras", "Map", "Settings"] as const;
+const PAGES = ["Home", "Live", "Find", "Events", "Family", "Signals", "Recordings", "People", "Insights", "Alarms", "Cameras", "Map", "Settings"] as const;
 type Page = (typeof PAGES)[number];
 
 // Display labels: the route key stays terse (and drives the Page union), but the
@@ -55,6 +56,7 @@ type Page = (typeof PAGES)[number];
 const LABELS: Record<Page, string> = {
   Home: "Home",
   Live: "Live",
+  Find: "Find",
   Events: "Events",
   Family: "Family",
   Signals: "Hand signals",
@@ -69,14 +71,14 @@ const LABELS: Record<Page, string> = {
 
 // On mobile the bottom tab bar can't hold 11 tabs, so only these four show as
 // tabs; the rest live behind a "More" overflow sheet. (Desktop shows them all.)
-const MOBILE_PRIMARY: readonly Page[] = ["Home", "Live", "Events", "Recordings"];
+const MOBILE_PRIMARY: readonly Page[] = ["Home", "Live", "Find", "Events"];
 
 // Desktop rail grouping — three labeled sections with hairline dividers so the
 // 11 tabs read as an organized hierarchy rather than a flat wall. The "Monitor"
 // group is exactly MOBILE_PRIMARY (same order), so on mobile (where the labels +
 // dividers are hidden) the bottom tab bar is unchanged.
 const NAV_GROUPS: { label: string; pages: readonly Page[] }[] = [
-  { label: "Monitor", pages: ["Home", "Live", "Events", "Recordings"] },
+  { label: "Monitor", pages: ["Home", "Live", "Find", "Events", "Recordings"] },
   { label: "Detections", pages: ["Family", "Signals", "People", "Insights"] },
   { label: "Configure", pages: ["Alarms", "Cameras", "Map", "Settings"] },
 ];
@@ -84,6 +86,7 @@ const NAV_GROUPS: { label: string; pages: readonly Page[] }[] = [
 const ICONS: Record<Page, (p: IconProps) => JSX.Element> = {
   Home: IconHome,
   Live: IconLive,
+  Find: IconSearch,
   Events: IconRadar,
   Family: IconShield,
   Signals: IconHand,
@@ -613,6 +616,7 @@ export default function App() {
           )}
           {page === "Family" && <Family cameras={cameras} onGo={go} />}
           {page === "Signals" && <Signals cameras={cameras} />}
+          {page === "Find" && <Find cameras={cameras} />}
           {page === "Recordings" && <Recordings cameras={cameras} />}
           {page === "People" && <Faces onError={setError} />}
           {page === "Insights" && <Insights onError={setError} />}

@@ -2657,3 +2657,110 @@ img.identity-thumb { background: var(--n-0); }
   }
   .daycal-grid { justify-content: center; }
 }
+
+/* ── Find ─────────────────────────────────────────────────────────────────
+   The unified time-first surface. Three bands: when/where, the timeline
+   index, then the content. Tokens only — no new colors, no new sizes. */
+.find-controls { flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+.find-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* The film strip: one ordered list of a window, detections interleaved with
+   the quiet stretches between them. A row is always a link to a moment. */
+.film { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.film-hour {
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 14px 0 2px;
+  font-weight: 600;
+}
+.film-hour:first-child { margin-top: 2px; }
+.film-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border-radius: var(--radius-md, 10px);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--dur-fast, 120ms) ease, border-color var(--dur-fast, 120ms) ease;
+}
+.film-row:hover { background: var(--surface-3); border-color: var(--accent); }
+.film-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* A quiet stretch is real footage but not an event — quieter chrome so a page
+   of them never out-shouts the detections between them. */
+.film-quiet { background: transparent; }
+.film-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 108px;
+  height: 61px;
+  border-radius: var(--radius-sm, 6px);
+  overflow: hidden;
+  background: var(--surface-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.film-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.film-noimg { font-size: 0.68rem; color: var(--text-muted); }
+.film-count {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  background: var(--surface-1);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+.film-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.film-meta b { display: flex; align-items: center; gap: 6px; font-size: 0.92rem; }
+.film-meta .muted { font-size: 0.78rem; }
+.film-cap { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.film-side { flex: 0 0 auto; font-size: 0.76rem; opacity: 0; }
+.film-row:hover .film-side, .film-row:focus-visible .film-side { opacity: 1; }
+/* Gaps and unloaded stretches are BANDS, not tiles: they aren't places you can
+   go, and drawing them as clickable rows would promise footage that isn't
+   there. The two read differently on purpose — "nothing recorded" and "we
+   haven't looked" are completely different claims. */
+.film-band {
+  padding: 7px 10px;
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.78rem;
+  border: 1px dashed var(--border);
+}
+.film-gap { color: var(--text-muted); }
+.film-unknown { color: var(--text-muted); border-style: dotted; background: var(--surface-2); }
+.film-more { align-self: center; margin-top: 8px; }
+
+@media (max-width: 768px) {
+  /* Placed after the base rules above: a media query adds no specificity, so
+     the later source wins (the documented gotcha from the mobile pass). */
+  .film-thumb { width: 84px; height: 47px; }
+  .film-side { display: none; }
+  .film-meta b { font-size: 0.86rem; }
+  .find-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+  .act-strip.pickable .act-col { min-height: 40px; }
+
+  /* The cross-timeline's clock cannot carry an hourly tick on a phone. Measured
+     at 390px: the axis drew ten labels into ~270px and 9 of the 10 overlapped
+     into an unreadable smear — and this is not new, Recordings collided 5 of 6
+     there today. Promoting these lanes to Find's primary navigator makes it
+     worth fixing for both. Every other label, smaller, with room reclaimed from
+     the name gutter: the lanes are what you aim at, the axis only has to
+     orient you. */
+  .xtl-axis-label { font-size: 0.58rem; }
+  .xtl-axis-label:nth-child(even) { display: none; }
+  .xtl-name { width: 74px; min-width: 74px; }
+  .xtl-axis { margin-left: 74px; }
+}
