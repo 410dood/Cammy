@@ -5649,7 +5649,17 @@ async fn stats(
         }
     }
     let write_per_day = write_per_day.round() as u64;
-    let days_until_full = (write_per_day > 0).then(|| disk_free as f64 / write_per_day as f64);
+    // The disk only fills if retention would let footage grow past the space
+    // available. With a byte cap set below that, usage plateaus at the cap and
+    // the disk NEVER fills — projecting a fill date anyway ("~8 days until
+    // full") is the same class of falsehood as claiming 7 days of history when
+    // the cap holds 6 hours. `None` here means "it won't".
+    let headroom_needed = (settings.retention_gb as u64)
+        .saturating_mul(1_000_000_000)
+        .saturating_sub(total_bytes);
+    let can_fill = settings.retention_gb == 0 || headroom_needed > disk_free;
+    let days_until_full =
+        (write_per_day > 0 && can_fill).then(|| disk_free as f64 / write_per_day as f64);
     let est_full_ts = days_until_full.map(|d| {
         // Clamp to ~100 years and saturate: a near-zero write rate would
         // otherwise project past i64::MAX and overflow (panic in debug/tests).

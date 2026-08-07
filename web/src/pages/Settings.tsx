@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtSpan, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout, usePolling } from "../ui";
 import { LicensePane } from "../License";
 import { prettyGesture, prettyLabel } from "../labels";
@@ -9,6 +9,48 @@ import {
 } from "../icons";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/// Measured write rate, fetched once per session (several retention fields want
+/// the same number). `null` = not measurable yet on a fresh install.
+let writeRateCache: Promise<number | null> | null = null;
+function writeRate(): Promise<number | null> {
+  if (!writeRateCache) {
+    writeRateCache = api
+      .stats()
+      .then((st) => (st.write_bytes_per_day > 0 ? st.write_bytes_per_day : null))
+      .catch(() => null);
+  }
+  return writeRateCache;
+}
+
+/// Say what a retention setting actually BUYS, in time.
+///
+/// "keep at most (GB)" is meaningless on its own — 20 GB sounds generous and is
+/// six hours on a 4K install, which is exactly how this NVR ended up claiming a
+/// week of history it did not have. Showing the consequence beside the number,
+/// and which of the two limits binds, turns a guess into a decision.
+function RetentionHint({ days, gb }: { days: number; gb: number }) {
+  const [rate, setRate] = useState<number | null>(null);
+  useEffect(() => {
+    writeRate().then(setRate);
+  }, []);
+  if (!rate) return null;
+  const byDisk = gb > 0 ? (gb * 1e9) / rate : Infinity;
+  const byAge = days > 0 ? days : Infinity;
+  const binds = byDisk < byAge ? "disk" : "age";
+  const effective = Math.min(byDisk, byAge);
+  if (!Number.isFinite(effective)) return null;
+  return (
+    <span className="feat-help">
+      At your current {fmtBytes(rate)}/day this keeps <b>{fmtSpan(effective)}</b> of footage
+      {binds === "disk"
+        ? ` — the GB cap runs out first, so the day limit never applies. ${
+            days > 0 ? `Matching ${days} days would need ~${Math.round((days * rate) / 1e9)} GB.` : ""
+          }`
+        : " — the day limit binds first, so there is disk headroom to spare."}
+    </span>
+  );
+}
 
 const AUDIT_META: Record<string, { label: string; Icon: (p: IconProps) => JSX.Element; cls: string }> = {
   login_success: { label: "login", Icon: IconLogIn, cls: "ok" },
@@ -3349,6 +3391,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 value={s.retention_gb}
                 onChange={(e) => set({ retention_gb: num(e.target.value, s.retention_gb) })}
               />
+              <RetentionHint days={s.retention_days ?? 0} gb={s.retention_gb ?? 0} />
             </label>
             <label className="field">
               reduce quality after (days, 0 = off)
