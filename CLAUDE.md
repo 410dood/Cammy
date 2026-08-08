@@ -14,9 +14,84 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — docs/11 Phase 1 (the alert-losing cluster) shipped, 2026-08-07
+## Current status: v0.4 — docs/11 P0 COMPLETE (alert-losing + watchdog), 2026-08-07
 
-### Latest: docs/11 P0.1–P0.6 — "armed but silent" closed, 2026-08-07
+### Latest: docs/11 Phase 2 — the watchdog cluster, 2026-08-07
+
+`4d6e06b`, `3310177`, `24478f8`. **273 core tests** (was 257 at the start of the
+day), clippy -D + fmt clean, tsc + vite green, every state driven for real on
+:8081 and owner state restored (settings diff NONE after each).
+
+**Nobody was watching the watchers** (P0.7). Eighteen worker threads had no
+liveness check, every join discarded its panic payload, and `/api/health` was a
+literal `{"ok":true}` with no `State` — so a poisoned lock could end detection or
+recording for the life of the process while every surface stayed green. Now a
+`health::WorkerBoard` (`is_finished()` is an atomic load, so the supervisor only
+BORROWS through the mutex; teardown `mem::take`s ownership back) is supervised by
+the health worker — chosen because it already ticks every 15 s, already owns a
+Db, and already loops on `while !shutdown`, which is what stops a clean teardown
+from emitting 18 "worker stopped" notifications. `zoomy_worker_alive{worker=…}`
+is rendered by the axum runtime, independent of every worker thread, so it stays
+observable when the dead worker is `health` itself. **Two real bugs fell out:**
+the desktop app's `wait_for_health` treated a 503 as "not up" (`.call().is_ok()`),
+so a degraded engine would have shown a ~20 s blank window exactly when the owner
+most wants it open; and `transcribe`/`audio` `return`ed when ffmpeg was missing,
+which under supervision would have raised a false "part of Cammy stopped running"
+on any ordinary no-ffmpeg install — they now park and re-check every 30 s, which
+also fixes the latent "installing ffmpeg later revives nothing" bug. Plus 20
+`.lock().expect("… poisoned")` sites hardened to `PoisonError::into_inner`
+(**db.rs's WRITER deliberately left alone** — a poisoned writer can mean a
+half-applied multi-statement sequence, and swallowing that would paper over real
+corruption).
+
+**Three subsystems reported their configuration, not their behaviour** (P0.9 +
+P2 rows). `mqtt.rs` logged "mqtt connected" unconditionally right after
+`Client::new` — which performs NO network I/O — so it said the same thing whether
+the broker was up, the password was wrong, or the host didn't resolve; the event
+loop's `Ok(_)` arm was discarding the two packets that answer the question.
+`Packet::ConnAck` now drives `connected`, `Packet::PubAck` stamps
+`last_publish_ts`. go2rtc's exit status was being matched away by `try_wait` —
+kept now as `Go2RtcState {running, restarts, last_error}`, so one dead process is
+one banner instead of N identical tile errors. HomeKit published `{serving,
+last_error}` so a crash-looping bridge stops showing a pairing PIN. All three feed
+`GET /api/system` — deliberately a SIBLING of `/api/status`, because that response
+is a bare `camera-id → status` map whose consumers iterate its values, so a
+top-level key there would be read as a camera.
+
+**`/api/health` can fail now**: 503 when a worker has stopped, the DB is
+unreadable, go2rtc is down, or a CONFIGURED broker is disconnected. The body is
+names and booleans only — no error strings, camera names or paths — because the
+endpoint is unauthenticated. DEPLOYMENT.md documents the semantics, including
+that a restart-on-failure supervisor will now act on a degraded engine.
+
+**Settings gained a sixth tab, "System health"** (P3.1): one verdict line first
+(the failure it catches is a system quietly broken while every surface looks
+fine, so "everything is working" has to be a claim, not an absence of red), six
+subsystem rows, an MQTT **Send a test** (P1.4 — publishes a retained message and
+waits for the broker to ACK), and the per-camera inference-ms / frame-age /
+accelerator table that was previously curl-only.
+
+**Models are proved, not asserted** (P0.8). `Path::exists` drew a green tick over
+truncated downloads, `.part` files renamed by a crash, and HTML 404 pages saved
+under a model's name. New `models.rs` really opens each file — ONNX session build
+/ JSON parse / ggml magic / readable text — cached on path+size+mtime+accelerator
+in `spawn_blocking`. **Live: a 200 KB truncation of the 12.9 MB yolov8n reported
+`loadable:false, "Protobuf parsing failed"` where it used to say "installed".**
+Also caught: `audio` and `lpr` checked for a sidecar they never NAMED. Every web
+gate moved from `.present` to `capabilityUsable()`.
+
+Live evidence for the rest: a broker at a closed port → `/api/health` **503
+`{"degraded":["mqtt"]}`** + "Home automation link is down"; at a real (throwaway
+amqtt) broker → `connected:true` from an actual CONNACK, `last_publish_ts` from an
+actual PubAck, 200, "…is back", and the Test button's toast reading "The broker
+accepted a retained test message on zoomy/test."
+
+**GOTCHA worth remembering:** `cargo fmt` collapses a Rust `\`-continued string
+literal onto one line and BAKES IN the indentation whitespace — that shipped
+"Home                     Assistant" into a user-facing notification for one
+build. Use `concat!` for long prose.
+
+### Earlier: docs/11 P0.1–P0.6 — "armed but silent" closed, 2026-08-07
 
 Five commits (`77dc3c6`, `7c04282`, `8a37755`, `50d6d1b`, `a435fa1`), **267 core
 tests** (was 257), clippy -D + fmt clean, tsc + vite green, release-rebuilt and
@@ -97,12 +172,7 @@ place. **Use it for every further degradation surface** rather than re-deriving.
   unwrapped a `None`. Nothing restarts that thread: captions and every deferred
   VLM alarm fire would have stopped silently until restart.
 
-**Next: Phase 2** — the watchdog cluster (P0.7 worker liveness, P0.8 capabilities
-loadability, P0.9 MQTT state, + the P2 trust rows: go2rtc/HomeKit state, a real
-`/api/health`) feeding a System health pane (P3.1). Recon is done; note
-`genai.rs`'s panic was one of several real ones — `smart.rs:89/102` hold a mutex
-across ONNX inference (poisons permanently) and `go2rtc.rs:230`'s child-mutex
-expect would silently end go2rtc supervision.
+**Phase 2 shipped the same day** (see the top of this file).
 
 **Known, not caused by this work:** the generated `data/go2rtc.yaml` contained a
 newly-enabled camera that the RUNNING go2rtc did not have in `/api/streams`

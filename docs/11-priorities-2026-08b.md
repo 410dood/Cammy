@@ -20,9 +20,10 @@ degradation costs.
 
 ## P0 — silent failures that lose alerts or footage (fix first)
 
-> **STATUS 2026-08-07: P0.1–P0.6 are SHIPPED** (`77dc3c6`, `7c04282`, `8a37755`,
-> `50d6d1b`, `a435fa1`), each live-validated on :8081 with owner state
-> snapshotted and restored. P0.7–P0.9 are the Phase 2 watchdog cluster.
+> **STATUS 2026-08-07: ALL of P0 is SHIPPED** — P0.1–P0.6 (`77dc3c6`,
+> `7c04282`, `8a37755`, `50d6d1b`, `a435fa1`) and the P0.7–P0.9 watchdog cluster
+> (`4d6e06b`, `3310177`, `24478f8`), each live-validated on :8081 with owner
+> state snapshotted and restored (diff NONE every time).
 >
 > Three things the audit did not name, found while verifying:
 > - A lost `VlmGate` job is **unrecoverable**, not merely late: `notify::ready`
@@ -91,19 +92,43 @@ degradation costs.
    using only `vlm_prompt` rules never learns their Ollama is down — every
    "AI-verified" rule fires unverified. Fix: run `err_transition` on the
    VlmGate path; stamp fired notifications "verification unavailable".
-7. **19 worker threads, zero liveness monitoring** (`lib.rs:168-360`; joins
+7. ~~**19 worker threads, zero liveness monitoring**~~ **DONE `4d6e06b`** —
+   `health::WorkerBoard` shared between the health worker (which supervises it,
+   inheriting its warmup AND its `while !shutdown` loop head, so a clean teardown
+   can't emit 18 notifications) and the teardown join, which no longer discards
+   panic payloads. `zoomy_worker_alive{worker=…}` is rendered by the axum
+   runtime, so it stays observable when the dead worker is `health` itself.
+   Forced two other fixes: the desktop app's `wait_for_health` treated a 503 as
+   "not up" (a ~20 s blank launch on every degraded start), and `transcribe` /
+   `audio` `return`ed when ffmpeg was missing — which would have read as a
+   crashed worker on an ordinary no-ffmpeg install. Both now park and retry.
+   Plus 20 `.lock().expect("… poisoned")` sites hardened to
+   `unwrap_or_else(PoisonError::into_inner)` (db.rs's WRITER deliberately left
+   alone). Was: (`lib.rs:168-360`; joins
    discard panic payloads at `lib.rs:463-478`; real panic sites exist —
    `status.rs:79`, `go2rtc.rs:230`). One poisoned lock silently ends
    detection/recording for the process lifetime. Fix: supervisor tick over
    `handle.is_finished()` → `worker_died` notification; catch_unwind+restart
    where cheap.
-8. **`/api/capabilities` proves file presence, not loadability**
+8. ~~**`/api/capabilities` proves file presence, not loadability**~~ **DONE
+   `24478f8`** — new `models.rs` really opens each file (ONNX session build /
+   JSON parse / ggml magic / readable text), cached on path+size+mtime+
+   accelerator, in `spawn_blocking`. `{present, loadable, error, probed_ms}` per
+   feature; the Models card gained a red "file is damaged" state and every web
+   gate moved from `.present` to `capabilityUsable()`. Also fixed: `audio` and
+   `lpr` checked for a sidecar they never NAMED. Live: a truncated yolov8n
+   reported `loadable:false` with the protobuf error. Was:
    (`api.rs:343`): a truncated download reads `present:true` (and
    `models_dl.rs` job state is process-memory only, so a crash mid-download +
    B-item 1 = a green tick over a dead model). Fix: cached one-shot session
    build per model → `{present, loadable, error}`; persist download jobs +
    verify size before "installed".
-9. **MQTT state is asserted, never observed, never surfaced** (`mqtt.rs:245`
+9. ~~**MQTT state is asserted, never observed, never surfaced**~~ **DONE
+   `3310177`** — `Packet::ConnAck` drives `connected` (distinguishing a refusal
+   from an unreachable host) and `Packet::PubAck` stamps `last_publish_ts`; both
+   were being discarded by the event loop's `Ok(_)` arm. `degraded::Latch` makes
+   an outage one notification, not one per 2 s reconnect. Plus `POST
+   /api/mqtt/test` (P1.4) which waits for the broker to ACK. Was: (`mqtt.rs:245`
    logs "connected" before any CONNACK; the `alive` flag is private). Fix:
    `MqttState {connected, last_error, last_publish_ts}` in AppState + a live
    badge beside the MQTT settings + a "Send a test" probe (see P1.4).
@@ -119,7 +144,9 @@ degradation costs.
 3. **`min_score` is hard-coded to 0 in the builder** (`Alarms.tsx:583`) — a
    first-class AlarmRule field with no control anywhere. → `InheritSlider`
    ("how confident before this rule fires").
-4. **MQTT broker URL has no Test** (`Settings.tsx:4177`) while every sibling
+4. ~~**MQTT broker URL has no Test**~~ **DONE `3310177`** (with P0.9) — a Test
+   button on the System health pane, publishing a retained message and waiting
+   for the broker's acknowledgement. Was: (`Settings.tsx:4177`) while every sibling
    channel has one. → `POST /api/mqtt/test` (publish a retained test message)
    + button; pairs with P0.9's state badge.
 5. **Detection sub-stream is a raw RTSP box in the TuneModal**
@@ -145,10 +172,15 @@ degradation costs.
 
 ## P2 — medium (trust surfacing + mechanical UX swaps)
 
-- **go2rtc death has no global signal** (`go2rtc.rs:228`): N identical tile
+- ~~**go2rtc death has no global signal**~~ **DONE `3310177`** — `Go2RtcState
+  {running, restarts, last_error}` (keeping the exit status `try_wait` was
+  discarding), in `/api/status`'s sibling `/api/system` and on the System health
+  pane as one row. Was: (`go2rtc.rs:228`): N identical tile
   errors for one process fault. → `go2rtc: {running, restarts, last_error}`
   in `/api/status` + one banner.
-- **HomeKit reports the setting, not the bridge** (`api.rs:7181`): a
+- ~~**HomeKit reports the setting, not the bridge**~~ **DONE `3310177`** —
+  `HomekitStatus {serving, last_error}` published around each generation. Was:
+  (`api.rs:7181`): a
   crash-looping bridge still shows a pairing PIN. → worker publishes
   `{serving, last_error}`.
 - **Enhanced retention marks failures done** (`record.rs:379`): broken
@@ -167,7 +199,11 @@ degradation costs.
   policy failures never trip the stall check. → notify on gaveup increase.
 - **Push test toasts success on total failure** (`Settings.tsx:891`):
   "sent to 0 devices (2 failed)" renders green. → error toast when sent==0.
-- **`/api/health` cannot fail** (`api.rs:276`): green while everything is
+- ~~**`/api/health` cannot fail**~~ **DONE `4d6e06b`+`3310177`** — 503 when a
+  worker has stopped, the DB is unreadable, go2rtc is down, or a CONFIGURED
+  broker is disconnected. Body is names+booleans only (the endpoint is
+  unauthenticated). DEPLOYMENT.md documents the new semantics. Was:
+  (`api.rs:276`): green while everything is
   dead. → aggregate go2rtc + workers + DB; 503 when degraded.
 - **Transcription silently produces nothing** (`transcribe.rs:193/213`) when
   the model is missing. → gate the toggle on capabilities / notify.
@@ -204,7 +240,10 @@ degradation costs.
 
 ## P3 — surfacing existing capability + small stuff
 
-- **A "System health" pane** over `GET /api/metrics` (the richest data in the
+- ~~**A "System health" pane**~~ **DONE `3310177`** — a sixth Settings tab over
+  a new `GET /api/system`, leading with one verdict line and ending with the
+  per-camera inference-ms / frame-age / accelerator table. Was: over
+  `GET /api/metrics` (the richest data in the
   product — per-camera inference ms, frame age, offsite backlog — currently
   curl-only). Natural home for P0.7's worker liveness + P0.9 MQTT + go2rtc
   state.
