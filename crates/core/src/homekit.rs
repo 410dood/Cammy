@@ -153,10 +153,48 @@ pub const BRIDGE_RESET_KEY: &str = "homekit.bridge_reset";
 /// survive a rebuild (still subscribed to the OLD accessories, so motion
 /// notifications silently stop) or keep serving after the owner disables the
 /// bridge. (Adversarial-review finding.)
+/// Whether the HAP bridge is actually SERVING, as opposed to merely being
+/// switched on in Settings.
+///
+/// `GET /api/homekit` reported the setting, so a bridge crash-looping on an mDNS
+/// bind error still showed a pairing PIN and an encouraging green state — the
+/// owner would sit in the Home app waiting for an accessory that was never going
+/// to appear.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct HomekitStatus {
+    /// A HAP server is running right now.
+    pub serving: bool,
+    /// Why the last generation stopped or refused to start.
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct HomekitState(Arc<std::sync::Mutex<HomekitStatus>>);
+
+impl HomekitState {
+    pub fn snapshot(&self) -> HomekitStatus {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    fn set(&self, serving: bool, err: Option<String>) {
+        let mut g = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.serving = serving;
+        if err.is_some() {
+            g.last_error = err;
+        }
+    }
+}
+
 pub fn run(
     db: Db,
     data_dir: PathBuf,
     events_tx: broadcast::Sender<EventMsg>,
+    state: HomekitState,
     shutdown: Arc<AtomicBool>,
 ) {
     while !shutdown.load(Ordering::Relaxed) {
@@ -171,6 +209,7 @@ pub fn run(
         let sig = config_sig(&db);
         let (active, cams) = (sig.0, sig.2.clone());
         if !active {
+            state.set(false, None);
             crate::util::sleep_interruptible(Duration::from_secs(5), &shutdown);
             continue;
         }
@@ -181,15 +220,21 @@ pub fn run(
             Ok(rt) => rt,
             Err(e) => {
                 tracing::error!("homekit bridge: tokio runtime failed: {e:#}");
-                return;
+                state.set(false, Some(format!("tokio runtime failed: {e}")));
+                // Park rather than return: an exited thread now reads as a
+                // supervised worker death, and this is a retryable condition.
+                crate::util::sleep_interruptible(Duration::from_secs(30), &shutdown);
+                continue;
             }
         };
         // hap-rs panics (`expect`) on mDNS responder setup failure; contain it
         // so a transient UDP-5353 bind error degrades into the backoff below
         // instead of silently killing this worker thread for good.
+        state.set(true, None);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             rt.block_on(serve(&db, &data_dir, &events_tx, &shutdown, sig, cams))
         }));
+        state.set(false, None);
         // Dropping the runtime aborts every task hap spawned (accept loop,
         // per-connection sessions, mDNS) — a full teardown per generation.
         drop(rt);
@@ -197,11 +242,16 @@ pub fn run(
             Ok(Ok(())) => {} // clean teardown: config change / disable / shutdown
             Ok(Err(e)) => {
                 tracing::warn!("homekit sensor bridge stopped: {e:#}");
+                state.set(false, Some(format!("{e:#}")));
                 crate::util::sleep_interruptible(Duration::from_secs(30), &shutdown);
             }
             Err(_) => {
                 tracing::warn!(
                     "homekit sensor bridge panicked (likely mDNS UDP 5353 setup); retrying"
+                );
+                state.set(
+                    false,
+                    Some("the bridge crashed while starting (usually mDNS / UDP 5353)".into()),
                 );
                 crate::util::sleep_interruptible(Duration::from_secs(30), &shutdown);
             }

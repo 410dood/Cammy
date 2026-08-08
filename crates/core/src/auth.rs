@@ -179,6 +179,9 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
         // — both stay as locked-down as the settings that feed them.
         || path == "/api/offsite/test"
         || path == "/api/genai/probe"
+        // Connects the server to the saved (Admin-only) broker URL and publishes
+        // — same trust level as the mqtt_url setting that feeds it.
+        || path == "/api/mqtt/test"
         // Probes arbitrary server filesystem paths (writability + free space)
         // — Admin-only like the recordings_dir setting it validates.
         || path == "/api/path_probe"

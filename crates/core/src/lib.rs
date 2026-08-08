@@ -252,6 +252,8 @@ pub async fn run(
                 )
             }
         })?;
+    let mqtt_state = mqtt::MqttState::default();
+    let homekit_state = homekit::HomekitState::default();
     let mqtt_thread = std::thread::Builder::new().name("mqtt".into()).spawn({
         let (db, go2rtc, snaps, stop) = (
             db.clone(),
@@ -261,7 +263,12 @@ pub async fn run(
         );
         let (cmd_tx, bcast_tx, throttle) =
             (mqtt_tx_cmd, events_bcast_tx.clone(), alarm_throttle.clone());
-        move || mqtt::run(db, go2rtc, snaps, mqtt_rx, cmd_tx, bcast_tx, throttle, stop)
+        let state = mqtt_state.clone();
+        move || {
+            mqtt::run(
+                db, go2rtc, snaps, mqtt_rx, cmd_tx, bcast_tx, throttle, state, stop,
+            )
+        }
     })?;
     let health_thread = std::thread::Builder::new().name("health".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
@@ -374,7 +381,8 @@ pub async fn run(
     let homekit_thread = std::thread::Builder::new().name("homekit".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
         let (data_dir, tx) = (cfg.data_dir.clone(), events_bcast_tx.clone());
-        move || homekit::run(db, data_dir, tx, stop)
+        let state = homekit_state.clone();
+        move || homekit::run(db, data_dir, tx, state, stop)
     })?;
 
     // Liveness registry, in TEARDOWN ORDER. This Vec IS the teardown order now —
@@ -445,6 +453,8 @@ pub async fn run(
         events_tx: events_bcast_tx,
         genai_stats,
         workers: workers.clone(),
+        mqtt_state,
+        homekit_state,
     };
     let ui =
         ServeDir::new(&cfg.ui_dir).not_found_service(ServeFile::new(cfg.ui_dir.join("index.html")));

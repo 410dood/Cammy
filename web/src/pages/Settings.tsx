@@ -2,6 +2,7 @@ import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, CamEvent, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtSpan, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout, usePolling } from "../ui";
 import { LicensePane } from "../License";
+import SystemHealthCard from "../SystemHealth";
 import { ObjectPicker, InheritSlider, DurationPicker } from "../tuning";
 import { prettyGesture, prettyLabel } from "../labels";
 import {
@@ -2410,12 +2411,13 @@ function UsersCard({ onError }: { onError: (e: string) => void }) {
 // save bar are untouched. Not ARIA tabs on purpose: the "panels" are scattered
 // cards inside one form, so these are plain pressed/unpressed filter buttons
 // (the TogglePill / arm-bar convention) rather than a half-implemented tablist.
-type GroupKey = "detection" | "modes" | "security" | "recording" | "license";
+type GroupKey = "detection" | "modes" | "security" | "recording" | "system" | "license";
 const SETTINGS_GROUPS: { key: GroupKey; label: string }[] = [
   { key: "detection", label: "Detection & AI" },
   { key: "modes", label: "Modes & alerts" },
   { key: "security", label: "Access & security" },
   { key: "recording", label: "Recording & backup" },
+  { key: "system", label: "System health" },
   { key: "license", label: "License" },
 ];
 
@@ -3036,6 +3038,7 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
       )}
       <SettingsTabs active={tab} onSelect={selectTab} />
       <form onSubmit={save} noValidate>
+        <SystemHealthCard />
         <ModelsCard />
         <div className="card" data-settings-group="detection">
           <h2>Detection</h2>

@@ -131,6 +131,70 @@ fn parse_url(url: &str) -> Option<(String, u16, Credentials)> {
     Some((host, port, creds))
 }
 
+/// docs/11 P1.4 — "Send a test" for the broker, the one alert channel that had
+/// no way to prove itself. Connects with the SAVED settings, publishes one
+/// retained message to `<prefix>/test`, and waits for the broker to acknowledge
+/// it, so a success here means the message really left the machine — not merely
+/// that a client object was constructed (which is all the old "mqtt connected"
+/// log ever proved).
+pub fn test_publish(settings: &crate::db::Settings) -> Result<String, String> {
+    let Some((host, port, creds)) = parse_url(&settings.mqtt_url) else {
+        return Err("No broker address is set — fill in the MQTT broker URL first.".into());
+    };
+    let prefix = if settings.mqtt_prefix.trim().is_empty() {
+        "zoomy"
+    } else {
+        settings.mqtt_prefix.trim()
+    };
+    let mut opts = MqttOptions::new("zoomy-nvr-test", &host, port);
+    opts.set_keep_alive(Duration::from_secs(5));
+    if let Some((u, p)) = creds {
+        opts.set_credentials(u, p);
+    }
+    let (client, mut connection) = Client::new(opts, 8);
+    let topic = format!("{prefix}/test");
+    let payload = format!(
+        "Cammy test message at {}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    );
+    if let Err(e) = client.publish(&topic, QoS::AtLeastOnce, true, payload.as_bytes()) {
+        return Err(format!("could not queue the test message: {e}"));
+    }
+    // Drive the loop ourselves until the broker acknowledges, errors, or we give
+    // up. `Connection::iter` is what performs the actual TCP connect + CONNACK.
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let mut connected = false;
+    for ev in connection.iter() {
+        if std::time::Instant::now() > deadline {
+            let _ = client.disconnect();
+            return Err(if connected {
+                "connected, but the broker never acknowledged the message".into()
+            } else {
+                format!("no answer from {host}:{port} within 8 seconds")
+            });
+        }
+        match ev {
+            Ok(Event::Incoming(Packet::ConnAck(a))) => {
+                if a.code != rumqttc::ConnectReturnCode::Success {
+                    let _ = client.disconnect();
+                    return Err(format!("the broker refused the connection: {:?}", a.code));
+                }
+                connected = true;
+            }
+            Ok(Event::Incoming(Packet::PubAck(_))) => {
+                let _ = client.disconnect();
+                return Ok(topic);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                let _ = client.disconnect();
+                return Err(format!("{e}"));
+            }
+        }
+    }
+    Err("the connection closed before the broker acknowledged the message".into())
+}
+
 /// The MQTT worker. Besides the outbound publish + HA discovery it has always
 /// done, it now (P3.3):
 ///   - taps EVERY consumed [`EventMsg`] into `broadcast_tx` for the live SSE feed
@@ -141,6 +205,60 @@ fn parse_url(url: &str) -> Option<(String, u16, Credentials)> {
 ///
 /// `event_tx` is a clone of the same mpsc `Sender` that feeds `rx`, so an inbound
 /// trigger command can inject a real event back through the normal path.
+/// Observed broker state, for `/api/system` and the Settings badge.
+///
+/// The point is that every field is OBSERVED. The old code logged
+/// "mqtt connected" unconditionally right after `Client::new` — which performs
+/// no network I/O at all — so it said the same thing whether the broker was up,
+/// the password was wrong, or the host did not resolve. The private `alive` flag
+/// was no better: it tracks the driver THREAD, and is `true` throughout a
+/// connect attempt that never succeeds.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct MqttStatus {
+    /// An MQTT broker is configured at all.
+    pub enabled: bool,
+    /// A CONNACK with a success code has been seen and not yet superseded by a
+    /// connection error.
+    pub connected: bool,
+    /// Why the connection last failed (never contains the URL, so no credentials).
+    pub last_error: Option<String>,
+    /// When the broker last acknowledged one of our publishes (unix secs).
+    pub last_publish_ts: Option<i64>,
+}
+
+#[derive(Clone, Default)]
+pub struct MqttState(Arc<std::sync::Mutex<MqttStatus>>);
+
+impl MqttState {
+    pub fn snapshot(&self) -> MqttStatus {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    fn update(&self, f: impl FnOnce(&mut MqttStatus)) {
+        f(&mut self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner));
+    }
+}
+
+/// What the owner is told when the broker goes away and comes back.
+fn broker_messages() -> crate::degraded::Messages<'static> {
+    crate::degraded::Messages {
+        kind: "mqtt_error",
+        down_title: "Home automation link is down",
+        down_body: concat!(
+            "Cammy cannot reach the MQTT broker, so anything driven by it — Home Assistant ",
+            "automations, smart-home scenes — is no longer being told about events. Check the ",
+            "broker address in Settings."
+        ),
+        up_title: "Home automation link is back",
+        up_body: "Cammy is connected to the MQTT broker again.",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     db: Db,
@@ -150,11 +268,19 @@ pub fn run(
     event_tx: Sender<EventMsg>,
     broadcast_tx: broadcast::Sender<EventMsg>,
     alarm_throttle: AlarmThrottle,
+    state: MqttState,
     shutdown: Arc<AtomicBool>,
 ) {
+    // Edge-triggered so a broker that is down does not write a notification per
+    // 2-second reconnect attempt.
+    static BROKER: crate::degraded::Latch = crate::degraded::Latch::new();
     while !shutdown.load(Ordering::Relaxed) {
         let settings = db.settings();
         let Some((host, port, creds)) = parse_url(&settings.mqtt_url) else {
+            state.update(|s| {
+                s.enabled = false;
+                s.connected = false;
+            });
             // MQTT off: still tap events to the SSE feed, then drop them so the
             // channel never backs up.
             match rx.recv_timeout(Duration::from_secs(1)) {
@@ -201,9 +327,14 @@ pub fn run(
         // the publisher loop below can reconnect. Inbound command publishes arrive
         // here — each is dispatched on its own short-lived thread so a slow command
         // (a trigger's snapshot fetch) can't stall MQTT keep-alives.
+        state.update(|s| {
+            s.enabled = true;
+            s.connected = false; // not until a CONNACK says so
+        });
         let alive = Arc::new(AtomicBool::new(true));
         let driver = std::thread::spawn({
             let alive = alive.clone();
+            let (state, db) = (state.clone(), db.clone());
             move || {
                 for ev in connection.iter() {
                     match ev {
@@ -216,9 +347,40 @@ pub fn run(
                                 }
                             }
                         }
+                        // THE observation `Ok(_)` was throwing away: the broker's
+                        // answer to our CONNECT.
+                        Ok(Event::Incoming(Packet::ConnAck(a))) => {
+                            let ok = a.code == rumqttc::ConnectReturnCode::Success;
+                            state.update(|s| {
+                                s.connected = ok;
+                                if ok {
+                                    s.last_error = None;
+                                }
+                            });
+                            if ok {
+                                tracing::info!("mqtt broker accepted the connection");
+                                BROKER.report(&db, None, &broker_messages());
+                            } else {
+                                let msg = format!("broker refused the connection: {:?}", a.code);
+                                state.update(|s| s.last_error = Some(msg.clone()));
+                                BROKER.report(&db, Some(&msg), &broker_messages());
+                            }
+                        }
+                        // A broker acknowledgement is the only proof a publish
+                        // actually left the machine (every publish is QoS 1).
+                        Ok(Event::Incoming(Packet::PubAck(_))) => {
+                            let now = chrono::Utc::now().timestamp();
+                            state.update(|s| s.last_publish_ts = Some(now));
+                        }
                         Ok(_) => {}
                         Err(e) => {
                             tracing::warn!("mqtt connection error: {e}");
+                            let msg = e.to_string();
+                            state.update(|s| {
+                                s.connected = false;
+                                s.last_error = Some(msg.clone());
+                            });
+                            BROKER.report(&db, Some(&msg), &broker_messages());
                             break;
                         }
                     }
@@ -241,7 +403,9 @@ pub fn run(
                 "mqtt inbound commands ENABLED (subscribed to {prefix}/cmd/#)"
             );
         }
-        tracing::info!(broker = format!("{host}:{port}"), prefix, "mqtt connected");
+        // NOT "connected" — nothing has answered yet. The real thing is logged
+        // from the CONNACK arm above.
+        tracing::info!(broker = format!("{host}:{port}"), prefix, "mqtt connecting");
 
         // Home Assistant discovery: publish (retained) configs and remember the
         // (cameras × labels) signature so we re-publish when it changes.

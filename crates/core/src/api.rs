@@ -50,6 +50,10 @@ pub struct AppState {
     /// P3.3 — live event broadcast for the SSE feed (`GET /api/events/stream`).
     /// The MQTT worker taps every EventMsg here; each SSE client `subscribe()`s.
     pub events_tx: tokio::sync::broadcast::Sender<crate::mqtt::EventMsg>,
+    /// Observed MQTT broker state (docs/11 P0.9) — CONNACK-driven, not asserted.
+    pub mqtt_state: crate::mqtt::MqttState,
+    /// Whether the HomeKit bridge is actually serving, vs merely switched on.
+    pub homekit_state: crate::homekit::HomekitState,
     /// Liveness registry for the background worker threads (docs/11 P0.7),
     /// shared with the health worker that supervises it. Read-only here.
     pub workers: crate::health::WorkerBoard,
@@ -68,6 +72,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/password", axum::routing::post(set_password))
         .route("/api/login", axum::routing::post(login))
         .route("/api/status", get(camera_status))
+        .route("/api/system", get(system_state))
         .route("/api/cameras", get(list_cameras).post(add_camera))
         .route("/api/discover", axum::routing::post(discover))
         .route("/api/discover/scan", get(discover_scan))
@@ -131,6 +136,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/alarms/{id}/test", axum::routing::post(test_alarm_api))
         .route("/api/notify/test", axum::routing::post(notify_test_api))
+        .route("/api/mqtt/test", axum::routing::post(mqtt_test_api))
         .route("/api/offsite/test", axum::routing::post(offsite_test_api))
         .route("/api/path_probe", get(path_probe_api))
         .route("/api/hwaccel_probe", get(hwaccel_probe_api))
@@ -299,6 +305,17 @@ async fn health(State(st): State<AppState>) -> impl IntoResponse {
     if st.db.count_users().is_err() {
         degraded.push("database".to_string());
     }
+    // go2rtc is the single process EVERY camera goes through: if it is down,
+    // nothing is being watched or recorded, whatever the per-camera tiles say.
+    if !st.go2rtc.state().running {
+        degraded.push("go2rtc".to_string());
+    }
+    // A configured broker that isn't connected is a real outage of the home
+    // automation link. An unconfigured one is not a fault.
+    let mqtt = st.mqtt_state.snapshot();
+    if mqtt.enabled && !mqtt.connected {
+        degraded.push("mqtt".to_string());
+    }
     let ok = degraded.is_empty();
     let code = if ok {
         axum::http::StatusCode::OK
@@ -313,6 +330,38 @@ async fn health(State(st): State<AppState>) -> impl IntoResponse {
             "degraded": degraded,
         })),
     )
+}
+
+/// Everything the app knows about ITSELF: the worker threads, the streaming
+/// process every camera depends on, the AI queue, the alert delivery queue, the
+/// MQTT link and the HomeKit bridge.
+///
+/// This is deliberately a sibling of `/api/status` rather than a new key inside
+/// it: that response is a bare `camera-id -> status` map with several consumers
+/// (including the desktop tray, which iterates its values and counts cameras), so
+/// a top-level key there would be read as a camera.
+///
+/// It is Viewer-reachable, like `/api/status` — the whole point is that a
+/// degraded system is visible to whoever is looking at it. It carries subsystem
+/// error text (an MQTT connection error, a go2rtc exit status) but no
+/// credentials: the MQTT error never embeds the broker URL.
+async fn system_state(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let workers: Vec<serde_json::Value> = worker_liveness(&st)
+        .into_iter()
+        .map(|(name, alive)| serde_json::json!({ "name": name, "alive": alive }))
+        .collect();
+    let (alarm_depth, alarm_dropped) = crate::notify::dispatch_stats().unwrap_or((0, 0));
+    Json(serde_json::json!({
+        "workers": workers,
+        "go2rtc": st.go2rtc.state(),
+        "mqtt": st.mqtt_state.snapshot(),
+        "homekit": st.homekit_state.snapshot(),
+        "genai_queue": {
+            "depth": st.genai_stats.depth(),
+            "shed": st.genai_stats.shed(),
+        },
+        "alarm_queue": { "depth": alarm_depth, "dropped": alarm_dropped },
+    }))
 }
 
 /// Tells the UI where go2rtc's WebRTC endpoints live.
@@ -4693,6 +4742,22 @@ struct NotifyTestReq {
 /// webhook / health-push URL fields (docs/10 P2.3): prove the target works at
 /// configuration time instead of failing silently at the first real alert.
 /// Operator-tier like the per-rule alarm Test, which fires the same channels.
+/// docs/11 P1.4 — prove the MQTT broker works. Every sibling alert channel had a
+/// Test button; the broker, which carries the whole Home Assistant integration,
+/// had none, so a wrong address or password was invisible until an automation
+/// quietly stopped firing.
+async fn mqtt_test_api(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let settings = st.db.settings();
+    match tokio::task::spawn_blocking(move || crate::mqtt::test_publish(&settings)).await {
+        Ok(Ok(topic)) => Json(serde_json::json!({
+            "ok": true,
+            "detail": format!("The broker accepted a retained test message on {topic}."),
+        })),
+        Ok(Err(e)) => Json(serde_json::json!({ "ok": false, "error": e })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("test failed: {e}") })),
+    }
+}
+
 async fn notify_test_api(
     State(st): State<AppState>,
     Json(req): Json<NotifyTestReq>,

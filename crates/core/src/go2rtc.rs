@@ -58,11 +58,30 @@ pub enum DropPairings<'a> {
     All,
 }
 
+/// What the supervisor knows about the go2rtc child, for `/api/system` and
+/// `/api/health`.
+///
+/// Without this, one dead go2rtc showed up as N identical per-tile stream errors
+/// and a `warn!` every 5 seconds into a log nobody reads — the owner had no way
+/// to tell "all my cameras broke at once" from "the one process they all go
+/// through died".
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct Go2RtcState {
+    /// The child process is currently alive.
+    pub running: bool,
+    /// Times it has been (re)started since this process began. 1 is normal (the
+    /// initial start); a climbing number is a crash loop.
+    pub restarts: u32,
+    /// Why it last died or failed to start (exit status, or the spawn error).
+    pub last_error: Option<String>,
+}
+
 pub struct Go2Rtc {
     binary: PathBuf,
     config_path: PathBuf,
     api_port: u16,
     child: Mutex<Option<Child>>,
+    state: Mutex<Go2RtcState>,
 }
 
 impl Go2Rtc {
@@ -72,7 +91,23 @@ impl Go2Rtc {
             config_path,
             api_port,
             child: Mutex::new(None),
+            state: Mutex::new(Go2RtcState::default()),
         })
+    }
+
+    /// Snapshot of the child's supervision state.
+    pub fn state(&self) -> Go2RtcState {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set_state(&self, f: impl FnOnce(&mut Go2RtcState)) {
+        f(&mut self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner));
     }
 
     pub fn api_base(&self) -> String {
@@ -104,18 +139,34 @@ impl Go2Rtc {
             let _ = old.kill();
             let _ = old.wait();
         }
-        let child = Command::new(&self.binary)
+        let child = match Command::new(&self.binary)
             .arg("-config")
             .arg(&self.config_path)
             .no_console()
             .spawn()
-            .with_context(|| format!("spawning {}", self.binary.display()))?;
+        {
+            Ok(c) => c,
+            Err(e) => {
+                // A go2rtc that will not even start means every camera is dead;
+                // record WHY so `/api/system` can say so once instead of leaving
+                // each tile to guess.
+                self.set_state(|s| {
+                    s.running = false;
+                    s.last_error = Some(format!("could not start go2rtc: {e}"));
+                });
+                return Err(e).with_context(|| format!("spawning {}", self.binary.display()));
+            }
+        };
         tracing::info!(
             pid = child.id(),
             cameras = cameras.len(),
             "go2rtc (re)started"
         );
         *guard = Some(child);
+        self.set_state(|s| {
+            s.running = true;
+            s.restarts = s.restarts.saturating_add(1);
+        });
         Ok(())
     }
 
@@ -232,18 +283,32 @@ impl Go2Rtc {
 
     /// Restart the child if it died (call from a watchdog loop).
     pub fn ensure_alive(&self, db: &Db) -> Result<()> {
-        let needs_restart = {
+        // `try_wait`'s exit status used to be matched away and thrown out. It is
+        // the single most useful thing to tell the owner when every camera stops
+        // at once, so keep it.
+        let (needs_restart, why) = {
             let mut guard = self
                 .child
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match guard.as_mut() {
-                None => true,
-                Some(child) => !matches!(child.try_wait(), Ok(None)),
+                None => (true, Some("go2rtc has not been started".to_string())),
+                Some(child) => match child.try_wait() {
+                    Ok(None) => (false, None),
+                    Ok(Some(status)) => (true, Some(format!("go2rtc exited ({status})"))),
+                    Err(e) => (true, Some(format!("could not check go2rtc: {e}"))),
+                },
             }
         };
         if needs_restart {
-            tracing::warn!("go2rtc not running; restarting");
+            self.set_state(|s| {
+                s.running = false;
+                s.last_error = why.clone();
+            });
+            tracing::warn!(
+                "go2rtc not running ({}); restarting",
+                why.unwrap_or_default()
+            );
             self.restart_with(db)?;
         }
         Ok(())

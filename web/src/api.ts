@@ -601,6 +601,21 @@ export interface CamStatus {
 
 export type StatusMap = Record<string, CamStatus>;
 
+/** GET /api/system — the app's own health, as opposed to the cameras'. */
+export interface SystemState {
+  workers: { name: string; alive: boolean }[];
+  go2rtc: { running: boolean; restarts: number; last_error: string | null };
+  mqtt: {
+    enabled: boolean;
+    connected: boolean;
+    last_error: string | null;
+    last_publish_ts: number | null;
+  };
+  homekit: { serving: boolean; last_error: string | null };
+  genai_queue: { depth: number; shed: number };
+  alarm_queue: { depth: number; dropped: number };
+}
+
 const exportParams = (q: { camera_id: number; from: number; to: number; stream?: string }) => {
   const p = new URLSearchParams({
     camera_id: String(q.camera_id),
@@ -1055,6 +1070,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kind, target }),
     }),
+  /** Publish a retained test message to the saved MQTT broker and wait for it to
+   *  be acknowledged — so success means the message really left the machine. */
+  mqttTest: () =>
+    req<{ ok: boolean; detail?: string; error?: string }>("/api/mqtt/test", { method: "POST" }),
+  /** What the app knows about ITSELF: worker threads, go2rtc, MQTT, HomeKit and
+   *  the two work queues. Sibling of /api/status (which is a bare camera map). */
+  system: () => req<SystemState>("/api/system"),
   /** Is this server-side folder real + writable, and how much space is free?
    *  (P3 — validates the recordings-folder field.) Empty = the default dir. */
   pathProbe: (path: string) =>
