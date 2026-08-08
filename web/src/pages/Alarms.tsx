@@ -3,7 +3,7 @@ import { api, AlarmRule, Action, ActionKind, ArmMode, AttributesCatalog, CamEven
 import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
 import { prettyGesture, prettyLabel } from "../labels";
-import { DurationPicker } from "../tuning";
+import { DurationPicker, InheritSlider } from "../tuning";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -76,11 +76,15 @@ function VlmTestButton({ prompt, cameraId }: { prompt: string; cameraId: number 
 /// historical "would have matched" preview and the rules-table 24h counts.
 /// Same semantics for the event-shaped conditions (exact label, substring
 /// face/plate/zone/transcript, exact-word gesture, "?" stranger sentinel);
-/// deliberately NOT applied: schedules/arm modes, min-score, cooldowns,
-/// cross-modal confirmation, and the AI gates (vlm_prompt / prompt_like /
-/// attr_like — the CLIP appearance gates need the crop embedding, which lives
-/// server-side) — the preview shows candidates before those server-side filters
-/// run.
+/// deliberately NOT applied: schedules/arm modes, cooldowns, cross-modal
+/// confirmation, and the AI gates (vlm_prompt / prompt_like / attr_like — the
+/// CLIP appearance gates need the crop embedding, which lives server-side) —
+/// the preview shows candidates before those server-side filters run.
+///
+/// min_score IS applied (docs/11 P1.3): now that the builder has a confidence
+/// slider, a preview that ignored it would contradict the control right next to
+/// it — moving the slider has to change the number, or the number is a lie.
+/// Events carry their score, so this one is exact rather than an approximation.
 function matchPreview(
   cond: {
     camera_id: number | null;
@@ -91,10 +95,12 @@ function matchPreview(
     transcript_like: string | null;
     zone_like: string | null;
     face_unknown: boolean;
+    min_score?: number;
   },
   ev: CamEvent,
 ): boolean {
   if (cond.camera_id != null && ev.camera_id !== cond.camera_id) return false;
+  if (cond.min_score != null && cond.min_score > 0 && ev.score < cond.min_score) return false;
   if (cond.label && ev.label !== cond.label) return false;
   if (cond.face_unknown && ev.face !== "?") return false;
   if (cond.face_like && !(ev.face ?? "").toLowerCase().includes(cond.face_like.toLowerCase()))
@@ -194,6 +200,10 @@ export default function Alarms({
   const [name, setName] = useState("");
   const [cameraId, setCameraId] = useState<number | "">("");
   const [label, setLabel] = useState("");
+  // docs/11 P1.3 — AlarmRule.min_score is a first-class field the builder was
+  // hard-coding to 0, so "only fire when the AI is fairly sure" was unreachable
+  // from the UI and a rule could never be made less twitchy without the API.
+  const [minScore, setMinScore] = useState(0);
   const [faceLike, setFaceLike] = useState("");
   const [plateLike, setPlateLike] = useState("");
   // Face/plate conditions are pickers of people and plates the app already
@@ -247,6 +257,28 @@ export default function Alarms({
   const updateAction = (i: number, patch: Partial<Action>) =>
     setActions((p) => p.map((a, j) => (j === i ? { ...a, ...patch } : a)));
   const addAction = () => setActions((p) => [...p, { kind: "ntfy", target: "", priority: 0 }]);
+  // docs/11 P1.2 — which action row is mid-test (index), so only that button
+  // shows a busy state.
+  const [testingAction, setTestingAction] = useState<number | null>(null);
+  const testAction = async (i: number, kind: string, target: string) => {
+    setTestingAction(i);
+    try {
+      const r = await api.notifyTest(kind as "webhook" | "ntfy" | "email", target);
+      if (r.ok)
+        toast.success(
+          kind === "ntfy"
+            ? "Test push sent — check your phone"
+            : kind === "email"
+              ? "Test email sent"
+              : "Test delivered — the endpoint answered",
+        );
+      else toast.error(`Test failed: ${r.error}`);
+    } catch (e) {
+      toast.error(`Test failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setTestingAction(null);
+    }
+  };
   const removeAction = (i: number) =>
     setActions((p) => (p.length > 1 ? p.filter((_, j) => j !== i) : p));
 
@@ -372,8 +404,19 @@ export default function Alarms({
       transcript_like: transcriptLike.trim() || null,
       zone_like: zoneLike.trim() || null,
       face_unknown: faceUnknown,
+      min_score: minScore,
     }),
-    [cameraId, label, faceLike, plateLike, gestureLike, transcriptLike, zoneLike, faceUnknown],
+    [
+      cameraId,
+      label,
+      faceLike,
+      plateLike,
+      gestureLike,
+      transcriptLike,
+      zoneLike,
+      faceUnknown,
+      minScore,
+    ],
   );
   const previewHits = useMemo(
     () => recent.filter((e) => matchPreview(previewCond, e)),
@@ -476,6 +519,7 @@ export default function Alarms({
     setName("");
     setCameraId("");
     setLabel("");
+    setMinScore(0);
     setActions([{ kind: "ntfy", target: "", priority: 0 }]);
     setModes([]);
     setFaceLike("");
@@ -507,6 +551,7 @@ export default function Alarms({
     setName(r.name);
     setCameraId(r.camera_id ?? "");
     setLabel(r.label ?? "");
+    setMinScore(r.min_score ?? 0);
     setFaceLike(r.face_like ?? "");
     setPlateLike(r.plate_like ?? "");
     setGestureLike(r.gesture_like ?? "");
@@ -580,7 +625,7 @@ export default function Alarms({
         prompt_like: promptLike.trim() || null,
         attr_like: attrLike || null,
         face_unknown: faceUnknown,
-        min_score: 0,
+        min_score: minScore,
         // Legacy single-action mirror (kept in sync with actions[0] server-side too).
         action: acts[0].kind,
         target: acts[0].target,
@@ -1001,6 +1046,23 @@ export default function Alarms({
                 </small>
               )}
             </label>
+            <div className="field" style={{ minWidth: 240 }}>
+              <InheritSlider
+                label="How sure before this rule fires"
+                value={minScore}
+                globalValue={0}
+                min={0}
+                max={0.95}
+                step={0.05}
+                format={(v) =>
+                  v <= 0 ? "Any detection" : `Only when at least ${Math.round(v * 100)}% sure`
+                }
+                lowHint="Never misses"
+                highHint="Fewest false alarms"
+                onChange={(v) => setMinScore(v ?? 0)}
+                resettable={false}
+              />
+            </div>
             <label className="field">
               person recognized as (optional)
               {(() => {
@@ -1526,6 +1588,22 @@ export default function Alarms({
                     <option value={4}>Important (louder, pops up)</option>
                     <option value={5}>Urgent (repeats, breaks through Do Not Disturb)</option>
                   </select>
+                )}
+                {/* docs/11 P1.2 — per-action Test. The rule-level Test only
+                    exists AFTER saving, so a mistyped webhook or ntfy topic was
+                    only discovered by an alert that never arrived. Deterrence
+                    already had one (it pulses a physical relay); these are the
+                    channels that carry the alert itself. */}
+                {(a.kind === "webhook" || a.kind === "ntfy" || a.kind === "email") && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={!a.target.trim() || testingAction === i}
+                    title="Send one real message to this target right now, before saving the rule"
+                    onClick={() => testAction(i, a.kind, a.target.trim())}
+                  >
+                    {testingAction === i ? "Sending…" : "Test"}
+                  </button>
                 )}
                 <button
                   type="button"

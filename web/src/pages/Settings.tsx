@@ -3,7 +3,7 @@ import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, CamEvent,
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout, usePolling } from "../ui";
 import { LicensePane } from "../License";
 import SystemHealthCard from "../SystemHealth";
-import { ObjectPicker, InheritSlider, DurationPicker } from "../tuning";
+import { ObjectPicker, InheritSlider, DurationPicker, LabelChips } from "../tuning";
 import { prettyGesture, prettyLabel } from "../labels";
 import {
   IconProps, IconLogIn, IconBan, IconKey, IconLock, IconTicket, IconTrash,
@@ -3112,21 +3112,23 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             />
           </div>
           <div className="row">
-            <label className="field">
-              alert objects (shown in the Alerts review tab)
-              <input
-                type="text"
-                value={(s.alert_labels ?? []).join(", ")}
-                onChange={(e) =>
-                  set({
-                    alert_labels: e.target.value
-                      .split(",")
-                      .map((x) => x.trim())
-                      .filter(Boolean),
-                  })
-                }
+            {/* docs/11 P1.1 — this was raw comma-separated text on the very card
+                where ObjectPicker already lives. A typo ("prson") is silently
+                accepted and empties the Alerts review tab until someone notices,
+                which is the whole reason chips replaced free text everywhere
+                else. */}
+            <div className="field tune-sub" style={{ minWidth: 280 }}>
+              <h4 className="tune-sub-h">Which detections count as “alerts”</h4>
+              <LabelChips
+                value={s.alert_labels ?? []}
+                onChange={(labels) => set({ alert_labels: labels })}
+                emptyHint="Nothing chosen — the Alerts review tab will be empty."
               />
-            </label>
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Events with these objects show under Alerts on the Events page; everything else
+                is still recorded, just under Detections.
+              </span>
+            </div>
             <label className="field">
               don't log the same object again for
               <DurationPicker
