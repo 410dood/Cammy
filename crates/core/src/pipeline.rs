@@ -66,6 +66,24 @@ const STATE_DEBOUNCE: u32 = 2;
 /// look at (mirrors the Re-ID crop minimum in `embed_crop`).
 const STATE_MIN_CROP: u32 = 24;
 
+/// Edge-triggered surface for the face-recognition stage (docs/11 P2). Shared
+/// across cameras and workers, so a broken model is one notification.
+static FACE_STAGE: crate::degraded::Latch = crate::degraded::Latch::new();
+
+fn face_messages() -> crate::degraded::Messages<'static> {
+    crate::degraded::Messages {
+        kind: "face_error",
+        down_title: "Face recognition stopped working",
+        down_body: concat!(
+            "Cammy could not run face recognition, so everyone will be reported as an ",
+            "unknown face until it recovers. Check the face models under Settings → ",
+            "Detection & AI → Models."
+        ),
+        up_title: "Face recognition is working again",
+        up_body: "Faces are being matched against your saved people again.",
+    }
+}
+
 /// Has an alerted object's anchor moved at least `thresh` (frame fractions) from
 /// where it last fired? `None` (never alerted) always counts as moved, so a
 /// newly-matched track fires once. Pure so it can be unit-tested.
@@ -1366,8 +1384,17 @@ fn run_worker(
                         now,
                         &mut last_unknown_save,
                     ) {
-                        Ok(()) => {}
-                        Err(e) => tracing::debug!(camera = %cam.name, "face stage: {e:#}"),
+                        // docs/11 P2: this is a DEFAULT-ON feature, and a failure
+                        // here means every face is "unknown" forever with nothing
+                        // said anywhere — the People page just looks empty.
+                        Ok(()) => {
+                            FACE_STAGE.report(&db, None, &face_messages());
+                        }
+                        Err(e) => {
+                            let msg = format!("{e:#}");
+                            tracing::debug!(camera = %cam.name, "face stage: {msg}");
+                            FACE_STAGE.report(&db, Some(&msg), &face_messages());
+                        }
                     }
                 }
             }

@@ -1,6 +1,6 @@
 ﻿import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, AlarmRule, Action, ActionKind, ArmMode, AttributesCatalog, CamEvent, Camera, DAY_NAMES, DeterCaps } from "../api";
-import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil } from "../icons";
+import { IconStranger, IconMoon, IconPlus, IconX, IconSiren, IconPencil, IconAlert } from "../icons";
 import { EmptyState, ErrorState, TogglePill, useDialog, useToast } from "../ui";
 import { prettyGesture, prettyLabel } from "../labels";
 import { DurationPicker, InheritSlider } from "../tuning";
@@ -834,6 +834,23 @@ export default function Alarms({
                 <tr key={r.id}>
                   <td>
                     <b>{r.name}</b>
+                    {/* docs/11 P2 — a rule whose AI gate can't run looks
+                        identical to a working one and is simply never heard
+                        from again. The server works out which; this says it. */}
+                    {r.degraded && (
+                      <div style={{ marginTop: 4 }}>
+                        <span
+                          className="badge danger"
+                          style={{ whiteSpace: "normal" }}
+                          title={r.degraded_reason ?? undefined}
+                        >
+                          <IconAlert size={11} /> won&apos;t work as set up
+                        </span>
+                        <div className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 3 }}>
+                          {r.degraded_reason}
+                        </div>
+                      </div>
+                    )}
                   </td>
                   <td title={describe(r)}>
                     <div className="ev-chips" style={{ marginBottom: 4 }}>

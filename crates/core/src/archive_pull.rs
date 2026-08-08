@@ -99,6 +99,27 @@ impl Target {
 
 /// Worker entry point. Spawned + joined in `lib.rs` like the other workers;
 /// re-reads live `Settings` each tick.
+/// Edge-triggered surface for the pull (docs/11 P2). Offsite backup has had a
+/// stall notification for a long time; the two-box archive — whose ENTIRE
+/// purpose is to hold a copy when the primary is gone — did not, so it failing
+/// looked exactly like it working. Silently not mirroring is this feature's
+/// precise failure mode.
+static PULL: crate::degraded::Latch = crate::degraded::Latch::new();
+
+fn pull_messages() -> crate::degraded::Messages<'static> {
+    crate::degraded::Messages {
+        kind: "archive",
+        down_title: "Second-copy backup is not running",
+        down_body: concat!(
+            "Cammy could not reach the other Cammy it mirrors footage from, so no new ",
+            "footage is being copied here. If the main box is lost right now, anything ",
+            "recorded since the last successful copy is not on this one."
+        ),
+        up_title: "Second-copy backup is running again",
+        up_body: "Footage is being mirrored from the other Cammy again.",
+    }
+}
+
 pub fn run(db: Db, default_recordings_dir: PathBuf, shutdown: Arc<AtomicBool>) {
     // In-memory exponential backoff multiplier for a persistently-unreachable
     // primary, so we don't hammer it every 60 s while it's down.
@@ -107,11 +128,16 @@ pub fn run(db: Db, default_recordings_dir: PathBuf, shutdown: Arc<AtomicBool>) {
         let mut wait = TICK;
         if let Some(target) = Target::from_settings(&db.settings()) {
             match run_once(&db, &target, &default_recordings_dir, &shutdown) {
-                Ok(()) => backoff_mult = 1,
+                Ok(()) => {
+                    backoff_mult = 1;
+                    PULL.report(&db, None, &pull_messages());
+                }
                 Err(e) => {
                     let msg = format!("{e:#}");
                     let _ = db.set_kv(KV_LAST_ERROR, &truncate(&msg, 300));
                     tracing::debug!(error = %msg, "archive pull tick failed");
+                    // One notification per outage, not one per 60 s retry.
+                    PULL.report(&db, Some(&msg), &pull_messages());
                     backoff_mult = (backoff_mult * 2).min(30); // up to ~30 min
                     wait = TICK * backoff_mult;
                 }

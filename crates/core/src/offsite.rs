@@ -125,16 +125,48 @@ impl Target {
 /// workers; re-reads live `Settings` each tick.
 pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
     let mut stale_notified = false;
+    // docs/11 P2 — segments ABANDONED (too large, or out of retries) never
+    // reached the stall check: `gaveup` rows leave the pending queue, so the
+    // backlog can be zero and "stalled" false while footage was quietly given
+    // up on. Tracked separately, and reported once per new batch.
+    let mut gaveup_reported: i64 = -1;
     while !shutdown.load(Ordering::Relaxed) {
         match Target::from_settings(&db.settings()) {
             Some(target) => {
                 run_once(&db, &target, &shutdown);
                 update_stale_notification(&db, &mut stale_notified);
+                if let Ok(stats) = db.offsite_stats() {
+                    let gaveup = stats.gaveup;
+                    // Seed on the first tick so a pre-existing count from an
+                    // earlier run isn't re-announced at every startup.
+                    if gaveup_reported < 0 {
+                        gaveup_reported = gaveup;
+                    } else if gaveup > gaveup_reported {
+                        let n = gaveup - gaveup_reported;
+                        gaveup_reported = gaveup;
+                        tracing::warn!(new = n, total = gaveup, "offsite: gave up on segments");
+                        let _ = db.add_notification(
+                            Utc::now().timestamp(),
+                            "backup",
+                            &format!(
+                                "{n} recording{} will never be backed up",
+                                if n == 1 { "" } else { "s" }
+                            ),
+                            Some(concat!(
+                                "Cammy gave up copying some footage offsite (too large, or it ",
+                                "failed too many times). Those recordings exist only on this ",
+                                "machine — the offsite copy has a hole in it."
+                            )),
+                            None,
+                        );
+                    }
+                }
             }
             None => {
-                // Disabled / unconfigured: reset the latch so re-enabling later
-                // starts from a clean "healthy" state.
+                // Disabled / unconfigured: reset the latches so re-enabling
+                // later starts from a clean "healthy" state.
                 stale_notified = false;
+                gaveup_reported = -1;
             }
         }
         crate::util::sleep_interruptible(TICK, &shutdown);

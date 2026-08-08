@@ -890,9 +890,20 @@ function PushCard({ onError }: { onError: (e: string) => void }) {
   const test = async () => {
     try {
       const r = await api.pushTest();
+      // docs/11 P2 — "sent to 0 devices (2 failed)" used to render GREEN. A test
+      // that reached nobody is a failed test; saying it succeeded is the exact
+      // "Test always claimed success" bug this project already fixed once.
+      if (r.sent === 0) {
+        toast.error(
+          r.failed
+            ? `Nothing was delivered — all ${r.failed} subscribed device${r.failed === 1 ? "" : "s"} rejected it. Turn notifications off and on again in this browser to re-subscribe.`
+            : "Nothing was delivered — no device is subscribed to notifications yet.",
+        );
+        return;
+      }
       toast.success(
         `Test push sent to ${r.sent} device${r.sent === 1 ? "" : "s"}` +
-          (r.failed ? ` (${r.failed} failed)` : ""),
+          (r.failed ? ` — but ${r.failed} other${r.failed === 1 ? "" : "s"} failed` : ""),
       );
     } catch (e) {
       onError(String(e));

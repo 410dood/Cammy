@@ -534,6 +534,11 @@ export interface AlarmRule {
    *  prompt_like (an "AI watch"-style best-effort gate). null = none. */
   attr_like?: string | null;
   min_score: number;
+  /** docs/11 P2 — this rule's AI gate cannot run as configured: it either can
+   *  never fire (an AI-description rule with no CLIP models) or fires without
+   *  being checked (an AI-verified rule with captions off). Server-computed. */
+  degraded?: boolean;
+  degraded_reason?: string | null;
   /** Legacy single action; kept in sync with actions[0]. Prefer `actions`. */
   action: string;
   target: string;

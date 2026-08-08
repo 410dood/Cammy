@@ -4743,7 +4743,7 @@ async fn snapshot(
 async fn list_alarms_api(
     State(st): State<AppState>,
     axum::Extension(p): axum::Extension<crate::auth::Principal>,
-) -> ApiResult<Json<Vec<crate::db::AlarmRule>>> {
+) -> ApiResult<Json<Vec<serde_json::Value>>> {
     let mut alarms = st.db.list_alarms()?;
     // A scoped user sees only global rules (camera_id = None) + rules for their
     // cameras — not forbidden cameras' rules (which carry their ids, watch
@@ -4751,7 +4751,47 @@ async fn list_alarms_api(
     if let Some(set) = &allowed_cameras(&st, &p)? {
         alarms.retain(|a| a.camera_id.is_none_or(|cid| set.contains(&cid)));
     }
-    Ok(Json(alarms))
+    // docs/11 P2 — a rule whose AI gate cannot run shows "on" like any other and
+    // is simply never heard from again. Say so on the rule itself rather than
+    // leaving the owner to infer it from silence.
+    let clip = crate::smart::models_present();
+    let s = st.db.settings();
+    let genai = s.genai_enabled && !s.genai_url.trim().is_empty();
+    let out = alarms
+        .into_iter()
+        .map(|a| {
+            let has_prompt = a
+                .prompt_like
+                .as_deref()
+                .is_some_and(|p| !p.trim().is_empty())
+                || a.attr_like.as_deref().is_some_and(|p| !p.trim().is_empty());
+            let has_vlm = a
+                .vlm_prompt
+                .as_deref()
+                .is_some_and(|p| !p.trim().is_empty());
+            // Order matters: "never fires" is worse than "fires unchecked".
+            let degraded = if has_prompt && !clip {
+                Some(concat!(
+                    "This rule matches on an AI description, but the smart-search ",
+                    "models aren't installed — so it can never fire."
+                ))
+            } else if has_vlm && !genai {
+                Some(concat!(
+                    "This rule asks the AI to confirm each alert, but AI captions are ",
+                    "off — so it fires WITHOUT being checked."
+                ))
+            } else {
+                None
+            };
+            let mut v = serde_json::to_value(&a).unwrap_or(serde_json::Value::Null);
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("degraded".into(), serde_json::json!(degraded.is_some()));
+                obj.insert("degraded_reason".into(), serde_json::json!(degraded));
+            }
+            v
+        })
+        .collect();
+    Ok(Json(out))
 }
 
 /// Shared validation for creating or replacing an alarm rule.

@@ -9,6 +9,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Edge-triggered surface for the enhanced-retention (aging) encoder
+/// (docs/11 P2). A failure marks the segment "reduced" anyway so a stubborn file
+/// is not retried forever — which is right, and which also meant a BROKEN
+/// encoder reported a working aging policy while the disk kept filling.
+static AGING: crate::degraded::Latch = crate::degraded::Latch::new();
+
+fn aging_messages() -> crate::degraded::Messages<'static> {
+    crate::degraded::Messages {
+        kind: "retention_error",
+        down_title: "Older footage is not being shrunk",
+        down_body: concat!(
+            "Cammy could not re-encode an older recording to save space, so the aging ",
+            "policy is not actually reclaiming anything and the disk will fill faster ",
+            "than expected. Check that ffmpeg works (Settings → Recording)."
+        ),
+        up_title: "Older footage is being shrunk again",
+        up_body: "The aging policy is reclaiming space again.",
+    }
+}
+
 use recorder::Recording;
 
 use crate::db::Db;
@@ -372,15 +392,22 @@ pub fn run(
                                         new_mb = format!("{:.1}", new_bytes as f64 / 1e6),
                                         "enhanced retention: segment reduced"
                                     );
+                                    AGING.report(&db, None, &aging_messages());
                                 }
                                 Err(e) => {
                                     // Mark anyway so a stubborn file is not
-                                    // retried forever.
+                                    // retried forever — but SAY SO. Marking a
+                                    // failure "reduced" is what let a broken
+                                    // encoder read as a working aging policy
+                                    // while the disk quietly kept filling
+                                    // (docs/11 P2).
                                     let _ = db.mark_segment_reduced(
                                         &path,
                                         p.metadata().map(|m| m.len()).unwrap_or(0),
                                     );
-                                    tracing::debug!("enhanced retention skip: {e:#}");
+                                    let msg = format!("{e:#}");
+                                    tracing::debug!("enhanced retention skip: {msg}");
+                                    AGING.report(&db, Some(&msg), &aging_messages());
                                 }
                             }
                         }

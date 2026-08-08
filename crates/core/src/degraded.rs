@@ -99,6 +99,91 @@ impl Default for Latch {
 mod tests {
     use super::*;
 
+    /// A house-style lint, and it exists because this bit three times in one
+    /// day: a Rust `\`-continued string literal looks fine in the editor, and
+    /// then `cargo fmt` collapses it onto ONE line and BAKES IN the indentation.
+    /// "Home                     Assistant" and "AI captions are off
+    /// <22 spaces> so it fires unchecked" both reached user-facing text that way.
+    ///
+    /// Long prose must use `concat!`. This scans the crate's own source for the
+    /// residue, which is cheap and catches it wherever it appears — no reviewer
+    /// has to notice a run of spaces inside a quoted string again.
+    #[test]
+    fn no_user_facing_string_carries_collapsed_indentation() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut bad: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("src dir").flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            // Stop at the test module: fixtures legitimately contain messy
+            // whitespace (a transcript normalizer is fed "  Help   me" on
+            // purpose), and nothing in there is user-facing.
+            let text = match text.find("\n#[cfg(test)]") {
+                Some(i) => &text[..i],
+                None => &text[..],
+            };
+            for (n, line) in text.lines().enumerate() {
+                // Only inside a quoted run on the line, and only for a gap that
+                // follows a word character — indentation residue always does.
+                // (Deliberately ignores `//` comment lines and ASCII-art blocks.)
+                let code = line.trim_start();
+                if code.starts_with("//") || code.starts_with("///") {
+                    continue;
+                }
+                let Some(first) = line.find('"') else {
+                    continue;
+                };
+                let Some(last) = line.rfind('"') else {
+                    continue;
+                };
+                if last <= first {
+                    continue;
+                }
+                let inner = &line[first + 1..last];
+                let bytes: Vec<char> = inner.chars().collect();
+                for i in 0..bytes.len().saturating_sub(3) {
+                    // Skip a run that follows an ESCAPE — `\n    foo` is
+                    // deliberate layout in a multi-line message (the evidence
+                    // report, the go2rtc YAML template), not collapsed source
+                    // indentation.
+                    if i > 0 && bytes[i - 1] == '\\' {
+                        continue;
+                    }
+                    if bytes[i].is_alphanumeric()
+                        || bytes[i] == ','
+                        || bytes[i] == '.'
+                        || bytes[i] == '—'
+                    {
+                        let run = bytes[i + 1..].iter().take_while(|c| **c == ' ').count();
+                        // 3+ is never intentional prose spacing; `\n    ` style
+                        // ASCII indentation in a multi-line message uses \n.
+                        if run >= 3 && bytes.get(i + 1 + run).is_some_and(|c| c.is_alphanumeric()) {
+                            bad.push(format!(
+                                "{}:{}: {}",
+                                path.file_name().unwrap_or_default().to_string_lossy(),
+                                n + 1,
+                                inner
+                                    .chars()
+                                    .skip(i.saturating_sub(30))
+                                    .take(90)
+                                    .collect::<String>()
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "string literal(s) carry collapsed indentation — use concat! for long prose:\n{}",
+            bad.join("\n")
+        );
+    }
+
     #[test]
     fn transition_is_edge_triggered_both_ways() {
         // Healthy and quiet → nothing to say.
