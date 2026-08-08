@@ -2758,6 +2758,96 @@ const DOWNLOADABLE: Record<string, { label: string; feature: string }[]> = {
   ],
 };
 
+/// docs/11 P1.7/P1.8 — a model PATH field that offers what is actually
+/// installed, instead of asking someone to spell a filename correctly.
+///
+/// Mirrors the per-camera `ModelOverrideField` (Cameras.tsx) but without its
+/// "Inherit global" sentinel — these ARE the global settings, so there is
+/// nothing above them to inherit from. A path the list doesn't contain (an
+/// absolute path, a model in a subfolder) falls back to a plain text box rather
+/// than being silently dropped, and "Other…" gets you there deliberately.
+///
+/// `statusKey` links the field to its row in the Models card, so the box that
+/// causes a "not downloaded" / "file is damaged" badge finally says so itself.
+function InstalledModelField({
+  label,
+  value,
+  onChange,
+  help,
+  placeholder,
+  statusKey,
+}: {
+  label: string;
+  value: string;
+  onChange: (m: string) => void;
+  help?: string;
+  placeholder?: string;
+  statusKey?: string;
+}) {
+  const [installed, setInstalled] = useState<string[] | null>(null);
+  const [cap, setCap] = useState<Capability | null>(null);
+  const [custom, setCustom] = useState(false);
+  useEffect(() => {
+    api
+      .modelsInstalled()
+      .then((r) => setInstalled(r.models))
+      .catch(() => setInstalled(null));
+    if (statusKey)
+      api
+        .capabilities()
+        .then((r) => setCap(r.features.find((f) => f.key === statusKey) ?? null))
+        .catch(() => setCap(null));
+  }, [statusKey]);
+  const known = installed !== null && (value === "" || installed.includes(value));
+  return (
+    <label className="field" style={{ minWidth: 240 }}>
+      {label}
+      {known && !custom ? (
+        <select
+          value={value}
+          onChange={(e) => {
+            if (e.target.value === "__other__") setCustom(true);
+            else onChange(e.target.value);
+          }}
+        >
+          <option value="">{placeholder ? `${placeholder} (not installed)` : "None"}</option>
+          {installed.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+          <option value="__other__">Other (type a path)…</option>
+        </select>
+      ) : (
+        <input
+          type="text"
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value.trim())}
+        />
+      )}
+      {cap && (
+        <span
+          className={`badge ${cap.present && cap.loadable !== false ? "ok" : cap.present ? "danger" : "warn"}`}
+          style={{ marginTop: 4, alignSelf: "flex-start", whiteSpace: "nowrap" }}
+          title={cap.error ?? undefined}
+        >
+          {cap.present && cap.loadable !== false
+            ? "installed and working"
+            : cap.present
+              ? "file is damaged"
+              : "not installed — this feature stays off"}
+        </span>
+      )}
+      {help && (
+        <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+          {help}
+        </span>
+      )}
+    </label>
+  );
+}
+
 function ModelsCard() {
   const toast = useToast();
   const [caps, setCaps] = useState<Capability[] | null>(null);
@@ -4352,7 +4442,31 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             </label>
           </div>
           <details className="adv" style={{ marginTop: 8 }}>
-            <summary>Advanced (clip length, aging, event history)</summary>
+            <summary>Advanced (clip length, aging, event history, streaming port)</summary>
+            {/* docs/11 P1.10 — this setting existed with no UI anywhere. If port
+                1984 is already taken (a Frigate co-install is the usual way),
+                the camera streamer cannot start and EVERY camera is dead, with
+                no knob to turn. System health names the streamer as the single
+                point of failure; this is where you fix it. */}
+            <div className="row" style={{ marginTop: 8 }}>
+              <label className="field" style={{ maxWidth: 220 }}>
+                camera streamer port
+                <input
+                  type="number"
+                  min="1"
+                  max="65535"
+                  value={s.go2rtc_api_port}
+                  onChange={(e) =>
+                    set({ go2rtc_api_port: num(e.target.value, s.go2rtc_api_port) })
+                  }
+                />
+                <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                  The local port go2rtc listens on (default 1984). Only change this if something
+                  else is already using it — if that port is taken, no camera can stream at all.
+                  Changing it restarts the streamer.
+                </span>
+              </label>
+            </div>
             <div className="row" style={{ marginTop: 8 }}>
               <label className="field">
                 segment length (s)
@@ -4386,30 +4500,27 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
             </div>
           </details>
           <div className="row" style={{ marginTop: 8 }}>
-            <label className="field">
-              detector model file
-              <input
-                type="text"
-                value={s.model_path}
-                onChange={(e) => set({ model_path: e.target.value })}
-              />
-              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                Path to the object detection model. Leave as is unless you know you need to
-                change it.
-              </span>
-            </label>
-            <label
-              className="field"
-              title="YOLOv8-pose model for the server-side body-pose worker (fall / crib standing / covered-face). Download yolov8n-pose.onnx and put it beside the detector model; the worker idles until it exists and a camera turns on 'body pose monitoring'."
-            >
-              pose model path (body pose monitoring)
-              <input
-                type="text"
-                value={s.pose_model ?? ""}
-                placeholder="yolov8n-pose.onnx"
-                onChange={(e) => set({ pose_model: e.target.value })}
-              />
-            </label>
+            {/* docs/11 P1.7 — this was a spell-the-path textbox while the
+                PER-CAMERA override had already become a picker of what is really
+                installed. A typo here breaks detection on every camera at once,
+                so it is the one that most needed the list. */}
+            <InstalledModelField
+              label="Detector model"
+              value={s.model_path}
+              onChange={(m) => set({ model_path: m })}
+              help="The object-detection model every camera uses unless it overrides it. Leave this alone unless you know you need a different one."
+            />
+            {/* docs/11 P1.8 — the pose path lived here, three tabs away from the
+                Models card that reports whether it loaded, with nothing linking
+                them. The badge and the box that causes it now sit together. */}
+            <InstalledModelField
+              label="Body-pose model"
+              value={s.pose_model ?? ""}
+              onChange={(m) => set({ pose_model: m })}
+              placeholder="yolov8n-pose.onnx"
+              help="Used by the fall / crib-standing / covered-face watch. There is no download for this one — export it locally — and the worker idles until it exists."
+              statusKey="pose"
+            />
             <label className="toggle field" title="Audio is saved in the recording as AAC.">
               record audio
               <input

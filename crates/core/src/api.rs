@@ -4898,22 +4898,42 @@ async fn fs_list_api(
 /// directory, so the per-camera "model override" can be a select of real
 /// choices instead of a spell-the-filename textbox. Non-detector models
 /// (CLIP / plates / faces / audio) are filtered out by their known names.
-async fn models_installed_api() -> Json<serde_json::Value> {
-    let known_non_detector = [
-        crate::smart::VISION_MODEL,
-        crate::smart::TEXT_MODEL,
-        crate::audio::MODEL,
-        crate::lpr::DET_MODEL,
-        crate::lpr::REC_MODEL,
-        "det_10g.onnx",
-        "w600k_r50.onnx",
+async fn models_installed_api(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let s = st.db.settings();
+    let mut known_non_detector: Vec<String> = vec![
+        crate::smart::VISION_MODEL.to_string(),
+        crate::smart::TEXT_MODEL.to_string(),
+        crate::audio::MODEL.to_string(),
+        crate::lpr::DET_MODEL.to_string(),
+        crate::lpr::REC_MODEL.to_string(),
+        "det_10g.onnx".to_string(),
+        "w600k_r50.onnx".to_string(),
     ];
+    // The POSE model is not an object detector — its head is 56 channels, not
+    // 84 — and it was missing from this list. That only mis-offered a per-camera
+    // override before; now that the GLOBAL detector model is a picker too, one
+    // wrong click would point ALL detection at it. Read the configured path
+    // rather than hard-coding a filename, so a locally-exported pose model under
+    // any name is still excluded.
+    for extra in [
+        s.pose_model.trim(),
+        s.face_det_model.trim(),
+        s.face_rec_model.trim(),
+    ] {
+        if let Some(name) = std::path::Path::new(extra)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|n| !n.is_empty())
+        {
+            known_non_detector.push(name);
+        }
+    }
     let mut models: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(".") {
         for entry in rd.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.to_ascii_lowercase().ends_with(".onnx")
-                && !known_non_detector.contains(&name.as_str())
+                && !known_non_detector.iter().any(|k| k == &name)
             {
                 models.push(name);
             }
