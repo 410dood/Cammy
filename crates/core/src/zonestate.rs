@@ -70,14 +70,28 @@ pub fn zone_pixel_bbox(points: &[[f32; 2]], fw: f32, fh: f32) -> Option<(u32, u3
 /// stale/short embedding) scores 0 via [`crate::smart::cosine`], collapsing the
 /// margin to 0 → `None` (fail-safe, never a wrong reading). Pure + unit-tested.
 pub fn classify_state(crop_emb: &[f32], open_emb: &[f32], closed_emb: &[f32]) -> Option<bool> {
-    let open = crate::smart::cosine(crop_emb, open_emb);
-    let closed = crate::smart::cosine(crop_emb, closed_emb);
+    let (open, closed) = score_state(crop_emb, open_emb, closed_emb);
     let diff = open - closed;
     if diff.abs() < STATE_MARGIN {
         None
     } else {
         Some(diff > 0.0)
     }
+}
+
+/// The two raw cosines behind [`classify_state`], `(open, closed)`.
+///
+/// [`classify_state`] deliberately returns only a verdict, which is right for
+/// the pipeline and useless for TUNING: [`STATE_MARGIN`] is documented as a v0
+/// guess that "likely needs live tuning", and nobody could see the numbers it is
+/// compared against. The zone-state Test button shows them, so the margin can be
+/// set from real garages instead of guessed. Kept beside `classify_state` so
+/// there is exactly one definition of the comparison.
+pub fn score_state(crop_emb: &[f32], open_emb: &[f32], closed_emb: &[f32]) -> (f32, f32) {
+    (
+        crate::smart::cosine(crop_emb, open_emb),
+        crate::smart::cosine(crop_emb, closed_emb),
+    )
 }
 
 #[cfg(test)]

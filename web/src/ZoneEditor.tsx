@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, CrossDir, GroundCalib, PolyZone, Tripwire, ZoneKind } from "./api";
+import { api, Camera, CrossDir, GroundCalib, PolyZone, Tripwire, ZoneKind } from "./api";
 import { IconRefresh } from "./icons";
 import { TogglePill, useDialog } from "./ui";
 import { LabelChips } from "./tuning";
@@ -44,6 +44,108 @@ export const COLORS: Record<string, string> = {
  * on a still frame from the camera. All coordinates are stored as 0..1 frame
  * fractions so they survive resolution and sub-stream changes.
  */
+/// docs/11 P1.6 — "Test on the current frame" for the zone-state prompts.
+///
+/// The other two free-text AI prompts each got a Test; this one — the only one
+/// with a hand-tuned threshold behind it — did not, so writing the two
+/// descriptions was pure guesswork. It shows BOTH cosines and the margin they
+/// are compared against, because that margin (`STATE_MARGIN`) has been carrying
+/// a "likely needs live tuning" comment since it shipped and nobody could see
+/// the numbers it judges.
+function ZoneStateTest({
+  cameraId,
+  points,
+  openPrompt,
+  closedPrompt,
+}: {
+  cameraId: number;
+  points: [number, number][];
+  openPrompt: string;
+  closedPrompt: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<Awaited<ReturnType<typeof api.zoneStateTest>> | null>(null);
+  // Any edit invalidates the reading — a stale verdict beside changed text is
+  // worse than none.
+  useEffect(() => setRes(null), [points, openPrompt, closedPrompt]);
+  const ready = openPrompt.trim() !== "" && closedPrompt.trim() !== "";
+  const fmt = (n: number) => n.toFixed(3);
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button
+        type="button"
+        className="btn btn-ghost ev-act"
+        disabled={!ready || busy}
+        title={
+          ready
+            ? "Score both descriptions against this camera's picture right now"
+            : "Fill in both descriptions first"
+        }
+        onClick={async () => {
+          setBusy(true);
+          try {
+            setRes(
+              await api.zoneStateTest(cameraId, {
+                points,
+                open_prompt: openPrompt,
+                closed_prompt: closedPrompt,
+              }),
+            );
+          } catch (e) {
+            setRes({ ok: false, error: e instanceof Error ? e.message : String(e) });
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "Looking…" : "Test on the current picture"}
+      </button>
+      {res && !res.ok && (
+        <p className="muted" style={{ color: "var(--danger)", fontSize: "var(--text-xs)", marginTop: 4 }}>
+          {res.error}
+        </p>
+      )}
+      {res?.ok && (
+        <div className="row" style={{ gap: 10, alignItems: "flex-start", marginTop: 6 }}>
+          {res.crop && (
+            <img
+              src={res.crop}
+              alt="The part of the picture the AI looked at"
+              style={{ maxWidth: 160, borderRadius: 6, border: "1px solid var(--border)" }}
+            />
+          )}
+          <div style={{ fontSize: "var(--text-xs)" }}>
+            <div
+              style={{
+                color:
+                  res.verdict === true || res.verdict === false ? "var(--success)" : "var(--warn)",
+                fontWeight: 590,
+              }}
+            >
+              {res.verdict === true
+                ? "Reads as OPEN right now."
+                : res.verdict === false
+                  ? "Reads as CLOSED right now."
+                  : "Too close to call — the two descriptions score almost the same, so nothing would fire."}
+            </div>
+            <div className="muted" style={{ marginTop: 3 }}>
+              open {fmt(res.open_score ?? 0)} · closed {fmt(res.closed_score ?? 0)} · difference{" "}
+              {fmt(Math.abs((res.open_score ?? 0) - (res.closed_score ?? 0)))} (needs{" "}
+              {fmt(res.margin_needed ?? 0)})
+              {res.crop_w ? ` · looked at ${res.crop_w}×${res.crop_h} pixels` : ""}
+            </div>
+            <div className="muted" style={{ marginTop: 3 }}>
+              If it reads the wrong way, make the two descriptions more different from each other.
+              Live detection also waits for two matching readings about 15&nbsp;s apart, so one
+              close call here isn't a broken rule.
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ZoneEditor({
   camera,
   zones,
@@ -835,6 +937,14 @@ export default function ZoneEditor({
                         />
                       </label>
                     </div>
+                    {clipAvailable !== false && (
+                      <ZoneStateTest
+                        cameraId={camera.id}
+                        points={z.points}
+                        openPrompt={z.open_prompt ?? ""}
+                        closedPrompt={z.closed_prompt ?? ""}
+                      />
+                    )}
                     <p className="muted" style={{ fontSize: "var(--text-xs)", marginTop: 4 }}>
                       Needs the smart-search (CLIP) models — without them this does nothing (no
                       event). Best-effort scene reading, re-checked about every 15&nbsp;s; not a

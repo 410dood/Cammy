@@ -1115,6 +1115,28 @@ export const api = {
     }>(`/api/fs_list?path=${encodeURIComponent(path)}`),
   /** Detector .onnx files present in the app directory (P3). */
   modelsInstalled: () => req<{ models: string[] }>("/api/models/installed"),
+  /** docs/11 P1.6 — score both zone-state descriptions against the camera's
+   *  CURRENT frame and hand back the raw cosines, so the prompts (and the
+   *  margin they are compared against) can be tuned from what a real door
+   *  actually reads instead of guessed. */
+  zoneStateTest: (
+    cameraId: number,
+    body: { points: [number, number][]; open_prompt: string; closed_prompt: string },
+  ) =>
+    req<{
+      ok: boolean;
+      error?: string;
+      open_score?: number;
+      closed_score?: number;
+      margin_needed?: number;
+      verdict?: boolean | null;
+      crop?: string;
+      crop_w?: number;
+      crop_h?: number;
+    }>(`/api/cameras/${cameraId}/zone_state_test`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   /** Echo this request's headers as the server sees them (SSO debugging;
    *  cookie/authorization redacted server-side). */
   echoHeaders: () => req<Record<string, string>>("/api/echo_headers"),

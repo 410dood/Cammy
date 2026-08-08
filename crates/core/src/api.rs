@@ -153,6 +153,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/genai/probe", axum::routing::post(genai_probe_api))
         .route("/api/alarms/vlm_test", axum::routing::post(vlm_test_api))
+        .route(
+            "/api/cameras/{id}/zone_state_test",
+            axum::routing::post(zone_state_test_api),
+        )
         .route("/api/alarms/stats", get(alarm_stats_api))
         .route("/api/onvif/inspect", get(onvif_inspect))
         .route("/api/tokens", get(list_tokens).post(create_token))
@@ -2555,6 +2559,116 @@ async fn deter_test(
 /// Proxy the camera's current decoded frame from go2rtc as a same-origin JPEG.
 /// The zone/mask editor draws on top of this still; serving it through the core
 /// API avoids the cross-origin taint that blocks reading go2rtc pixels directly.
+#[derive(Deserialize)]
+struct ZoneStateTestReq {
+    /// The polygon the user is drawing RIGHT NOW (0..1 fractions), not the saved
+    /// one — they are tuning, so scoring the stored zone would be a lie.
+    points: Vec<[f32; 2]>,
+    open_prompt: String,
+    closed_prompt: String,
+}
+
+/// POST /api/cameras/{id}/zone_state_test — docs/11 P1.6: score both zone-state
+/// prompts against the CURRENT frame and show the numbers.
+///
+/// The other two free-text AI prompts (the VLM question, the "AI watch"
+/// description) each got a Test; this one — the only one with a hand-tuned
+/// threshold behind it — did not, so `open_prompt` / `closed_prompt` were pure
+/// guesswork and `STATE_MARGIN` stayed a documented v0 guess because nobody
+/// could see what it was comparing.
+///
+/// Uses the live frame (the one the user is dragging the polygon over), not a
+/// stored snapshot, so the test matches what they are looking at. Runs ONE
+/// reading with no debounce: the live classifier needs two agreeing readings
+/// ~15 s apart, which the UI says.
+async fn zone_state_test_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<ZoneStateTestReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (open_p, closed_p) = (
+        req.open_prompt.trim().to_string(),
+        req.closed_prompt.trim().to_string(),
+    );
+    if open_p.is_empty() || closed_p.is_empty() {
+        return Err(bad_request("fill in both descriptions first"));
+    }
+    let cam = st.db.get_camera(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, id)?;
+    if !crate::smart::models_present() {
+        return Ok(Json(serde_json::json!({
+            "ok": false,
+            "error": "The smart-search models aren't installed, so this can't run                       (Settings → Detection & AI → Models).",
+        })));
+    }
+    let url = format!("{}/api/frame.jpeg?src={}", st.go2rtc.api_base(), cam.name);
+    let points = req.points.clone();
+    let out = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        use std::io::Read as _;
+        let resp = ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .call()
+            .map_err(|e| format!("could not get a picture from this camera: {e}"))?;
+        let mut buf = Vec::new();
+        resp.into_reader()
+            .take(32 * 1024 * 1024)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("could not read the picture: {e}"))?;
+        let frame =
+            image::load_from_memory(&buf).map_err(|e| format!("unreadable picture: {e}"))?;
+        let (fw, fh) = (frame.width() as f32, frame.height() as f32);
+        let (zx, zy, zw, zh) =
+            crate::zonestate::zone_pixel_bbox(&points, fw, fh).ok_or_else(|| {
+                "that area is too small or has too few corners to look at".to_string()
+            })?;
+        // The same floor the live classifier applies. Without saying so, a zone
+        // drawn as a thin sliver simply never classifies and nothing explains why.
+        if zw < 24 || zh < 24 {
+            // NOTE: not a `\`-continued literal. `cargo fmt` collapses those onto
+            // one line and BAKES IN the indentation, which is how "Draw a
+            // <18 spaces> bigger box" reached a user-facing string once already.
+            return Err(format!(
+                "that area is only {zw}×{zh} pixels — too small for the AI to read. {}",
+                "Draw a bigger box around the door or gate."
+            ));
+        }
+        let crop = image::GenericImageView::view(&frame, zx, zy, zw, zh).to_image();
+        let crop = image::DynamicImage::ImageRgba8(crop);
+        let crop_emb = crate::smart::embed_image(&crop).map_err(|e| format!("{e:#}"))?;
+        let open_emb = crate::smart::embed_text(&open_p).map_err(|e| format!("{e:#}"))?;
+        let closed_emb = crate::smart::embed_text(&closed_p).map_err(|e| format!("{e:#}"))?;
+        let (open, closed) = crate::zonestate::score_state(&crop_emb, &open_emb, &closed_emb);
+        let verdict = crate::zonestate::classify_state(&crop_emb, &open_emb, &closed_emb);
+        // Hand back the exact crop that was scored: a zone that looks right on the
+        // full frame can still be pointing at the wrong thing once cropped.
+        let mut jpeg = Vec::new();
+        let _ = crop.write_to(
+            &mut std::io::Cursor::new(&mut jpeg),
+            image::ImageFormat::Jpeg,
+        );
+        Ok(serde_json::json!({
+            "ok": true,
+            "open_score": open,
+            "closed_score": closed,
+            "margin_needed": crate::zonestate::STATE_MARGIN,
+            "verdict": verdict,
+            "crop_w": zw,
+            "crop_h": zh,
+            "crop": format!(
+                "data:image/jpeg;base64,{}",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &jpeg)
+            ),
+        }))
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(match out {
+        Ok(v) => v,
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }))
+}
+
 async fn camera_frame(
     State(st): State<AppState>,
     Path(id): Path<i64>,
