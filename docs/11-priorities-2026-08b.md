@@ -20,28 +20,73 @@ degradation costs.
 
 ## P0 — silent failures that lose alerts or footage (fix first)
 
-1. **Detector load failure is invisible AND mis-diagnosed as "offline"**
+> **STATUS 2026-08-07: P0.1–P0.6 are SHIPPED** (`77dc3c6`, `7c04282`, `8a37755`,
+> `50d6d1b`, `a435fa1`), each live-validated on :8081 with owner state
+> snapshotted and restored. P0.7–P0.9 are the Phase 2 watchdog cluster.
+>
+> Three things the audit did not name, found while verifying:
+> - A lost `VlmGate` job is **unrecoverable**, not merely late: `notify::ready`
+>   stamps the cooldown and `take_suppressed` drains the burst counter at the
+>   dispatch site, *before* the hand-off. Nothing retries it.
+> - The GenAI worker discarded its whole backlog on shutdown, silently.
+> - `parse_response` guarded on BYTES and indexed by CHARS, so any caption over
+>   280 bytes but under 280 chars (one accent or emoji) **panicked the GenAI
+>   worker dead for the life of the process** — captions *and* every deferred
+>   VLM alarm fire, gone until restart. Fixed with the queue work.
+>
+> Also measured live and fixed beyond the letter of P0.2: with a stalled model,
+> a fired alarm sat behind six queued captions (~6 min late). Split caps only
+> help at saturation, so alarm fires now have their own channel and are always
+> taken first — verified delivering an alert with 12 captions queued ahead of it.
+
+1. ~~**Detector load failure is invisible AND mis-diagnosed as "offline"**~~
+   **DONE `77dc3c6`** — `CamHealth.detector_error` is a separate axis from
+   `last_error`; the loop no longer `continue`s past the frame fetch, so
+   reachability/tamper/motion keep working and only detection is skipped;
+   "Model failed to load" badge on Cameras + an amber Live chip. Live: the
+   camera read `online: true` with the model error named, and cleared on repair.
    (`pipeline.rs:487`). A bad/missing model or EP init failure `debug!`s and
    `continue`s *before* the frame fetch, so `last_frame_ts` stays None and the
    camera reads **offline** — the owner chases a network fault while the model
    is broken. Fix: `CamHealth.detector_error`, a distinct "Model failed to
    load" badge on Cameras, `warn!`.
-2. **The GenAI queue is unbounded and carries ALARM FIRES** (`lib.rs:208`,
+2. ~~**The GenAI queue is unbounded and carries ALARM FIRES**~~ **DONE
+   `7c04282`+`a435fa1`** — explicit depth counter (not `sync_channel`, whose
+   send blocks the detection thread); captions shed at 64, alarm fires at 512;
+   alarm fires on their own channel, taken first; shutdown drains alarms and
+   SAYS what it could not deliver; `zoomy_genai_queue_depth` +
+   `zoomy_genai_jobs_shed_total`; edge-triggered "AI queue backed up" with
+   hysteresis. Was: (`lib.rs:208`,
    drained one multi-second vision call at a time in `genai.rs`). A busy
    camera + slow model = alerts minutes-to-hours late, RAM growth, zero
    signal. Fix: bounded channel + depth gauge in `/api/metrics` + "AI queue
    backed up" notification. (Long-known open item — now measured as P0.)
-3. **Alarm-dispatch drops are log-only** (`notify.rs:129-137`): queue full at
+3. ~~**Alarm-dispatch drops are log-only**~~ **DONE `7c04282`** — counted,
+   persisted as a lifetime total in KV, and one in-app notification per outage
+   ("N alerts could not be delivered") plus a recovery notice;
+   `zoomy_alarm_queue_depth` + `zoomy_alarm_drops_total`. Was:
+   (`notify.rs:129-137`): queue full at
    512 → the alert is discarded at `warn!`. Fix: persisted drop counter + one
    in-app notification ("N alerts could not be delivered").
-4. **WebPush kills itself permanently on a VAPID error** (`push.rs:38-43`):
+4. ~~**WebPush kills itself permanently on a VAPID error**~~ **DONE
+   `8a37755`** — retried with bounded backoff; per-user EMAIL (delivered from
+   the same worker, which the audit did not note) keeps flowing while push is
+   down; edge-triggered `push_unavailable` + recovery. Was: (`push.rs:38-43`):
    the worker returns; subscribe/test UI keeps "working"; no push ever
    arrives. Fix: retry loop + a `push_unavailable` notification.
-5. **The GLOBAL webhook drops failures at `debug!`** (`pipeline.rs:2234`) —
+5. ~~**The GLOBAL webhook drops failures at `debug!`**~~ **DONE `50d6d1b`** —
+   all THREE senders (detections, analytics/residential, hand signals) now share
+   `notify::post_global_webhook` behind one `degraded::Latch`, so one dead
+   endpoint = one notification. Both edges seen live. Was: (`pipeline.rs:2234`) —
    the per-rule path was fixed (`b6b42ee`) but the every-event
    `Settings.webhook_url` (the main HA integration) was missed. Fix:
    edge-triggered unreachable/recovered notification like `genai::err_transition`.
-6. **VLM-gated rules fail open silently** (`genai.rs:443`): the
+6. ~~**VLM-gated rules fail open silently**~~ **DONE `50d6d1b`** —
+   `vlm_confirm` returns reachability (it used to collapse "unparseable answer"
+   and "no model" into the same `None`, so the signal did not exist); the worker
+   runs the same `err_transition` as captions; `notify::fire_unverified` appends
+   "sent WITHOUT the AI check" to the alert. Live: an alert arrived stamped. Was:
+   (`genai.rs:443`): the
    endpoint-unreachable notification only covers Caption jobs, so an owner
    using only `vlm_prompt` rules never learns their Ollama is down — every
    "AI-verified" rule fires unverified. Fix: run `err_transition` on the
@@ -223,9 +268,11 @@ model picker. Also: pool2 needs **no** power-cycle (schedule, not fault —
 
 ## Sequencing recommendation
 
-1. **P0.1–P0.6** — the alert-losing cluster (detector badge, bounded genai
-   queue, dispatch-drop notification, push retry, global webhook, VLM-gate
-   notice). Each is small; together they close the "armed but silent" class.
+1. ~~**P0.1–P0.6**~~ **DONE 2026-08-07** — the alert-losing cluster. New shared
+   infrastructure to reuse: **`crates/core/src/degraded.rs`** — a `Latch`
+   (`report(&db, err, &Messages{kind, down_title, down_body, up_title, up_body})`)
+   plus a pure `transition(ok, notified)`. Every further "surface a silent
+   failure" row should go through it rather than re-deriving the latch.
 2. **P0.7–P0.9 + the P2 trust-surfacing rows** as one "watchdog" feature:
    worker liveness + go2rtc + MQTT + HomeKit state feeding a System health
    pane (P3.1) and a real `/api/health`.

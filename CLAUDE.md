@@ -14,9 +14,102 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — UX phases 1-3 + two audit sweeps, 2026-08-07
+## Current status: v0.4 — docs/11 Phase 1 (the alert-losing cluster) shipped, 2026-08-07
 
-### Latest: second priority sweep → docs/11, 2026-08-07
+### Latest: docs/11 P0.1–P0.6 — "armed but silent" closed, 2026-08-07
+
+Five commits (`77dc3c6`, `7c04282`, `8a37755`, `50d6d1b`, `a435fa1`), **267 core
+tests** (was 257), clippy -D + fmt clean, tsc + vite green, release-rebuilt and
+**every fix live-validated on :8081** with owner state snapshotted before and
+restored after (verified: settings diff NONE, 0 cameras differing, alarm rule ids
+unchanged).
+
+**New shared primitive: `crates/core/src/degraded.rs`.** Every silent-failure fix
+in this tree has one shape — tell the owner ONCE when something breaks and ONCE
+when it recovers. `genai::err_transition` and the offsite/health latches had each
+re-derived it. `Latch::report(&db, err, &Messages{kind, down_title, down_body,
+up_title, up_body})` + a pure `transition(ok, notified)` is that logic in one
+place. **Use it for every further degradation surface** rather than re-deriving.
+
+- **P0.1 a broken model read as "camera offline"** (`77dc3c6`). The detector-load
+  failure `debug!`d and `continue`d *before* the frame fetch, so `frame_ok` never
+  ran, `last_frame_ts` stayed None, and `is_online` said offline — sending the
+  owner after a network fault while the real problem was the `.onnx`. New
+  `CamHealth.detector_error` is a SEPARATE axis from `last_error` (stream vs
+  model fail for different reasons and need different fixes). The loop carries on
+  to the frame fetch, so reachability, tamper detection and the motion gate keep
+  working; only the detector run is skipped. warn! once per distinct message (the
+  loop is ~1 Hz per camera), INFO on recovery, pruned for deleted AND
+  stopped-detecting cameras. Cameras shows "⚠ Model failed to load", Live goes
+  amber (a warning about the AI, not the offline grey). **LIVE: pool3 with a
+  bogus model override read `online: true, recording: true` with the error named;
+  restoring it cleared the badge and inference resumed.** Also: `/api/status`
+  cloned the whole status board once PER CAMERA; now once per response.
+- **P0.2 the GenAI queue was unbounded and carries ALARM FIRES**
+  (`7c04282`, `a435fa1`). Three things the audit missed, found while verifying:
+  (1) **a lost VlmGate job is unrecoverable, not late** — `notify::ready` stamps
+  the cooldown and `take_suppressed` drains the burst counter at the dispatch
+  site, BEFORE the hand-off, so nothing retries it; (2) shutdown discarded the
+  whole backlog in silence; (3) captions and alarm fires shared one FIFO. Now an
+  explicit depth counter (NOT `sync_channel` — a bounded send blocks the
+  detection thread, the exact stall the design exists to prevent), captions shed
+  at 64 and alarms not until 512, **alarm fires on their own channel and always
+  taken first**, shutdown drains alarms for 5 s and writes a notification naming
+  what went unsent, plus `zoomy_genai_queue_depth` / `zoomy_genai_jobs_shed_total`
+  and an edge-triggered "AI queue backed up" with hysteresis. **LIVE (black-hole
+  endpoint that accepts and never answers + ptz-cam on `motion_threshold=0`): the
+  depth gauge tracked a real backlog, and a fired VLM rule sat behind SIX queued
+  captions at 60 s each (~6 min late) — which is why priority shipped; after it,
+  an alert was delivered with TWELVE captions queued ahead of it.**
+- **P0.3 alarm-dispatch drops were log-only** (`7c04282`). Queue full at 512
+  discarded the alert at `warn!`, which the owner never reads. Now counted, a
+  lifetime total persisted in KV (a restart can't make a history of dropped
+  alerts look like a clean slate), ONE notification per outage + a recovery
+  notice, `zoomy_alarm_queue_depth` / `zoomy_alarm_drops_total` (family omitted
+  entirely with no dispatcher, rather than reported as a healthy zero).
+- **P0.4 WebPush killed itself permanently on a VAPID error** (`8a37755`).
+  Worse than recorded: that worker is ALSO the only per-user EMAIL path, so one
+  transient failure ended push AND email until restart while the subscribe/Test
+  UI kept reporting success. Now retried with bounded backoff, email keeps
+  flowing while push is down, edge-triggered `push_unavailable` + recovery.
+- **P0.5 the GLOBAL webhook dropped every failure at `debug!`** (`50d6d1b`).
+  The per-rule path was fixed in `b6b42ee`; the every-event `Settings.webhook_url`
+  — the main HA integration — was missed, and there were **three** silent senders
+  with their own copy of the request (detections, analytics/residential, hand
+  signals). All now share `notify::post_global_webhook` behind one Latch, so one
+  dead endpoint = one notification. **LIVE: both edges** — "Webhook is not
+  receiving events" from a real detection, then "Webhook is receiving events
+  again" once repointed at a target that logged the 245-byte delivery.
+- **P0.6 VLM-gated rules failed open in silence** (`50d6d1b`). `vlm_confirm`
+  collapsed "unparseable answer" and "no model" into the same `None` (`_ =>
+  None`), so the reachability signal never existed: an owner running only
+  `vlm_prompt` rules got no hint their Ollama was down while every "AI-verified"
+  rule fired unverified. It now returns the Outcome, the worker runs the same
+  `err_transition` as captions (the describe-only path too — it makes no other
+  call), and `notify::fire_unverified` appends "— sent WITHOUT the AI check (the
+  vision model could not be reached)". **LIVE: an alert arrived stamped.** For
+  contrast, this install's own "front-door car (AI-verified)" rule has been
+  writing "car (78%) on front-door" with no way to tell verified from not.
+- **A real panic that would have ended the GenAI worker for good** (`a435fa1`,
+  found while mapping P0.7's panic sites): `parse_response` guarded on
+  `trimmed.len()` (BYTES) then indexed `char_indices().nth(279)` (CHARS), so any
+  caption over 280 bytes but under 280 chars — **one accent or emoji is enough** —
+  unwrapped a `None`. Nothing restarts that thread: captions and every deferred
+  VLM alarm fire would have stopped silently until restart.
+
+**Next: Phase 2** — the watchdog cluster (P0.7 worker liveness, P0.8 capabilities
+loadability, P0.9 MQTT state, + the P2 trust rows: go2rtc/HomeKit state, a real
+`/api/health`) feeding a System health pane (P3.1). Recon is done; note
+`genai.rs`'s panic was one of several real ones — `smart.rs:89/102` hold a mutex
+across ONNX inference (poisons permanently) and `go2rtc.rs:230`'s child-mutex
+expect would silently end go2rtc supervision.
+
+**Known, not caused by this work:** the generated `data/go2rtc.yaml` contained a
+newly-enabled camera that the RUNNING go2rtc did not have in `/api/streams`
+(seen when briefly enabling the synthetic `driveway` camera) — i.e. a camera can
+be enabled and never restreamed. Worth a look during Phase 2's go2rtc state work.
+
+### Earlier: second priority sweep → docs/11, 2026-08-07
 
 With docs/10 fully shipped, a 3-agent audit (fresh control-UX pass over
 web/src · capability-vs-surface + silent-failure sweep of crates/core ·
