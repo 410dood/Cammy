@@ -201,6 +201,31 @@ degradation costs.
 
 ## P2 — medium (trust surfacing + mechanical UX swaps)
 
+> **STATUS 2026-08-07: the TRUST half is done; the mechanical half is partly
+> done.** Shipped: go2rtc/HomeKit state + a real `/api/health` (`3310177`,
+> `4d6e06b`); retention-encoder failures, face-stage failures, archive stall,
+> offsite give-ups, and degraded prompt/VLM rules (`8ee17eb`); the push-test
+> success lie (`8ee17eb`); the dead-end fixes on Home / Recordings / Alarms /
+> offsite / archive (`27b5bf2`); loiter → DurationPicker + LIVE occupancy count,
+> per-camera detection interval → InheritSlider, trigger pre/post-roll →
+> DurationPicker (`e85b850`).
+>
+> **Still open in this section** (all small, all mechanical): absence hours,
+> per-camera retention days → pills + span estimate, `detect_workers` context,
+> quality-aging toggle + savings estimate, keep-events readout, segment length
+> presets, gesture hold-time chips, the speech-model field duplicating the
+> ModelsCard download + `TranscriptionReadiness` linking to GitHub instead of
+> the in-app downloader, transcription gating on capabilities, ObjectPicker
+> validating against the model's class list, the Onboarding/Family ntfy
+> hard-coding, probe-before-enable on the brand-template Add (the endpoint now
+> EXISTS — `POST /api/stream_probe` — so this is a UI wiring job), and the
+> tripwire/residential-flag labelling polish.
+>
+> New reusable pieces for whoever picks these up: `degraded::Latch`,
+> `/api/system` + `web/src/SystemHealth.tsx`, `POST /api/stream_probe`,
+> `models::probe`, and the `no_user_facing_string_carries_collapsed_indentation`
+> lint (long prose must use `concat!`).
+
 - ~~**go2rtc death has no global signal**~~ **DONE `3310177`** — `Go2RtcState
   {running, restarts, last_error}` (keeping the exit status `try_wait` was
   discarding), in `/api/status`'s sibling `/api/system` and on the System health

@@ -14,9 +14,61 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — docs/11 P0 + P1 COMPLETE, 2026-08-07
+## Current status: v0.4 — docs/11 P0 + P1 complete, P2 trust half done, 2026-08-07
 
-### Latest: docs/11 Phase 3 — all ten P1 control-UX gaps, 2026-08-07
+### Latest: docs/11 Phase 4 — the P2 sweep (trust half + dead ends), 2026-08-07
+
+`8ee17eb`, `27b5bf2`, `e85b850`. **274 core tests**, clippy -D + fmt clean, tsc +
+vite + 14 web tests green.
+
+**Five more silent degradations, all through `degraded::Latch`:** face
+recognition failing at `debug!` (a DEFAULT-ON feature — everyone reads as an
+unknown face forever and the People page just looks empty); the enhanced-retention
+encoder marking failures "reduced" (right, so a stubborn file isn't retried
+forever — and it meant a broken encoder reported a working aging policy while the
+disk filled); archive-pull having no stall notification though offsite has had
+one for ages (silently not mirroring is that feature's *precise* failure mode);
+offsite `gaveup` never notifying (abandoned segments LEAVE the pending queue, so
+backlog can read zero and "stalled" false while footage was given up on); and
+`prompt_like`/`vlm_prompt` rules going dead — `GET /api/alarms` now computes
+`degraded` + a reason, stated differently for the two cases because they differ:
+an AI-description rule with no CLIP models **can never fire**, an AI-verified rule
+with captions off **fires unchecked**. **Live: turning captions off flipped both
+VLM rules and left the other three alone.**
+
+**The push Test toasted SUCCESS on total failure** — "sent to 0 devices (2
+failed)" rendered green. Same shape as the "Test always claimed success" bug this
+project already fixed once.
+
+**Dead ends** (`27b5bf2`): Home's "Cameras online" / "Free space" tiles, the
+Recordings "Nearly full" badge, and the Alarms "no zone named X — may never fire"
+badge all now go where the fix is; the offsite error row gets its Test inline;
+the archive error row says when it will retry.
+
+**Control swaps** (`e85b850`): zone loiter → `DurationPicker`, zone occupancy
+limit now shows the **live count inside** (already published, never surfaced),
+per-camera detection interval → the same `InheritSlider` the global one uses (the
+same decision had two different shapes depending on where you made it), trigger
+pre/post-roll → `DurationPicker`.
+
+**A lint for a mistake I made three times in one day.** A Rust `\`-continued
+string literal looks right in the editor, then `cargo fmt` collapses it and
+BAKES IN the indentation — it shipped "Home <21 spaces> Assistant" to a
+notification, "Draw a <18 spaces> bigger box" to an error, and did it again in
+the alarm-rule text. `degraded.rs` now scans the crate's own source for the
+residue (skipping `\n`-escapes and test fixtures) and **was verified to fail
+against an injected instance**. Long prose in this tree uses `concat!`.
+
+**What's left in docs/11 P2** — all small and mechanical, listed in the doc:
+absence hours, per-camera retention days → pills, `detect_workers` context,
+quality-aging toggle, keep-events readout, segment-length presets, gesture
+hold-time chips, the speech-model field duplicating the ModelsCard download,
+transcription capability gating, ObjectPicker validating against the model's
+class list, the Onboarding/Family ntfy hard-coding, probe-before-enable on the
+brand-template Add (**the endpoint now exists** — `POST /api/stream_probe` — so
+it's UI wiring), and tripwire/residential-flag labelling. P3 is untouched.
+
+### Earlier: docs/11 Phase 3 — all ten P1 control-UX gaps, 2026-08-07
 
 `e15e6cd`, `fed2a39`, `dc98671`, `fcb2daa`, `33992e1` (P1.4 shipped with P0.9).
 273 core tests, clippy -D + fmt clean, tsc + vite green, every item live-validated
@@ -64,11 +116,7 @@ to the pre-change snapshot).
   library (exact match on the normalized plate) cannot express, so moving
   partials into it would silently stop them matching.
 
-**Next: Phase 4** — the docs/11 P2 sweep (trust surfacing + ~20 mechanical UX
-swaps + dead-end fixes). Build them on what now exists: `degraded::Latch` for any
-"surface a silent failure" row, `/api/system` + `web/src/SystemHealth.tsx` for
-anything the owner should know about the app itself, `POST /api/stream_probe` for
-URL checks, `models::probe` for "is this file real".
+**Phase 4 followed the same day** (see the top of this file).
 
 ### Earlier: docs/11 Phase 2 — the watchdog cluster, 2026-08-07
 
