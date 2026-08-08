@@ -3,7 +3,7 @@ import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMa
 import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { recordState, recordStateHint, scheduleWindow } from "../labels";
 import SizeFilterEditor, { ChildHeightEditor, MotionTuner, RectZoneDraw } from "../SizeFilterEditor";
-import { ObjectPicker, InheritSlider, LabelChips } from "../tuning";
+import { ObjectPicker, InheritSlider, LabelChips, DurationPicker } from "../tuning";
 import { Modal, EmptyState, TogglePill, Callout, useToast, useDialog, usePolling } from "../ui";
 import {
   IconRadar,
@@ -762,20 +762,26 @@ function TuneModal({
                 </span>
               )}
             </label>
-            <label className="field" title="Per-camera sample-interval cap (resource governance). Only slows this camera down.">
-              Detection interval (ms)
-              <input
-                type="number" step="100" min="0"
-                placeholder="Inherit global"
-                value={dc.poll_ms ?? ""}
-                onChange={(e) => setDc({ ...dc, poll_ms: e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0) })}
+            {/* docs/11 P2 — raw milliseconds, on the one control whose whole
+                meaning is a trade-off. The global Settings version of this
+                setting is already an InheritSlider with outcome-labelled ends;
+                the per-camera one should not be a different kind of control. */}
+            <div className="field">
+              <InheritSlider
+                label="How often this camera is checked"
+                value={dc.poll_ms ?? null}
+                globalValue={settings?.poll_ms ?? 1000}
+                min={200}
+                max={5000}
+                step={100}
+                format={(v) =>
+                  v >= 1000 ? `every ${(v / 1000).toFixed(1).replace(/\.0$/, "")} s` : `every ${v} ms`
+                }
+                lowHint="Reacts fastest"
+                highHint="Lightest on your machine"
+                onChange={(v) => setDc({ ...dc, poll_ms: v })}
               />
-              {dc.poll_ms == null && settings ? (
-                <span className="feat-help">using global: {settings.poll_ms} ms</span>
-              ) : (
-                <span className="feat-help">ms between analyzed frames; higher = lighter load.</span>
-              )}
-            </label>
+            </div>
             <label className="field" title="Opt this camera into (or out of) face recognition. Inherit uses the global Settings switch.">
               Face recognition
               <select
@@ -854,38 +860,22 @@ function TuneModal({
           {dc.trigger_recording && (
             <div className="tune-grid" style={{ marginBottom: 10 }}>
               <label className="field">
-                Pre-roll (seconds before)
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="10"
-                  value={dc.trigger_pre_roll_secs ?? ""}
-                  onChange={(e) =>
-                    setDc({
-                      ...dc,
-                      trigger_pre_roll_secs:
-                        e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0),
-                    })
-                  }
+                Keep this much BEFORE each detection
+                <DurationPicker
+                  value={dc.trigger_pre_roll_secs ?? 10}
+                  onChange={(secs) => setDc({ ...dc, trigger_pre_roll_secs: secs })}
+                  zeroLabel="Nothing before"
+                  ariaLabel="Pre-roll kept before each detection"
                 />
-                <span className="feat-help">Footage kept before each detection (default 10).</span>
               </label>
               <label className="field">
-                Post-roll (seconds after)
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="30"
-                  value={dc.trigger_post_roll_secs ?? ""}
-                  onChange={(e) =>
-                    setDc({
-                      ...dc,
-                      trigger_post_roll_secs:
-                        e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0),
-                    })
-                  }
+                Keep this much AFTER each detection
+                <DurationPicker
+                  value={dc.trigger_post_roll_secs ?? 30}
+                  onChange={(secs) => setDc({ ...dc, trigger_post_roll_secs: secs })}
+                  zeroLabel="Nothing after"
+                  ariaLabel="Post-roll kept after each detection"
                 />
-                <span className="feat-help">Footage kept after each detection (default 30).</span>
               </label>
             </div>
           )}

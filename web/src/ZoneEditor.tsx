@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, Camera, CrossDir, GroundCalib, PolyZone, Tripwire, ZoneKind } from "./api";
 import { IconRefresh } from "./icons";
 import { TogglePill, useDialog } from "./ui";
-import { LabelChips } from "./tuning";
+import { DurationPicker, LabelChips } from "./tuning";
 
 /// Common household zone names, offered as autocomplete on the name field so a
 /// zone gets a real name ("Pool") instead of shipping as "zone 1" — alarm rules
@@ -176,6 +176,27 @@ export default function ZoneEditor({
   /** Jump the parent modal to the tab holding the child-height control. */
   onNeedChildCalib?: () => void;
 }) {
+  // docs/11 P2 — an occupancy LIMIT with no idea what the current count is asks
+  // the owner to guess. The number is already published by the analytics tick.
+  const [liveOccupancy, setLiveOccupancy] = useState<Record<string, number> | null>(null);
+  useEffect(() => {
+    let stop = false;
+    const tick = () =>
+      api
+        .analyticsOccupancy()
+        .then((r) => {
+          if (!stop)
+            setLiveOccupancy(r.cameras.find((c) => c.camera_id === camera.id)?.zones ?? null);
+        })
+        .catch(() => {});
+    tick();
+    const t = setInterval(tick, 5000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [camera.id]);
+
   const [draw, setDraw] = useState<Draw>(null);
   const dialog = useDialog();
   // Calibration display unit (P3). Stored values are ALWAYS metres; this only
@@ -824,21 +845,21 @@ export default function ZoneEditor({
                     emptyHint="Any object"
                   />
                 </label>
-                <label className="field" title="Alert if someone stays in this zone longer than this many seconds. Blank = off. Needs object tracking.">
-                  loiter&nbsp;alert&nbsp;after&nbsp;(s)
-                  <input
-                    type="number"
-                    min="0"
-                    step="5"
-                    placeholder="off"
-                    aria-label="Loiter dwell seconds"
-                    style={{ width: 76 }}
-                    value={z.dwell_secs ?? ""}
-                    onChange={(e) => upd({ dwell_secs: e.target.value === "" ? null : Number(e.target.value) })}
+                {/* docs/11 P2 — raw seconds with a "off" placeholder, on a
+                    control whose whole job is "how long is too long". The house
+                    picker states the outcome, and 0 means off explicitly rather
+                    than by an empty box. */}
+                <label className="field" title="Alert if someone stays in this zone longer than this. Needs object tracking.">
+                  alert if someone stays
+                  <DurationPicker
+                    value={z.dwell_secs ?? 0}
+                    onChange={(secs) => upd({ dwell_secs: secs === 0 ? null : secs })}
+                    zeroLabel="Off — don't alert on lingering"
+                    ariaLabel="Loiter dwell time"
                   />
                 </label>
-                <label className="field" title="Alert when more than this many people or objects are inside. Blank = off. Needs object tracking.">
-                  max&nbsp;occupants
+                <label className="field" title="Alert when more than this many people or objects are inside. Needs object tracking.">
+                  alert if more than this many are inside
                   <input
                     type="number"
                     min="0"
@@ -849,6 +870,13 @@ export default function ZoneEditor({
                     value={z.occupancy_max ?? ""}
                     onChange={(e) => upd({ occupancy_max: e.target.value === "" ? null : Number(e.target.value) })}
                   />
+                  {/* Live count from the analytics tick, so the number being set
+                      has something real to be compared against. */}
+                  {liveOccupancy?.[z.name] != null && (
+                    <span className="feat-help">
+                      {liveOccupancy[z.name]} inside right now
+                    </span>
+                  )}
                 </label>
               </div>
 
