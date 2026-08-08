@@ -174,6 +174,107 @@ const fillTemplate = (tpl: string, host: string, user: string, pass: string) =>
     .replace("{auth}", user ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : "")
     .replace("{host}", host.trim());
 
+/// docs/11 P1.5 — "Test this stream": prove a camera URL produces a picture
+/// BEFORE saving it.
+///
+/// A wrong detection sub-stream silently kills detection on that camera while
+/// everything still looks configured. And finding out by saving is expensive:
+/// editing `detect_source` forces a full go2rtc restart, i.e. a live-view blip
+/// for every camera in the house — twice, if the first guess was wrong.
+///
+/// Reports the SIZE too. A sub-stream that works but is 4K is a different
+/// mistake from one that doesn't work, and it's the mistake this field exists to
+/// prevent.
+function StreamProbe({ src }: { src: string }) {
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<Awaited<ReturnType<typeof api.streamProbe>> | null>(null);
+  useEffect(() => setRes(null), [src]);
+  if (!src.trim()) return null;
+  const big = (res?.width ?? 0) > 1280;
+  return (
+    <div style={{ marginTop: 4 }}>
+      <button
+        type="button"
+        className="btn btn-ghost ev-act"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            setRes(await api.streamProbe(src.trim()));
+          } catch (e) {
+            setRes({ ok: false, error: e instanceof Error ? e.message : String(e) });
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "Connecting…" : "Test this stream"}
+      </button>
+      {res && (
+        <div className="row" style={{ gap: 8, alignItems: "flex-start", marginTop: 6 }}>
+          {res.frame && (
+            <img
+              src={res.frame}
+              alt="Picture from the stream being tested"
+              style={{ maxWidth: 160, borderRadius: 6, border: "1px solid var(--border)" }}
+            />
+          )}
+          <span
+            className="feat-help"
+            style={{ color: res.ok ? (big ? "var(--warn)" : "var(--success)") : "var(--danger)" }}
+          >
+            {res.ok
+              ? big
+                ? `Works — but it's ${res.width}×${res.height}. That's a full-size stream; detection is meant to run on the small one, so this won't save any work.`
+                : `Works — ${res.width}×${res.height}.`
+              : `No picture: ${res.error}`}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/// docs/11 P1.5 — offer the brand's known low-res path instead of asking someone
+/// to remember that Dahua's sub-stream is `subtype=1` and Hikvision's is `/102`.
+///
+/// The add wizard has had these templates since the discover-first rewrite; the
+/// tuning modal, where a sub-stream is actually most often added, did not. The
+/// host and credentials are lifted out of the camera's MAIN source, so there is
+/// nothing to retype (and no second place for a password to be typed wrong).
+function SubStreamTemplates({
+  mainSource,
+  onPick,
+}: {
+  mainSource: string;
+  onPick: (url: string) => void;
+}) {
+  // `scheme://user:pass@host[:port]/…` → the pieces a template needs.
+  const m = /^\w+:\/\/(?:([^/@\s:]+)(?::([^/@\s]*))?@)?([^/@\s:?]+)/.exec(mainSource.trim());
+  if (!m) return null;
+  const [, user = "", pass = "", host = ""] = m;
+  const withSub = BRAND_TEMPLATES.filter((b) => b.sub);
+  if (!host || withSub.length === 0) return null;
+  return (
+    <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+      <span className="feat-help" style={{ alignSelf: "center" }}>
+        Use my camera brand&apos;s usual one:
+      </span>
+      {withSub.map((b) => (
+        <button
+          key={b.key}
+          type="button"
+          className="btn btn-ghost ev-act"
+          title={`Fill in ${b.label}'s standard low-res path for ${host}`}
+          onClick={() => onPick(fillTemplate(b.sub as string, host, decodeURIComponent(user), decodeURIComponent(pass)))}
+        >
+          {b.label.split(" / ")[0]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /// Hide the password (and blur the username) in a displayed camera URL so a
 /// glance / screenshot / screen-share can't leak camera credentials. The full
 /// URL stays available in the edit form, where showing it is deliberate.
@@ -610,6 +711,7 @@ function TuneModal({
           <div className="tune-grid">
             <label className="field span-full">
               Detection sub-stream
+              <SubStreamTemplates mainSource={camera.source} onPick={setSubSource} />
               <input
                 type="text"
                 placeholder="rtsp://user:pass@cam/...subtype=1"
@@ -617,6 +719,7 @@ function TuneModal({
                 onChange={(e) => setSubSource(e.target.value)}
               />
               <span className="feat-help">Low-res stream to run detection on; empty = detect on the main stream.</span>
+              <StreamProbe src={subSource} />
             </label>
             <ModelOverrideField value={dc.model ?? null} onChange={(model) => setDc({ ...dc, model })} />
             <label className="field" title="Which processor runs this camera's detector. Inherit uses the global setting.">

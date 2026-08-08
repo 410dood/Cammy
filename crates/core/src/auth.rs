@@ -182,6 +182,9 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
         // Connects the server to the saved (Admin-only) broker URL and publishes
         // — same trust level as the mqtt_url setting that feeds it.
         || path == "/api/mqtt/test"
+        // Makes the server connect to a caller-supplied camera address — the
+        // same SSRF surface as the GenAI probe above.
+        || path == "/api/stream_probe"
         // Probes arbitrary server filesystem paths (writability + free space)
         // — Admin-only like the recordings_dir setting it validates.
         || path == "/api/path_probe"

@@ -281,6 +281,75 @@ impl Go2Rtc {
         Ok(!needs_restart)
     }
 
+    /// Try a camera URL WITHOUT saving it: register a throwaway stream, pull one
+    /// frame, remove it again. Returns the JPEG.
+    ///
+    /// docs/11 P1.5 — the detection sub-stream was a raw RTSP box, and the only
+    /// way to find out whether the URL worked was to save it. Saving it forces a
+    /// full go2rtc restart (`patch_camera` treats a `detect_source` edit as
+    /// stream-relevant), which blips EVERY camera's live view — so "type it,
+    /// save, see it fail, fix it, save again" costs two restarts for everyone in
+    /// the house. Probing costs none.
+    ///
+    /// The temp stream is removed explicitly; if that ever fails, the next
+    /// registry reconcile deletes it anyway (it is not in `desired_streams`).
+    pub fn probe_stream(&self, src: &str) -> Result<Vec<u8>> {
+        use std::io::Read as _;
+        let src = clean(src.trim());
+        if src.is_empty() {
+            bail!("no address to test");
+        }
+        if !api_addable(&src) {
+            // exec:/ffmpeg: are config-file only — go2rtc's REST API rejects
+            // them, and they are the RCE-shaped sources anyway.
+            bail!("this kind of source can only be tested by saving it");
+        }
+        let base = self.api_base();
+        // Unique per attempt so two concurrent probes can't delete each other's.
+        let name = format!(
+            "__probe_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        );
+        ureq::put(&format!(
+            "{base}/api/streams?name={}&src={}",
+            urlencode(&name),
+            urlencode(&src)
+        ))
+        .timeout(Duration::from_secs(5))
+        .call()
+        .context("the streaming server would not accept that address")?;
+        let frame = (|| -> Result<Vec<u8>> {
+            let resp = ureq::get(&format!("{base}/api/frame.jpeg?src={}", urlencode(&name)))
+                .timeout(Duration::from_secs(12))
+                .call()
+                .context("no picture came back from that address")?;
+            let mut buf = Vec::new();
+            resp.into_reader()
+                .take(32 * 1024 * 1024)
+                .read_to_end(&mut buf)?;
+            if buf.is_empty() {
+                // go2rtc answers 200-with-nothing whether the host was
+                // unreachable, the path was wrong, or the credentials were
+                // rejected — it does not tell us which. Say what we actually
+                // know rather than inventing a cause ("the camera answered"
+                // would be a claim about something that may never have replied).
+                bail!(
+                    "no picture came back. Check the address, the username and password, \
+                     and that the camera is reachable from this machine."
+                );
+            }
+            Ok(buf)
+        })();
+        let _ = ureq::delete(&format!("{base}/api/streams?src={}", urlencode(&name)))
+            .timeout(Duration::from_secs(4))
+            .call();
+        frame
+    }
+
     /// Restart the child if it died (call from a watchdog loop).
     pub fn ensure_alive(&self, db: &Db) -> Result<()> {
         // `try_wait`'s exit status used to be matched away and thrown out. It is

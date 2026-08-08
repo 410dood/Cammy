@@ -1115,6 +1115,13 @@ export const api = {
     }>(`/api/fs_list?path=${encodeURIComponent(path)}`),
   /** Detector .onnx files present in the app directory (P3). */
   modelsInstalled: () => req<{ models: string[] }>("/api/models/installed"),
+  /** docs/11 P1.5 — does this camera URL produce a picture, before saving it?
+   *  Saving a detect_source restarts the streamer and blips every camera. */
+  streamProbe: (src: string) =>
+    req<{ ok: boolean; error?: string; width?: number; height?: number; frame?: string }>(
+      "/api/stream_probe",
+      { method: "POST", body: JSON.stringify({ src }) },
+    ),
   /** docs/11 P1.6 — score both zone-state descriptions against the camera's
    *  CURRENT frame and hand back the raw cosines, so the prompts (and the
    *  margin they are compared against) can be tuned from what a real door

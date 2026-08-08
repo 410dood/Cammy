@@ -153,6 +153,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/genai/probe", axum::routing::post(genai_probe_api))
         .route("/api/alarms/vlm_test", axum::routing::post(vlm_test_api))
+        .route("/api/stream_probe", axum::routing::post(stream_probe_api))
         .route(
             "/api/cameras/{id}/zone_state_test",
             axum::routing::post(zone_state_test_api),
@@ -2559,6 +2560,56 @@ async fn deter_test(
 /// Proxy the camera's current decoded frame from go2rtc as a same-origin JPEG.
 /// The zone/mask editor draws on top of this still; serving it through the core
 /// API avoids the cross-origin taint that blocks reading go2rtc pixels directly.
+#[derive(Deserialize)]
+struct StreamProbeReq {
+    src: String,
+}
+
+/// POST /api/stream_probe — docs/11 P1.5: does this camera URL actually produce
+/// a picture, BEFORE it is saved?
+///
+/// The detection sub-stream was a raw RTSP box with no way to check it; a wrong
+/// URL silently kills detection for that camera while everything still looks
+/// configured. Saving to find out costs a full go2rtc restart (a
+/// `detect_source` edit is stream-relevant), i.e. a live-view blip for every
+/// camera in the house — twice, if the first attempt was wrong.
+///
+/// Reports the SIZE as well as success: a sub-stream that works but is 4K is a
+/// different mistake from one that doesn't work, and it is the mistake this
+/// field exists to prevent.
+///
+/// Admin-gated in `auth.rs`: it makes the server connect to a caller-supplied
+/// address, the same reason `/api/genai/probe` is.
+async fn stream_probe_api(
+    State(st): State<AppState>,
+    Json(req): Json<StreamProbeReq>,
+) -> Json<serde_json::Value> {
+    let src = req.src.trim().to_string();
+    if src.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "type an address first" }));
+    }
+    let go2rtc = st.go2rtc.clone();
+    let out = tokio::task::spawn_blocking(move || go2rtc.probe_stream(&src)).await;
+    match out {
+        Ok(Ok(bytes)) => {
+            let dims = image::load_from_memory(&bytes)
+                .ok()
+                .map(|i| (i.width(), i.height()));
+            Json(serde_json::json!({
+                "ok": true,
+                "width": dims.map(|d| d.0),
+                "height": dims.map(|d| d.1),
+                "frame": format!(
+                    "data:image/jpeg;base64,{}",
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
+                ),
+            }))
+        }
+        Ok(Err(e)) => Json(serde_json::json!({ "ok": false, "error": format!("{e:#}") })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
 #[derive(Deserialize)]
 struct ZoneStateTestReq {
     /// The polygon the user is drawing RIGHT NOW (0..1 fractions), not the saved
