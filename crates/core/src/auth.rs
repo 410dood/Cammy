@@ -111,25 +111,28 @@ impl Sessions {
     pub fn insert(&self, token: String, principal: Principal) {
         self.0
             .lock()
-            .expect("sessions poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(token, principal);
     }
     pub fn get(&self, token: &str) -> Option<Principal> {
         self.0
             .lock()
-            .expect("sessions poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(token)
             .cloned()
     }
     pub fn clear(&self) {
-        self.0.lock().expect("sessions poisoned").clear();
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
     /// Invalidate just one named user's sessions (e.g. after their role or
     /// password changes), without logging everyone else out.
     pub fn clear_user(&self, user_id: i64) {
         self.0
             .lock()
-            .expect("sessions poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|_, p| p.user_id != Some(user_id));
     }
 }
@@ -220,7 +223,10 @@ impl LoginThrottle {
         if ip.is_loopback() {
             return None;
         }
-        let mut map = self.0.lock().expect("throttle poisoned");
+        let mut map = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let a = map.get_mut(&ip)?;
         let until = a.locked_until?;
         let now = Instant::now();
@@ -239,7 +245,10 @@ impl LoginThrottle {
             return;
         }
         let now = Instant::now();
-        let mut map = self.0.lock().expect("throttle poisoned");
+        let mut map = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Sweep entries that are neither currently locked nor in a fresh
         // failure window — this keeps the map bounded under IP rotation.
         map.retain(|_, a| {
@@ -272,7 +281,10 @@ impl LoginThrottle {
 
     /// A successful login clears the peer's failure history.
     pub fn record_success(&self, ip: IpAddr) {
-        self.0.lock().expect("throttle poisoned").remove(&ip);
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&ip);
     }
 }
 

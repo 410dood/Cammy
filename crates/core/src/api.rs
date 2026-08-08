@@ -50,6 +50,9 @@ pub struct AppState {
     /// P3.3 — live event broadcast for the SSE feed (`GET /api/events/stream`).
     /// The MQTT worker taps every EventMsg here; each SSE client `subscribe()`s.
     pub events_tx: tokio::sync::broadcast::Sender<crate::mqtt::EventMsg>,
+    /// Liveness registry for the background worker threads (docs/11 P0.7),
+    /// shared with the health worker that supervises it. Read-only here.
+    pub workers: crate::health::WorkerBoard,
     /// Depth/shed counters for the GenAI work queue, exported at
     /// `/api/metrics`. That queue carries deferred alarm fires, so a backlog is
     /// late (or lost) ALERTS — it needs to be visible from outside the process.
@@ -277,8 +280,39 @@ fn forbidden(msg: impl Into<String>) -> ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+/// Liveness AND readiness. This used to be a literal `{"ok":true}` with no
+/// `State` at all — it could not fail, so it stayed green while detection,
+/// recording or the database were dead. It now answers for the things whose
+/// death is invisible from outside: the worker threads and the DB.
+///
+/// **503 when degraded.** The body is deliberately thin — subsystem NAMES and
+/// booleans only, never error strings, camera names or paths — because
+/// `/api/health` is in the unauthenticated exempt list (`auth::middleware`) and
+/// is therefore world-readable from wherever the NVR is reachable.
+async fn health(State(st): State<AppState>) -> impl IntoResponse {
+    let mut degraded: Vec<String> = worker_liveness(&st)
+        .into_iter()
+        .filter(|(_, alive)| !alive)
+        .map(|(name, _)| format!("worker:{name}"))
+        .collect();
+    // A cheap read proves the database is actually usable, not merely open.
+    if st.db.count_users().is_err() {
+        degraded.push("database".to_string());
+    }
+    let ok = degraded.is_empty();
+    let code = if ok {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        code,
+        Json(serde_json::json!({
+            "ok": ok,
+            "version": env!("CARGO_PKG_VERSION"),
+            "degraded": degraded,
+        })),
+    )
 }
 
 /// Tells the UI where go2rtc's WebRTC endpoints live.
@@ -5072,7 +5106,10 @@ async fn onvif_inspect(
 ) -> ApiResult<Json<serde_json::Value>> {
     let allow = allowed_cameras(&st, &p)?;
     let want: Option<i64> = q.get("camera_id").and_then(|s| s.parse().ok());
-    let board = st.onvif_inspector.lock().expect("onvif inspector poisoned");
+    let board = st
+        .onvif_inspector
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut out = serde_json::Map::new();
     for (cam_id, ring) in board.iter() {
         if want.is_some_and(|w| w != *cam_id) || !camera_allowed(&allow, *cam_id) {
@@ -5092,7 +5129,10 @@ async fn onvif_inspect(
 /// throttle is in-memory) and how many matches its cooldown has swallowed
 /// since. Complements the rules list for a UniFi-style "last triggered" column.
 async fn alarm_stats_api(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let map = st.alarm_throttle.lock().expect("alarm throttle poisoned");
+    let map = st
+        .alarm_throttle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let stats: serde_json::Map<String, serde_json::Value> = map
         .iter()
         .map(|(rule_id, (last, suppressed))| {
@@ -6743,17 +6783,36 @@ fn esc_label(s: &str) -> String {
         .replace('\n', "\\n")
 }
 
-/// Render the metrics exposition text (Prometheus 0.0.4). Pure so it's unit-
-/// testable without a server.
-fn render_metrics(
-    version: &str,
+/// Everything `render_metrics` reports. A struct rather than a parameter list
+/// because the trust-surfacing work keeps adding subsystems to it.
+struct MetricsInput<'a> {
+    version: &'a str,
     events: i64,
     disk_free: u64,
-    cams: &[CamMetric],
-    backup: &BackupMetric,
+    cams: &'a [CamMetric],
+    backup: &'a BackupMetric,
+    /// GenAI work queue `(depth, shed)`.
     genai: (usize, usize),
+    /// Alarm delivery queue `(depth, dropped)`; `None` = no dispatcher running,
+    /// in which case the family is omitted rather than reported as a healthy 0.
     alarm_queue: Option<(usize, usize)>,
-) -> String {
+    /// Worker threads and whether each is still running.
+    workers: &'a [(&'a str, bool)],
+}
+
+/// Render the metrics exposition text (Prometheus 0.0.4). Pure so it's unit-
+/// testable without a server.
+fn render_metrics(m: &MetricsInput<'_>) -> String {
+    let MetricsInput {
+        version,
+        events,
+        disk_free,
+        cams,
+        backup,
+        genai,
+        alarm_queue,
+        workers,
+    } = *m;
     let online = cams.iter().filter(|c| c.online).count();
     let mut out = String::new();
     let family = |out: &mut String, name: &str, help: &str, kind: &str| {
@@ -6986,7 +7045,38 @@ fn render_metrics(
         );
         out.push_str(&format!("zoomy_alarm_drops_total {qdropped}\n"));
     }
+
+    // Worker liveness (docs/11 P0.7). Rendered by the axum runtime, which is
+    // independent of every worker thread — so this stays observable even when
+    // the dead one is `health`, the very worker that raises the notification.
+    if !workers.is_empty() {
+        family(
+            &mut out,
+            "zoomy_worker_alive",
+            "Background worker thread still running (1/0).",
+            "gauge",
+        );
+        for (name, alive) in workers {
+            out.push_str(&format!(
+                "zoomy_worker_alive{{worker=\"{}\"}} {}\n",
+                esc_label(name),
+                *alive as u8
+            ));
+        }
+    }
     out
+}
+
+/// Snapshot which worker threads are still running, for `/api/metrics` and
+/// `/api/health`. Cheap: `is_finished` is an atomic load under a lock held for
+/// microseconds.
+pub(crate) fn worker_liveness(st: &AppState) -> Vec<(&'static str, bool)> {
+    st.workers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .map(|(name, h, _)| (*name, !h.is_finished()))
+        .collect()
 }
 
 /// Prometheus metrics exposition. Gated by the same auth as the rest of `/api`,
@@ -7058,15 +7148,17 @@ async fn metrics(
         gaveup: bstats.gaveup,
         per_camera: bstats.per_camera,
     };
-    let body = render_metrics(
-        env!("CARGO_PKG_VERSION"),
-        events_total,
+    let workers = worker_liveness(&st);
+    let body = render_metrics(&MetricsInput {
+        version: env!("CARGO_PKG_VERSION"),
+        events: events_total,
         disk_free,
-        &cams,
-        &backup,
-        (st.genai_stats.depth(), st.genai_stats.shed()),
-        crate::notify::dispatch_stats(),
-    );
+        cams: &cams,
+        backup: &backup,
+        genai: (st.genai_stats.depth(), st.genai_stats.shed()),
+        alarm_queue: crate::notify::dispatch_stats(),
+        workers: &workers,
+    });
     Ok((
         [(
             axum::http::header::CONTENT_TYPE,
@@ -7546,7 +7638,8 @@ async fn put_settings(
 mod tests {
     use super::{
         admin_only_settings_delta, csv_field, events_to_csv, no_control, redact_url_creds,
-        render_metrics, valid_group, valid_source, BackupMetric, BookmarkReq, CamMetric, Settings,
+        render_metrics, valid_group, valid_source, BackupMetric, BookmarkReq, CamMetric,
+        MetricsInput, Settings,
     };
 
     #[test]
@@ -8008,7 +8101,18 @@ mod tests {
             gaveup: 0,
             per_camera: vec![("porch".into(), 4096)],
         };
-        let m = render_metrics("0.1.0", 42, 9999, &cams, &backup, (7, 2), Some((3, 5)));
+        let workers = [("recorder", true), ("genai", false)];
+        let input = MetricsInput {
+            version: "0.1.0",
+            events: 42,
+            disk_free: 9999,
+            cams: &cams,
+            backup: &backup,
+            genai: (7, 2),
+            alarm_queue: Some((3, 5)),
+            workers: &workers,
+        };
+        let m = render_metrics(&input);
         // Global gauges.
         assert!(m.contains("zoomy_build_info{version=\"0.1.0\"} 1\n"));
         assert!(m.contains("\nzoomy_cameras 2\n"));
@@ -8051,8 +8155,23 @@ mod tests {
         assert!(m.contains("\nzoomy_alarm_drops_total 5\n"));
         // With no dispatcher running (unit tests, --verify) the family is
         // omitted rather than reported as a healthy zero.
-        let none = render_metrics("0.1.0", 42, 9999, &cams, &backup, (0, 0), None);
+        // Worker liveness (docs/11 P0.7): a dead worker is a 0, not an absence.
+        assert!(m.contains(
+            "zoomy_worker_alive{worker=\"recorder\"} 1
+"
+        ));
+        assert!(m.contains(
+            "zoomy_worker_alive{worker=\"genai\"} 0
+"
+        ));
+        let none = render_metrics(&MetricsInput {
+            genai: (0, 0),
+            alarm_queue: None,
+            workers: &[],
+            ..input
+        });
         assert!(!none.contains("zoomy_alarm_queue_depth"));
+        assert!(!none.contains("zoomy_worker_alive"));
     }
 
     #[test]

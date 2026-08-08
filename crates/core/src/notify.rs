@@ -556,7 +556,9 @@ pub fn render_template(tpl: &str, ev: &AlarmEvent) -> String {
 /// suppressed match increments the rule's burst counter, which the next real
 /// fire drains via [`take_suppressed`] into a "+N more" summary.
 pub fn ready(rule: &AlarmRule, throttle: &AlarmThrottle, now: i64) -> bool {
-    let mut map = throttle.lock().expect("alarm throttle poisoned");
+    let mut map = throttle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let suppressed = |map: &mut HashMap<i64, (i64, u32)>| {
         map.entry(rule.id).or_insert((0, 0)).1 += 1;
     };
@@ -583,7 +585,9 @@ pub fn ready(rule: &AlarmRule, throttle: &AlarmThrottle, now: i64) -> bool {
 /// `ready` returned true) and pass the count into [`fire`] so the push reads
 /// "person on Driveway (+3 more during cooldown)" instead of losing them.
 pub fn take_suppressed(throttle: &AlarmThrottle, rule_id: i64) -> u32 {
-    let mut map = throttle.lock().expect("alarm throttle poisoned");
+    let mut map = throttle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match map.get_mut(&rule_id) {
         Some(entry) => std::mem::take(&mut entry.1),
         None => 0,

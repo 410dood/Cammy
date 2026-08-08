@@ -157,9 +157,10 @@ pub fn run(
     transcribe_tx: std::sync::mpsc::Sender<crate::transcribe::TranscribeJob>,
     shutdown: Arc<AtomicBool>,
 ) {
-    let Ok(ffmpeg) = recorder::locate_ffmpeg(ffmpeg_bin.as_deref()) else {
-        tracing::warn!("audio detection disabled: ffmpeg not found");
-        return;
+    let Some(ffmpeg) =
+        crate::util::wait_for_ffmpeg("audio detection", ffmpeg_bin.as_deref(), &shutdown)
+    else {
+        return; // shutting down
     };
     let mut engine: Option<Engine> = None;
     let mut last_fire: HashMap<(i64, String), i64> = HashMap::new();

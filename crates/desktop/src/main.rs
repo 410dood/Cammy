@@ -344,12 +344,14 @@ fn wait_for_health(base: &str, startup_err: &Mutex<Option<String>>) {
         if startup_err.lock().expect("startup err").is_some() {
             return;
         }
-        if ureq::get(&url)
-            .timeout(Duration::from_millis(500))
-            .call()
-            .is_ok()
-        {
-            return;
+        // ANY HTTP status proves the server is listening, which is all this
+        // wait needs. `/api/health` now answers 503 while a subsystem is
+        // degraded, and `is_ok()` treats that as "not up" — so a degraded
+        // engine would burn all 100 iterations (~20 s of blank window) exactly
+        // when the user most wants the app open to see why.
+        match ureq::get(&url).timeout(Duration::from_millis(500)).call() {
+            Ok(_) | Err(ureq::Error::Status(_, _)) => return,
+            Err(_) => {}
         }
         std::thread::sleep(Duration::from_millis(200));
     }

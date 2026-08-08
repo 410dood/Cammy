@@ -69,7 +69,9 @@ impl ReadPool {
             }
         }
         let i = self.next.fetch_add(1, Ordering::Relaxed) % self.conns.len();
-        self.conns[i].lock().expect("db read-pool mutex poisoned")
+        self.conns[i]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

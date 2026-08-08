@@ -100,7 +100,52 @@ impl Watch {
     }
 }
 
-pub fn run(db: Db, status: StatusBoard, shutdown: Arc<AtomicBool>) {
+/// The named worker threads, in TEARDOWN ORDER, shared between this supervisor
+/// and `lib.rs`'s shutdown join. The `bool` is a once-only "already reported"
+/// latch.
+///
+/// `JoinHandle` is `!Clone` and `join` consumes it, but `is_finished(&self)` is
+/// just an atomic load — so the supervisor only ever *borrows* through the
+/// mutex, and teardown `mem::take`s ownership back when it is time to join.
+pub type WorkerBoard =
+    Arc<std::sync::Mutex<Vec<(&'static str, std::thread::JoinHandle<()>, bool)>>>;
+
+/// Report any worker thread that has stopped running.
+///
+/// Deliberately NOT a [`crate::degraded::Latch`]: thread death is monotonic — a
+/// finished thread never comes back — so there is no recovery edge for a Latch
+/// to report, and a plain once-only bool says that truthfully.
+///
+/// Known limits, stated rather than papered over: this catches DEATH, not hangs
+/// (a wedged-but-alive worker still reads healthy — a heartbeat is the follow-up),
+/// and it cannot tell a panic from a deliberate early return, which is why the
+/// wording is "is no longer running" and why both cases are reported: the owner
+/// needs to know either way.
+fn supervise_workers(db: &Db, workers: &WorkerBoard, now: i64) {
+    let mut w = workers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (name, handle, reported) in w.iter_mut() {
+        if *reported || !handle.is_finished() {
+            continue;
+        }
+        *reported = true;
+        tracing::error!(worker = %name, "worker thread is no longer running");
+        let _ = db.add_notification(
+            now,
+            "worker_stopped",
+            "Part of Cammy stopped running",
+            Some(&format!(
+                "The {name} worker is no longer running, so whatever it handles has \
+                 silently stopped. Restart Cammy to bring it back, and check the log \
+                 for the reason."
+            )),
+            None,
+        );
+    }
+}
+
+pub fn run(db: Db, status: StatusBoard, workers: WorkerBoard, shutdown: Arc<AtomicBool>) {
     let mut online: HashMap<i64, Watch> = HashMap::new();
     // Recording liveness, only tracked while the camera is online AND expected to
     // record 24/7 (continuous, no schedule) — so a scheduled pause is never a
@@ -123,6 +168,13 @@ pub fn run(db: Db, status: StatusBoard, shutdown: Arc<AtomicBool>) {
         // entire job is reassurance is worse than no heartbeat at all.
         if ticks >= WARMUP_CHECKS {
             maybe_heartbeat(&db, &settings, &cameras, &board, now, window, &url);
+            // Nobody was watching the watchers: 19 worker threads and not one
+            // liveness check, so a single poisoned lock ended detection or
+            // recording for the life of the process in silence. The same warmup
+            // gate applies, and the `while !shutdown` loop head means a clean
+            // teardown (where every thread finishes within seconds) can never
+            // produce a burst of "worker stopped" notifications.
+            supervise_workers(&db, &workers, now);
         }
         ticks = ticks.saturating_add(1);
 
@@ -349,6 +401,52 @@ fn maybe_heartbeat(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Drives the REAL `supervise_workers` against a REAL dead thread and a real
+    /// Db — not a copy of its logic. Nineteen worker threads had no liveness
+    /// check at all, so a poisoned lock ended detection or recording for the life
+    /// of the process with nothing said anywhere.
+    #[test]
+    fn a_dead_worker_is_reported_exactly_once() {
+        let dir = std::env::temp_dir().join(format!("cammy-supervise-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Db::open(&dir.join("s.db")).expect("test db");
+
+        let dead = std::thread::spawn(|| {}); // returns immediately
+        let alive = std::thread::spawn(|| std::thread::sleep(Duration::from_secs(30)));
+        // Wait for the dead one to actually finish, so this can't be flaky.
+        while !dead.is_finished() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let board: WorkerBoard = Arc::new(std::sync::Mutex::new(vec![
+            ("gone", dead, false),
+            ("still-here", alive, false),
+        ]));
+
+        supervise_workers(&db, &board, 1_000);
+        supervise_workers(&db, &board, 1_001); // a second tick must stay quiet
+        supervise_workers(&db, &board, 1_002);
+
+        let rows = db.list_notifications(false, 50).expect("notifications");
+        let ours: Vec<_> = rows.iter().filter(|n| n.kind == "worker_stopped").collect();
+        assert_eq!(
+            ours.len(),
+            1,
+            "one notification per dead worker, not per tick"
+        );
+        let body = ours[0].body.as_deref().unwrap_or_default();
+        assert!(
+            body.contains("gone"),
+            "the notification must NAME the worker"
+        );
+        // A distinctive name, because the message prose itself contains the
+        // word "running".
+        assert!(
+            !body.contains("still-here"),
+            "a live worker must not be reported"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Feed a watch a sequence of raw readings, returning everything it said.
     fn run_watch(readings: &[bool]) -> Vec<Say> {

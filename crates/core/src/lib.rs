@@ -161,6 +161,10 @@ pub async fn run(
     go2rtc.restart_with(&db).context("starting go2rtc")?;
 
     let workers_stop = Arc::new(AtomicBool::new(false));
+    // Liveness registry for the worker threads spawned below, shared with the
+    // health worker (which supervises it) and with the teardown join. Populated
+    // once, after every spawn, so a partly-filled board is never observed.
+    let workers: health::WorkerBoard = Arc::new(std::sync::Mutex::new(Vec::new()));
     let snapshots_dir = cfg.data_dir.join("snapshots");
     let recordings_dir = cfg.data_dir.join("recordings");
     let status_board = status::StatusBoard::default();
@@ -262,7 +266,8 @@ pub async fn run(
     let health_thread = std::thread::Builder::new().name("health".into()).spawn({
         let (db, stop) = (db.clone(), workers_stop.clone());
         let status = status_board.clone();
-        move || health::run(db, status, stop)
+        let workers = workers.clone();
+        move || health::run(db, status, workers, stop)
     })?;
     // B1: daily AI digest. B3: anomaly scoring. Both opt-in (gated on settings),
     // re-read live config each tick, and join cleanly at shutdown.
@@ -372,6 +377,34 @@ pub async fn run(
         move || homekit::run(db, data_dir, tx, stop)
     })?;
 
+    // Liveness registry, in TEARDOWN ORDER. This Vec IS the teardown order now —
+    // the join loop below just walks it, so the two can no longer drift.
+    // Producers first, then alarm-dispatch (so anything they queued on the way
+    // out still gets delivered), then the backup/bridge workers.
+    {
+        let mut w = workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        w.push(("recorder", rec_thread, false));
+        w.push(("detector", det_thread, false));
+        w.push(("audio", audio_thread, false));
+        w.push(("mqtt", mqtt_thread, false));
+        w.push(("health", health_thread, false));
+        w.push(("genai", genai_thread, false));
+        w.push(("transcribe", transcribe_thread, false));
+        w.push(("digest", digest_thread, false));
+        w.push(("anomaly", anomaly_thread, false));
+        w.push(("absence", absence_thread, false));
+        w.push(("onvif-events", onvif_thread, false));
+        w.push(("schedule", schedule_thread, false));
+        w.push(("pose", pose_thread, false));
+        w.push(("push", push_thread, false));
+        w.push(("alarm-dispatch", dispatch_thread, false));
+        w.push(("offsite", offsite_thread, false));
+        w.push(("archive", archive_thread, false));
+        w.push(("homekit", homekit_thread, false));
+    }
+
     // go2rtc watchdog.
     tokio::spawn({
         let (db, go2rtc, stop) = (db.clone(), go2rtc.clone(), workers_stop.clone());
@@ -411,6 +444,7 @@ pub async fn run(
         onvif_inspector,
         events_tx: events_bcast_tx,
         genai_stats,
+        workers: workers.clone(),
     };
     let ui =
         ServeDir::new(&cfg.ui_dir).not_found_service(ServeFile::new(cfg.ui_dir.join("index.html")));
@@ -467,28 +501,25 @@ pub async fn run(
     }
 
     // Orderly teardown: stop workers (they finalize ffmpeg segments), then go2rtc.
+    // The order lives in the liveness registry above; this walks it.
     workers_stop.store(true, Ordering::Relaxed);
+    let handles = {
+        let mut w = workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Take ownership back and release the lock BEFORE joining: a blocking
+        // join under the board lock would wedge the supervisor.
+        std::mem::take(&mut *w)
+    };
     let _ = tokio::task::spawn_blocking(move || {
-        let _ = rec_thread.join();
-        let _ = det_thread.join();
-        let _ = audio_thread.join();
-        let _ = mqtt_thread.join();
-        let _ = health_thread.join();
-        let _ = genai_thread.join();
-        let _ = transcribe_thread.join();
-        let _ = digest_thread.join();
-        let _ = anomaly_thread.join();
-        let _ = absence_thread.join();
-        let _ = onvif_thread.join();
-        let _ = schedule_thread.join();
-        let _ = pose_thread.join();
-        let _ = push_thread.join();
-        // After the producers above have stopped, so anything they queued on
-        // the way out still gets delivered.
-        let _ = dispatch_thread.join();
-        let _ = offsite_thread.join();
-        let _ = archive_thread.join();
-        let _ = homekit_thread.join();
+        for (name, h, _) in handles {
+            // Every join here used to be `let _ = …join()`, which threw away the
+            // panic payload of any worker that died — the process exited looking
+            // clean no matter what had happened.
+            if h.join().is_err() {
+                tracing::error!(worker = name, "worker thread panicked");
+            }
+        }
     })
     .await;
     go2rtc.stop();

@@ -137,9 +137,10 @@ pub fn run(
     rx: Receiver<TranscribeJob>,
     shutdown: Arc<AtomicBool>,
 ) {
-    let Ok(ffmpeg) = recorder::locate_ffmpeg(ffmpeg_bin.as_deref()) else {
-        tracing::warn!("transcription disabled: ffmpeg not found");
-        return;
+    let Some(ffmpeg) =
+        crate::util::wait_for_ffmpeg("transcription", ffmpeg_bin.as_deref(), &shutdown)
+    else {
+        return; // shutting down
     };
     // Route whisper.cpp / ggml's own logging through `log` -> tracing (off raw
     // stderr), so it respects RUST_LOG like everything else.

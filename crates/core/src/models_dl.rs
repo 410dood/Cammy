@@ -120,13 +120,16 @@ fn jobs() -> &'static Mutex<HashMap<String, Status>> {
 }
 
 pub fn all_status() -> HashMap<String, Status> {
-    jobs().lock().expect("model dl jobs poisoned").clone()
+    jobs()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 fn set(feature: &str, st: Status) {
     jobs()
         .lock()
-        .expect("model dl jobs poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(feature.to_string(), st);
 }
 
@@ -136,7 +139,9 @@ fn set(feature: &str, st: Status) {
 pub fn start(feature: &str) -> Result<(), String> {
     let items = catalog(feature).ok_or_else(|| format!("unknown feature '{feature}'"))?;
     {
-        let map = jobs().lock().expect("model dl jobs poisoned");
+        let map = jobs()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if map.get(feature).is_some_and(|s| s.state == "running") {
             return Err("that download is already running".into());
         }

@@ -89,7 +89,9 @@ pub struct StatusBoard(Arc<RwLock<HashMap<i64, CamHealth>>>);
 
 impl StatusBoard {
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<i64, CamHealth>> {
-        self.0.write().expect("status board poisoned")
+        self.0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn frame_ok(&self, camera_id: i64, ts: i64) {
@@ -149,7 +151,10 @@ impl StatusBoard {
     }
 
     pub fn snapshot(&self) -> HashMap<i64, CamHealth> {
-        self.0.read().expect("status board poisoned").clone()
+        self.0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 

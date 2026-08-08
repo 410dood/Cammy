@@ -251,6 +251,21 @@ brute-force throttle and loopback exemption would then key off an attacker-spoof
   `GET /api/metrics` (loopback or an API token via `Authorization: Bearer`). A
   starter Grafana scrape: point Prometheus at `https://nvr.example.com/api/metrics`
   with a Bearer token from Settings → API tokens.
+
+  **`/api/health` returns `503 Service Unavailable` when a subsystem is
+  degraded** (a background worker thread has stopped, or the database is
+  unreadable) — it used to be a constant `{"ok":true}` that could not fail, so a
+  probe stayed green while detection or recording were dead. `200` means every
+  worker is running. The body is `{"ok":bool,"version":str,"degraded":[names]}`;
+  the names are deliberately opaque (`"worker:detector"`, `"database"`) and carry
+  no error text, camera names or paths, because this endpoint is unauthenticated.
+
+  If you have a supervisor configured to RESTART on a failing health check, be
+  aware it will now act on a degraded engine. That is usually what you want (a
+  dead detector thread only comes back on restart), but decide deliberately —
+  use `GET /api/config` instead if you only want a "the process is listening"
+  probe. Per-worker detail is in `zoomy_worker_alive{worker="…"}` on
+  `/api/metrics`.
 - **Config backup:** `GET /api/backup` (cameras + settings + alarms). Recordings can
   mirror to any S3-compatible bucket (incl. MinIO/NAS) via Settings → Offsite backup.
 - **Storage:** set the recordings location + retention (age + total-bytes cap) in

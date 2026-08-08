@@ -36,6 +36,41 @@ pub fn pretty_label(label: &str) -> String {
 
 /// Sleep up to `dur`, waking within ~200 ms once `shutdown` is set so a periodic
 /// background worker tears down promptly instead of blocking a full tick.
+/// Wait for ffmpeg to exist, instead of the worker exiting when it doesn't.
+///
+/// Two workers used to `return` here. That made a missing ffmpeg permanent —
+/// installing it later revived nothing until the next restart — and, since
+/// worker liveness became a supervised signal, a deliberate exit is
+/// indistinguishable from a crash: a perfectly ordinary no-ffmpeg install would
+/// have raised "part of Cammy stopped running" and pinned `/api/health` at 503
+/// forever. Parking makes "this thread finished" mean *abnormal*, which is what
+/// the supervisor needs it to mean.
+///
+/// Returns `None` only when shutdown is requested while waiting.
+pub fn wait_for_ffmpeg(
+    what: &str,
+    ffmpeg_bin: Option<&std::path::Path>,
+    shutdown: &Arc<AtomicBool>,
+) -> Option<std::path::PathBuf> {
+    let mut warned = false;
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            return None;
+        }
+        if let Ok(p) = recorder::locate_ffmpeg(ffmpeg_bin) {
+            if warned {
+                tracing::info!("{what}: ffmpeg found, starting");
+            }
+            return Some(p);
+        }
+        if !warned {
+            warned = true;
+            tracing::warn!("{what} is idle: ffmpeg not found (re-checking every 30s)");
+        }
+        sleep_interruptible(std::time::Duration::from_secs(30), shutdown);
+    }
+}
+
 pub fn sleep_interruptible(dur: Duration, shutdown: &Arc<AtomicBool>) {
     let start = Instant::now();
     while start.elapsed() < dur && !shutdown.load(Ordering::Relaxed) {

@@ -86,7 +86,9 @@ pub fn vision_present() -> bool {
 /// first use). Used by the upload-a-reference-photo appearance search.
 pub fn embed_image(img: &DynamicImage) -> Result<Vec<f32>> {
     let cell = VISION.get_or_init(|| Mutex::new(None));
-    let mut guard = cell.lock().expect("clip vision mutex poisoned");
+    let mut guard = cell
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.is_none() {
         *guard = Some(detector::build_ort_session(VISION_MODEL, "cpu")?);
     }
@@ -99,7 +101,9 @@ static TEXT: OnceLock<Mutex<Option<(Session, tokenizers::Tokenizer)>>> = OnceLoc
 
 pub fn embed_text(query: &str) -> Result<Vec<f32>> {
     let cell = TEXT.get_or_init(|| Mutex::new(None));
-    let mut guard = cell.lock().expect("clip text mutex poisoned");
+    let mut guard = cell
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.is_none() {
         let session = detector::build_ort_session(TEXT_MODEL, "cpu")?;
         let tokenizer = tokenizers::Tokenizer::from_file(TOKENIZER)

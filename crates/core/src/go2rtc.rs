@@ -96,7 +96,10 @@ impl Go2Rtc {
         let cameras = db.list_cameras()?;
         self.write_config(db, &cameras, drop)?;
 
-        let mut guard = self.child.lock().expect("go2rtc mutex poisoned");
+        let mut guard = self
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(mut old) = guard.take() {
             let _ = old.kill();
             let _ = old.wait();
@@ -138,7 +141,10 @@ impl Go2Rtc {
         }
         // A reconcile only makes sense against a live process; otherwise start.
         let running = {
-            let mut guard = self.child.lock().expect("go2rtc mutex poisoned");
+            let mut guard = self
+                .child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match guard.as_mut() {
                 Some(child) => matches!(child.try_wait(), Ok(None)),
                 None => false,
@@ -227,7 +233,10 @@ impl Go2Rtc {
     /// Restart the child if it died (call from a watchdog loop).
     pub fn ensure_alive(&self, db: &Db) -> Result<()> {
         let needs_restart = {
-            let mut guard = self.child.lock().expect("go2rtc mutex poisoned");
+            let mut guard = self
+                .child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match guard.as_mut() {
                 None => true,
                 Some(child) => !matches!(child.try_wait(), Ok(None)),
@@ -241,7 +250,12 @@ impl Go2Rtc {
     }
 
     pub fn stop(&self) {
-        if let Some(mut child) = self.child.lock().expect("go2rtc mutex poisoned").take() {
+        if let Some(mut child) = self
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = child.kill();
             let _ = child.wait();
         }
