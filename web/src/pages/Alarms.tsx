@@ -871,9 +871,17 @@ export default function Alarms({
                         style={{ marginTop: 4 }}
                         title="The zone condition is matched against zone names drawn on the camera. Nothing currently drawn matches, so detections can't satisfy this rule."
                       >
-                        <span className="badge" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>
-                          no zone named “{r.zone_like}” — may never fire
-                        </span>
+                        {/* docs/11 P2 — this was a dead end: it told you the
+                            rule can't fire and left you to find the zone editor
+                            yourself. The fix is one click away, so link to it. */}
+                        <a
+                          className="badge"
+                          style={{ color: "var(--warn)", borderColor: "var(--warn)", textDecoration: "none" }}
+                          href="#/cameras"
+                          title={`Open Cameras to draw a zone called “${r.zone_like}” (Tune → Zones & privacy)`}
+                        >
+                          no zone named “{r.zone_like}” — may never fire · draw it
+                        </a>
                       </div>
                     )}
                   </td>

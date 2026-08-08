@@ -501,9 +501,18 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
               )}
             </span>
             {showCap && (
-              <span className={`badge ${capTone}`} style={{ marginLeft: 8 }}>
-                <IconAlert size={11} /> {capTone === "danger" ? "Nearly full" : "Filling up"}
-              </span>
+              /* docs/11 P2 — "Nearly full" with nowhere to click is a worry,
+                 not a warning. The knob that fixes it is one page away. */
+              <a
+                className={`badge ${capTone}`}
+                style={{ marginLeft: 8, textDecoration: "none" }}
+                href="#/settings/recording"
+                title="Change how long footage is kept, the disk budget, or where recordings are stored"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <IconAlert size={11} /> {capTone === "danger" ? "Nearly full" : "Filling up"} ·
+                change retention
+              </a>
             )}
           </summary>
           <div className="card" style={{ marginTop: 10 }}>

@@ -84,22 +84,36 @@ function StatCard({
   value,
   sub,
   tone,
+  href,
+  hrefTitle,
 }: {
   icon: React.ReactNode;
   label: string;
   value: React.ReactNode;
   sub?: string;
   tone?: "ok" | "warn" | "danger";
+  /** docs/11 P2 — a tile that reports a PROBLEM should be the way to go fix it.
+   *  "2 offline" and "3 days until full" were dead ends: true, worrying, and
+   *  with nowhere to click. */
+  href?: string;
+  hrefTitle?: string;
 }) {
-  return (
-    <div className="stat-card">
+  const body = (
+    <>
       <span className={`stat-ico ${tone ?? ""}`}>{icon}</span>
       <div className="stat-body">
         <div className="stat-value tnum">{value}</div>
         <div className="stat-label">{label}</div>
         {sub && <div className="stat-sub muted">{sub}</div>}
       </div>
-    </div>
+    </>
+  );
+  return href ? (
+    <a className="stat-card" href={href} title={hrefTitle} style={{ textDecoration: "none", color: "inherit" }}>
+      {body}
+    </a>
+  ) : (
+    <div className="stat-card">{body}</div>
   );
 }
 
@@ -422,6 +436,12 @@ export default function Home({
               : undefined
           }
           tone={loaded ? (offline.length ? "warn" : "ok") : undefined}
+          href="#/cameras"
+          hrefTitle={
+            offline.length
+              ? "See which cameras are offline and why"
+              : "Manage cameras"
+          }
         />
         <StatCard
           icon={<IconRecDot size={18} />}
@@ -442,6 +462,8 @@ export default function Home({
         />
         <StatCard
           icon={<IconDatabase size={20} />}
+          href="#/settings/recording"
+          hrefTitle="Change how much footage is kept, or where it's stored"
           label="Free space"
           value={stats ? fmtBytes(stats.disk_free_bytes) : <SkelValue />}
           sub={

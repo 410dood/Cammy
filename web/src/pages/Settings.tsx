@@ -1743,6 +1743,10 @@ function OffsiteStatusReadout() {
           last error: {st.last_error.slice(0, 80)}
         </span>
       )}
+      {/* docs/11 P2 — an error row with no action is a dead end. The test that
+          would tell you whether it's fixed already exists; put it here, where
+          the failure is, instead of only up beside the credentials. */}
+      {st.last_error && <OffsiteTestButton configured={st.configured} />}
     </div>
   );
 }
@@ -1776,6 +1780,12 @@ function ArchiveStatusReadout() {
           <span style={{ color: "var(--danger)" }} title={st.last_error}>
             last error: {st.last_error.slice(0, 80)}
           </span>
+        )}
+        {/* docs/11 P2 — the pull retries on its own backoff (up to ~30 min), so
+            an error row with nothing to click leaves you waiting without knowing
+            whether it's still broken. Say when the next attempt is. */}
+        {st.last_error && (
+          <span className="muted">Retrying automatically; the next attempt is within 30 minutes.</span>
         )}
       </div>
       {st.per_camera.length > 0 && (
