@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
-import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, CamEvent, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtSpan, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, Role, Settings as S, User } from "../api";
+import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, CamEvent, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtSpan, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, PlateEntry, Role, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout, usePolling } from "../ui";
 import { LicensePane } from "../License";
 import SystemHealthCard from "../SystemHealth";
@@ -2769,6 +2769,30 @@ const DOWNLOADABLE: Record<string, { label: string; feature: string }[]> = {
 ///
 /// `statusKey` links the field to its row in the Models card, so the box that
 /// causes a "not downloaded" / "file is damaged" badge finally says so itself.
+/// docs/11 P1.9 — the Plates library, summarised where the competing settings
+/// lists used to be the only visible plate control. It is the store that wins
+/// server-side, so it should be the one you see first.
+function PlateLibrarySummary() {
+  const [lib, setLib] = useState<PlateEntry[] | null>(null);
+  useEffect(() => {
+    api.plates().then(setLib).catch(() => setLib(null));
+  }, []);
+  const watch = lib?.filter((p) => p.category === "watch").length ?? 0;
+  const known = (lib?.length ?? 0) - watch;
+  return (
+    <>
+      <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+        {lib === null
+          ? "Kept on the People page."
+          : lib.length === 0
+            ? "No plates saved yet — add the vehicles you care about on the People page."
+            : `${lib.length} saved: ${watch} to alert on, ${known} known.`}{" "}
+        <a href="#/people">Open the plate list</a>
+      </span>
+    </>
+  );
+}
+
 function InstalledModelField({
   label,
   value,
@@ -3326,28 +3350,53 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={(v) => v != null && set({ face_match_threshold: v })}
               />
             </div>
-            <label className="field" style={{ flex: 1, minWidth: 280 }} title="Plates (or partials) of interest — a match fires a guaranteed high-priority push.">
-              plate deny-list (vehicles of interest, comma-separated)
-              <input
-                type="text"
-                placeholder="B8AU77, STOLEN1"
-                value={(s.plate_denylist ?? []).join(", ")}
-                onChange={(e) =>
-                  set({ plate_denylist: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })
-                }
-              />
-            </label>
-            <label className="field" style={{ flex: 1, minWidth: 280 }} title="Known/expected plates — surfaced as 'known' in review.">
-              plate allow-list (known vehicles)
-              <input
-                type="text"
-                placeholder="MYCAR1, SPOUSE2"
-                value={(s.plate_allowlist ?? []).join(", ")}
-                onChange={(e) =>
-                  set({ plate_allowlist: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })
-                }
-              />
-            </label>
+            {/* docs/11 P1.9 — two competing plate stores. The People page's
+                Plates library is the one that wins server-side (pipeline.rs
+                consults it FIRST and only falls back to these lists), it holds a
+                name and a category per plate, and it is the one a homeowner will
+                find. These two boxes are not deleted, because they are not a
+                worse copy of it: they match SUBSTRINGS, which the library — an
+                exact match on the normalized plate — cannot express. Migrating a
+                partial into the library would silently stop it matching.
+
+                So: point at the library, and say plainly what is left here. */}
+            <div className="field" style={{ flex: 1, minWidth: 300 }}>
+              <span>vehicle plates</span>
+              <PlateLibrarySummary />
+            </div>
+            <details className="adv" style={{ width: "100%", marginTop: 4 }}>
+              <summary>Partial plate matches (advanced)</summary>
+              <p className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 6 }}>
+                These match any PART of a plate, which the library above can&apos;t do — &ldquo;XYZ&rdquo;
+                here alerts on 8XYZ99. Use them for a partial read from a neighbour&apos;s report;
+                use the library for a whole plate you know. A plate in the library wins over
+                anything typed here.
+              </p>
+              <div className="row">
+                <label className="field" style={{ flex: 1, minWidth: 280 }}>
+                  alert on plates containing (comma-separated)
+                  <input
+                    type="text"
+                    placeholder="XYZ, STOLEN"
+                    value={(s.plate_denylist ?? []).join(", ")}
+                    onChange={(e) =>
+                      set({ plate_denylist: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })
+                    }
+                  />
+                </label>
+                <label className="field" style={{ flex: 1, minWidth: 280 }}>
+                  treat as known if it contains
+                  <input
+                    type="text"
+                    placeholder="MYCAR, SPOUSE"
+                    value={(s.plate_allowlist ?? []).join(", ")}
+                    onChange={(e) =>
+                      set({ plate_allowlist: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })
+                    }
+                  />
+                </label>
+              </div>
+            </details>
           </div>
         </div>
 
