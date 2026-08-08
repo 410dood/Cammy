@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, CamEvent, GaitProfile, PlateEntry, PlateCategory } from "../api";
+import { api, CamEvent, GaitProfile, PlateEntry, PlateCategory, capabilityUsable } from "../api";
 import { useToast, useDialog, Modal, RelTime, ErrorState, EmptyState, Callout, usePolling } from "../ui";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -79,7 +79,7 @@ export default function Faces({ onError }: { onError: (e: string) => void }) {
     }).catch(() => {});
     api
       .capabilities()
-      .then((r) => setFaceMissing(r.features.some((c) => c.key === "face" && !c.present)))
+      .then((r) => setFaceMissing(!capabilityUsable(r.features.find((c) => c.key === "face"))))
       .catch(() => {});
   };
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, AlarmRule, Camera, CamEvent, DetectConfig, fmtTime, PolyZone } from "../api";
+import { api, AlarmRule, Camera, CamEvent, DetectConfig, fmtTime, PolyZone, capabilityUsable } from "../api";
 import { IconInfo, IconAlert } from "../icons";
 import { Modal, useToast } from "../ui";
 import { ChildHeightEditor, Rect, RectZoneDraw } from "../SizeFilterEditor";
@@ -734,7 +734,7 @@ export default function Family({ cameras, onGo }: { cameras: Camera[]; onGo?: (p
       .finally(() => setLoaded(true));
     api
       .capabilities()
-      .then((r) => setPoseAvailable(r.features.find((f) => f.key === "pose")?.present ?? true))
+      .then((r) => setPoseAvailable(capabilityUsable(r.features.find((f) => f.key === "pose"))))
       .catch(() => {});
   }, []);
 

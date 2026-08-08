@@ -2840,9 +2840,28 @@ function ModelsCard() {
                   {c.model}
                 </div>
               </div>
-              {c.present ? (
-                <span className="badge ok" style={{ whiteSpace: "nowrap" }}>
+              {c.present && c.loadable !== false ? (
+                <span
+                  className="badge ok"
+                  style={{ whiteSpace: "nowrap" }}
+                  title={
+                    c.probed_ms != null
+                      ? `Checked ${c.probed_ms} ms ago by really opening the file, not just looking for it.`
+                      : undefined
+                  }
+                >
                   <IconCheck size={13} /> installed
+                </span>
+              ) : c.present ? (
+                /* Present but unusable — a truncated download, a `.part` renamed
+                   by a crash, or a file that is not the model it claims to be.
+                   This used to show a green tick over a dead feature. */
+                <span
+                  className="badge danger"
+                  style={{ whiteSpace: "nowrap" }}
+                  title={`The file is there but Cammy could not load it, so this feature will not run. Re-download or replace it. Details: ${c.error ?? "unknown"}`}
+                >
+                  <IconAlert size={13} /> file is damaged
                 </span>
               ) : (() => {
                 const job = jobFor(c.key);

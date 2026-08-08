@@ -1,5 +1,5 @@
 ﻿import { FormEvent, useEffect, useRef, useState } from "react";
-import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMap } from "../api";
+import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMap, capabilityUsable } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { recordState, recordStateHint, scheduleWindow } from "../labels";
 import SizeFilterEditor, { ChildHeightEditor, MotionTuner, RectZoneDraw } from "../SizeFilterEditor";
@@ -1193,10 +1193,10 @@ export default function Cameras({
     api
       .capabilities()
       .then((r) => {
-        setPoseModelMissing(!(r.features.find((f) => f.key === "pose")?.present ?? true));
+        setPoseModelMissing(!capabilityUsable(r.features.find((f) => f.key === "pose")));
         setOpenvinoAvailable(!!r.openvino);
-        setClipAvailable(r.features.find((f) => f.key === "smart_search")?.present ?? true);
-        setAudioAvailable(r.features.find((f) => f.key === "audio")?.present ?? true);
+        setClipAvailable(capabilityUsable(r.features.find((f) => f.key === "smart_search")));
+        setAudioAvailable(capabilityUsable(r.features.find((f) => f.key === "audio")));
       })
       .catch(() => {});
   }, []);

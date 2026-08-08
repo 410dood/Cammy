@@ -422,87 +422,134 @@ async fn deactivate_license(State(st): State<AppState>) -> ApiResult<Json<serde_
     ))
 }
 
-/// Per-feature optional-model presence, so the UI can show a "model not
-/// downloaded" status and disable toggles whose backing model is missing —
-/// instead of letting an enabled feature silently no-op (the dominant
-/// silent-failure gap). Returns model *filenames* (already documented in the
-/// README), never absolute paths, so it's safe for any authenticated caller.
+/// Per-feature model availability — now PROVED, not asserted.
+///
+/// This used to be `Path::exists` per file, and the UI drew a green tick from
+/// it. A truncated download, a `.part` renamed by a crash mid-download, or an
+/// `.onnx` from an incompatible export all read as "installed" and the feature
+/// then silently no-oped — the exact failure the presence check existed to
+/// prevent. Each file is now really opened (an ONNX session build, a JSON parse,
+/// a ggml header check), cached under path+size+mtime+accelerator so the cost is
+/// paid once per model rather than once per request.
+///
+/// Returns model *filenames* (already documented in the README), never absolute
+/// paths, so it stays safe for any authenticated caller.
 async fn capabilities(State(st): State<AppState>) -> Json<serde_json::Value> {
     let s = st.db.settings();
-    let exists = |p: &str| !p.trim().is_empty() && std::path::Path::new(p.trim()).exists();
-    let feat = |key: &str, label: &str, model: String, present: bool, required: bool| {
-        serde_json::json!({
-            "key": key, "label": label, "model": model,
-            "present": present, "required": required,
-        })
+    // Session builds are seconds of CPU (and a DirectML device init on Windows),
+    // so the whole sweep goes to a blocking thread — sequentially, so eight graph
+    // optimizations can't stampede the box the live detector is running on.
+    // P3.2 "Ask your cameras": true only when enabled AND a BYO endpoint is
+    // configured, so the UI never offers a box that would just error.
+    let ask = s.ask_enabled && !s.ask_endpoint.trim().is_empty();
+    let probed = tokio::task::spawn_blocking(move || probe_features(&s))
+        .await
+        .unwrap_or_default();
+    Json(serde_json::json!({
+        "features": probed,
+        // Honest gate for the OpenVINO accelerator option: true only when this
+        // build + linked ONNX Runtime can genuinely run OpenVINO (false
+        // out-of-the-box — the prebuilt runtime doesn't bundle it), so the UI
+        // never offers a silent no-op.
+        "openvino": detector::openvino_available(),
+        "ask": ask,
+    }))
+}
+
+/// Probe every optional model. BLOCKING.
+fn probe_features(s: &Settings) -> Vec<serde_json::Value> {
+    use crate::models::{combine, probe, Kind};
+    // The accelerator the pipeline would really use, so the probe answers the
+    // question that is actually asked. CLIP/YAMNet/LPR are hard-coded to CPU at
+    // their call sites, so probing them on a GPU EP would answer nothing.
+    let accel = detector::effective_accelerator(&s.accelerator, s.force_cpu);
+    let one = |path: &str, kind: Kind, acc: &str| {
+        let name = std::path::Path::new(path.trim())
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.trim().to_string());
+        (name, probe(path, kind, acc))
     };
-    let features = serde_json::json!([
-        feat(
+    let feature =
+        |key: &str, label: &str, required: bool, parts: Vec<(String, crate::models::Probe)>| {
+            let names: Vec<&str> = parts.iter().map(|(n, _)| n.as_str()).collect();
+            let (present, loadable, error, probed_ms) = combine(&parts);
+            serde_json::json!({
+                "key": key,
+                "label": label,
+                "model": names.join(" + "),
+                "present": present,
+                // NOTE what a successful ONNX session build does NOT prove: ONNX
+                // Runtime registers execution providers with error_on_failure=false,
+                // so a GPU EP that cannot load quietly degrades to CPU. This says the
+                // MODEL is good, not that the accelerator engaged.
+                "loadable": loadable,
+                "error": error,
+                "probed_ms": probed_ms,
+                "required": required,
+            })
+        };
+    vec![
+        feature(
             "detection",
             "Object detection (YOLO)",
-            s.model_path.clone(),
-            exists(&s.model_path),
             true,
+            vec![one(&s.model_path, Kind::Onnx, accel)],
         ),
-        feat(
+        feature(
             "smart_search",
             "Smart search & appearance (CLIP)",
-            format!(
-                "{} + {} + {}",
-                crate::smart::VISION_MODEL,
-                crate::smart::TEXT_MODEL,
-                crate::smart::TOKENIZER
-            ),
-            crate::smart::models_present(),
             false,
+            vec![
+                one(crate::smart::VISION_MODEL, Kind::Onnx, "cpu"),
+                one(crate::smart::TEXT_MODEL, Kind::Onnx, "cpu"),
+                one(crate::smart::TOKENIZER, Kind::Json, "cpu"),
+            ],
         ),
-        feat(
+        feature(
             "audio",
             "Audio events (YAMNet)",
-            crate::audio::MODEL.to_string(),
-            crate::audio::models_present(),
             false,
+            // The class map was always part of the presence check but was never
+            // NAMED, so "the model is there" could be true while the feature was
+            // broken by a missing sidecar.
+            vec![
+                one(crate::audio::MODEL, Kind::Onnx, "cpu"),
+                one(crate::audio::CLASS_MAP, Kind::Text, "cpu"),
+            ],
         ),
-        feat(
+        feature(
             "transcription",
             "Audio transcription (Whisper)",
-            s.transcription_model.clone(),
-            exists(&s.transcription_model),
             false,
+            vec![one(&s.transcription_model, Kind::Ggml, "cpu")],
         ),
-        feat(
+        feature(
             "lpr",
             "License-plate recognition",
-            format!("{} + {}", crate::lpr::DET_MODEL, crate::lpr::REC_MODEL),
-            crate::lpr::models_present(),
             false,
+            vec![
+                one(crate::lpr::DET_MODEL, Kind::Onnx, "cpu"),
+                one(crate::lpr::REC_MODEL, Kind::Onnx, "cpu"),
+                one(crate::lpr::DICT_FILE, Kind::Text, "cpu"),
+            ],
         ),
-        feat(
+        feature(
             "face",
             "Face recognition",
-            format!("{} + {}", s.face_det_model, s.face_rec_model),
-            exists(&s.face_det_model) && exists(&s.face_rec_model),
             false,
+            vec![
+                one(&s.face_det_model, Kind::Onnx, accel),
+                one(&s.face_rec_model, Kind::Onnx, accel),
+            ],
         ),
-        feat(
+        feature(
             "pose",
             "Body-pose safety monitoring",
-            s.pose_model.clone(),
-            crate::posture::models_present(&s.pose_model),
             false,
+            vec![one(&s.pose_model, Kind::Onnx, accel)],
         ),
-    ]);
-    // Honest gate for the OpenVINO accelerator option: true only when this build
-    // + linked ONNX Runtime can genuinely run OpenVINO (false out-of-the-box —
-    // the prebuilt runtime doesn't bundle it), so the UI never offers a silent
-    // no-op. Same pattern as the model-presence flags above.
-    Json(serde_json::json!({
-        "features": features,
-        "openvino": detector::openvino_available(),
-        // P3.2 "Ask your cameras": true only when enabled AND a BYO endpoint is
-        // configured, so the UI never offers a box that would just error.
-        "ask": s.ask_enabled && !s.ask_endpoint.trim().is_empty(),
-    }))
+    ]
 }
 
 /// Per-camera health: frame freshness from the detection pipeline + recorder

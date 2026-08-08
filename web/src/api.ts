@@ -799,10 +799,25 @@ export interface Capability {
   label: string;
   /** Expected model filename(s) — never an absolute path. */
   model: string;
+  /** Every file is on disk. */
   present: boolean;
+  /** Every file was really OPENED, not merely found. A truncated download or a
+   *  half-written `.part` renamed by a crash is `present` but not `loadable`,
+   *  and used to draw a green tick over a dead feature. */
+  loadable?: boolean;
+  /** Why it would not load, in the underlying library's words. */
+  error?: string | null;
+  /** How long the check took — proof the badge was earned, not assumed. */
+  probed_ms?: number;
   /** True for the mandatory object detector (others are optional add-ons). */
   required: boolean;
 }
+
+/** Can this feature actually run? Present-but-broken is as unusable as missing,
+ *  so every gate must ask this rather than `.present`. Tolerates an older server
+ *  that does not send `loadable` yet. */
+export const capabilityUsable = (c: Capability | undefined) =>
+  !!c && c.present && c.loadable !== false;
 
 export interface Liveview {
   name: string;
