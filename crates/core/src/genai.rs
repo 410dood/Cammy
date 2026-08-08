@@ -113,26 +113,45 @@ impl QueueStats {
     }
 }
 
-/// The producer half. The channel stays UNBOUNDED with an explicit depth counter
+/// The consumer half: TWO channels, because they hold work of different value.
+/// The worker always takes an alarm before a caption.
+pub struct Rx {
+    alarms: Receiver<Job>,
+    captions: Receiver<Job>,
+}
+
+/// The producer half. Each channel stays UNBOUNDED with an explicit depth counter
 /// (the shape `notify::enqueue` uses) rather than a `sync_channel`: a bounded
 /// `send` BLOCKS, and blocking here would stall the detection thread — the exact
 /// failure the whole deferred-fire design exists to prevent.
+///
+/// Alarm fires and captions are separated so a slow model cannot make an ALERT
+/// wait behind cosmetic work. Measured on this install with a stalled endpoint:
+/// a fired VLM rule sat behind six queued captions, each burning a full 60 s
+/// timeout — the alert would have been ~6 minutes late. One FIFO could not fix
+/// that; two can.
 #[derive(Clone)]
 pub struct Queue {
-    tx: std::sync::mpsc::Sender<Job>,
+    alarms: std::sync::mpsc::Sender<Job>,
+    captions: std::sync::mpsc::Sender<Job>,
     stats: QueueStats,
 }
 
 impl Queue {
-    pub fn new() -> (Queue, Receiver<Job>, QueueStats) {
-        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+    pub fn new() -> (Queue, Rx, QueueStats) {
+        let (atx, arx) = std::sync::mpsc::channel::<Job>();
+        let (ctx, crx) = std::sync::mpsc::channel::<Job>();
         let stats = QueueStats::default();
         (
             Queue {
-                tx,
+                alarms: atx,
+                captions: ctx,
                 stats: stats.clone(),
             },
-            rx,
+            Rx {
+                alarms: arx,
+                captions: crx,
+            },
             stats,
         )
     }
@@ -140,8 +159,9 @@ impl Queue {
     /// Hand a job to the worker. `false` = shed (the caller should say so; for a
     /// `VlmGate` job that means an alert will never be delivered).
     pub fn send(&self, job: Job) -> bool {
+        let is_alarm = job.is_alarm();
         let depth = self.stats.depth.load(Ordering::Relaxed);
-        if !admits(job.is_alarm(), depth) {
+        if !admits(is_alarm, depth) {
             self.stats.shed.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
                 kind = job.kind(),
@@ -151,7 +171,12 @@ impl Queue {
             return false;
         }
         self.stats.depth.fetch_add(1, Ordering::Relaxed);
-        if self.tx.send(job).is_err() {
+        let tx = if is_alarm {
+            &self.alarms
+        } else {
+            &self.captions
+        };
+        if tx.send(job).is_err() {
             self.stats.depth.fetch_sub(1, Ordering::Relaxed);
             return false; // worker gone
         }
@@ -188,12 +213,15 @@ fn parse_response(body: &serde_json::Value) -> Option<String> {
     let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = one_line.trim().trim_matches('"').trim();
     (!trimmed.is_empty()).then(|| {
-        // Keep captions compact for the UI / push.
-        if trimmed.len() > 280 {
-            format!(
-                "{}…",
-                &trimmed[..trimmed.char_indices().nth(279).unwrap().0]
-            )
+        // Keep captions compact for the UI / push. Count CHARACTERS on both
+        // sides: the guard used to test `len()` (BYTES) and then index by the
+        // 280th CHAR, so any caption over 280 bytes but under 280 characters —
+        // i.e. any non-ASCII reply, an accent or an emoji is enough — made
+        // `nth(279)` return None and PANICKED the GenAI worker dead for the rest
+        // of the process. Nothing restarts it, so captions and every deferred
+        // VLM alarm fire would have stopped for good.
+        if trimmed.chars().count() > 280 {
+            format!("{}…", trimmed.chars().take(279).collect::<String>())
         } else {
             trimmed.to_string()
         }
@@ -578,7 +606,7 @@ const SHUTDOWN_DRAIN: Duration = Duration::from_secs(5);
 
 pub fn run(
     db: Db,
-    rx: Receiver<Job>,
+    rx: Rx,
     stats: QueueStats,
     mqtt_tx: std::sync::mpsc::Sender<crate::mqtt::EventMsg>,
     shutdown: Arc<AtomicBool>,
@@ -615,25 +643,35 @@ pub fn run(
             }
             backlog_notified = state;
         }
-        match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(job) => {
-                stats.depth.fetch_sub(1, Ordering::Relaxed);
-                match job {
-                    Job::Caption(job) => {
-                        let outcome = caption_one(&db, &job);
-                        report_reachability(&db, &outcome, &mut err_notified);
-                    }
-                    Job::VlmGate(j) => {
-                        // Same edge-triggered surface as the caption path: a
-                        // vlm_prompt-only owner used to get NO signal that their
-                        // model was down while every rule fired unverified.
-                        let outcome = vlm_gate(&db, &j, &mqtt_tx);
-                        report_reachability(&db, &outcome, &mut err_notified);
-                    }
+        // ALARMS FIRST, always. A caption is a sentence of description; an
+        // alarm fire is the alert itself, and nothing retries it.
+        let job = match rx.alarms.try_recv() {
+            Ok(j) => Some(j),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+            // No alarm waiting: take a caption, blocking briefly so shutdown is
+            // still noticed while both queues are idle.
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                match rx.captions.recv_timeout(Duration::from_millis(500)) {
+                    Ok(j) => Some(j),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
                 }
             }
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => return,
+        };
+        let Some(job) = job else { continue };
+        stats.depth.fetch_sub(1, Ordering::Relaxed);
+        match job {
+            Job::Caption(job) => {
+                let outcome = caption_one(&db, &job);
+                report_reachability(&db, &outcome, &mut err_notified);
+            }
+            Job::VlmGate(j) => {
+                // Same edge-triggered surface as the caption path: a
+                // vlm_prompt-only owner used to get NO signal that their
+                // model was down while every rule fired unverified.
+                let outcome = vlm_gate(&db, &j, &mqtt_tx);
+                report_reachability(&db, &outcome, &mut err_notified);
+            }
         }
     }
     // Shutdown: what is still queued includes ALARM FIRES that nothing will ever
@@ -642,16 +680,19 @@ pub fn run(
     // to just exit and drop the whole backlog in silence.
     let deadline = std::time::Instant::now() + SHUTDOWN_DRAIN;
     let (mut fired, mut lost_alarms, mut lost_captions) = (0usize, 0usize, 0usize);
-    while let Ok(job) = rx.try_recv() {
+    while let Ok(job) = rx.alarms.try_recv() {
         stats.depth.fetch_sub(1, Ordering::Relaxed);
         match job {
             Job::VlmGate(j) if std::time::Instant::now() < deadline => {
                 let _ = vlm_gate(&db, &j, &mqtt_tx);
                 fired += 1;
             }
-            Job::VlmGate(_) => lost_alarms += 1,
-            Job::Caption(_) => lost_captions += 1,
+            _ => lost_alarms += 1,
         }
+    }
+    while let Ok(_job) = rx.captions.try_recv() {
+        stats.depth.fetch_sub(1, Ordering::Relaxed);
+        lost_captions += 1;
     }
     if lost_alarms > 0 {
         tracing::warn!(
@@ -720,6 +761,30 @@ mod tests {
         // Empty / missing → None.
         assert!(parse_response(&serde_json::json!({ "response": "   " })).is_none());
         assert!(parse_response(&serde_json::json!({ "x": 1 })).is_none());
+    }
+
+    /// A multi-byte caption used to PANIC the worker dead: the length guard
+    /// counted bytes and the slice counted characters, so anything over 280
+    /// bytes but under 280 chars hit `nth(279).unwrap()` on a `None`. One
+    /// accented word from the model would have ended captions AND every
+    /// deferred VLM alarm fire for the life of the process.
+    #[test]
+    fn a_multibyte_caption_does_not_kill_the_worker() {
+        // 200 chars, 400 bytes: over the old byte guard, under the char index.
+        let two_hundred_accents = "é".repeat(200);
+        let out = parse_response(&serde_json::json!({ "response": two_hundred_accents }))
+            .expect("a caption");
+        assert_eq!(out.chars().count(), 200, "short enough to keep whole");
+        assert!(!out.ends_with('…'));
+        // 400 chars → truncated on a character boundary, not a byte one.
+        let long = "é".repeat(400);
+        let out = parse_response(&serde_json::json!({ "response": long })).expect("a caption");
+        assert_eq!(out.chars().count(), 280, "279 chars + the ellipsis");
+        assert!(out.ends_with('…'));
+        // Emoji (4-byte) too — the same trap with a bigger multiplier.
+        let emoji = "🐈".repeat(100);
+        let out = parse_response(&serde_json::json!({ "response": emoji })).expect("a caption");
+        assert_eq!(out.chars().count(), 100);
     }
 
     #[test]
@@ -795,7 +860,18 @@ mod tests {
         }))));
         assert_eq!(stats.depth(), CAPTION_CAP + 1);
         assert_eq!(stats.shed(), 1);
-        drop(rx);
+        // …and it is FIRST in line, not behind the caption flood. Measured on
+        // the live install: an alarm queued behind six stalled captions would
+        // have been ~6 minutes late, which the single FIFO could not fix.
+        assert!(
+            matches!(rx.alarms.try_recv(), Ok(Job::VlmGate(_))),
+            "the alarm must be immediately available while captions are backed up"
+        );
+        assert!(
+            rx.alarms.try_recv().is_err(),
+            "…and only the alarm is on that channel"
+        );
+        assert!(matches!(rx.captions.try_recv(), Ok(Job::Caption(_))));
     }
 
     #[test]
