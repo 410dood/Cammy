@@ -14,9 +14,63 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — docs/11 P0 COMPLETE (alert-losing + watchdog), 2026-08-07
+## Current status: v0.4 — docs/11 P0 + P1 COMPLETE, 2026-08-07
 
-### Latest: docs/11 Phase 2 — the watchdog cluster, 2026-08-07
+### Latest: docs/11 Phase 3 — all ten P1 control-UX gaps, 2026-08-07
+
+`e15e6cd`, `fed2a39`, `dc98671`, `fcb2daa`, `33992e1` (P1.4 shipped with P0.9).
+273 core tests, clippy -D + fmt clean, tsc + vite green, every item live-validated
+on :8081 with owner state restored (cameras/settings/alarm-rule ids all identical
+to the pre-change snapshot).
+
+- **P1.1** `alert_labels` → `LabelChips`. The founding docs/10 sin, last one
+  standing, on the very card where `ObjectPicker` already lived; a typo empties
+  the Alerts review tab silently forever.
+- **P1.2** per-action **Test** on every webhook/ntfy/email alarm action. The
+  rule-level Test only existed after saving, so a mistyped target was discovered
+  by an alert that never came. **Live: a webhook at a closed port reported the OS
+  error before the rule was saved.**
+- **P1.3** `min_score` — a first-class `AlarmRule` field the builder hard-coded
+  to 0 — is now an `InheritSlider` ("Any detection" → "Only when at least 70%
+  sure"). **And `matchPreview` now applies it**: it deliberately didn't, so a
+  preview sitting under the new slider would have contradicted it. **Live:
+  sweeping the slider moved the count 45 → 31 → 1.**
+- **P1.5** the detection sub-stream gains brand buttons (host + credentials
+  lifted from the camera's main source) and a REAL test — `POST
+  /api/stream_probe` registers a throwaway go2rtc stream, pulls one frame,
+  removes it. It reports the SIZE too, because a sub-stream that works but is 4K
+  is the mistake the field exists to prevent. **Live: the real sub-stream 640×480,
+  the main stream 3840×2160 (warned), wrong path/host refused.** Note the audit's
+  "the add-wizard has both" was half true — the wizard's only probe is an ONVIF
+  profile enumeration that never fetches a frame.
+- **P1.6** "Test on the current picture" for the zone-state prompts, scoring both
+  against the live frame and showing both cosines, the margin, the crop size and
+  the crop. **This produced the first real data for the long-deferred
+  `STATE_MARGIN` question: measured here, the two prompts separate by only
+  0.001–0.011 against cosines of ~0.21–0.27 — the 0.01 margin sits at the noise
+  floor**, so prompts must be far more different than "open gate"/"closed gate".
+  Tuning stays the owner's call against a real door; the instrument now exists.
+- **P1.7/P1.8/P1.10** the global detector model becomes a picker of what is
+  really installed; the pose path carries its own live capability badge (the
+  badge and the box causing it were three tabs apart); and `go2rtc_api_port` —
+  which existed in Settings, in the API type, and in NO UI — is an Advanced
+  field, because if 1984 is taken every camera is dead with no knob.
+  **Foot-gun caught here: `/api/models/installed` never excluded the POSE model,
+  so the new global picker would have offered a 56-channel model as the object
+  detector.** It now excludes the CONFIGURED pose/face paths, not filenames.
+- **P1.9** the plate library becomes primary in Settings (count, split, link),
+  and the two comma-text lists move behind "Partial plate matches (advanced)".
+  **Deliberately not a migration:** those lists match SUBSTRINGS, which the
+  library (exact match on the normalized plate) cannot express, so moving
+  partials into it would silently stop them matching.
+
+**Next: Phase 4** — the docs/11 P2 sweep (trust surfacing + ~20 mechanical UX
+swaps + dead-end fixes). Build them on what now exists: `degraded::Latch` for any
+"surface a silent failure" row, `/api/system` + `web/src/SystemHealth.tsx` for
+anything the owner should know about the app itself, `POST /api/stream_probe` for
+URL checks, `models::probe` for "is this file real".
+
+### Earlier: docs/11 Phase 2 — the watchdog cluster, 2026-08-07
 
 `4d6e06b`, `3310177`, `24478f8`. **273 core tests** (was 257 at the start of the
 day), clippy -D + fmt clean, tsc + vite green, every state driven for real on

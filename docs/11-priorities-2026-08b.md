@@ -135,13 +135,26 @@ degradation costs.
 
 ## P1 — control-UX gaps the docs/10 sweep missed (high)
 
-1. **`alert_labels` is still raw comma-text** (`Settings.tsx:3095`) — the
+> **STATUS 2026-08-07: ALL TEN SHIPPED** (`e15e6cd`, `fed2a39`, `dc98671`,
+> `fcb2daa`, `33992e1`, + P1.4 with P0.9 in `3310177`), each live-validated.
+> Three things found while doing them, worth carrying:
+> - `/api/models/installed` never excluded the POSE model, so the new global
+>   picker would have offered a 56-channel model as the object detector. Fixed
+>   by excluding the CONFIGURED pose/face paths, not filenames.
+> - `matchPreview` deliberately ignored min-score; once P1.3 added the slider a
+>   preview that ignored it would have contradicted the control beside it.
+> - P1.9 is NOT a migration. The settings lists match SUBSTRINGS, which the
+>   library cannot express, so moving partials into it would silently stop them
+>   matching. The library is now primary; the lists are relabelled for what only
+>   they can do.
+
+1. ~~**`alert_labels` is still raw comma-text**~~ **DONE `e15e6cd`** (`Settings.tsx:3095`) — the
    founding docs/10 sin, on the card where `ObjectPicker` already lives. A
    typo empties the Alerts review tab forever. → `LabelChips`.
-2. **Alarm actions have no per-action Test** (`Alarms.tsx:1507`) — the
+2. ~~**Alarm actions have no per-action Test**~~ **DONE `e15e6cd`** (`Alarms.tsx:1507`) — the
    rule-level Test only exists after save; `TestSendButton` + `notifyTest`
    already exist. → mount per action row.
-3. **`min_score` is hard-coded to 0 in the builder** (`Alarms.tsx:583`) — a
+3. ~~**`min_score` is hard-coded to 0 in the builder**~~ **DONE `e15e6cd`** (+ the preview now applies it) (`Alarms.tsx:583`) — a
    first-class AlarmRule field with no control anywhere. → `InheritSlider`
    ("how confident before this rule fires").
 4. ~~**MQTT broker URL has no Test**~~ **DONE `3310177`** (with P0.9) — a Test
@@ -149,24 +162,40 @@ degradation costs.
    for the broker's acknowledgement. Was: (`Settings.tsx:4177`) while every sibling
    channel has one. → `POST /api/mqtt/test` (publish a retained test message)
    + button; pairs with P0.9's state badge.
-5. **Detection sub-stream is a raw RTSP box in the TuneModal**
+5. ~~**Detection sub-stream is a raw RTSP box in the TuneModal**~~ **DONE
+   `fcb2daa`** — brand buttons (host/credentials lifted from the main source) +
+   a real `POST /api/stream_probe` that registers a throwaway go2rtc stream,
+   pulls one frame and removes it, reporting the SIZE so a 4K "sub"-stream is
+   caught too. Note the audit's "the add-wizard has both" was half true: the
+   wizard's only probe is an ONVIF profile enumeration that never fetches a
+   frame. Was:
    (`Cameras.tsx:613`) — no brand template, no probe, though the add-wizard
    has both. A wrong URL silently kills detection. → reuse templates + "Test
    this stream".
-6. **Zone-state CLIP prompts have no Test** (`ZoneEditor.tsx:817`) — the other
+6. ~~**Zone-state CLIP prompts have no Test**~~ **DONE `dc98671`** — scores both
+   prompts against the CURRENT frame and shows both cosines, the margin needed,
+   the crop size and the crop itself. **This produced the first real data for the
+   STATE_MARGIN deferral: on this install the two prompts separate by
+   0.001-0.011 against cosines of ~0.21-0.27, i.e. the 0.01 margin sits at the
+   noise floor** — the prompts must be far more different from each other than
+   "open gate"/"closed gate". Tuning stays the owner's call; the instrument
+   exists. Was: (`ZoneEditor.tsx:817`) — the other
    two AI free-text prompts both got one. → "Test on the current frame"
    showing both prompts' scores (also unblocks the long-open prompt-tuning
    deferral).
-7. **Global detector model is a spell-the-path box** (`Settings.tsx:4368`)
+7. ~~**Global detector model is a spell-the-path box**~~ **DONE `fed2a39`** (`Settings.tsx:4368`)
    while the per-camera one became `ModelOverrideField`. → same select.
-8. **`pose_model` is a free-text path outside ModelsCard**
+8. ~~**`pose_model` is a free-text path outside ModelsCard**~~ **DONE `fed2a39`**
+   — the field now carries its own live capability badge, which is the part that
+   was actually missing (P0.8 already made the card honest). Was:
    (`Settings.tsx:4383`) — the nursery/elder-safety feature silently no-ops
    on a typo. → make pose a ModelsCard row (path field to Advanced; still no
    auto-download — it needs a local export).
-9. **Two competing plate stores** (`Settings.tsx:3217/3228` comma-text
+9. ~~**Two competing plate stores**~~ **DONE `33992e1`** (see the note above —
+   deliberately not a migration). Was: (`Settings.tsx:3217/3228` comma-text
    deny/allowlists vs the Plates library on People). → unify through the
    library.
-10. **`go2rtc_api_port` has no UI** (`db.rs:1285`) — if 1984 is taken
+10. ~~**`go2rtc_api_port` has no UI**~~ **DONE `fed2a39`** (`db.rs:1285`) — if 1984 is taken
     (Frigate co-install), every camera is dead with no knob. → Advanced field
     + surface bind failure via P0.9-style state.
 
@@ -315,6 +344,10 @@ model picker. Also: pool2 needs **no** power-cycle (schedule, not fault —
 2. **P0.7–P0.9 + the P2 trust-surfacing rows** as one "watchdog" feature:
    worker liveness + go2rtc + MQTT + HomeKit state feeding a System health
    pane (P3.1) and a real `/api/health`.
-3. **P1.1–P1.5** — the mechanical control-UX fixes (chips, Tests, min_score).
-4. **P1.6–P1.10 + P2 UX swaps** in sweeps, live-validated as before.
+3. ~~**P1.1–P1.5**~~ / ~~**P1.6–P1.10**~~ **ALL DONE 2026-08-07.**
+4. **P2 UX swaps + dead-end fixes** — the remaining work. New reusable pieces to
+   build them on: `degraded::Latch` for every "surface a silent failure" row,
+   `/api/system` + `web/src/SystemHealth.tsx` for anything the owner should see
+   about the app itself, `POST /api/stream_probe` for URL checks, and
+   `models::probe` for "is this file real".
 5. P3 + deferred features as appetite allows.
