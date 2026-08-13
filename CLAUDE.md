@@ -14,9 +14,59 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — docs/11 P0 + P1 + P2 COMPLETE, 2026-08-13
+## Current status: v0.4 — docs/11 COMPLETE (P0+P1+P2+P3), 2026-08-13
 
-### Latest: docs/11 P2 mechanical remainder — five sweeps, 2026-08-13
+### Latest: docs/11 P3 — the last six items, 2026-08-13
+
+`de0a65c`, `784884b`, `6c75672`, `56a44fd`, `dc16dc5`, `d966a25`. **274 core
+tests**, clippy -D + fmt clean, tsc + vite + 14 web tests green, every item
+live-validated on :8081 (settings verified byte-identical after each; the two
+synthetic soft-trigger events were unflagged so retention treats them
+normally). **docs/11 is COMPLETE — no ranked backlog remains**; what's left is
+the classified deferred inventory (owner actions / needs-data / bigger
+features / design decisions) at the bottom of docs/11.
+
+- **ONVIF inspector UI** (`de0a65c`): the TuneModal's Camera-side detection
+  toggle offers "See what this camera is saying" — a live 3 s-poll table of
+  the raw inspector ring (`GET /api/onvif/inspect`, was curl-only). Each row
+  shows topic/state/object class and what it BECOMES: ingested topics badge
+  their `camera_*` label via a TS mirror of `onvif_events::label_for`; the
+  rest say "shown only". Live: front-door's real Dahua feed showed 50 rows,
+  8 badged camera-motion, 42 shown-only (StorageFailure, Relay, …) — exactly
+  the "camera fires topics we don't ingest" visibility this existed for.
+- **`zoomy_dropped_events_total{consumer="sse"|"homekit"}`** (`784884b`): both
+  broadcast `Lagged` arms now feed AtomicU64 totals rendered in /api/metrics.
+  An SSE drop is an HA integration that missed an event; a HomeKit drop is a
+  motion sensor that never tripped; both were debug!-only.
+- **face_det_model / face_rec_model / nms_iou** (`6c75672`): the type-surface
+  decision resolved to SURFACE (all three are live-wired — the default-on face
+  feature gates on both paths; nms_iou feeds every Detector) behind a new
+  "Expert model settings (advanced)" disclosure under the detector/pose row,
+  with the face capability badge at the field and nms_iou as an
+  outcome-labeled 0.2–0.7 slider.
+- **Insights corrective actions** (`56a44fd`): Top-objects rows gain a "too
+  many?" expander linking the FIX — ignore-zone (Cameras → Tune) or the
+  detected-object list (#/settings/detection) — with an honest separate branch
+  for `camera_*` labels (those come from the camera's own detection; a zone or
+  object picker would do nothing).
+- **Events rides SSE** (`dc16dc5`): new `web/src/useEventStream.ts` (out of
+  api.ts so node tests still import it). Events reloads the moment an event
+  arrives; the poll stays as fallback, stretched 5 s → 60 s while connected,
+  snapping back on EventSource error while the browser reconnects. Deferred
+  refreshes (hidden tab, open modal) are remembered and flushed on
+  visibilitychange/modal-close. RBAC needed no client work — the feed is
+  filtered identically to list_events at connect, fail-closed. **Live: a soft
+  trigger appeared on the open page in 450 ms; 12 s of network watching showed
+  zero list refetches.** Live's 5 s poll is deliberately untouched — it's
+  /api/status, which the event feed doesn't carry.
+- **FOV cones on Map pins** (`d966a25`): each pin gains optional `dir`
+  (degrees, 0 = up, clockwise) dragged via a handle orbiting the pin in edit
+  mode; plain click clears it. Cone is presentational (faint, fixed 60°) and
+  computed in measured pixels (percent coords distort angles on non-square
+  plans). Floorplan is a JSON blob — no backend change. Live-validated with a
+  temporary plan (this install has none); owner settings restored identical.
+
+### Earlier: docs/11 P2 mechanical remainder — five sweeps, 2026-08-13
 
 `0b18f0f`, `bd31db8`, `65768fd`, `3d62501` (+ two P3 quick items). **274 core
 tests**, clippy -D + fmt clean, tsc + vite + 14 web tests green, every sweep
@@ -62,9 +112,8 @@ live-validated on :8081 with owner state verified byte-identical afterwards.
   warning suppressed there, because 4K on a MAIN address is just the camera
   working.
 
-**docs/11 status: P0, P1 and P2 are COMPLETE.** P3 still open: ONVIF inspector
-UI, SSE consumption in Events/Live, the `face_det_model`/`nms_iou` type
-decision, `dropped_events` gauge, FOV cones, Insights corrective actions.
+**docs/11 status: COMPLETE** (P3 finished later the same day — see the top of
+this file).
 
 ### Earlier: docs/11 Phase 4 — the P2 sweep (trust half + dead ends), 2026-08-07
 

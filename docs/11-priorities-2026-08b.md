@@ -314,12 +314,14 @@ degradation costs.
 
 ## P3 — surfacing existing capability + small stuff
 
-> **Still open as of 2026-08-13:** ONVIF inspector UI, SSE consumption in
-> Events/Live, the `face_det_model`/`nms_iou` public-type decision (they have
-> NO UI today, so nothing renders wrong — it is purely a type-surface
-> decision), the `dropped_events` gauge, FOV cones (needs per-pin bearing
-> design), and Insights corrective actions. The System health pane, the Family
-> zone-name presets, and the GroupCell placeholder are done.
+> **ALL DONE as of 2026-08-13** (`de0a65c`..`d966a25`): ONVIF inspector UI
+> (TuneModal "See what this camera is saying"), SSE consumption in Events
+> (poll kept as fallback; Live deliberately untouched — its poll is
+> /api/status, which the feed doesn't carry), face/nms_iou surfaced behind
+> "Expert model settings (advanced)" (decided: surface, not drop — all three
+> are live-wired), `zoomy_dropped_events_total{consumer="sse"|"homekit"}`,
+> FOV cones via a per-pin bearing handle, and Insights "too many?"
+> corrective-action expanders. **docs/11 is COMPLETE.**
 
 - ~~**A "System health" pane**~~ **DONE `3310177`** — a sixth Settings tab over
   a new `GET /api/system`, leading with one verdict line and ending with the
