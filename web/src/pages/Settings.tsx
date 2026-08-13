@@ -3057,6 +3057,14 @@ function ModelsCard() {
 export default function Settings({ onError }: { onError: (e: string) => void }) {
   const toast = useToast();
   const [s, setS] = useState<S | null>(null);
+  // docs/11 P2 — anchors the detect_workers helper to something real.
+  const [enabledCamCount, setEnabledCamCount] = useState<number | null>(null);
+  useEffect(() => {
+    api
+      .cameras()
+      .then((cs) => setEnabledCamCount(cs.filter((c) => c.enabled && c.detect).length))
+      .catch(() => {});
+  }, []);
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -3342,10 +3350,17 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                   set({ detect_workers: Math.min(8, Math.max(1, Math.round(num(e.target.value, s.detect_workers ?? 1)))) })
                 }
               />
+              {/* docs/11 P2 — a bare 1-8 with nothing to judge it against.
+                  Anchor the number to what it divides: this install's cameras.
+                  (The server's core count isn't exposed, and the browser's
+                  would be a lie on a remote box, so cameras are the honest
+                  anchor.) */}
               <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
-                Parallel detection pipelines — raise on a many-camera box so one slow camera can't
-                stall the others. Each worker uses its own detector session (more RAM/VRAM). Takes
-                effect after a restart.
+                Cameras are split across these workers
+                {enabledCamCount != null ? <> — you have <b>{enabledCamCount}</b> detecting</> : null}
+                . 1 is fine for most homes; raise it only if one slow camera is visibly delaying
+                the others. Each extra worker loads its own copy of the model (more RAM/VRAM).
+                Takes effect after a restart.
               </span>
             </label>
             <label className="toggle field">
@@ -3436,13 +3451,31 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={() => set({ gesture_recognition: !s.gesture_recognition })}
               />
             </label>
-            <label className="field">
-              hold time before firing (s)
-              <input
-                type="number" step="0.1" min="0"
-                value={s.gesture_hold_secs}
-                onChange={(e) => set({ gesture_hold_secs: num(e.target.value, s.gesture_hold_secs) })}
-              />
+            <label className="field" title="How long a hand signal must be held before it fires — the anti-accident delay.">
+              hold the signal for
+              <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+                {[
+                  { v: 0.5, t: "half a second" },
+                  { v: 1, t: "1 second" },
+                  { v: 2, t: "2 seconds" },
+                  { v: 3, t: "3 seconds" },
+                ].map((p) => (
+                  <TogglePill
+                    key={p.v}
+                    on={s.gesture_hold_secs === p.v}
+                    ariaLabel={`Hold a signal for ${p.t} before it fires`}
+                    onClick={() => set({ gesture_hold_secs: p.v })}
+                  >
+                    {p.t}
+                  </TogglePill>
+                ))}
+                {![0.5, 1, 2, 3].includes(s.gesture_hold_secs) && (
+                  <span className="badge accent">custom: {s.gesture_hold_secs} s</span>
+                )}
+              </div>
+              <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                Longer = fewer accidental triggers, slower panic signal.
+              </span>
             </label>
             <label className="field" style={{ flex: 1, minWidth: 300 }}>
               armed signals
@@ -4538,26 +4571,60 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               </label>
             </div>
             <div className="row" style={{ marginTop: 8 }}>
-              <label className="field">
-                segment length (s)
-                <input
-                  type="number" min="10"
-                  value={s.segment_seconds}
-                  onChange={(e) => set({ segment_seconds: num(e.target.value, s.segment_seconds) })}
-                />
+              <label className="field" title="Footage is written as back-to-back clip files of this length. Shorter files = finer-grained deletion; longer = fewer files on disk.">
+                clip file length
+                <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+                  {[
+                    { v: 30, t: "30 s" },
+                    { v: 60, t: "1 min" },
+                    { v: 120, t: "2 min" },
+                    { v: 300, t: "5 min" },
+                  ].map((p) => (
+                    <TogglePill
+                      key={p.v}
+                      on={s.segment_seconds === p.v}
+                      ariaLabel={`Write footage in ${p.t} files`}
+                      onClick={() => set({ segment_seconds: p.v })}
+                    >
+                      {p.t}
+                    </TogglePill>
+                  ))}
+                  {![30, 60, 120, 300].includes(s.segment_seconds) && (
+                    <span className="badge accent">custom: {s.segment_seconds} s</span>
+                  )}
+                </div>
               </label>
-              <label className="field">
-                reduce quality after (days, 0 = off)
-                <input
-                  type="number" min="0"
-                  value={s.enhanced_retention_days}
-                  onChange={(e) =>
-                    set({ enhanced_retention_days: num(e.target.value, s.enhanced_retention_days) })
-                  }
-                />
+              <label className="field" title="After this many days, footage is re-encoded at a lower resolution (at most 1280 px wide) to reclaim space. Recent days stay full quality.">
+                shrink older footage
+                <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 2 }}>
+                  {[
+                    { v: 0, t: "Never" },
+                    { v: 1, t: "After 1 day" },
+                    { v: 3, t: "After 3 days" },
+                    { v: 7, t: "After a week" },
+                  ].map((p) => (
+                    <TogglePill
+                      key={p.v}
+                      on={s.enhanced_retention_days === p.v}
+                      ariaLabel={p.v === 0 ? "Never shrink older footage" : `Shrink footage older than ${p.v} day(s)`}
+                      onClick={() => set({ enhanced_retention_days: p.v })}
+                    >
+                      {p.t}
+                    </TogglePill>
+                  ))}
+                  {![0, 1, 3, 7].includes(s.enhanced_retention_days) && (
+                    <span className="badge accent">custom: {s.enhanced_retention_days} days</span>
+                  )}
+                </div>
+                {s.enhanced_retention_days > 0 && (
+                  <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                    Older clips are scaled to at most 1280 px wide — a 4K clip typically shrinks by
+                    80% or more, so footage reaches further back on the same disk.
+                  </span>
+                )}
               </label>
               <HwaccelSelect value={s.hwaccel ?? ""} onChange={(v) => set({ hwaccel: v })} />
-              <label className="field" title="Detections (with snapshots) are kept separately from footage — the density calendar can offer days whose video is already gone.">
+              <label className="field" title="Detections (with snapshots) are kept separately from footage.">
                 keep events (days)
                 <input
                   type="number" min="1"
@@ -4566,6 +4633,14 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                     set({ event_retention_days: num(e.target.value, s.event_retention_days) })
                   }
                 />
+                {/* docs/11 P2 — the split between event history and footage is
+                    the most confusing thing about retention (the density
+                    calendar offers days whose video is gone). Say what the
+                    number MEANS instead of leaving it to be discovered. */}
+                <span className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                  Detections stay searchable (with snapshots) for {s.event_retention_days} days —
+                  even after the video itself has been recycled, which usually happens much sooner.
+                </span>
               </label>
             </div>
           </details>

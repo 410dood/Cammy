@@ -1,5 +1,5 @@
 ﻿import { FormEvent, useEffect, useRef, useState } from "react";
-import { api, Camera, DetectConfig, DiscoveredCam, DAY_NAMES, Settings, StatusMap, capabilityUsable } from "../api";
+import { api, Camera, CamStorage, DetectConfig, DiscoveredCam, DAY_NAMES, fmtBytes, Settings, StatusMap, capabilityUsable } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { recordState, recordStateHint, scheduleWindow } from "../labels";
 import SizeFilterEditor, { ChildHeightEditor, MotionTuner, RectZoneDraw } from "../SizeFilterEditor";
@@ -173,6 +173,84 @@ const fillTemplate = (tpl: string, host: string, user: string, pass: string) =>
   tpl
     .replace("{auth}", user ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@` : "")
     .replace("{host}", host.trim());
+
+/// docs/11 P2 — per-camera retention as chips, with an estimate of what the
+/// chosen span COSTS on this camera specifically. The global retention control
+/// earned an honest readout after the 6-hour-retention surprise; the per-camera
+/// one was still a bare number box that said nothing about consequences, on the
+/// setting where cameras differ most (a 4K doorbell writes an order of
+/// magnitude more than a quiet side yard).
+function CamRetentionField({
+  cameraId,
+  value,
+  globalDays,
+  onChange,
+}: {
+  cameraId: number;
+  value: number | null;
+  globalDays: number | null;
+  onChange: (days: number | null) => void;
+}) {
+  const [cam, setCam] = useState<CamStorage | null>(null);
+  useEffect(() => {
+    api
+      .stats()
+      .then((st) => setCam(st.cameras.find((c) => c.camera_id === cameraId) ?? null))
+      .catch(() => setCam(null));
+  }, [cameraId]);
+  // This camera's measured write rate, from what it has actually written. Needs
+  // at least ~an hour of span to be worth stating.
+  const rate = (() => {
+    if (!cam || cam.oldest_ts == null || cam.newest_ts == null) return null;
+    const days = (cam.newest_ts - cam.oldest_ts) / 86_400;
+    if (days < 0.04 || cam.bytes <= 0) return null;
+    return cam.bytes / days; // bytes per day
+  })();
+  const chosen = value ?? globalDays;
+  return (
+    <label
+      className="field"
+      title="Keep this camera's footage for its own number of days (e.g. a doorbell 30, a quiet side camera 3). Inherit uses the global retention. The global disk size cap still applies as the safety net."
+      style={{ minWidth: 300 }}
+    >
+      Keep this camera&apos;s footage for
+      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+        <TogglePill
+          on={value == null}
+          ariaLabel="Inherit the global retention"
+          onClick={() => onChange(null)}
+        >
+          {globalDays != null ? `Global (${globalDays} days)` : "Global"}
+        </TogglePill>
+        {[
+          { d: 1, t: "1 day" },
+          { d: 3, t: "3 days" },
+          { d: 7, t: "1 week" },
+          { d: 14, t: "2 weeks" },
+          { d: 30, t: "30 days" },
+        ].map((p) => (
+          <TogglePill
+            key={p.d}
+            on={value === p.d}
+            ariaLabel={`Keep this camera's footage for ${p.t}`}
+            onClick={() => onChange(p.d)}
+          >
+            {p.t}
+          </TogglePill>
+        ))}
+        {value != null && ![1, 3, 7, 14, 30].includes(value) && (
+          <span className="badge accent">custom: {value} days</span>
+        )}
+      </div>
+      {rate != null && chosen != null && chosen > 0 && (
+        <span className="feat-help">
+          At this camera&apos;s measured rate ({fmtBytes(rate)}/day), {chosen}{" "}
+          {chosen === 1 ? "day" : "days"} is about {fmtBytes(rate * chosen)}.
+        </span>
+      )}
+    </label>
+  );
+}
 
 /// docs/11 P1.5 — "Test this stream": prove a camera URL produces a picture
 /// BEFORE saving it.
@@ -929,27 +1007,16 @@ function TuneModal({
             )}
           </div>
           <div className="tune-grid" style={{ marginTop: 12 }}>
-            <label
-              className="field"
-              title="Keep this camera's footage for a custom number of days (e.g. a doorbell 30, a quiet side camera 3). Blank inherits the global retention. The global disk size cap still applies as the safety net."
-            >
-              Retention (days)
-              <input
-                type="number"
-                min="0"
-                value={dc.retention_days ?? ""}
-                placeholder="Inherit global"
-                onChange={(e) =>
-                  setDc({
-                    ...dc,
-                    retention_days: e.target.value === "" ? null : Math.max(0, Number(e.target.value) || 0),
-                  })
-                }
-              />
-              {dc.retention_days == null && settings && (
-                <span className="feat-help">using global: {settings.retention_days} days</span>
-              )}
-            </label>
+            {/* docs/11 P2 — a raw number box where the global control is chips,
+                and no idea what the number COSTS. The estimate below uses this
+                camera's own measured write rate, because a 4K doorbell and a
+                quiet side camera differ by an order of magnitude. */}
+            <CamRetentionField
+              cameraId={camera.id}
+              value={dc.retention_days ?? null}
+              globalDays={settings?.retention_days ?? null}
+              onChange={(d) => setDc({ ...dc, retention_days: d })}
+            />
           </div>
           {dc.record_schedule && (
             <div className="sched" style={{ marginTop: 12 }}>
@@ -1089,24 +1156,35 @@ function TuneModal({
               className="field"
               title="Inactivity watch (aging-in-place & pets): notify when this camera has seen NO person or pet for this many hours. One alert per quiet spell, cleared by the next sighting. Assistive only — absence of detections is not proof of absence of activity."
             >
-              Alert if no one seen for (hours)
-              <input
-                type="number"
-                step="0.5"
-                min="0.25"
-                placeholder="Off"
-                value={dc.absence_hours ?? ""}
-                onChange={(e) =>
-                  setDc({
-                    ...dc,
-                    absence_hours:
-                      e.target.value === "" ? null : Math.max(0.25, Number(e.target.value) || 0.25),
-                  })
-                }
-              />
+              Alert if no one has been seen for…
+              {/* docs/11 P2 — decimal hours with a blank-means-off placeholder.
+                  The real choices are a handful of spans; state them, and make
+                  "off" a choice rather than an absence. */}
+              <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                {[
+                  { h: null, t: "Off" },
+                  { h: 4, t: "4 hours" },
+                  { h: 8, t: "8 hours" },
+                  { h: 12, t: "12 hours" },
+                  { h: 24, t: "a day" },
+                  { h: 48, t: "2 days" },
+                ].map((p) => (
+                  <TogglePill
+                    key={String(p.h)}
+                    on={(dc.absence_hours ?? null) === p.h}
+                    ariaLabel={p.h == null ? "Inactivity watch off" : `Alert after ${p.t} of no one seen`}
+                    onClick={() => setDc({ ...dc, absence_hours: p.h })}
+                  >
+                    {p.t}
+                  </TogglePill>
+                ))}
+                {dc.absence_hours != null && ![4, 8, 12, 24, 48].includes(dc.absence_hours) && (
+                  <span className="badge accent">custom: {dc.absence_hours} h</span>
+                )}
+              </div>
               <span className="feat-help">
-                No person/pet detected for this long → a notification + health push (assistive*).
-                Blank = off.
+                No person or pet detected for that long → one notification per quiet spell,
+                cleared by the next sighting (assistive*).
               </span>
             </label>
           </div>
