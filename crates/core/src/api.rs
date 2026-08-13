@@ -106,6 +106,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(review_all_api),
         )
         .route("/api/events/unreviewed_count", get(unreviewed_count_api))
+        .route("/api/suppressed", get(list_suppressed_api))
         .route("/api/events/{id}/tags", axum::routing::post(set_event_tags))
         .route(
             "/api/events/{id}/feedback",
@@ -3373,6 +3374,18 @@ async fn unreviewed_count_api(
     Ok(Json(
         serde_json::json!({ "total": total, "important": important }),
     ))
+}
+
+/// Suppressed-events bin — what the suppressors (lens obstruction, "not this"
+/// feedback, AI-verification) quietly dropped, newest first, with the numbers
+/// each verdict used. RBAC: scoped users only see their cameras' rows.
+async fn list_suppressed_api(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<Vec<crate::db::SuppressedRow>>> {
+    let allow = allowed_cameras(&st, &p)?;
+    let ids: Option<Vec<i64>> = allow.as_ref().map(|set| set.iter().copied().collect());
+    Ok(Json(st.db.list_suppressed(ids.as_deref(), 200)?))
 }
 
 /// P2.8b feedback learning — thumbs-down an alert to quiet CLIP-similar FUTURE

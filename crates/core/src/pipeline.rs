@@ -1281,6 +1281,11 @@ fn run_worker(
             if settings.suppress_lens_obstruction {
                 let cfg = crate::lens::ObstructionConfig::default();
                 let before = wanted.len();
+                // Each drop lands in the suppressed bin WITH the measured
+                // numbers the verdict used — the owner-facing evidence this
+                // suppressor has needed since it shipped ("thresholds need
+                // owner tuning against real bug footage").
+                let mut lens_dropped: Vec<(String, f32, String)> = Vec::new();
                 wanted.retain(|d| {
                     let (w, h) = ((d.x2 - d.x1).max(0.0), (d.y2 - d.y1).max(0.0));
                     let area_frac = (w * h) / (fw * fh);
@@ -1298,8 +1303,28 @@ fn run_worker(
                     }
                     let crop = frame.crop_imm(cx, cy, cw, ch);
                     let (mean, var) = crate::lens::luma_stats(&crate::tamper::thumb_of(&crop));
-                    !crate::lens::is_obstruction(area_frac, mean, var, &cfg)
+                    let ob = crate::lens::is_obstruction(area_frac, mean, var, &cfg);
+                    if ob {
+                        lens_dropped.push((
+                            d.label.to_string(),
+                            d.score,
+                            format!(
+                                concat!(
+                                    "fills {:.0}% of the frame, brightness {:.0}/255, ",
+                                    "texture {:.1} \u{2014} large + IR-bright + featureless ",
+                                    "reads as something ON the lens, not in the scene"
+                                ),
+                                area_frac * 100.0,
+                                mean,
+                                var
+                            ),
+                        ));
+                    }
+                    !ob
                 });
+                for (label, score, detail) in &lens_dropped {
+                    db.add_suppressed(now, cam.id, label, *score, "lens", Some(detail), None);
+                }
                 if wanted.len() < before {
                     tracing::info!(
                         camera = %cam.name,
@@ -1659,6 +1684,19 @@ fn run_worker(
                                 camera = %cam.name, label = d.label, event = id,
                                 "alarm fires suppressed by feedback (crop matches a thumbs-down); \
                                  clear it under Settings if this is wrong"
+                            );
+                            db.add_suppressed(
+                                now,
+                                cam.id,
+                                d.label,
+                                d.score,
+                                "feedback",
+                                Some(concat!(
+                                    "This picture matches one you thumbs-downed, so every ",
+                                    "alarm for it was muted. If that's wrong, clear the ",
+                                    "stored feedback under Settings \u{2192} Alert feedback."
+                                )),
+                                Some(id),
                             );
                         }
                         for rule in alarms.iter().filter(|r| {
@@ -2595,6 +2633,21 @@ fn fire_prompt_alarms(
             tracing::debug!(
                 rule = %rule.name, event = job.event_id,
                 "prompt rule suppressed by feedback (crop matches a thumbs-down)"
+            );
+            db.add_suppressed(
+                now,
+                cam.id,
+                &job.label,
+                job.score,
+                "feedback",
+                Some(&format!(
+                    concat!(
+                        "AI-watch rule \u{201c}{}\u{201d} matched, but the picture ",
+                        "matches one you thumbs-downed"
+                    ),
+                    rule.name
+                )),
+                Some(job.event_id),
             );
             continue;
         }

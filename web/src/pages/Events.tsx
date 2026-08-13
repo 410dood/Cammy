@@ -138,6 +138,120 @@ function parseNL(raw: string, cameras: Camera[], faces: string[]): Parsed {
   return out;
 }
 
+/// The suppressed-events bin (the Blue Iris "cancelled" trust lesson): a live
+/// list of detections/alerts the suppressors dropped WITHOUT alerting — near-
+/// lens obstruction, "not this" feedback matches, and AI-verification "no"s —
+/// each with the numbers its verdict used and a link to the control that
+/// caused it. Without this, "the alerts stopped" and "nothing happened" look
+/// identical.
+function SuppressedBinModal({
+  onClose,
+  onOpenEvent,
+}: {
+  onClose: () => void;
+  onOpenEvent: (id: number) => void;
+}) {
+  const [rows, setRows] = useState<import("../api").SuppressedRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    api.suppressed().then(setRows).catch((e) => setErr(errMsg(e)));
+  }, []);
+  const REASON: Record<string, { chip: string; fix: JSX.Element }> = {
+    lens: {
+      chip: "lens obstruction",
+      fix: (
+        <>
+          filtered by the insect/cobweb suppressor —{" "}
+          <a href="#/settings/detection">turn it off in Settings → Detection</a> if these look real
+        </>
+      ),
+    },
+    feedback: {
+      chip: "matched a thumbs-down",
+      fix: (
+        <>
+          muted by your "Not this" feedback —{" "}
+          <a href="#/settings/modes">review stored feedback in Settings</a> if this is wrong
+        </>
+      ),
+    },
+    ai_check: {
+      chip: "AI said no",
+      fix: <>the rule's AI verification answered no, so the alert did not fire</>,
+    },
+  };
+  return (
+    <Modal onClose={onClose} title="Suppressed — dropped without alerting" className="modal-wide">
+      <p className="hint" style={{ marginTop: 0 }}>
+        Detections and alerts Cammy deliberately kept quiet, newest first, with the reason and the
+        measurements behind each call. Continuous recording keeps the footage either way — this
+        list exists so a wrong suppression is discoverable, not silent.
+      </p>
+      {err && <Callout tone="warn">Couldn't load the bin: {err}</Callout>}
+      {rows !== null && rows.length === 0 && (
+        <EmptyState
+          title="Nothing has been suppressed"
+          hint="When the lens suppressor, your saved 'Not this' feedback, or an AI-verified rule quietly drops something, it will be listed here."
+        />
+      )}
+      {rows !== null && rows.length > 0 && (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Camera</th>
+                <th>What</th>
+                <th>Why it was dropped</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const meta = REASON[r.reason] ?? { chip: r.reason, fix: <></> };
+                return (
+                  <tr key={r.id}>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <RelTime ts={r.ts} />
+                    </td>
+                    <td>{r.camera}</td>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        {r.snapshot && (
+                          <img
+                            src={`/api/snapshots/${r.snapshot}`}
+                            alt={`Suppressed ${prettyLabel(r.label)} on ${r.camera}`}
+                            style={{ width: 72, borderRadius: "var(--radius-xs)", cursor: r.event_id ? "pointer" : undefined }}
+                            onClick={r.event_id ? () => onOpenEvent(r.event_id!) : undefined}
+                          />
+                        )}
+                        <span style={{ textTransform: "capitalize" }}>
+                          {prettyLabel(r.label)}{" "}
+                          <span className="muted">({(r.score * 100).toFixed(0)}%)</span>
+                        </span>
+                      </div>
+                    </td>
+                    <td style={{ maxWidth: 380 }}>
+                      <span className="badge warn">{meta.chip}</span>
+                      {r.detail && (
+                        <div className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                          {r.detail}
+                        </div>
+                      )}
+                      <div className="muted" style={{ fontSize: "var(--text-sm)", marginTop: 4 }}>
+                        {meta.fix}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 export default function Events({
   cameras,
   focusEventId,
@@ -194,6 +308,8 @@ export default function Events({
   // itself so "you're caught up" is a claim the page can actually make.
   const [reviewMode, setReviewMode] = useState(false);
   const [unreviewed, setUnreviewed] = useState<{ total: number; important: number } | null>(null);
+  // Suppressed-events bin modal.
+  const [binOpen, setBinOpen] = useState(false);
   // Persisted: on a chatty install, collapsing repeat detections is a setting
   // you pick once, not per visit.
   const [grouped, setGrouped] = useState(() => localStorage.getItem("cammy-events-grouped") === "1");
@@ -1306,6 +1422,14 @@ export default function Events({
         >
           <IconDownload size={15} /> Export CSV
         </a>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => setBinOpen(true)}
+          title="See detections and alerts that were deliberately kept quiet (lens obstruction filter, 'Not this' feedback, AI verification) — and why."
+        >
+          <IconLayers size={15} /> Suppressed
+        </button>
       </div>
 
       {/* Power-user filters tucked behind a disclosure so the everyday triage row
@@ -2217,6 +2341,18 @@ export default function Events({
         </Modal>
       )}
 
+      {binOpen && (
+        <SuppressedBinModal
+          onClose={() => setBinOpen(false)}
+          onOpenEvent={async (id) => {
+            try {
+              setOpen(await api.event(id));
+            } catch {
+              toast.error("That event isn't available anymore.");
+            }
+          }}
+        />
+      )}
       {playing && (
         <Modal bare onClose={() => setPlaying(null)}>
           <video

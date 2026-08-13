@@ -611,6 +611,20 @@ export interface CamStatus {
 export type StatusMap = Record<string, CamStatus>;
 
 /** GET /api/system — the app's own health, as opposed to the cameras'. */
+/** One suppressed-bin row: a detection/alert a suppressor dropped, and why. */
+export interface SuppressedRow {
+  id: number;
+  ts: number;
+  camera_id: number;
+  camera: string;
+  label: string;
+  score: number;
+  reason: "lens" | "feedback" | "ai_check" | string;
+  detail: string | null;
+  event_id: number | null;
+  snapshot: string | null;
+}
+
 /** One raw camera-side (ONVIF) notification kept in the inspector ring. */
 export interface OnvifNotifyRow {
   ts: number;
@@ -1026,6 +1040,9 @@ export const api = {
   /** Review inbox — unreviewed counts in this user's camera scope. */
   unreviewedCount: () =>
     req<{ total: number; important: number }>("/api/events/unreviewed_count"),
+  /** Suppressed-events bin: what the suppressors quietly dropped (newest
+   *  first), with the numbers each verdict used. */
+  suppressed: () => req<SuppressedRow[]>("/api/suppressed"),
   /** One event by id — resolves deep links to events older than a loaded list. */
   event: (id: number) => req<CamEvent>(`/api/events/${id}`),
   bookmarkEvent: (id: number, flagged: boolean, note?: string | null) =>

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// Current schema version (`PRAGMA user_version`). Bump this and append a
 /// step to `MIGRATIONS` (in `Db::migrate`) to change the schema — never edit
 /// an existing step, and keep v1 idempotent (see the note on `migrate_v1`).
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Which recording segments a bookmark protects from retention.
 ///
@@ -445,6 +445,26 @@ pub struct DetectConfig {
     /// only go2rtc's (sensor-less) HAP accessory has. Needs `homekit_expose`.
     #[serde(default)]
     pub homekit_doorbell: bool,
+}
+
+/// One suppressed-bin row (v4): a detection or alert a suppressor dropped,
+/// with the numbers/reason it was dropped for.
+#[derive(Clone, Debug, Serialize)]
+pub struct SuppressedRow {
+    pub id: i64,
+    pub ts: i64,
+    pub camera_id: i64,
+    pub camera: String,
+    pub label: String,
+    pub score: f32,
+    /// "lens" | "feedback" | "ai_check".
+    pub reason: String,
+    pub detail: Option<String>,
+    /// Set when the suppression happened AFTER an event row existed (feedback /
+    /// AI-check gates); `None` for lens drops (no event was ever created).
+    pub event_id: Option<i64>,
+    /// The linked event's snapshot, when it still exists.
+    pub snapshot: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1770,8 +1790,12 @@ impl Db {
     /// - steps v2+ only ever run exactly once, so they may be strict
     ///   (error-checked ALTERs, data backfills, renames).
     fn migrate(conn: &mut Connection) -> Result<()> {
-        const MIGRATIONS: &[fn(&Connection) -> Result<()>] =
-            &[Db::migrate_v1, Db::migrate_v2, Db::migrate_v3];
+        const MIGRATIONS: &[fn(&Connection) -> Result<()>] = &[
+            Db::migrate_v1,
+            Db::migrate_v2,
+            Db::migrate_v3,
+            Db::migrate_v4,
+        ];
         let have: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if have > SCHEMA_VERSION {
             // A newer build touched this DB. All migrations are additive, so
@@ -2196,6 +2220,28 @@ impl Db {
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS events_unreviewed
                  ON events(camera_id, severity, ts) WHERE reviewed = 0;",
+        )?;
+        Ok(())
+    }
+
+    /// v4 — the suppressed-events bin (the Blue Iris "cancelled" trust
+    /// lesson): every detection or alert a suppressor quietly dropped gets an
+    /// auditable row, so "the alerts stopped" is diagnosable by the owner
+    /// instead of only by someone reading the log. Bounded by self-trim on
+    /// insert; rows are metadata (the numbers the thresholds used), with an
+    /// event link when the event itself still exists.
+    fn migrate_v4(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS suppressed_bin (
+                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                 ts        INTEGER NOT NULL,
+                 camera_id INTEGER NOT NULL,
+                 label     TEXT NOT NULL,
+                 score     REAL NOT NULL,
+                 reason    TEXT NOT NULL,
+                 detail    TEXT,
+                 event_id  INTEGER
+             );",
         )?;
         Ok(())
     }
@@ -5232,6 +5278,84 @@ impl Db {
             .query_row(&sql, [], |r| Ok((r.get(0)?, r.get(1)?)))?)
     }
 
+    /// Suppressed-events bin — record a quietly-dropped detection/alert.
+    /// Best-effort like `add_audit`: a bin failure must never block the
+    /// detection thread or the suppression itself. Self-trims to the newest
+    /// 300 rows (it is an inspection window, not history — events/notifications
+    /// are the durable records).
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_suppressed(
+        &self,
+        ts: i64,
+        camera_id: i64,
+        label: &str,
+        score: f32,
+        reason: &str,
+        detail: Option<&str>,
+        event_id: Option<i64>,
+    ) {
+        let conn = self.conn();
+        if conn
+            .execute(
+                "INSERT INTO suppressed_bin (ts, camera_id, label, score, reason, detail, event_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![ts, camera_id, label, score, reason, detail, event_id],
+            )
+            .is_ok()
+        {
+            let _ = conn.execute(
+                "DELETE FROM suppressed_bin WHERE id NOT IN
+                 (SELECT id FROM suppressed_bin ORDER BY id DESC LIMIT 300)",
+                [],
+            );
+        }
+    }
+
+    /// Suppressed-events bin — newest first, optionally camera-scoped (RBAC).
+    /// Joins the camera name and, when the suppressed alert's event still
+    /// exists, its snapshot so the UI can show WHAT was suppressed.
+    pub fn list_suppressed(
+        &self,
+        camera_ids: Option<&[i64]>,
+        limit: u32,
+    ) -> Result<Vec<SuppressedRow>> {
+        if matches!(camera_ids, Some(ids) if ids.is_empty()) {
+            return Ok(Vec::new());
+        }
+        let mut sql = String::from(
+            "SELECT s.id, s.ts, s.camera_id, c.name, s.label, s.score, s.reason, s.detail,
+                    s.event_id, e.snapshot
+             FROM suppressed_bin s
+             JOIN cameras c ON c.id = s.camera_id
+             LEFT JOIN events e ON e.id = s.event_id
+             WHERE 1=1",
+        );
+        if let Some(ids) = camera_ids {
+            let in_list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND s.camera_id IN ({in_list})"));
+        }
+        sql.push_str(" ORDER BY s.id DESC LIMIT ?");
+        let conn = self.read();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map([limit], |r| {
+                Ok(SuppressedRow {
+                    id: r.get(0)?,
+                    ts: r.get(1)?,
+                    camera_id: r.get(2)?,
+                    camera: r.get(3)?,
+                    label: r.get(4)?,
+                    score: r.get(5)?,
+                    reason: r.get(6)?,
+                    detail: r.get(7)?,
+                    event_id: r.get(8)?,
+                    snapshot: r.get(9)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn count_events(&self) -> Result<i64> {
         Ok(self
             .read()
@@ -6391,6 +6515,61 @@ mod tests {
         // Deleting the camera cascades to its events.
         db.delete_camera(cam.id).unwrap();
         assert!(all(&db).is_empty());
+    }
+
+    /// v4 suppressed bin: rows round-trip with camera name + linked-event
+    /// snapshot, RBAC scoping filters, and the self-trim caps the table.
+    #[test]
+    fn suppressed_bin_roundtrip_scope_and_trim() {
+        let db = mem_db();
+        let cam = db
+            .add_camera("porch", "rtsp://x", None, true, true)
+            .unwrap();
+        let cam2 = db.add_camera("yard", "rtsp://y", None, true, true).unwrap();
+        let ev = db
+            .add_event(
+                cam.id,
+                100,
+                "person",
+                0.9,
+                [0.0; 4],
+                Some("snap.jpg"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        db.add_suppressed(
+            100,
+            cam.id,
+            "person",
+            0.9,
+            "feedback",
+            Some("why"),
+            Some(ev),
+        );
+        db.add_suppressed(101, cam2.id, "cat", 0.5, "lens", Some("stats"), None);
+        let all = db.list_suppressed(None, 50).unwrap();
+        assert_eq!(all.len(), 2);
+        // Newest first; the linked event contributes its snapshot.
+        assert_eq!(all[0].reason, "lens");
+        assert_eq!(all[1].camera, "porch");
+        assert_eq!(all[1].snapshot.as_deref(), Some("snap.jpg"));
+        // RBAC scope: cam2-only sees only its row; empty scope sees nothing.
+        let scoped = db.list_suppressed(Some(&[cam2.id]), 50).unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].camera, "yard");
+        assert!(db.list_suppressed(Some(&[]), 50).unwrap().is_empty());
+        // Self-trim: the table never grows past 300 rows.
+        for i in 0..350 {
+            db.add_suppressed(200 + i, cam.id, "person", 0.5, "lens", None, None);
+        }
+        let n: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM suppressed_bin", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 300);
     }
 
     /// v3 review inbox: new events arrive unreviewed; the filter, the counts

@@ -474,6 +474,22 @@ fn vlm_gate(
     let unverified = matches!(outcome, Outcome::Failed(_));
     if verdict == Some(false) {
         tracing::info!(rule = %j.rule.name, event = j.event_id, "vlm gate: suppressed (model said no)");
+        db.add_suppressed(
+            j.ts,
+            j.camera_id,
+            &j.label,
+            j.score,
+            "ai_check",
+            Some(&format!(
+                concat!(
+                    "Rule \u{201c}{}\u{201d} asked the AI \u{201c}{}\u{201d} ",
+                    "about the snapshot and it answered no"
+                ),
+                j.rule.name,
+                j.rule.vlm_prompt.as_deref().unwrap_or("").trim()
+            )),
+            Some(j.event_id),
+        );
         return outcome;
     }
     // P2.8b feedback learning: quiet this AI-verified fire if the event's object
@@ -489,6 +505,21 @@ fn vlm_gate(
             tracing::debug!(
                 rule = %j.rule.name, event = j.event_id,
                 "vlm gate: suppressed by feedback (crop matches a thumbs-down)"
+            );
+            db.add_suppressed(
+                j.ts,
+                j.camera_id,
+                &j.label,
+                j.score,
+                "feedback",
+                Some(&format!(
+                    concat!(
+                        "AI-verified rule \u{201c}{}\u{201d} passed its check, but the ",
+                        "picture matches one you thumbs-downed"
+                    ),
+                    j.rule.name
+                )),
+                Some(j.event_id),
             );
             return outcome;
         }
