@@ -478,6 +478,13 @@ export default function ZoneEditor({
               vectorEffect="non-scaling-stroke"
             />
           )}
+          <datalist id="tripwire-name-presets">
+            {["Driveway line", "Gate", "Front walk", "Fence line", "Property line", "Door"].map(
+              (n) => (
+                <option key={n} value={n} />
+              ),
+            )}
+          </datalist>
           {tripwires.map((tw, i) => (
             <g key={`tw${i}`}>
               {/* Fractional stroke (viewBox units), NOT non-scaling-stroke: a
@@ -494,6 +501,35 @@ export default function ZoneEditor({
               />
               <circle cx={tw.a[0]} cy={tw.a[1]} r={0.012} fill={COLORS.tripwire} />
               <circle cx={tw.b[0]} cy={tw.b[1]} r={0.012} fill={COLORS.tripwire} />
+              {/* docs/11 P2 — the direction select says "A -> B" and nothing on
+                  the picture said which end was A. SVG viewBox is 0..1, so font
+                  size lives in that space too. */}
+              <text
+                x={tw.a[0]}
+                y={tw.a[1] - 0.022}
+                fill={COLORS.tripwire}
+                fontSize={0.035}
+                fontWeight={700}
+                textAnchor="middle"
+                stroke="rgba(0,0,0,0.65)"
+                strokeWidth={0.006}
+                paintOrder="stroke"
+              >
+                A
+              </text>
+              <text
+                x={tw.b[0]}
+                y={tw.b[1] - 0.022}
+                fill={COLORS.tripwire}
+                fontSize={0.035}
+                fontWeight={700}
+                textAnchor="middle"
+                stroke="rgba(0,0,0,0.65)"
+                strokeWidth={0.006}
+                paintOrder="stroke"
+              >
+                B
+              </text>
             </g>
           ))}
           {draw && draw.points.length > 0 && (
@@ -886,18 +922,22 @@ export default function ZoneEditor({
                   <div className="muted" style={{ fontSize: "var(--text-xs)", marginBottom: 4 }}>
                     Residential safety hints (assistive*)
                   </div>
+                  {/* docs/11 P2 — these read "enter / child* / alone* / water*"
+                      with the meaning hidden in hover-only tooltips, on the
+                      safety toggles where a misread costs the most. Full labels;
+                      the caveats stay in the titles as the longer form. */}
                   <div className="row" style={{ gap: 14, flexWrap: "wrap" }}>
-                    <label className="muted" title="Residential: fire a zone_enter event (labelled with the object's class) when a tracked object enters — e.g. 'person enters the Pool', 'pet on the Couch'. Needs object tracking.">
-                      <input type="checkbox" checked={!!z.alert_enter} onChange={(e) => upd({ alert_enter: e.target.checked })} /> enter
+                    <label className="muted" title="Fires a zone_enter event (labelled with the object's class) when a tracked object enters — e.g. 'person enters the Pool', 'pet on the Couch'. Needs object tracking.">
+                      <input type="checkbox" checked={!!z.alert_enter} onChange={(e) => upd({ alert_enter: e.target.checked })} /> alert when something enters
                     </label>
-                    <label className="muted" title="Residential ASSISTIVE: a child-classified person entering fires a 'child' event (stairs/kitchen/driveway). Requires per-camera child calibration on the detect config — a detection aid, NOT guaranteed coverage.">
-                      <input type="checkbox" checked={!!z.child_watch} onChange={(e) => upd({ child_watch: e.target.checked })} /> child*
+                    <label className="muted" title="ASSISTIVE: a child-classified person entering fires a 'child' event (stairs/kitchen/driveway). Requires per-camera child calibration — a detection aid, NOT guaranteed coverage.">
+                      <input type="checkbox" checked={!!z.child_watch} onChange={(e) => upd({ child_watch: e.target.checked })} /> alert if a child enters*
                     </label>
-                    <label className="muted" title="Residential ASSISTIVE: fire 'child_alone' when a child is here with NO adult present (unattended-near-pool). Requires child calibration. NOT a substitute for active supervision or a pool fence; can miss a child if the height heuristic misreads them.">
-                      <input type="checkbox" checked={!!z.supervise} onChange={(e) => upd({ supervise: e.target.checked })} /> alone*
+                    <label className="muted" title="ASSISTIVE: fire 'child_alone' when a child is here with NO adult present (unattended-near-pool). Requires child calibration. NOT a substitute for active supervision or a pool fence.">
+                      <input type="checkbox" checked={!!z.supervise} onChange={(e) => upd({ supervise: e.target.checked })} /> alert if a child is here alone*
                     </label>
-                    <label className="muted" title="Residential EXPERIMENTAL: mark this zone as water (a pool); a motionless person in it fires a 'still_water' hint. This is NOT drowning detection — an above-water camera cannot see a submerged body. Supplement, never a replacement, for supervision/fencing.">
-                      <input type="checkbox" checked={!!z.water} onChange={(e) => upd({ water: e.target.checked })} /> water*
+                    <label className="muted" title="EXPERIMENTAL: mark this zone as water (a pool); a motionless person in it fires a 'still_water' hint. This is NOT drowning detection — an above-water camera cannot see a submerged body. Supplement, never a replacement, for supervision and fencing.">
+                      <input type="checkbox" checked={!!z.water} onChange={(e) => upd({ water: e.target.checked })} /> this is water (pool)*
                     </label>
                   </div>
                   {(z.child_watch || z.supervise) && childCalibrated === false && (
@@ -1017,6 +1057,13 @@ export default function ZoneEditor({
             Tripwires — an object crossing the line fires a <code>crossing</code> event (in/out counting,
             perimeter, one-way enforcement).
           </div>
+          <datalist id="tripwire-name-presets">
+            {["Driveway line", "Gate", "Front walk", "Fence line", "Property line", "Door"].map(
+              (n) => (
+                <option key={n} value={n} />
+              ),
+            )}
+          </datalist>
           {tripwires.map((tw, i) => (
             <div className="row" key={`tw${i}`} style={{ marginBottom: 6, alignItems: "center" }}>
               <span className="dot" style={{ background: COLORS.tripwire }} />
@@ -1024,13 +1071,18 @@ export default function ZoneEditor({
                 type="text"
                 style={{ width: 110 }}
                 value={tw.name}
+                list="tripwire-name-presets"
+                aria-label="Tripwire name"
                 onChange={(e) =>
                   onTripwires(tripwires.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))
                 }
               />
+              {/* docs/11 P2 — "A → B only" with nothing saying which end is
+                  which. A is the FIRST point drawn; the canvas now labels both
+                  ends, and this select says the same thing in words. */}
               <select
                 value={tw.direction}
-                title="Which crossing direction fires"
+                title="Which crossing direction fires. A is the first point you drew (labelled on the picture), B the second."
                 onChange={(e) =>
                   onTripwires(
                     tripwires.map((x, j) =>
@@ -1039,9 +1091,9 @@ export default function ZoneEditor({
                   )
                 }
               >
-                <option value="both">both ways</option>
-                <option value="a_to_b">A → B only</option>
-                <option value="b_to_a">B → A only</option>
+                <option value="both">crossing either way</option>
+                <option value="a_to_b">only A → B (as labelled on the picture)</option>
+                <option value="b_to_a">only B → A (as labelled on the picture)</option>
               </select>
               <label className="field" style={{ minWidth: "min(100%, 300px)" }}>
                 objects it counts

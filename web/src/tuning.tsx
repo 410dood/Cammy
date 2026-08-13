@@ -17,6 +17,60 @@ export const OBJECT_GROUPS: { name: string; labels: string[] }[] = [
 ];
 const CATALOG = new Set(OBJECT_GROUPS.flatMap((g) => g.labels));
 
+/// docs/11 P2 — every name the system can actually PRODUCE, so a typed chip
+/// that can never match ("raccon", "racoon", "delivery guy") is marked instead
+/// of silently accepted forever. Two sources:
+/// - the detector's 80 COCO class names, exactly as `detector::coco_label`
+///   spells them (some contain SPACES — "traffic light", not traffic_light);
+/// - Cammy's own synthetic event labels (analytics / camera-side / residential
+///   / pose / zone-state), which alert_labels and zone chips legitimately match.
+/// Deliberately NOT a block: a custom-exported model could know other classes,
+/// so unknowns stay usable — they just say what they are.
+const COCO_80 = [
+  "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
+  "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+  "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
+  "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+  "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
+  "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
+  "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+  "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+  "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+  "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+  "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+  "hair drier", "toothbrush",
+];
+const SYNTHETIC_LABELS = [
+  "crossing", "wrong_way", "loiter", "occupancy", "zone_enter",
+  "camera_person", "camera_vehicle", "camera_motion", "camera_tripwire", "camera_intrusion",
+  "child", "child_alone", "fall", "still_water", "standing", "covered_face",
+  "zone_open", "zone_closed", "package_delivered", "package_removed",
+  "gesture", "tamper", "doorbell",
+];
+const PRODUCIBLE = new Set<string>([...COCO_80, ...SYNTHETIC_LABELS]);
+
+/** Whether the system can ever emit this label. */
+export const labelProducible = (l: string) => PRODUCIBLE.has(l);
+
+/** Canonicalize a typed label toward a spelling that can actually match: the
+ *  detector's COCO names contain spaces, Cammy's synthetic names underscores,
+ *  and a homeowner should not need to know which is which. */
+export function canonicalLabel(typed: string): string {
+  const t = typed.trim().toLowerCase();
+  if (!t) return "";
+  const under = t.replace(/\s+/g, "_");
+  const spaced = t.replace(/_+/g, " ");
+  if (PRODUCIBLE.has(t)) return t;
+  if (PRODUCIBLE.has(spaced)) return spaced;
+  if (PRODUCIBLE.has(under)) return under;
+  // Unknown either way: keep the snake_case house style for event labels.
+  return under;
+}
+
+const UNKNOWN_TITLE =
+  "The AI doesn't know this name, so it will never match anything — check the spelling. " +
+  "(Only kept in case a custom model produces it.)";
+
 /// Chip-based multi-select for "objects to detect".
 /// variant "camera": null = inherit the global list (shown live); tapping any
 /// chip forks a per-camera list seeded from the global one.
@@ -43,7 +97,7 @@ export function ObjectPicker({
   };
   const extras = effective.filter((l) => !CATALOG.has(l));
   const addOther = () => {
-    const l = other.trim().toLowerCase().replace(/\s+/g, "_");
+    const l = canonicalLabel(other);
     if (l && !effective.includes(l)) onChange([...effective, l]);
     setOther("");
   };
@@ -66,8 +120,15 @@ export function ObjectPicker({
           <span className="objpick-name">Other</span>
           <div className="objpick-chips">
             {extras.map((l) => (
-              <TogglePill key={l} on ariaLabel={`Stop detecting ${l}`} onClick={() => toggle(l)}>
+              <TogglePill
+                key={l}
+                on
+                ariaLabel={labelProducible(l) ? `Stop detecting ${l}` : `${l} — the AI doesn't know this name`}
+                title={labelProducible(l) ? undefined : UNKNOWN_TITLE}
+                onClick={() => toggle(l)}
+              >
                 {prettyLabel(l)}
+                {!labelProducible(l) && " ⚠"}
               </TogglePill>
             ))}
           </div>
@@ -141,7 +202,7 @@ export function LabelChips({
     onChange(value.includes(label) ? value.filter((l) => l !== label) : [...value, label]);
   const extras = value.filter((l) => !catalog.includes(l));
   const addOther = () => {
-    const l = other.trim().toLowerCase().replace(/\s+/g, "_");
+    const l = canonicalLabel(other);
     if (l && !value.includes(l)) onChange([...value, l]);
     setOther("");
   };
@@ -154,8 +215,15 @@ export function LabelChips({
           </TogglePill>
         ))}
         {extras.map((l) => (
-          <TogglePill key={l} on ariaLabel={`Stop applying to ${l}`} onClick={() => toggle(l)}>
+          <TogglePill
+            key={l}
+            on
+            ariaLabel={labelProducible(l) ? `Stop applying to ${l}` : `${l} — the AI doesn't know this name`}
+            title={labelProducible(l) ? undefined : UNKNOWN_TITLE}
+            onClick={() => toggle(l)}
+          >
             {prettyLabel(l)}
+            {!labelProducible(l) && " ⚠"}
           </TogglePill>
         ))}
         <input
