@@ -365,7 +365,9 @@ child-height heuristic fragility.
 inbox~~ **DONE `0f5b788`** (2026-08-13 — schema v3 `events.reviewed`,
 history backfilled reviewed, To-review mode + auto-mark-on-open + scoped
 bounded mark-all + "You're caught up");
-suppressed-events bin; cross-camera one-clip-one-notification collapse;
+~~suppressed-events bin~~ **DONE `13ef100`** (schema v4, all four suppressor
+sites, real live-driven suppression); cross-camera
+one-clip-one-notification collapse;
 actionable push buttons + animated thumbnails; package-still-present state
 machine + audio backchannel; NL-to-rule generation; stitched multi-camera
 Moments export; ~~browser upload for import~~ **DONE `a8a4f14`**; ~~dual-stream

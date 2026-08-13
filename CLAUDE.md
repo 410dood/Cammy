@@ -16,7 +16,23 @@ GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 
 
 ## Current status: v0.4 — docs/11 COMPLETE + deferred-inventory batches 1–2, 2026-08-13
 
-### Latest: the unread review inbox, 2026-08-13
+### Latest: the suppressed-events bin, 2026-08-13
+
+`13ef100`. **277 core tests**, clippy -D + fmt clean, tsc + vite + 14 web
+tests green. **Schema v4**: bounded `suppressed_bin` (self-trim 300,
+best-effort writes like the audit log). All four suppressor sites wired: lens
+drops carry the MEASURED numbers their verdict used (the tuning evidence that
+suppressor always lacked); the three feedback gates (plain / AI-watch / VLM)
+and the VLM "no" carry the rule + event link + snapshot. `GET /api/suppressed`
+(Viewer, camera-scoped); a "Suppressed" button beside Export CSV opens the bin
+with reason chips + per-reason fix links. **Live-driven with a REAL
+suppression**: temp rule + ptz-cam `motion_threshold 0` + thumbs-down on a
+parked-car event → the next car detection (40 s later) was muted into the bin
+and rendered with snapshot + fix link; all state verified restored (settings /
+detect_config / alarm ids identical, feedback cleared, the 111
+validation-window events marked reviewed). All bin prose via `concat!`.
+
+### Earlier: the unread review inbox, 2026-08-13
 
 `0f5b788`. **276 core tests** (one new: `review_inbox_roundtrip`), clippy -D +
 fmt clean, tsc + vite + 14 web tests green, live-validated on :8081.
