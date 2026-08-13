@@ -37,6 +37,9 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
   // to the hover-only tooltip (which never appears on a phone).
   const [selDay, setSelDay] = useState<{ readout: string; iso: string } | null>(null);
   const [selHour, setSelHour] = useState<string | null>(null);
+  // docs/11 P3 — the corrective-action expander: which Top-objects row is
+  // showing its "too many of these?" fix links.
+  const [fixLabel, setFixLabel] = useState<string | null>(null);
 
   // Local-date ISO (yyyy-mm-dd) for Find's `day=` param — toISOString() would
   // name the wrong day west of Greenwich.
@@ -187,23 +190,60 @@ export default function Insights({ onError }: { onError?: (e: string) => void })
                 <p className="muted" style={{ margin: 0 }}>No objects yet.</p>
               ) : (
                 data.by_label.map(([label, n]) => (
-                  <div key={label} style={{ display: "flex", alignItems: "center", gap: 10, margin: "7px 0" }}>
-                    <a
-                      href={`#/find?label=${encodeURIComponent(label)}&view=list`}
-                      title={`See today's ${prettyLabel(label)} detections in Find`}
-                      style={{ width: 96, textAlign: "right", textTransform: "capitalize", fontSize: "var(--text-sm)" }}
-                    >
-                      {prettyLabel(label)}
-                    </a>
-                    <div style={{ flex: 1, height: 18, background: "var(--surface-hover)", borderRadius: "var(--radius-xs)", overflow: "hidden" }}>
-                      <div
-                        title={`${n.toLocaleString()} detections`}
-                        style={{ width: `${(n / maxLabel) * 100}%`, height: "100%", background: "var(--accent)", borderRadius: "var(--radius-xs)" }}
-                      />
+                  <div key={label} style={{ margin: "7px 0" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <a
+                        href={`#/find?label=${encodeURIComponent(label)}&view=list`}
+                        title={`See today's ${prettyLabel(label)} detections in Find`}
+                        style={{ width: 96, textAlign: "right", textTransform: "capitalize", fontSize: "var(--text-sm)" }}
+                      >
+                        {prettyLabel(label)}
+                      </a>
+                      <div style={{ flex: 1, height: 18, background: "var(--surface-hover)", borderRadius: "var(--radius-xs)", overflow: "hidden" }}>
+                        <div
+                          title={`${n.toLocaleString()} detections`}
+                          style={{ width: `${(n / maxLabel) * 100}%`, height: "100%", background: "var(--accent)", borderRadius: "var(--radius-xs)" }}
+                        />
+                      </div>
+                      <div className="tnum muted" style={{ width: 60, textAlign: "right", fontSize: "var(--text-sm)" }}>
+                        {n.toLocaleString()}
+                      </div>
+                      {/* docs/11 P3 — corrective actions: a chart that only says
+                          "you have a lot of cars" dead-ends; the fix lives in
+                          zones (Cameras) or the detected-object list (Settings),
+                          so link the change, not just Find. */}
+                      <button
+                        type="button"
+                        className="pill"
+                        aria-expanded={fixLabel === label}
+                        title={`How to get fewer ${prettyLabel(label)} detections`}
+                        onClick={() => setFixLabel(fixLabel === label ? null : label)}
+                        style={{ fontSize: "var(--text-xs)" }}
+                      >
+                        too many?
+                      </button>
                     </div>
-                    <div className="tnum muted" style={{ width: 60, textAlign: "right", fontSize: "var(--text-sm)" }}>
-                      {n.toLocaleString()}
-                    </div>
+                    {fixLabel === label && (
+                      <div className="muted" style={{ fontSize: "var(--text-sm)", margin: "4px 0 4px 106px" }}>
+                        {label.startsWith("camera_") ? (
+                          <>
+                            These come from the camera's own built-in detection. Turn off
+                            "Camera-side detection" in that camera's{" "}
+                            <a href="#/cameras">tuning (Cameras → Tune)</a>, or adjust the
+                            detection rules in the camera's own settings.
+                          </>
+                        ) : (
+                          <>
+                            If most of these are somewhere you don't care about (the street, a
+                            neighbor's driveway), draw a "Never alert inside this area" zone on
+                            that camera — <a href="#/cameras">Cameras → Tune → Zones &amp; privacy</a>.
+                            To stop detecting {prettyLabel(label)} everywhere, remove it from the
+                            objects to detect — <a href="#/settings/detection">Settings → Detection &amp; AI</a>{" "}
+                            (or per camera in its tuning).
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))
               )}
