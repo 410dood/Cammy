@@ -54,6 +54,12 @@ use tokio::sync::broadcast;
 
 use crate::{db::Db, mqtt::EventMsg};
 
+/// docs/11 P3 — events the HomeKit bridge missed because it lagged the shared
+/// broadcast channel (a missed motion event = a sensor that never tripped).
+/// Surfaced as `zoomy_dropped_events_total{consumer="homekit"}`.
+pub(crate) static HK_DROPPED_EVENTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// TCP port the sensor bridge serves HAP on (fixed so the firewall note in
 /// DEPLOYMENT.md can name it; mDNS advertises it either way).
 pub const BRIDGE_PORT: u16 = 32180;
@@ -456,6 +462,7 @@ async fn serve(
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
+                    HK_DROPPED_EVENTS.fetch_add(n, Ordering::Relaxed);
                     tracing::debug!("homekit bridge lagged {n} events");
                 }
                 Err(broadcast::error::RecvError::Closed) => break Ok(()),

@@ -2882,6 +2882,14 @@ async fn get_event_api(
     Ok(Json(ev))
 }
 
+/// docs/11 P3 — events silently skipped because an SSE client fell behind the
+/// broadcast channel (tokio `RecvError::Lagged`). Summed across all clients;
+/// surfaced as `zoomy_dropped_events_total{consumer="sse"}` so a chronically
+/// slow consumer (an HA integration on a bad link) is visible instead of a
+/// `debug!` line nobody reads.
+pub(crate) static SSE_DROPPED_EVENTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// P3.3 — live Server-Sent-Events feed of new events (`GET /api/events/stream`,
 /// Viewer). Every detection/audio/trigger event the MQTT worker consumes is
 /// re-broadcast here; each client subscribes and receives compact JSON lines
@@ -2953,6 +2961,7 @@ async fn events_stream(
                     }
                     // A slow client fell behind: skip the missed events, don't die.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        SSE_DROPPED_EVENTS.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
                         tracing::debug!("events SSE lagged, dropped {n}");
                         continue;
                     }
@@ -7121,6 +7130,10 @@ struct MetricsInput<'a> {
     alarm_queue: Option<(usize, usize)>,
     /// Worker threads and whether each is still running.
     workers: &'a [(&'a str, bool)],
+    /// Events silently skipped by lagged broadcast consumers `(sse, homekit)`
+    /// (docs/11 P3). An SSE drop is an integration that missed an event; a
+    /// HomeKit drop is a motion sensor that never tripped.
+    dropped_events: (u64, u64),
 }
 
 /// Render the metrics exposition text (Prometheus 0.0.4). Pure so it's unit-
@@ -7135,6 +7148,7 @@ fn render_metrics(m: &MetricsInput<'_>) -> String {
         genai,
         alarm_queue,
         workers,
+        dropped_events,
     } = *m;
     let online = cams.iter().filter(|c| c.online).count();
     let mut out = String::new();
@@ -7369,6 +7383,23 @@ fn render_metrics(m: &MetricsInput<'_>) -> String {
         out.push_str(&format!("zoomy_alarm_drops_total {qdropped}\n"));
     }
 
+    // Lagged broadcast consumers (docs/11 P3). The tokio broadcast channel
+    // skips a slow receiver forward rather than blocking the producer; each
+    // skipped message is an event that consumer never saw.
+    let (sse_dropped, hk_dropped) = dropped_events;
+    family(
+        &mut out,
+        "zoomy_dropped_events_total",
+        "Events a live consumer missed since startup because it fell behind the broadcast feed.",
+        "counter",
+    );
+    out.push_str(&format!(
+        "zoomy_dropped_events_total{{consumer=\"sse\"}} {sse_dropped}\n"
+    ));
+    out.push_str(&format!(
+        "zoomy_dropped_events_total{{consumer=\"homekit\"}} {hk_dropped}\n"
+    ));
+
     // Worker liveness (docs/11 P0.7). Rendered by the axum runtime, which is
     // independent of every worker thread — so this stays observable even when
     // the dead one is `health`, the very worker that raises the notification.
@@ -7481,6 +7512,10 @@ async fn metrics(
         genai: (st.genai_stats.depth(), st.genai_stats.shed()),
         alarm_queue: crate::notify::dispatch_stats(),
         workers: &workers,
+        dropped_events: (
+            SSE_DROPPED_EVENTS.load(std::sync::atomic::Ordering::Relaxed),
+            crate::homekit::HK_DROPPED_EVENTS.load(std::sync::atomic::Ordering::Relaxed),
+        ),
     });
     Ok((
         [(
@@ -8434,6 +8469,7 @@ mod tests {
             genai: (7, 2),
             alarm_queue: Some((3, 5)),
             workers: &workers,
+            dropped_events: (11, 4),
         };
         let m = render_metrics(&input);
         // Global gauges.
@@ -8476,6 +8512,10 @@ mod tests {
         // that were never sent.
         assert!(m.contains("\nzoomy_alarm_queue_depth 3\n"));
         assert!(m.contains("\nzoomy_alarm_drops_total 5\n"));
+        // Lagged broadcast consumers (docs/11 P3): missed events per consumer.
+        assert!(m.contains("# TYPE zoomy_dropped_events_total counter\n"));
+        assert!(m.contains("zoomy_dropped_events_total{consumer=\"sse\"} 11\n"));
+        assert!(m.contains("zoomy_dropped_events_total{consumer=\"homekit\"} 4\n"));
         // With no dispatcher running (unit tests, --verify) the family is
         // omitted rather than reported as a healthy zero.
         // Worker liveness (docs/11 P0.7): a dead worker is a 0, not an absence.
