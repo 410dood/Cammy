@@ -1,9 +1,9 @@
 // A4 — Notifications center: a right-slide panel listing recent activity
 // (strangers, camera offline/online, anomalies, daily digests), with mark-read.
 
-import { useEffect, useRef } from "react";
-import { Notification } from "./api";
-import { RelTime, EmptyState, useFocusTrap } from "./ui";
+import { useEffect, useRef, useState } from "react";
+import { api, Notification } from "./api";
+import { RelTime, EmptyState, useFocusTrap, useToast } from "./ui";
 import {
   IconBell, IconX, IconWifiOff, IconWifi, IconStranger, IconSparkles,
   IconAlert, IconCheck, IconProps,
@@ -40,6 +40,27 @@ export default function NotificationsPanel({
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   useFocusTrap(panelRef);
+  const toast = useToast();
+  // Global timed snooze (deferred-inventory): unix ts while active, null when
+  // not. Loaded on open; setting it round-trips through the server so the
+  // shown deadline is the one that will actually be honored.
+  const [snoozeUntil, setSnoozeUntil] = useState<number | null>(null);
+  useEffect(() => {
+    api.snooze().then((r) => setSnoozeUntil(r.until)).catch(() => {});
+  }, []);
+  const snooze = async (minutes: number) => {
+    try {
+      const r = await api.setSnooze(minutes);
+      setSnoozeUntil(r.until);
+      if (r.until == null) toast.success("Alerts back on");
+      else
+        toast.success(
+          `Alerts snoozed until ${new Date(r.until * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+        );
+    } catch (e) {
+      toast.error(`Couldn't change the snooze: ${e}`);
+    }
+  };
   // Move focus into the panel on open so the trap has somewhere to start and
   // keyboard/screen-reader users land inside it.
   useEffect(() => {
@@ -76,6 +97,41 @@ export default function NotificationsPanel({
           <button className="icon-btn" aria-label="Close" onClick={onClose}>
             <IconX size={18} />
           </button>
+        </div>
+        <div className="notif-snooze">
+          {snoozeUntil != null ? (
+            <>
+              <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                Phone &amp; email alerts snoozed until{" "}
+                <b>
+                  {new Date(snoozeUntil * 1000).toLocaleTimeString([], {
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })}
+                </b>{" "}
+                — urgent (duress) alerts still come through, and everything still lands here.
+              </span>
+              <button type="button" className="btn btn-ghost ev-act" onClick={() => snooze(0)}>
+                Resume alerts
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                Expecting activity (mowing, a party)? Quiet your phone for a bit:
+              </span>
+              {[30, 60, 480].map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className="btn btn-ghost ev-act"
+                  onClick={() => snooze(m)}
+                >
+                  {m < 60 ? `${m} min` : `${m / 60} h`}
+                </button>
+              ))}
+            </>
+          )}
         </div>
         <div className="notif-list">
           {notes.length === 0 ? (

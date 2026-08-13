@@ -135,6 +135,12 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
         let settings = db.settings();
         let smtp = crate::notify::smtp_cfg(&settings);
         let min_sev = settings.notify_min_severity;
+        // Global timed snooze (read once per batch): while active, only
+        // critical rows (severity 4 — duress rides there) reach a phone or
+        // mailbox. The cursor still advances, so a snoozed hour is quiet
+        // FOREVER — never a stale flood the moment the snooze expires. The
+        // rows stay in the bell either way.
+        let snoozed = crate::notify::snooze_until(&db).is_some();
 
         'batch: for n in &news {
             if shutdown.load(Ordering::Relaxed) {
@@ -149,7 +155,8 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
             // delivered); an alarm's duress rides severity 4 ⇒ always passes. The
             // in-app notification ROW is written regardless — only DELIVERY is
             // gated here.
-            let human_ok = severity_allows(n.severity, min_sev);
+            let human_ok = severity_allows(n.severity, min_sev)
+                && (!snoozed || n.severity.is_some_and(|s| s >= 4));
 
             // --- PUSH ---------------------------------------------------------
             if human_ok && keys.is_some() {

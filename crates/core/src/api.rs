@@ -159,6 +159,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(zone_state_test_api),
         )
         .route("/api/alarms/stats", get(alarm_stats_api))
+        .route("/api/snooze", get(get_snooze).post(set_snooze))
         .route("/api/onvif/inspect", get(onvif_inspect))
         .route("/api/tokens", get(list_tokens).post(create_token))
         .route("/api/tokens/{id}", axum::routing::delete(delete_token))
@@ -5470,6 +5471,36 @@ async fn onvif_inspect(
         out.insert(cam_id.to_string(), serde_json::Value::Array(rows));
     }
     Ok(Json(serde_json::Value::Object(out)))
+}
+
+/// Global timed snooze: quiet the human alert channels (ntfy/email/push) for
+/// a while — "mowing the lawn" mode. Automations, the in-app bell, and duress
+/// are untouched. GET is Viewer (the UI shows the state); POST is Operator by
+/// the default method rule.
+async fn get_snooze(State(st): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "until": crate::notify::snooze_until(&st.db) }))
+}
+
+#[derive(Deserialize)]
+struct SnoozeReq {
+    /// Minutes from now; 0 clears an active snooze. Capped at 24 h — a
+    /// "snooze" that lasts days is a config change wearing a disguise.
+    minutes: u32,
+}
+
+async fn set_snooze(
+    State(st): State<AppState>,
+    Json(req): Json<SnoozeReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if req.minutes == 0 {
+        st.db.delete_kv(crate::notify::SNOOZE_KEY)?;
+        return Ok(Json(serde_json::json!({ "until": null })));
+    }
+    let minutes = req.minutes.min(24 * 60);
+    let until = chrono::Utc::now().timestamp() + i64::from(minutes) * 60;
+    st.db
+        .set_kv(crate::notify::SNOOZE_KEY, &until.to_string())?;
+    Ok(Json(serde_json::json!({ "until": until })))
 }
 
 /// Per-rule live throttle stats: when each rule last fired (this run — the

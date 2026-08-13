@@ -1108,6 +1108,14 @@ export const api = {
   /** What the app knows about ITSELF: worker threads, go2rtc, MQTT, HomeKit and
    *  the two work queues. Sibling of /api/status (which is a bare camera map). */
   system: () => req<SystemState>("/api/system"),
+  /** Global timed snooze: quiet phone/ntfy/email alerts for a while. Duress
+   *  and automations (webhook/MQTT) still go through; the bell still fills. */
+  snooze: () => req<{ until: number | null }>("/api/snooze"),
+  setSnooze: (minutes: number) =>
+    req<{ until: number | null }>("/api/snooze", {
+      method: "POST",
+      body: JSON.stringify({ minutes }),
+    }),
   /** docs/11 P3 — the ONVIF event inspector: the most recent raw camera-side
    *  notifications per camera (Blue Iris-style), so a user can see exactly
    *  what their camera emits before writing rules against it. Keyed by

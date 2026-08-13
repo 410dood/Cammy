@@ -607,6 +607,19 @@ pub fn armed_in_mode(modes: &[String], arm_mode: &str) -> bool {
     }
 }
 
+/// Global timed snooze (deferred-inventory item): while set, human-facing
+/// channels (ntfy/email/push) stay quiet; automations (webhook/MQTT/
+/// deterrence) and the in-app bell are untouched, and duress always breaks
+/// through. Stored in KV so it survives a restart, self-expiring: an absent,
+/// unparseable or past value reads as "not snoozed".
+pub const SNOOZE_KEY: &str = "snooze_until";
+
+/// The active snooze deadline (unix ts), or `None` when not snoozed.
+pub fn snooze_until(db: &Db) -> Option<i64> {
+    let until: i64 = db.get_kv(SNOOZE_KEY)?.parse().ok()?;
+    (until > chrono::Utc::now().timestamp()).then_some(until)
+}
+
 /// Should a HUMAN-facing channel (ntfy/email) deliver this event, given the
 /// global `notify_min_severity` gate? Automations (webhook/MQTT) are never
 /// gated, and duress always delivers. Pure → unit-tested.
@@ -789,6 +802,19 @@ fn fire_action(
             &action.kind,
             "skipped: this alert is below your minimum notification severity",
         );
+    }
+    // Global timed snooze: same human channels, duress excepted. A clicked
+    // Test (event_id 0) still delivers — an owner testing DURING a snooze is
+    // asking whether the pipe works, and a silently-skipped test reading as
+    // success is the exact lie the Test buttons exist to prevent.
+    if matches!(action.kind.as_str(), "ntfy" | "email" | "push") && !ev.duress && ev.event_id != 0 {
+        if let Some(until) = snooze_until(db) {
+            tracing::info!(
+                rule = rule_name, event = ev.event_id, until, kind = %action.kind,
+                "push skipped: alerts snoozed"
+            );
+            return ActionOutcome::skipped(&action.kind, "skipped: alerts are snoozed");
+        }
     }
     // Channels that touch the network are BUILT here (pure string work) and
     // performed on the dispatch worker; MQTT is already a channel send and
@@ -1321,6 +1347,62 @@ mod tests {
 
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = worker.join();
+    }
+
+    /// The snooze self-expires and never fails closed: absent, garbage and
+    /// past values all read as "not snoozed" — a corrupt KV row must never
+    /// silently mute alerts forever. And while active, a snoozed ntfy action
+    /// is SKIPPED (reported honestly, not as a delivery).
+    #[test]
+    fn snooze_expires_and_skips_human_channels() {
+        let dir = std::env::temp_dir().join(format!("cammy-snooze-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = crate::db::Db::open(&dir.join("t.db")).expect("test db");
+        let now = chrono::Utc::now().timestamp();
+        assert_eq!(snooze_until(&db), None, "absent = not snoozed");
+        db.set_kv(SNOOZE_KEY, "not-a-number").unwrap();
+        assert_eq!(snooze_until(&db), None, "garbage = not snoozed");
+        db.set_kv(SNOOZE_KEY, &(now - 5).to_string()).unwrap();
+        assert_eq!(snooze_until(&db), None, "past = expired");
+        db.set_kv(SNOOZE_KEY, &(now + 600).to_string()).unwrap();
+        assert_eq!(snooze_until(&db), Some(now + 600), "future = active");
+
+        // A live (non-test, non-duress) ntfy fire during the snooze is skipped.
+        let mut r = rule(1, 0, 0);
+        r.action = "ntfy".into();
+        r.target = "http://127.0.0.1:9/closed".into();
+        let (tx, _rx) = std::sync::mpsc::channel::<EventMsg>();
+        let mut ev = AlarmEvent {
+            event_id: 43,
+            camera: "cam",
+            label: "person",
+            score: 0.9,
+            ts: 1,
+            snapshot_url: "/s.jpg",
+            snapshot_path: None,
+            face: None,
+            plate: None,
+            gesture: None,
+            transcript: None,
+            speed: None,
+            base_url: "",
+            webhook_template: "",
+            smtp: None,
+            duress: false,
+            severity: 2,
+            min_push_severity: 0,
+            caption: None,
+        };
+        let out = fire(&r, &ev, &tx, 0, &db);
+        assert!(out[0].detail.as_deref().unwrap().contains("snoozed"));
+        // Duress breaks through: not skipped-as-snoozed.
+        ev.duress = true;
+        let out = fire(&r, &ev, &tx, 0, &db);
+        assert_ne!(
+            out[0].detail.as_deref(),
+            Some("skipped: alerts are snoozed")
+        );
+        let _ = db.delete_kv(SNOOZE_KEY);
     }
 
     /// A dropped alert used to leave a `warn!` and nothing else — invisible to
