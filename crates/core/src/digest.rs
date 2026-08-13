@@ -28,7 +28,17 @@ pub fn run(db: Db, shutdown: Arc<AtomicBool>) {
             if last_day != Some(day_num) && now.hour() >= DIGEST_HOUR {
                 let since = now.timestamp() - 86_400;
                 let events = db
-                    .list_events(None, None, None, None, Some(since), None, false, 20_000)
+                    .list_events(
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(since),
+                        None,
+                        false,
+                        false,
+                        20_000,
+                    )
                     .unwrap_or_default();
                 let text = summarize(&events);
                 if db.add_digest(now.timestamp(), &text).is_ok() {
@@ -219,6 +229,7 @@ mod tests {
             tags: vec![],
             track_id: None,
             path_json: None,
+            reviewed: false,
         }
     }
 

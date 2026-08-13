@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// Current schema version (`PRAGMA user_version`). Bump this and append a
 /// step to `MIGRATIONS` (in `Db::migrate`) to change the schema — never edit
 /// an existing step, and keep v1 idempotent (see the note on `migrate_v1`).
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Which recording segments a bookmark protects from retention.
 ///
@@ -482,6 +482,10 @@ pub struct Event {
     /// Free-text note the user attached to the event.
     #[serde(default)]
     pub note: Option<String>,
+    /// Review inbox (v3): whether the owner has seen this event. New events
+    /// arrive unreviewed; opening one (or "mark all reviewed") clears it.
+    #[serde(default)]
+    pub reviewed: bool,
     /// Anomaly score (0..1) from the anomaly-detection worker; None = unscored.
     #[serde(default)]
     pub anomaly_score: Option<f32>,
@@ -1766,7 +1770,8 @@ impl Db {
     /// - steps v2+ only ever run exactly once, so they may be strict
     ///   (error-checked ALTERs, data backfills, renames).
     fn migrate(conn: &mut Connection) -> Result<()> {
-        const MIGRATIONS: &[fn(&Connection) -> Result<()>] = &[Db::migrate_v1, Db::migrate_v2];
+        const MIGRATIONS: &[fn(&Connection) -> Result<()>] =
+            &[Db::migrate_v1, Db::migrate_v2, Db::migrate_v3];
         let have: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if have > SCHEMA_VERSION {
             // A newer build touched this DB. All migrations are additive, so
@@ -2166,6 +2171,35 @@ impl Db {
         Ok(())
     }
 
+    /// v3 — the review inbox (Frigate-style unread loop). `reviewed` marks an
+    /// event as seen; new events arrive unreviewed. Every PRE-EXISTING event is
+    /// backfilled `reviewed = 1`: without that, an install with months of
+    /// history would open to a "10,000 to review" wall — a number nobody will
+    /// ever clear is a number everyone learns to ignore, which defeats the
+    /// entire feature. The partial index keeps the unreviewed count/list cheap
+    /// no matter how large the events table grows.
+    fn migrate_v3(conn: &Connection) -> Result<()> {
+        // Idempotent like v1/v2 (guarded ALTER): a pre-versioning restamp
+        // replays the whole ladder over an already-complete schema, so a bare
+        // ALTER here would fail with "duplicate column" on that path.
+        let has: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'reviewed'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has == 0 {
+            conn.execute_batch(
+                "ALTER TABLE events ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 0;
+                 UPDATE events SET reviewed = 1;",
+            )?;
+        }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS events_unreviewed
+                 ON events(camera_id, severity, ts) WHERE reviewed = 0;",
+        )?;
+        Ok(())
+    }
+
     /// The single writer connection. Multi-statement sequences under one
     /// guard are atomic with respect to every other `conn()` caller.
     fn conn(&self) -> MutexGuard<'_, Connection> {
@@ -2329,13 +2363,14 @@ impl Db {
         after_ts: Option<i64>,
         before_ts: Option<i64>,
         flagged_only: bool,
+        unreviewed_only: bool,
         limit: u32,
     ) -> Result<Vec<Event>> {
         let conn = self.read();
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json, e.reviewed
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE (?1 IS NULL OR e.camera_id = ?1)
                AND (?2 IS NULL OR e.label = ?2)
@@ -2344,7 +2379,8 @@ impl Db {
                AND (?5 IS NULL OR e.ts >= ?5)
                AND (?6 IS NULL OR e.ts < ?6)
                AND (?7 = 0 OR e.flagged = 1)
-             ORDER BY e.ts DESC, e.id DESC LIMIT ?8",
+               AND (?8 = 0 OR e.reviewed = 0)
+             ORDER BY e.ts DESC, e.id DESC LIMIT ?9",
         )?;
         let rows = stmt
             .query_map(
@@ -2356,6 +2392,7 @@ impl Db {
                     after_ts,
                     before_ts,
                     flagged_only as i64,
+                    unreviewed_only as i64,
                     limit
                 ],
                 row_to_event,
@@ -2370,7 +2407,7 @@ impl Db {
             .query_row(
                 "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                         e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json
+                        e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json, e.reviewed
                  FROM events e JOIN cameras c ON c.id = e.camera_id WHERE e.id = ?1",
                 [id],
                 row_to_event,
@@ -2400,7 +2437,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json, e.reviewed
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE e.camera_id = ?1 AND e.track_id = ?2
              ORDER BY e.ts ASC, e.id ASC",
@@ -2458,7 +2495,7 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT e.id, e.camera_id, c.name, e.ts, e.label, e.score,
                     e.x1, e.y1, e.x2, e.y2, e.snapshot, e.face, e.plate, e.gesture, e.zone, e.caption, e.transcript,
-                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json
+                    e.flagged, e.note, e.anomaly_score, e.direction, e.speed, e.gait, e.severity, e.tags, e.track_id, e.path_json, e.reviewed
              FROM events e JOIN cameras c ON c.id = e.camera_id
              WHERE e.gait = ?1 AND e.gait_sig IS NOT NULL
              ORDER BY e.ts DESC, e.id DESC LIMIT ?2",
@@ -5142,6 +5179,59 @@ impl Db {
         Ok(rows)
     }
 
+    /// Review inbox — mark one event reviewed. Returns whether it existed.
+    pub fn mark_event_reviewed(&self, id: i64) -> Result<bool> {
+        let n = self
+            .conn()
+            .execute("UPDATE events SET reviewed = 1 WHERE id = ?1", [id])?;
+        Ok(n > 0)
+    }
+
+    /// Review inbox — mark every unreviewed event at/before `before_ts`
+    /// reviewed, optionally restricted to a camera set (RBAC scope: a scoped
+    /// user's "mark all" must not clear cameras they can't see). `camera_ids`:
+    /// `None` = all cameras; `Some(&[])` = none (returns 0). Ids are our own
+    /// i64s, so the IN-list is inlined (injection-safe, like
+    /// `count_events_in`). The time bound means events that arrive DURING the
+    /// click can't be swept away unseen.
+    pub fn mark_events_reviewed(
+        &self,
+        camera_ids: Option<&[i64]>,
+        before_ts: i64,
+    ) -> Result<usize> {
+        if matches!(camera_ids, Some(ids) if ids.is_empty()) {
+            return Ok(0);
+        }
+        let mut sql = String::from("UPDATE events SET reviewed = 1 WHERE reviewed = 0 AND ts <= ?");
+        if let Some(ids) = camera_ids {
+            let in_list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND camera_id IN ({in_list})"));
+        }
+        Ok(self.conn().execute(&sql, [before_ts])?)
+    }
+
+    /// Review inbox — unreviewed counts `(total, important)` within an optional
+    /// camera scope. "Important" mirrors the Events page's badge line:
+    /// severity >= 3. Uses the v3 partial index, so it stays cheap at any
+    /// table size. NULL severity rows count as not-important here (they are
+    /// legacy rows, which the v3 backfill already marked reviewed).
+    pub fn count_unreviewed(&self, camera_ids: Option<&[i64]>) -> Result<(i64, i64)> {
+        if matches!(camera_ids, Some(ids) if ids.is_empty()) {
+            return Ok((0, 0));
+        }
+        let mut sql = String::from(
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN severity >= 3 THEN 1 ELSE 0 END), 0)
+             FROM events WHERE reviewed = 0",
+        );
+        if let Some(ids) = camera_ids {
+            let in_list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            sql.push_str(&format!(" AND camera_id IN ({in_list})"));
+        }
+        Ok(self
+            .read()
+            .query_row(&sql, [], |r| Ok((r.get(0)?, r.get(1)?)))?)
+    }
+
     pub fn count_events(&self) -> Result<i64> {
         Ok(self
             .read()
@@ -5298,6 +5388,7 @@ fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
             .unwrap_or_default(),
         track_id: r.get(25)?,
         path_json: r.get(26)?,
+        reviewed: r.get::<_, i64>(27)? != 0,
     })
 }
 
@@ -6205,38 +6296,68 @@ mod tests {
         .unwrap();
 
         let all = |db: &Db| {
-            db.list_events(None, None, None, None, None, None, false, 10)
+            db.list_events(None, None, None, None, None, None, false, false, 10)
                 .unwrap()
         };
         assert_eq!(all(&db).len(), 3);
         assert_eq!(
-            db.list_events(None, Some("person"), None, None, None, None, false, 10)
-                .unwrap()
-                .len(),
+            db.list_events(
+                None,
+                Some("person"),
+                None,
+                None,
+                None,
+                None,
+                false,
+                false,
+                10
+            )
+            .unwrap()
+            .len(),
             1
         );
         assert_eq!(
-            db.list_events(None, None, Some("open_palm"), None, None, None, false, 10)
-                .unwrap()
-                .len(),
+            db.list_events(
+                None,
+                None,
+                Some("open_palm"),
+                None,
+                None,
+                None,
+                false,
+                false,
+                10
+            )
+            .unwrap()
+            .len(),
             1
         );
         // Zone filter.
         assert_eq!(
-            db.list_events(None, None, None, Some("driveway"), None, None, false, 10)
-                .unwrap()
-                .len(),
+            db.list_events(
+                None,
+                None,
+                None,
+                Some("driveway"),
+                None,
+                None,
+                false,
+                false,
+                10
+            )
+            .unwrap()
+            .len(),
             1
         );
         // before / after time bounds.
         assert_eq!(
-            db.list_events(None, None, None, None, None, Some(150), false, 10)
+            db.list_events(None, None, None, None, None, Some(150), false, false, 10)
                 .unwrap()
                 .len(),
             1
         );
         assert_eq!(
-            db.list_events(None, None, None, None, Some(250), None, false, 10)
+            db.list_events(None, None, None, None, Some(250), None, false, false, 10)
                 .unwrap()
                 .len(),
             1
@@ -6251,7 +6372,7 @@ mod tests {
             .unwrap());
         assert!(!db.set_event_bookmark(999_999, true, None).unwrap()); // missing id
         let only_flagged = db
-            .list_events(None, None, None, None, None, None, true, 10)
+            .list_events(None, None, None, None, None, None, true, false, 10)
             .unwrap();
         assert_eq!(only_flagged.len(), 1);
         assert_eq!(only_flagged[0].id, flagged_id);
@@ -6270,6 +6391,61 @@ mod tests {
         // Deleting the camera cascades to its events.
         db.delete_camera(cam.id).unwrap();
         assert!(all(&db).is_empty());
+    }
+
+    /// v3 review inbox: new events arrive unreviewed; the filter, the counts
+    /// (with the severity>=3 "important" split), single + bulk marking, the
+    /// bulk time bound (an event arriving mid-click stays unread), and the
+    /// bulk camera scope (a scoped "mark all" can't clear other cameras).
+    #[test]
+    fn review_inbox_roundtrip() {
+        let db = mem_db();
+        let cam = db
+            .add_camera("porch", "rtsp://x", None, true, true)
+            .unwrap();
+        let cam2 = db.add_camera("yard", "rtsp://y", None, true, true).unwrap();
+        // package = severity 3 (important); car/person = severity 2.
+        let e1 = db
+            .add_event(
+                cam.id, 100, "package", 0.9, [0.0; 4], None, None, None, None, None,
+            )
+            .unwrap();
+        db.add_event(
+            cam.id, 200, "car", 0.8, [0.0; 4], None, None, None, None, None,
+        )
+        .unwrap();
+        db.add_event(
+            cam2.id, 300, "car", 0.8, [0.0; 4], None, None, None, None, None,
+        )
+        .unwrap();
+        let unrev = |db: &Db| {
+            db.list_events(None, None, None, None, None, None, false, true, 10)
+                .unwrap()
+        };
+        assert_eq!(unrev(&db).len(), 3, "new events arrive unreviewed");
+        assert!(!unrev(&db)[0].reviewed);
+        assert_eq!(db.count_unreviewed(None).unwrap(), (3, 1));
+        // Single mark.
+        assert!(db.mark_event_reviewed(e1).unwrap());
+        assert_eq!(db.count_unreviewed(None).unwrap(), (2, 0));
+        // Scoped bulk: clearing cam only must leave cam2's event unread.
+        let n = db.mark_events_reviewed(Some(&[cam.id]), 1000).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(db.count_unreviewed(None).unwrap(), (1, 0));
+        assert_eq!(db.count_unreviewed(Some(&[cam2.id])).unwrap(), (1, 0));
+        // Time bound: an event newer than before_ts survives a bulk clear.
+        let e4 = db
+            .add_event(
+                cam2.id, 900, "person", 0.9, [0.0; 4], None, None, None, None, None,
+            )
+            .unwrap();
+        let n = db.mark_events_reviewed(None, 500).unwrap();
+        assert_eq!(n, 1, "only the ts<=500 event clears");
+        let left = unrev(&db);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, e4);
+        // Empty scope = no-op.
+        assert_eq!(db.mark_events_reviewed(Some(&[]), i64::MAX).unwrap(), 0);
     }
 
     #[test]

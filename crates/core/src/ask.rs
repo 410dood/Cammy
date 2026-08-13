@@ -366,6 +366,7 @@ fn execute_tool(
                         since,
                         until,
                         false,
+                        false,
                         fetch,
                     )
                     .map_err(|e| format!("event query failed: {e}"))?;

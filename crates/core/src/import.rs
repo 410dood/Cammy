@@ -515,7 +515,17 @@ mod tests {
 
         // Its events flow through the normal events list.
         let evs = db
-            .list_events(Some(cam.id), None, None, None, None, None, false, 10_000)
+            .list_events(
+                Some(cam.id),
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                false,
+                10_000,
+            )
             .unwrap();
         assert_eq!(evs.len(), summary.events_created);
         let _ = std::fs::remove_dir_all(&snaps);

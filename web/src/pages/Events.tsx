@@ -189,6 +189,11 @@ export default function Events({
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [highOnly, setHighOnly] = useState(false);
+  // Review inbox: list only what hasn't been seen yet. Opening an event marks
+  // it; "Mark all reviewed" clears the rest. The count renders on the toggle
+  // itself so "you're caught up" is a claim the page can actually make.
+  const [reviewMode, setReviewMode] = useState(false);
+  const [unreviewed, setUnreviewed] = useState<{ total: number; important: number } | null>(null);
   // Persisted: on a chatty install, collapsing repeat detections is a setting
   // you pick once, not per visit.
   const [grouped, setGrouped] = useState(() => localStorage.getItem("cammy-events-grouped") === "1");
@@ -390,6 +395,24 @@ export default function Events({
     }
     return api.recordingAt(cameraId, ts);
   };
+  // Review inbox: opening an event IS reviewing it. Fire-and-forget to the
+  // server, mirror locally (card stops reading as unread, count drops) —
+  // deliberately NOT removed from the visible list mid-look; the next reload
+  // of the To-review filter drops it.
+  useEffect(() => {
+    if (!open || open.reviewed) return;
+    api.markReviewed(open.id).catch(() => {});
+    setEvents((prev) => prev.map((e) => (e.id === open.id ? { ...e, reviewed: true } : e)));
+    setUnreviewed((u) =>
+      u
+        ? {
+            total: Math.max(0, u.total - 1),
+            important: Math.max(0, u.important - ((open.severity ?? 0) >= 3 ? 1 : 0)),
+          }
+        : u,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open?.id]);
   useEffect(() => {
     setOpenClip(null);
     setOpenSegs([]);
@@ -840,6 +863,7 @@ export default function Events({
     before: day ? day.to : toTime ? Math.floor(new Date(toTime).getTime() / 1000) : undefined,
     flagged: flaggedOnly || undefined,
     tag: tagFilter || undefined,
+    unreviewed: reviewMode || undefined,
   });
 
   /// The window a search must be asked about — the same camera / day / object
@@ -863,6 +887,32 @@ export default function Events({
       })
       .catch((e) => setLoadError(errMsg(e)))
       .finally(() => setLoaded(true));
+    // Cheap (partial-index) count — rides every refresh so the To-review
+    // number tracks reality, including changes made from another device.
+    api.unreviewedCount().then(setUnreviewed).catch(() => {});
+  };
+
+  // Review inbox: mark everything currently visible to this user as seen,
+  // bounded at the newest event the page has actually SHOWN — an event that
+  // arrives mid-click stays unread rather than being swept away unseen.
+  const [markingAll, setMarkingAll] = useState(false);
+  const markAllReviewed = async () => {
+    if (markingAll) return;
+    setMarkingAll(true);
+    try {
+      const newest = events.length ? events[0].ts : Math.floor(Date.now() / 1000);
+      const r = await api.reviewAll(newest);
+      toast.success(
+        r.marked === 0
+          ? "Nothing to review — you're caught up"
+          : `Marked ${r.marked} event${r.marked === 1 ? "" : "s"} reviewed`,
+      );
+      load();
+    } catch (e) {
+      toast.error(`Couldn't mark events reviewed: ${errMsg(e)}`);
+    } finally {
+      setMarkingAll(false);
+    }
   };
 
   // Reach events older than the newest page. Without this the list was a hard
@@ -979,7 +1029,7 @@ export default function Events({
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // `day` is a dep: changing the day must refetch, not just re-render.
-  }, [cameraId, label, fromTime, toTime, flaggedOnly, tagFilter, day?.from, day?.to, sseLive]);
+  }, [cameraId, label, fromTime, toTime, flaggedOnly, tagFilter, reviewMode, day?.from, day?.to, sseLive]);
 
   // Filter-option lists (rescanned only when the event set changes, not on every
   // keystroke/hover/modal toggle).
@@ -1142,6 +1192,29 @@ export default function Events({
         >
           <IconBell size={15} /> Alerts
         </button>
+        <button
+          className={`btn ${reviewMode ? "btn-primary" : "btn-ghost"}`}
+          onClick={() => setReviewMode((v) => !v)}
+          aria-pressed={reviewMode}
+          title="Show only events you haven't looked at yet. Opening one marks it as seen; new events land here as they happen."
+        >
+          <IconCheck size={15} /> To review
+          {unreviewed != null && unreviewed.total > 0 && (
+            <span className="badge accent" style={{ marginLeft: 6 }}>
+              {unreviewed.total > 999 ? "999+" : unreviewed.total}
+            </span>
+          )}
+        </button>
+        {reviewMode && unreviewed != null && unreviewed.total > 0 && (
+          <button
+            className="btn btn-ghost"
+            onClick={markAllReviewed}
+            disabled={markingAll}
+            title="Mark every event you can see as reviewed (only up to the newest one already on this page — anything arriving right now stays unread)."
+          >
+            {markingAll ? "Marking…" : "Mark all reviewed"}
+          </button>
+        )}
         <button
           className={`btn ${flaggedOnly ? "btn-primary" : "btn-ghost"}`}
           onClick={() => setFlaggedOnly((v) => !v)}
@@ -1423,6 +1496,17 @@ export default function Events({
               ) : undefined
             }
           />
+        ) : reviewMode ? (
+          <EmptyState
+            icon={<IconCheck />}
+            title="You're caught up"
+            hint="Every event in this view has been reviewed. New detections will land here as they happen."
+            action={
+              <button className="btn btn-ghost" onClick={() => setReviewMode(false)}>
+                Show all events
+              </button>
+            }
+          />
         ) : (
           <EmptyState
             icon={<IconBell />}
@@ -1443,7 +1527,7 @@ export default function Events({
             const activate = () => (selectMode ? toggleSelect(ev.id) : setOpen(ev));
             return (
             <div
-              className={`event-card ${selectMode && isSel ? "selected" : ""}`}
+              className={`event-card ${selectMode && isSel ? "selected" : ""}${ev.reviewed === false ? " unread" : ""}`}
               key={ev.id}
               role="button"
               tabIndex={0}

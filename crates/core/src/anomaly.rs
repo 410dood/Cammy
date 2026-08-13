@@ -40,6 +40,7 @@ fn score_recent(db: &Db) -> anyhow::Result<()> {
         Some(now - HISTORY_SECS),
         None,
         false,
+        false,
         50_000,
     )?;
     if hist.len() < MIN_HISTORY {

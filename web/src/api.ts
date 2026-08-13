@@ -189,6 +189,8 @@ export interface CamEvent {
   transcript: string | null;
   flagged: boolean;
   note: string | null;
+  /** Review inbox: whether the owner has seen this event yet. */
+  reviewed?: boolean;
   /** Attributed gait identity (#64): an enrolled name or "?" (unknown walker). */
   gait?: string | null;
   /** Severity tier 1 (low) .. 4 (critical) — drives push gating + badges. */
@@ -994,6 +996,7 @@ export const api = {
       before?: number;
       flagged?: boolean;
       tag?: string;
+      unreviewed?: boolean;
       limit?: number;
     } = {}
   ) => {
@@ -1006,9 +1009,23 @@ export const api = {
     if (q.before != null) p.set("before", String(q.before));
     if (q.flagged) p.set("flagged", "true");
     if (q.tag) p.set("tag", q.tag);
+    if (q.unreviewed) p.set("unreviewed", "true");
     if (q.limit) p.set("limit", String(q.limit));
     return req<CamEvent[]>(`/api/events?${p}`);
   },
+  /** Review inbox — mark one event seen (the viewer calls this on open). */
+  markReviewed: (id: number) =>
+    req<{ id: number; reviewed: boolean }>(`/api/events/${id}/reviewed`, { method: "POST" }),
+  /** Review inbox — mark everything visible to this user reviewed, up to
+   *  `before_ts` (the newest event the client has actually shown). */
+  reviewAll: (before_ts: number) =>
+    req<{ marked: number }>("/api/events/review_all", {
+      method: "POST",
+      body: JSON.stringify({ before_ts }),
+    }),
+  /** Review inbox — unreviewed counts in this user's camera scope. */
+  unreviewedCount: () =>
+    req<{ total: number; important: number }>("/api/events/unreviewed_count"),
   /** One event by id — resolves deep links to events older than a loaded list. */
   event: (id: number) => req<CamEvent>(`/api/events/${id}`),
   bookmarkEvent: (id: number, flagged: boolean, note?: string | null) =>

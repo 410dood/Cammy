@@ -665,6 +665,9 @@ button.pill:disabled { opacity: 0.5; cursor: default; }
   grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
   gap: 12px;
 }
+/* Review inbox: a not-yet-seen event carries a quiet accent edge. Opening it
+   (which marks it reviewed) clears the edge. */
+.event-card.unread { box-shadow: inset 3px 0 0 var(--accent); }
 .event-card {
   position: relative;
   background: var(--panel);

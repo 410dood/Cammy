@@ -97,6 +97,15 @@ pub fn router(state: AppState) -> Router {
             "/api/events/{id}/bookmark",
             axum::routing::post(bookmark_event),
         )
+        .route(
+            "/api/events/{id}/reviewed",
+            axum::routing::post(mark_reviewed_api),
+        )
+        .route(
+            "/api/events/review_all",
+            axum::routing::post(review_all_api),
+        )
+        .route("/api/events/unreviewed_count", get(unreviewed_count_api))
         .route("/api/events/{id}/tags", axum::routing::post(set_event_tags))
         .route(
             "/api/events/{id}/feedback",
@@ -2927,6 +2936,9 @@ struct EventQuery {
     flagged: bool,
     /// Only events carrying this user tag (exact, case-insensitive).
     tag: Option<String>,
+    /// Review inbox (v3): when true, return only not-yet-reviewed events.
+    #[serde(default)]
+    unreviewed: bool,
     #[serde(default = "default_limit")]
     limit: u32,
 }
@@ -2952,6 +2964,7 @@ async fn list_events(
         q.after,
         q.before,
         q.flagged,
+        q.unreviewed,
         q.limit.min(1000),
     )?;
     // Scoped users see only their cameras' events (the LIMIT applies pre-scope,
@@ -3232,6 +3245,7 @@ async fn export_events_csv(
         q.after,
         q.before,
         q.flagged,
+        false,
         100_000,
     )?;
     if let Some(set) = &allow {
@@ -3310,6 +3324,54 @@ async fn bookmark_event(
     }
     Ok(Json(
         serde_json::json!({ "id": id, "flagged": req.flagged }),
+    ))
+}
+
+/// Review inbox — mark one event reviewed (the viewer calls this on open).
+/// RBAC mirrors `bookmark_event`: load first so a scoped user can't touch a
+/// camera they can't see; 404 for missing OR forbidden.
+async fn mark_reviewed_api(
+    State(st): State<AppState>,
+    Path(id): Path<i64>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ev = st.db.get_event(id)?.ok_or_else(not_found)?;
+    require_camera(&allowed_cameras(&st, &p)?, ev.camera_id)?;
+    st.db.mark_event_reviewed(id)?;
+    Ok(Json(serde_json::json!({ "id": id, "reviewed": true })))
+}
+
+#[derive(Deserialize)]
+struct ReviewAllReq {
+    /// Only events at/before this moment are cleared — the client passes the
+    /// newest event it has SEEN, so anything arriving mid-click stays unread.
+    before_ts: i64,
+}
+
+/// Review inbox — mark everything (this caller can see) reviewed.
+async fn review_all_api(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Json(req): Json<ReviewAllReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let allow = allowed_cameras(&st, &p)?;
+    let ids: Option<Vec<i64>> = allow.as_ref().map(|set| set.iter().copied().collect());
+    let n = st.db.mark_events_reviewed(ids.as_deref(), req.before_ts)?;
+    Ok(Json(serde_json::json!({ "marked": n })))
+}
+
+/// Review inbox — unreviewed counts within the caller's camera scope:
+/// `{ total, important }` (important = severity >= 3, the same bar the badges
+/// use). Cheap (partial index), polled by the Events page.
+async fn unreviewed_count_api(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let allow = allowed_cameras(&st, &p)?;
+    let ids: Option<Vec<i64>> = allow.as_ref().map(|set| set.iter().copied().collect());
+    let (total, important) = st.db.count_unreviewed(ids.as_deref())?;
+    Ok(Json(
+        serde_json::json!({ "total": total, "important": important }),
     ))
 }
 
@@ -4367,6 +4429,7 @@ async fn create_timelapse(
             None,
             Some(day_start),
             Some(day_end),
+            false,
             false,
             5000,
         )
@@ -6827,6 +6890,7 @@ async fn overview(
         Some(today_start),
         None,
         false,
+        false,
         20_000,
     )?;
     if let Some(set) = &allow {
@@ -7110,6 +7174,7 @@ async fn run_digest_api(
         None,
         Some(now - 86_400),
         None,
+        false,
         false,
         20_000,
     )?;
@@ -8195,6 +8260,7 @@ mod tests {
             tags: vec![],
             track_id: None,
             path_json: None,
+            reviewed: false,
         };
         let csv = events_to_csv(std::slice::from_ref(&ev));
         let mut lines = csv.lines();
