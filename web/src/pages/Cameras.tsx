@@ -1,7 +1,7 @@
 ﻿import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, Camera, CamStorage, DetectConfig, DiscoveredCam, DAY_NAMES, fmtBytes, Settings, StatusMap, capabilityUsable } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
-import { recordState, recordStateHint, scheduleWindow } from "../labels";
+import { prettyLabel, recordState, recordStateHint, scheduleWindow } from "../labels";
 import SizeFilterEditor, { ChildHeightEditor, MotionTuner, RectZoneDraw } from "../SizeFilterEditor";
 import { ObjectPicker, InheritSlider, LabelChips, DurationPicker } from "../tuning";
 import { Modal, EmptyState, TogglePill, Callout, useToast, useDialog, usePolling } from "../ui";
@@ -18,6 +18,107 @@ import {
   IconShield,
   IconZone,
 } from "../icons";
+
+/// Mirror of the server's onvif_events::label_for — which raw camera topics
+/// become Cammy events. Kept in sync so the inspector can say honestly whether
+/// a notification is recorded or shown-only.
+function onvifLabelFor(topic: string, objectClass: string | null): string | null {
+  if (objectClass) {
+    const c = objectClass.toLowerCase();
+    if (c.includes("human") || c.includes("person") || c.includes("people")) return "camera_person";
+    if (c.includes("vehicle") || c.includes("car") || c.includes("truck")) return "camera_vehicle";
+  }
+  const t = topic.toLowerCase();
+  if (t.includes("crossline") || t.includes("tripwire") || t.includes("linedetector"))
+    return "camera_tripwire";
+  if (t.includes("intrusion") || t.includes("fielddetector") || t.includes("objectsinside"))
+    return "camera_intrusion";
+  if (t.includes("motion")) return "camera_motion";
+  return null;
+}
+
+/// docs/11 P3 — the ONVIF event inspector (Blue Iris-style): a live view of the
+/// raw notifications this camera's own chip is emitting, so the owner can see
+/// exactly what it says BEFORE writing alarm rules against the camera_* labels
+/// — and can tell "the camera never sends anything" apart from "it sends
+/// events Cammy doesn't ingest".
+function OnvifInspectorModal({ camera, onClose }: { camera: Camera; onClose: () => void }) {
+  const [rows, setRows] = useState<import("../api").OnvifNotifyRow[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  usePolling(
+    () => {
+      api
+        .onvifInspect(camera.id)
+        .then((r) => {
+          setRows(r[String(camera.id)] ?? []);
+          setErr(null);
+        })
+        .catch((e) => setErr(String(e)));
+    },
+    3000,
+    [camera.id],
+  );
+  return (
+    <Modal onClose={onClose} title={`What ${camera.name} is saying`} className="modal-wide">
+      <p className="hint" style={{ marginTop: 0 }}>
+        The most recent notifications this camera's own detection sent over ONVIF (newest first,
+        refreshing live). Rows marked <b>recorded</b> become events an alarm rule can match; the
+        rest are topics Cammy doesn't turn into events — shown here so you can see everything the
+        camera emits.
+      </p>
+      {err && <Callout tone="warn">Couldn't load the camera's notifications: {err}</Callout>}
+      {rows !== null && rows.length === 0 && (
+        <EmptyState
+          title="Nothing received from this camera yet"
+          hint="The camera only reports when its own detection triggers something — walk in front of it, or check that its built-in motion/IVS rules are enabled in the camera's own settings. The list starts empty after every Cammy restart, and needs ONVIF credentials (user:pass@host) in the camera source."
+        />
+      )}
+      {rows !== null && rows.length > 0 && (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Camera topic</th>
+                <th>State</th>
+                <th>Object</th>
+                <th>Becomes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const label = onvifLabelFor(r.notify.topic, r.notify.object_class);
+                return (
+                  <tr key={`${r.ts}-${i}`}>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {new Date(r.ts * 1000).toLocaleTimeString()}
+                    </td>
+                    <td style={{ wordBreak: "break-all" }}>{r.notify.topic}</td>
+                    <td>
+                      {r.notify.active === null ? "pulse" : r.notify.active ? "active" : "cleared"}
+                    </td>
+                    <td>{r.notify.object_class ?? "—"}</td>
+                    <td>
+                      {label ? (
+                        <span className="badge ok" title={`Recorded as a "${prettyLabel(label)}" event when it turns active (alarm rules match the label "${label}").`}>
+                          {prettyLabel(label)}
+                        </span>
+                      ) : (
+                        <span className="hint" title="Cammy doesn't turn this topic into an event — it's shown here only.">
+                          shown only
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Modal>
+  );
+}
 
 /// docs/10 P3 — the per-camera model override was a spell-the-filename
 /// textbox; now it's a select of the detector `.onnx` files actually present
@@ -530,6 +631,8 @@ function TuneModal({
   // subSource (lifted state), so switching panels never loses an in-flight
   // edit even though inactive panels unmount.
   const [tab, setTab] = useState<"detect" | "zones" | "stream">("detect");
+  // docs/11 P3 — the ONVIF inspector, reachable from the camera-side toggle.
+  const [inspectOpen, setInspectOpen] = useState(false);
 
   const toast = useToast();
   const dialog = useDialog();
@@ -750,6 +853,16 @@ function TuneModal({
               />
             ))}
           </div>
+          {dc.onvif_events && (
+            <div style={{ marginTop: 8 }}>
+              {/* docs/11 P3 — the only debug surface for camera-side detection
+                  was a curl-only endpoint; without it "the camera never fires"
+                  and "the camera fires topics we don't ingest" look identical. */}
+              <button type="button" className="pill" onClick={() => setInspectOpen(true)}>
+                <IconSearch size={14} /> See what this camera is saying
+              </button>
+            </div>
+          )}
           {dc.package_detect && (
             <label className="field span-full" style={{ marginTop: 12 }}>
               Where parcels get left (optional)
@@ -1266,6 +1379,7 @@ function TuneModal({
           {saving ? "Saving…" : "Save"}
         </button>
       </div>
+      {inspectOpen && <OnvifInspectorModal camera={camera} onClose={() => setInspectOpen(false)} />}
     </Modal>
   );
 }

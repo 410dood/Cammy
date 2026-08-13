@@ -609,6 +609,12 @@ export interface CamStatus {
 export type StatusMap = Record<string, CamStatus>;
 
 /** GET /api/system — the app's own health, as opposed to the cameras'. */
+/** One raw camera-side (ONVIF) notification kept in the inspector ring. */
+export interface OnvifNotifyRow {
+  ts: number;
+  notify: { topic: string; active: boolean | null; object_class: string | null };
+}
+
 export interface SystemState {
   workers: { name: string; alive: boolean }[];
   go2rtc: { running: boolean; restarts: number; last_error: string | null };
@@ -1099,6 +1105,14 @@ export const api = {
   /** What the app knows about ITSELF: worker threads, go2rtc, MQTT, HomeKit and
    *  the two work queues. Sibling of /api/status (which is a bare camera map). */
   system: () => req<SystemState>("/api/system"),
+  /** docs/11 P3 — the ONVIF event inspector: the most recent raw camera-side
+   *  notifications per camera (Blue Iris-style), so a user can see exactly
+   *  what their camera emits before writing rules against it. Keyed by
+   *  camera id (as a string); newest first. */
+  onvifInspect: (cameraId?: number) =>
+    req<Record<string, OnvifNotifyRow[]>>(
+      `/api/onvif/inspect${cameraId != null ? `?camera_id=${cameraId}` : ""}`,
+    ),
   /** Is this server-side folder real + writable, and how much space is free?
    *  (P3 — validates the recordings-folder field.) Empty = the default dir. */
   pathProbe: (path: string) =>
