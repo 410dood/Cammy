@@ -254,6 +254,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/backup", get(backup))
         .route("/api/restore", axum::routing::post(restore))
         .route("/api/import", axum::routing::post(import_footage))
+        .route(
+            "/api/import/upload",
+            axum::routing::post(import_upload)
+                // Video files, not JSON: raise this one route's body cap far
+                // above axum's 2 MB default. Streamed to disk, never buffered.
+                .layer(axum::extract::DefaultBodyLimit::max(IMPORT_UPLOAD_MAX)),
+        )
         .route("/api/offsite/status", get(offsite_status))
         .route("/api/archive/status", get(archive_status))
         .route("/api/player/{file}", get(go2rtc_player))
@@ -1879,6 +1886,96 @@ async fn import_footage(
     })?
     .map_err(|e| bad_request(format!("{e:#}")))?;
     Ok(Json(summary))
+}
+
+/// Upload cap for `/api/import/upload` — generous for phone/dashcam clips
+/// while still bounding a runaway request. (4 GiB.)
+const IMPORT_UPLOAD_MAX: usize = 4 * 1024 * 1024 * 1024;
+
+/// POST /api/import/upload?name=… — the browser half of footage import
+/// (deferred from P3.10, which shipped server-path-only). Streams the raw
+/// request body into `<data_dir>/imports/` and returns the saved server path
+/// for the existing `/api/import` step to consume. Admin-only, like every
+/// other server-filesystem write. The file is streamed chunk-by-chunk — a
+/// multi-GB clip never sits in memory.
+async fn import_upload(
+    State(st): State<AppState>,
+    axum::Extension(p): axum::Extension<crate::auth::Principal>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    body: axum::body::Body,
+) -> ApiResult<Json<serde_json::Value>> {
+    if p.role < crate::auth::Role::Admin {
+        return Err(forbidden("uploading footage requires an administrator"));
+    }
+    // Sanitize to a bare filename: strip any path part, keep a conservative
+    // character set, and require a video-ish extension so the imports dir
+    // can't be seeded with arbitrary junk names.
+    let raw = q.get("name").map(String::as_str).unwrap_or("upload.mp4");
+    let base: String = raw
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("upload.mp4")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .take(80)
+        .collect();
+    let ext = base.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    if !matches!(
+        ext.as_str(),
+        "mp4" | "mov" | "mkv" | "avi" | "m4v" | "webm" | "ts" | "flv" | "wmv"
+    ) {
+        return Err(bad_request(
+            "that doesn't look like a video file (expected .mp4/.mov/.mkv/…)",
+        ));
+    }
+    let dir = st.data_dir.join("imports");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Timestamp prefix: two uploads of the same phone clip must not clobber
+    // each other mid-import.
+    let path = dir.join(format!("{}-{}", chrono::Utc::now().timestamp(), base));
+    let mut file = tokio::fs::File::create(&path)
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut stream = body.into_data_stream();
+    let mut written: u64 = 0;
+    use futures_util::StreamExt as _;
+    use tokio::io::AsyncWriteExt as _;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                // A dead connection mid-upload must not leave a partial file
+                // that a later Import run would half-scan without complaint.
+                let _ = tokio::fs::remove_file(&path).await;
+                return Err(bad_request(format!("upload interrupted: {e}")));
+            }
+        };
+        written += chunk.len() as u64;
+        if let Err(e) = file.write_all(&chunk).await {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+        }
+    }
+    if written == 0 {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(bad_request("the uploaded file was empty"));
+    }
+    if let Err(e) = file.flush().await {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+    }
+    st.db.add_audit(
+        chrono::Utc::now().timestamp(),
+        None,
+        "import_upload",
+        Some(&format!("{} ({written} bytes)", path.display())),
+    );
+    Ok(Json(serde_json::json!({
+        "path": path.to_string_lossy(),
+        "bytes": written,
+    })))
 }
 
 #[derive(Deserialize)]

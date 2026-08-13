@@ -172,8 +172,10 @@ pub fn min_role_for(method: &axum::http::Method, path: &str) -> Role {
         || path == "/api/backup"
         || path == "/api/restore"
         // Importing offline footage creates a camera row AND reads a server-local
-        // filesystem path — both are Admin-only.
+        // filesystem path — both are Admin-only; the upload half writes to the
+        // server filesystem, so it is gated identically.
         || path == "/api/import"
+        || path == "/api/import/upload"
         // The offsite test uses the saved (Admin-only) S3 credentials, and the
         // GenAI probe makes the server GET a caller-supplied URL (SSRF surface)
         // — both stay as locked-down as the settings that feed them.

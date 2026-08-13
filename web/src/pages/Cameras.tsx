@@ -1,4 +1,4 @@
-﻿import { FormEvent, useEffect, useRef, useState } from "react";
+﻿import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { api, Camera, CamStorage, DetectConfig, DiscoveredCam, DAY_NAMES, fmtBytes, Settings, StatusMap, capabilityUsable } from "../api";
 import ZoneEditor, { COLORS } from "../ZoneEditor";
 import { prettyLabel, recordState, recordStateHint, scheduleWindow } from "../labels";
@@ -1550,6 +1550,36 @@ export default function Cameras({
   const [importName, setImportName] = useState("");
   const [importBusy, setImportBusy] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  // Upload a clip from THIS device to the server's imports folder, then fill
+  // the path field so the normal Import step runs on it. Also seeds the name
+  // field from the filename when it's still empty.
+  const onUploadFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    try {
+      const r = await api.importUpload(file);
+      setImportPath(r.path);
+      if (!importName.trim()) {
+        setImportName(
+          file.name
+            .replace(/\.[^.]+$/, "")
+            .toLowerCase()
+            .replace(/[^a-z0-9_-]+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .slice(0, 32) || "imported",
+        );
+      }
+      toast.success(`Uploaded ${file.name} (${fmtBytes(r.bytes)}) — now click Import`);
+    } catch (err) {
+      onError(`Couldn't upload that file: ${errMsg(err)}`);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const scan = async () => {
     setScanning(true);
@@ -1989,8 +2019,8 @@ export default function Cameras({
         <summary><IconFilm size={15} /> Import footage</summary>
         <p className="muted" style={{ marginTop: 8 }}>
           Run detection over an existing video file (a phone clip, a dashcam recording, exported
-          footage) to add its events to the archive. The file must already be on the machine
-          running Cammy — give its full path below. This is not an upload from your browser.
+          footage) to add its events to the archive. <b>Upload…</b> sends a file from this device
+          to the Cammy server; or, for a file already on that machine, give its full path.
         </p>
         <Callout tone="info">
           The footage is imported as a <strong>virtual camera</strong>: it appears in the list but
@@ -2012,6 +2042,18 @@ export default function Cameras({
               <button type="button" className="btn btn-ghost" onClick={() => setBrowsing(true)}>
                 Browse…
               </button>
+              {/* Deferred P3.10 half: upload from THIS device instead of
+                  spelling a server path. Streams to <data>/imports/ and fills
+                  the path field, so the Import step below stays the same. */}
+              <label className={`btn btn-ghost file-btn ${uploading ? "disabled" : ""}`}>
+                {uploading ? "Uploading…" : "Upload…"}
+                <input
+                  type="file"
+                  accept="video/*,.mkv,.ts,.flv"
+                  disabled={uploading}
+                  onChange={onUploadFile}
+                />
+              </label>
             </span>
             <span className="feat-help">Sampled at about one frame per second, so a long clip takes a while.</span>
           </label>

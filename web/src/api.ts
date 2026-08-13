@@ -1108,6 +1108,18 @@ export const api = {
   /** What the app knows about ITSELF: worker threads, go2rtc, MQTT, HomeKit and
    *  the two work queues. Sibling of /api/status (which is a bare camera map). */
   system: () => req<SystemState>("/api/system"),
+  /** Browser half of footage import: stream a local video file to the server
+   *  (`<data>/imports/`) and get back the server path for importFootage().
+   *  Raw-body fetch (the File streams; a multi-GB clip never sits in memory),
+   *  so it bypasses the JSON `req` helper. */
+  importUpload: async (file: File): Promise<{ path: string; bytes: number }> => {
+    const r = await fetch(`/api/import/upload?name=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      body: file,
+    });
+    if (!r.ok) throw new Error((await r.text()) || `upload failed (${r.status})`);
+    return r.json();
+  },
   /** Global timed snooze: quiet phone/ntfy/email alerts for a while. Duress
    *  and automations (webhook/MQTT) still go through; the bell still fills. */
   snooze: () => req<{ until: number | null }>("/api/snooze"),
