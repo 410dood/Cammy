@@ -14,9 +14,59 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — docs/11 P0 + P1 complete, P2 trust half done, 2026-08-07
+## Current status: v0.4 — docs/11 P0 + P1 + P2 COMPLETE, 2026-08-13
 
-### Latest: docs/11 Phase 4 — the P2 sweep (trust half + dead ends), 2026-08-07
+### Latest: docs/11 P2 mechanical remainder — five sweeps, 2026-08-13
+
+`0b18f0f`, `bd31db8`, `65768fd`, `3d62501` (+ two P3 quick items). **274 core
+tests**, clippy -D + fmt clean, tsc + vite + 14 web tests green, every sweep
+live-validated on :8081 with owner state verified byte-identical afterwards.
+
+- **Presets + consequences** (`0b18f0f`): per-camera retention → the global
+  day-chips plus an "Inherit global (N days)" pill AND an estimate priced in
+  THAT camera's measured write rate (live: front-door "6.60 GB/day → 7 days ≈
+  46.23 GB"); absence hours → span chips with Off as a choice; detect_workers
+  anchored to "you have N detecting" (NOT the browser's core count, which lies
+  about a remote server); gesture hold / segment length / aging → chips, aging's
+  consequence taken from the real ffmpeg filter (scale='min(1280,iw)':-2 → "a 4K
+  clip typically shrinks by 80%+"); keep-events → the readout that defuses
+  events-outliving-footage. Custom values always render as a "custom: X" chip —
+  presets must never misrepresent a hand-set number (the owner's real 1.5 s
+  gesture hold rendered as custom, correctly).
+- **Transcription truth** (`bd31db8`): speech model → tier select (Fast/More
+  accurate) pointing at the in-app downloader instead of GitHub; readiness gates
+  on `capabilityUsable` (a damaged file used to read "installed");
+  `transcribe.rs`'s model-load failure — previously a local variable nothing
+  could read — reports through `degraded::Latch`.
+- **Labels that can't match say so** (`65768fd`): ObjectPicker/LabelChips carry
+  the full producible set (the detector's 80 COCO names AS SPELLED + Cammy's
+  synthetic event labels); unknown chips get ⚠ + why (warning, not a block — a
+  custom model may know more). **Real foot-gun caught:** the pickers normalized
+  typed text to snake_case but several COCO names contain SPACES — "traffic
+  light" was stored as `traffic_light`, which the detector never emits.
+  `canonicalLabel` now prefers the spelling the system actually produces.
+  Tripwires label their A/B endpoints on the canvas (verified on ptz-cam's real
+  wire) + name presets; residential zone flags read as sentences instead of
+  "child* / alone* / water*" with hover-only meaning.
+- **The no-new-apps channel** (`3d62501`): a first-class **"push" alarm-action
+  kind** — the alarm notification row already fans out to subscribed devices via
+  the push worker, and now a rule can name that as its delivery (no target;
+  valid in `validate_alarm_rule`; live fire = no-op because the row IS the
+  delivery; a clicked TEST pushes directly and reports the real count, since the
+  synthetic fire writes no row). **Live: "delivered to 1 device" — a real push
+  to the owner's real subscription.** Both wizards (Onboarding alerts step,
+  Family notify step) now lead with "This device (no new apps)" via a shared
+  `web/src/webpush.ts` (kept out of api.ts so node tests still import it), ntfy
+  second. And the add wizard **auto-probes** a brand-template URL (debounced,
+  frame preview) before the camera is committed — with the "full-size stream"
+  warning suppressed there, because 4K on a MAIN address is just the camera
+  working.
+
+**docs/11 status: P0, P1 and P2 are COMPLETE.** P3 still open: ONVIF inspector
+UI, SSE consumption in Events/Live, the `face_det_model`/`nms_iou` type
+decision, `dropped_events` gauge, FOV cones, Insights corrective actions.
+
+### Earlier: docs/11 Phase 4 — the P2 sweep (trust half + dead ends), 2026-08-07
 
 `8ee17eb`, `27b5bf2`, `e85b850`. **274 core tests**, clippy -D + fmt clean, tsc +
 vite + 14 web tests green.

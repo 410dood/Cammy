@@ -397,7 +397,21 @@ function ModeWizard({
             />
             <label className="field" style={{ maxWidth: 240 }}>
               zone name
-              <input type="text" value={zoneName} onChange={(e) => setZoneName(e.target.value)} />
+              {/* docs/11 P3 — alarm rules match zones BY NAME, so a renamed zone
+                  wants a real household name, not free-typed variance. */}
+              <input
+                type="text"
+                list="family-zone-names"
+                value={zoneName}
+                onChange={(e) => setZoneName(e.target.value)}
+              />
+              <datalist id="family-zone-names">
+                {["Crib", "Couch", "Pool", "Stairs", "Kitchen", "Driveway", "Yard", "Gate"].map(
+                  (n) => (
+                    <option key={n} value={n} />
+                  ),
+                )}
+              </datalist>
             </label>
             {plan.zoneNote && (
               <p className="muted" style={{ margin: 0, fontSize: "var(--text-sm)" }}>{plan.zoneNote}</p>

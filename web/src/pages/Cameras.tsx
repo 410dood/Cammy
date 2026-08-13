@@ -1350,7 +1350,7 @@ function GroupCell({
     <input
       className="field"
       list="cam-groups"
-      placeholder="—"
+      placeholder="No group"
       style={{ width: 110 }}
       value={val}
       onChange={(e) => setVal(e.target.value)}

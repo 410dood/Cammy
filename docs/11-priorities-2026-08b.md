@@ -201,8 +201,28 @@ degradation costs.
 
 ## P2 — medium (trust surfacing + mechanical UX swaps)
 
-> **STATUS 2026-08-07: the TRUST half is done; the mechanical half is partly
-> done.** Shipped: go2rtc/HomeKit state + a real `/api/health` (`3310177`,
+> **STATUS 2026-08-13: P2 is COMPLETE.** The 2026-08-07 sweep did the trust
+> half + dead ends; the 2026-08-13 sweep (`0b18f0f`, `bd31db8`, `65768fd`,
+> `3d62501`) finished the mechanical half: per-camera retention → chips priced
+> in THAT camera's measured write rate; absence hours → span chips;
+> detect_workers anchored to the install's camera count; gesture hold / segment
+> length / aging → chips with the real consequence stated (the aging estimate
+> comes from the actual ffmpeg filter, scale='min(1280,iw)':-2); keep-events →
+> the readout that defuses the events-outlive-footage confusion; the speech
+> model → a tier select pointing at the in-app downloader, gated on LOADABLE,
+> with a `degraded::Latch` on the whisper load failure; ObjectPicker/LabelChips
+> now mark chips the system can never produce (⚠ + why) and canonicalize typed
+> names toward the spelling the detector actually emits (caught a real
+> foot-gun: "traffic light" was being stored as traffic_light, which never
+> matches); tripwire endpoints are labelled A/B on the canvas; residential
+> flags read as sentences; and BOTH wizards offer a no-new-apps channel via a
+> new first-class "push" alarm-action kind (the notification row IS the
+> delivery; a clicked Test pushes for real and reports the count — live:
+> "delivered to 1 device"), with the add wizard auto-probing a templated URL
+> before the camera is committed. Also done: the Family zone-name presets
+> datalist and the GroupCell "No group" placeholder from P3.
+>
+> Original 2026-08-07 status: Shipped: go2rtc/HomeKit state + a real `/api/health` (`3310177`,
 > `4d6e06b`); retention-encoder failures, face-stage failures, archive stall,
 > offsite give-ups, and degraded prompt/VLM rules (`8ee17eb`); the push-test
 > success lie (`8ee17eb`); the dead-end fixes on Home / Recordings / Alarms /
@@ -293,6 +313,13 @@ degradation costs.
   labels, not tooltip-only tokens (`ZoneEditor.tsx:761`).
 
 ## P3 — surfacing existing capability + small stuff
+
+> **Still open as of 2026-08-13:** ONVIF inspector UI, SSE consumption in
+> Events/Live, the `face_det_model`/`nms_iou` public-type decision (they have
+> NO UI today, so nothing renders wrong — it is purely a type-surface
+> decision), the `dropped_events` gauge, FOV cones (needs per-pin bearing
+> design), and Insights corrective actions. The System health pane, the Family
+> zone-name presets, and the GroupCell placeholder are done.
 
 - ~~**A "System health" pane**~~ **DONE `3310177`** — a sixth Settings tab over
   a new `GET /api/system`, leading with one verdict line and ending with the
