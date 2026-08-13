@@ -14,9 +14,34 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — docs/11 COMPLETE + deferred-inventory batch 1, 2026-08-13
+## Current status: v0.4 — docs/11 COMPLETE + deferred-inventory batches 1–2, 2026-08-13
 
-### Latest: three deferred-inventory features, 2026-08-13
+### Latest: the unread review inbox, 2026-08-13
+
+`0f5b788`. **276 core tests** (one new: `review_inbox_roundtrip`), clippy -D +
+fmt clean, tsc + vite + 14 web tests green, live-validated on :8081.
+
+The largest deferred feature (Frigate-style review loop). **Schema v3**:
+`events.reviewed` (new events arrive unreviewed) + a partial index, with a
+deliberate backfill — every PRE-EXISTING event marked reviewed, because
+opening months of history to "10,000 to review" is a number nobody clears and
+everyone learns to ignore. The migration is guarded like v1/v2 (the
+pre-versioning restamp replays the whole ladder, so a bare ALTER would fail
+there — the existing `pre_versioning_db_migrates_to_baseline` test caught
+exactly that on the first cut). **Rule reminder: bump `SCHEMA_VERSION`,
+append to `MIGRATIONS`.**
+
+API: `unreviewed=true` list filter; `POST /api/events/{id}/reviewed` (RBAC
+load-first like bookmark); `POST /api/events/review_all` — camera-scoped AND
+bounded at the caller's `before_ts` so an event arriving mid-click stays
+unread; `GET /api/events/unreviewed_count` → `{total, important}` (severity
+>= 3). Web: "To review" toggle with live count badge, accent-edged unread
+cards, opening an event IS reviewing it (fire-and-forget + local mirror; the
+card is not yanked mid-look), "Mark all reviewed", and an earned "You're
+caught up" state. Live: history migrated 2→3 opening at {0}; two soft
+triggers → badge 2 / important 1; open-one → 1; mark-all → 0 + caught up.
+
+### Earlier: three deferred-inventory features, 2026-08-13
 
 `f655a2a`, `a8a4f14`, `d828c57`. **275 core tests** (one new), clippy -D + fmt
 clean, tsc + vite + 14 web tests green, all live-validated on :8081 with owner

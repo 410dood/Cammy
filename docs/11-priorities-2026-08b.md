@@ -361,7 +361,10 @@ calibration data), lens-suppressor thresholds (real bug footage), zone-state
 (multi-pet footage; CLIP same-camera floor ~0.90 makes it unreliable anyway),
 child-height heuristic fragility.
 
-**Deferred features** (bigger, deliberate): Frigate-style unread review inbox;
+**Deferred features** (bigger, deliberate): ~~Frigate-style unread review
+inbox~~ **DONE `0f5b788`** (2026-08-13 — schema v3 `events.reviewed`,
+history backfilled reviewed, To-review mode + auto-mark-on-open + scoped
+bounded mark-all + "You're caught up");
 suppressed-events bin; cross-camera one-clip-one-notification collapse;
 actionable push buttons + animated thumbnails; package-still-present state
 machine + audio backchannel; NL-to-rule generation; stitched multi-camera
