@@ -777,7 +777,7 @@ fn fire_action(
     // severity; automations still see everything. (Deterrence is a physical
     // automation, never a human-facing push, so it is intentionally NOT gated
     // here — its own master switch governs it below.)
-    if matches!(action.kind.as_str(), "ntfy" | "email")
+    if matches!(action.kind.as_str(), "ntfy" | "email" | "push")
         && !push_allowed(ev.severity, ev.min_push_severity, ev.duress)
     {
         tracing::info!(
@@ -815,6 +815,49 @@ fn fire_action(
             suppressed,
         ))),
         "email" => build_email(&action.target, rule_name, ev, suppressed).map(Some),
+        // docs/11 P2 — the no-new-apps channel. Every real alarm fire already
+        // writes a notification row, and the push worker fans that out to every
+        // subscribed browser/phone; this kind exists so a rule can name that as
+        // its delivery instead of borrowing ntfy's. Nothing to build or send
+        // for a live fire — the row IS the delivery. A clicked TEST (event_id
+        // 0) never writes that row, so it pushes to the devices directly and
+        // reports the real count: a test must never claim success into a void.
+        "push" => {
+            if ev.event_id == 0 {
+                match crate::webpush::test_push(
+                    db,
+                    &format!("Test: {rule_name}"),
+                    "This rule will notify your subscribed devices like this.",
+                ) {
+                    Ok((sent, failed)) if sent > 0 => {
+                        return ActionOutcome::skipped(
+                            "push",
+                            format!(
+                                "delivered to {sent} device{}{}",
+                                if sent == 1 { "" } else { "s" },
+                                if failed > 0 {
+                                    format!(" ({failed} failed)")
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                        );
+                    }
+                    Ok((_, failed)) => Err(if failed > 0 {
+                        format!("no device accepted it ({failed} failed)")
+                    } else {
+                        concat!(
+                            "no device is subscribed to notifications yet — enable them ",
+                            "under Settings, Modes & alerts"
+                        )
+                        .to_string()
+                    }),
+                    Err(e) => Err(format!("{e:#}")),
+                }
+            } else {
+                Ok(None)
+            }
+        }
         "deterrence" => {
             deterrence(&action.target, rule_name, ev, db);
             Ok(None)

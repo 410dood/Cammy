@@ -263,12 +263,45 @@ function CamRetentionField({
 /// Reports the SIZE too. A sub-stream that works but is 4K is a different
 /// mistake from one that doesn't work, and it's the mistake this field exists to
 /// prevent.
-function StreamProbe({ src }: { src: string }) {
+function StreamProbe({
+  src,
+  auto = false,
+  warnBig = true,
+}: {
+  src: string;
+  auto?: boolean;
+  /** Warn when the stream is full-size. Right for the DETECTION sub-stream
+   *  (whose whole point is being small); wrong for a main address, where 4K is
+   *  simply the camera working. */
+  warnBig?: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   const [res, setRes] = useState<Awaited<ReturnType<typeof api.streamProbe>> | null>(null);
   useEffect(() => setRes(null), [src]);
+  // docs/11 P2 — probe-before-enable: in the add wizard the URL came from a
+  // brand template the user never typed, so verify it unprompted (debounced so
+  // hand-editing the address doesn't fire a probe per keystroke).
+  useEffect(() => {
+    if (!auto || !src.trim()) return;
+    let stale = false;
+    const t = setTimeout(async () => {
+      setBusy(true);
+      try {
+        const r = await api.streamProbe(src.trim());
+        if (!stale) setRes(r);
+      } catch (e) {
+        if (!stale) setRes({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      } finally {
+        if (!stale) setBusy(false);
+      }
+    }, 600);
+    return () => {
+      stale = true;
+      clearTimeout(t);
+    };
+  }, [auto, src]);
   if (!src.trim()) return null;
-  const big = (res?.width ?? 0) > 1280;
+  const big = warnBig && (res?.width ?? 0) > 1280;
   return (
     <div style={{ marginTop: 4 }}>
       <button
@@ -1769,10 +1802,16 @@ export default function Cameras({
             </label>
           )}
           {source && (
-            <span className="save-ok" style={{ alignSelf: "center" }}>
-              <IconCheck size={14} /> video address set
-              {detectSource ? " · AI will watch the camera's smaller stream (saves CPU)" : ""}
-            </span>
+            <div className="field" style={{ alignSelf: "center", minWidth: 260 }}>
+              <span className="save-ok">
+                <IconCheck size={14} /> video address set
+                {detectSource ? " · AI will watch the camera's smaller stream (saves CPU)" : ""}
+              </span>
+              {/* docs/11 P2 — the address above may have come from a brand
+                  template the user never typed. Prove it produces a picture
+                  BEFORE the camera is added, not after it sits dark on Live. */}
+              <StreamProbe src={source} auto warnBig={false} />
+            </div>
           )}
           <label className="field" style={{ minWidth: 130 }} title="Optional: group cameras for the Live view (e.g. 'outdoor', 'downstairs').">
             group (optional)

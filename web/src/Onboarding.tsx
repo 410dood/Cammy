@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api, DiscoveredCam } from "./api";
+import { enableWebPush, webPushSupported } from "./webpush";
 import { useToast, useFocusTrap } from "./ui";
 import { IconShield, IconRadar, IconVideo, IconCheck, IconLock, IconBell } from "./icons";
 
@@ -32,6 +33,11 @@ export default function Onboarding({
   // Alerts step: an ntfy topic + the starter rule that makes this a security
   // system, not just a recorder.
   const [ntfy, setNtfy] = useState("");
+  // docs/11 P2 — the alerts step hard-coded ntfy, so a homeowner unwilling to
+  // install another app got no alerts at all. "device" = the built-in Web Push
+  // channel (this browser/phone, no new apps).
+  const [channel, setChannel] = useState<"device" | "ntfy">(webPushSupported() ? "device" : "ntfy");
+  const [pushReady, setPushReady] = useState(false);
   const [testBusy, setTestBusy] = useState(false);
   const [creatingRule, setCreatingRule] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -136,11 +142,68 @@ export default function Onboarding({
             <span className="onb-hero"><IconBell size={26} /></span>
             <h2>Get alerts on your phone</h2>
             <p className="muted">
-              Without this, Cammy records but never tells you anything. Install the free{" "}
-              <b>ntfy</b> app (App Store / Play Store), generate a private topic below, and
-              subscribe to it in the app — alerts arrive as instant pushes with a snapshot.
+              Without this, Cammy records but never tells you anything.
             </p>
-            <div className="row" style={{ width: "100%" }}>
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                type="button"
+                className={`btn ${channel === "device" ? "btn-primary" : "btn-ghost"}`}
+                disabled={!webPushSupported()}
+                title={
+                  webPushSupported()
+                    ? "Built-in notifications to this browser or phone — nothing to install"
+                    : "This browser doesn't support push notifications — use the ntfy app instead"
+                }
+                onClick={() => setChannel("device")}
+              >
+                This device (no new apps)
+              </button>
+              <button
+                type="button"
+                className={`btn ${channel === "ntfy" ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => setChannel("ntfy")}
+              >
+                The ntfy app
+              </button>
+            </div>
+            {channel === "device" && (
+              <div className="onb-push" style={{ width: "100%" }}>
+                <p className="muted" style={{ marginTop: 8 }}>
+                  Alerts arrive as normal notifications on this device — allow the permission
+                  prompt when it appears. Repeat this step from any other phone or computer you
+                  want alerted.
+                </p>
+                {pushReady ? (
+                  <span className="save-ok">
+                    <IconCheck size={14} /> This device will get alerts.
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={async () => {
+                      try {
+                        await enableWebPush();
+                        setPushReady(true);
+                        toast.success("Notifications enabled on this device");
+                      } catch (e) {
+                        toast.error(e instanceof Error ? e.message : String(e));
+                      }
+                    }}
+                  >
+                    Turn on notifications here
+                  </button>
+                )}
+              </div>
+            )}
+            {channel === "ntfy" && (
+              <p className="muted" style={{ marginBottom: 0 }}>
+                Install the free <b>ntfy</b> app (App Store / Play Store), generate a private
+                topic below, and subscribe to it in the app — alerts arrive as instant pushes
+                with a snapshot.
+              </p>
+            )}
+            <div className="row" style={{ width: "100%", display: channel === "ntfy" ? undefined : "none" }}>
               <input
                 type="text"
                 placeholder="https://ntfy.sh/your-private-topic"
@@ -161,7 +224,7 @@ export default function Onboarding({
                 Generate a private topic
               </button>
             </div>
-            {ntfy.trim() !== "" && (
+            {channel === "ntfy" && ntfy.trim() !== "" && (
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -186,13 +249,18 @@ export default function Onboarding({
               <button className="btn btn-ghost" onClick={() => setStep(3)}>Skip</button>
               <button
                 className="btn btn-primary"
-                disabled={creatingRule || ntfy.trim() === ""}
+                disabled={creatingRule || (channel === "ntfy" ? ntfy.trim() === "" : !pushReady)}
+                title={
+                  channel === "device" && !pushReady
+                    ? "Turn on notifications above first"
+                    : undefined
+                }
                 onClick={async () => {
                   // A DVR becomes a security system here: one starter rule so
                   // the first person a camera sees actually reaches the phone.
                   setCreatingRule(true);
                   try {
-                    const t = ntfy.trim();
+                    const t = channel === "ntfy" ? ntfy.trim() : "";
                     await api.addAlarm({
                       name: "Person spotted (starter rule)",
                       enabled: true,
@@ -208,7 +276,7 @@ export default function Onboarding({
                       confirm_within_secs: null,
                       vlm_prompt: null,
                       min_score: 0,
-                      action: "ntfy",
+                      action: channel === "ntfy" ? "ntfy" : "push",
                       target: t,
                       days: [],
                       start_hhmm: null,
@@ -217,7 +285,7 @@ export default function Onboarding({
                       priority: 0,
                       snooze_until: 0,
                       modes: [],
-                      actions: [{ kind: "ntfy", target: t, priority: 0 }],
+                      actions: [{ kind: channel === "ntfy" ? "ntfy" : "push", target: t, priority: 0 }],
                     });
                     toast.success("Starter rule created — any person on any camera pushes to your phone (2 min quiet gap; tune it on Alarms)");
                     setStep(3);

@@ -4805,15 +4805,16 @@ fn validate_alarm_rule(rule: &crate::db::AlarmRule) -> ApiResult<()> {
     for a in &actions {
         if !matches!(
             a.kind.as_str(),
-            "webhook" | "mqtt" | "ntfy" | "email" | "deterrence"
+            "webhook" | "mqtt" | "ntfy" | "email" | "deterrence" | "push"
         ) {
             return Err(bad_request(
-                "each action must be webhook, mqtt, ntfy, email or deterrence",
+                "each action must be webhook, mqtt, ntfy, email, push or deterrence",
             ));
         }
-        // An email action may leave target blank (uses the default smtp_to);
-        // every other kind needs an explicit target.
-        if a.kind != "email" && a.target.trim().is_empty() {
+        // An email action may leave target blank (uses the default smtp_to),
+        // and a push action has no target at all (it delivers to every
+        // subscribed device); every other kind needs an explicit target.
+        if !matches!(a.kind.as_str(), "email" | "push") && a.target.trim().is_empty() {
             return Err(bad_request(
                 "each action needs a target (URL or MQTT topic)",
             ));
@@ -7051,26 +7052,11 @@ async fn push_unsubscribe(
 /// Send a test push to every subscription right now (the "Send test" button).
 async fn push_test(State(st): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let res = tokio::task::spawn_blocking(move || -> anyhow::Result<(usize, usize)> {
-        let keys = crate::webpush::vapid_keys(&st.db)?;
-        let subs = st.db.list_push_subscriptions()?;
-        let payload = serde_json::json!({
-            "title": "Cammy test notification",
-            "body": "Push notifications are working on this device.",
-            "kind": "test",
-        })
-        .to_string();
-        let (mut sent, mut failed) = (0usize, 0usize);
-        for sub in &subs {
-            match crate::webpush::send(&keys, sub, payload.as_bytes(), 3600) {
-                Ok(()) => sent += 1,
-                Err(crate::webpush::SendError::Gone) => {
-                    let _ = st.db.delete_push_subscription(&sub.endpoint);
-                    failed += 1;
-                }
-                Err(_) => failed += 1,
-            }
-        }
-        Ok((sent, failed))
+        crate::webpush::test_push(
+            &st.db,
+            "Cammy test notification",
+            "Push notifications are working on this device.",
+        )
     })
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;

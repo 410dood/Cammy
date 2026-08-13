@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, AlarmRule, Camera, CamEvent, DetectConfig, fmtTime, PolyZone, capabilityUsable } from "../api";
-import { IconInfo, IconAlert } from "../icons";
+import { enableWebPush, webPushSupported } from "../webpush";
+import { IconInfo, IconAlert, IconCheck } from "../icons";
 import { Modal, useToast } from "../ui";
 import { ChildHeightEditor, Rect, RectZoneDraw } from "../SizeFilterEditor";
 import { prettyLabel } from "../labels";
@@ -142,7 +143,9 @@ function mkRule(
     confirm_within_secs: null,
     vlm_prompt: null,
     min_score: 0,
-    action: "ntfy",
+    // docs/11 P2 — an empty topic means the built-in push channel (subscribed
+    // browsers/phones), so a no-new-apps homeowner still gets these alerts.
+    action: ntfy ? "ntfy" : "push",
     target: ntfy,
     days: [],
     start_hhmm: null,
@@ -151,7 +154,7 @@ function mkRule(
     priority: 0,
     snooze_until: 0,
     modes: [],
-    actions: [{ kind: "ntfy", target: ntfy, priority: pushPriority ?? 0 }],
+    actions: [{ kind: ntfy ? "ntfy" : "push", target: ntfy, priority: pushPriority ?? 0 }],
     ...rest,
   } as NewRule;
 }
@@ -248,6 +251,9 @@ function ModeWizard({
   const [zoneName, setZoneName] = useState(plan.zoneName ?? "");
   const [rect, setRect] = useState<Rect | null>(null);
   const [childFrac, setChildFrac] = useState(0.45);
+  // docs/11 P2 — "device" = built-in Web Push, no new apps.
+  const [channel, setChannel] = useState<"device" | "ntfy">(webPushSupported() ? "device" : "ntfy");
+  const [pushReady, setPushReady] = useState(false);
   const [ntfy, setNtfy] = useState("");
   const [busy, setBusy] = useState(false);
   const [testBusy, setTestBusy] = useState<number | null>(null);
@@ -417,10 +423,60 @@ function ModeWizard({
         {step === "notify" && (
           <>
             <p style={{ margin: 0 }}>Where should these alerts go?</p>
-            <p className="muted" style={{ margin: 0, fontSize: "var(--text-sm)" }}>
-              Install the free <b>ntfy</b> app on your phone, then subscribe to this topic in it.
-            </p>
-            <div className="row">
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                type="button"
+                className={`btn ${channel === "device" ? "btn-primary" : "btn-ghost"}`}
+                disabled={!webPushSupported()}
+                title={
+                  webPushSupported()
+                    ? "Built-in notifications to this browser or phone — nothing to install"
+                    : "This browser doesn't support push notifications — use the ntfy app instead"
+                }
+                onClick={() => setChannel("device")}
+              >
+                This device (no new apps)
+              </button>
+              <button
+                type="button"
+                className={`btn ${channel === "ntfy" ? "btn-primary" : "btn-ghost"}`}
+                onClick={() => setChannel("ntfy")}
+              >
+                The ntfy app
+              </button>
+            </div>
+            {channel === "device" && (
+              <div>
+                {pushReady ? (
+                  <span className="save-ok">
+                    <IconCheck size={14} /> This device will get these alerts.
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={async () => {
+                      try {
+                        await enableWebPush();
+                        setPushReady(true);
+                        toast.success("Notifications enabled on this device");
+                      } catch (e) {
+                        toast.error(e instanceof Error ? e.message : String(e));
+                      }
+                    }}
+                  >
+                    Turn on notifications here
+                  </button>
+                )}
+              </div>
+            )}
+            {channel === "ntfy" && (
+              <p className="muted" style={{ margin: 0, fontSize: "var(--text-sm)" }}>
+                Install the free <b>ntfy</b> app on your phone, then subscribe to this topic in
+                it.
+              </p>
+            )}
+            <div className="row" style={{ display: channel === "ntfy" ? undefined : "none" }}>
               <input
                 type="text"
                 placeholder="https://ntfy.sh/your-private-topic"
@@ -441,7 +497,7 @@ function ModeWizard({
                 Generate a private topic
               </button>
             </div>
-            {ntfy.trim() !== "" && (
+            {channel === "ntfy" && ntfy.trim() !== "" && (
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -536,7 +592,7 @@ function ModeWizard({
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={busy || !canNext || ntfy.trim() === ""}
+                disabled={busy || !canNext || (channel === "ntfy" ? ntfy.trim() === "" : !pushReady)}
                 onClick={apply}
               >
                 {busy ? "Setting up…" : "Finish setup"}

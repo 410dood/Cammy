@@ -467,7 +467,9 @@ export interface AppConfig {
 }
 
 export type ArmMode = "home" | "away" | "disarmed";
-export type ActionKind = "webhook" | "mqtt" | "ntfy" | "email" | "deterrence";
+/** "push" = the built-in channel: the alarm's notification row fans out to
+ *  every subscribed browser/phone, so the action itself needs no target. */
+export type ActionKind = "webhook" | "mqtt" | "ntfy" | "email" | "deterrence" | "push";
 
 /** One ONVIF relay output a camera advertises (P2.9 deterrence). */
 export interface RelayOutput {

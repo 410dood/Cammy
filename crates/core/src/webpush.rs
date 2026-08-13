@@ -333,6 +333,27 @@ pub fn vapid_keys(db: &Db) -> Result<VapidKeys> {
     Ok(VapidKeys { pkcs8, public })
 }
 
+/// Send one test push to every subscribed device NOW, returning
+/// `(sent, failed)`. Shared by `POST /api/push/test` and the alarm Test path
+/// for `push` actions. Blocking (network per subscription).
+pub fn test_push(db: &crate::db::Db, title: &str, body: &str) -> anyhow::Result<(usize, usize)> {
+    let keys = vapid_keys(db)?;
+    let subs = db.list_push_subscriptions()?;
+    let payload = serde_json::json!({ "title": title, "body": body, "kind": "test" }).to_string();
+    let (mut sent, mut failed) = (0usize, 0usize);
+    for sub in &subs {
+        match send(&keys, sub, payload.as_bytes(), 3600) {
+            Ok(()) => sent += 1,
+            Err(SendError::Gone) => {
+                let _ = db.delete_push_subscription(&sub.endpoint);
+                failed += 1;
+            }
+            Err(_) => failed += 1,
+        }
+    }
+    Ok((sent, failed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
