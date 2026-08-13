@@ -842,7 +842,10 @@ export interface FloorPlan {
   /** `camera` is the display name; `camera_id` (P3) is the stable key — a
    *  rename must not orphan a pin. Older plans lack the id; the Map page heals
    *  them on load (id stamped from the name, names refreshed from the id). */
-  pins: { camera: string; camera_id?: number; x: number; y: number }[];
+  /** `dir` (docs/11 P3) is an optional facing bearing in degrees (0 = up,
+   *  clockwise) set by dragging the pin's direction handle in edit mode;
+   *  when present the Map draws a presentational field-of-view cone. */
+  pins: { camera: string; camera_id?: number; x: number; y: number; dir?: number }[];
 }
 
 export type Role = "viewer" | "operator" | "admin";

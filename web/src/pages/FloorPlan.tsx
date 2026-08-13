@@ -183,6 +183,78 @@ export default function FloorPlanPage({
   const pinDomKey = (p: FloorPlan["pins"][number]) =>
     p.camera_id != null ? `id:${p.camera_id}` : `name:${p.camera}`;
 
+  // docs/11 P3 — FOV cones. The cone is presentational (which way the camera
+  // points, not a calibrated view field); the bearing comes from dragging the
+  // small handle that orbits each pin in edit mode. Cone geometry is computed
+  // in PIXELS (via a measured wrap size), because percentage coordinates
+  // distort angles on a non-square plan image.
+  const [wrapSize, setWrapSize] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || !plan.image) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) setWrapSize({ w: r.width, h: r.height });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [plan.image]);
+
+  /// Screen-space unit vector for a bearing (0° = up, clockwise).
+  const dirVec = (deg: number) => {
+    const rad = (deg * Math.PI) / 180;
+    return { dx: Math.sin(rad), dy: -Math.cos(rad) };
+  };
+
+  /// Drag the direction handle: the bearing tracks the pointer's angle from
+  /// the pin; a press that never moves clears the bearing (removes the cone).
+  const startDirDrag = (pinKey: string, pin: { x: number; y: number }) => (e: React.PointerEvent) => {
+    if (!editing || !wrapRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = wrapRef.current.getBoundingClientRect();
+    const cx = rect.left + pin.x * rect.width;
+    const cy = rect.top + pin.y * rect.height;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let moved = false;
+    let lastDir: number | null = null;
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
+      moved = true;
+      const deg = (Math.atan2(ev.clientX - cx, cy - ev.clientY) * 180) / Math.PI;
+      lastDir = Math.round((deg + 360) % 360);
+      setPlan((cur) => ({
+        ...cur,
+        pins: cur.pins.map((p) => (pinDomKey(p) === pinKey ? { ...p, dir: lastDir! } : p)),
+      }));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      setPlan((cur) => {
+        const next = {
+          ...cur,
+          pins: cur.pins.map((p) =>
+            pinDomKey(p) === pinKey
+              ? moved && lastDir != null
+                ? { ...p, dir: lastDir }
+                : { ...p, dir: undefined }
+              : p,
+          ),
+        };
+        void save(next);
+        return next;
+      });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+
   return (
     <>
       <div className="row" style={{ alignItems: "center" }}>
@@ -249,6 +321,57 @@ export default function FloorPlanPage({
             style={{ cursor: editing && placing ? "crosshair" : "default" }}
           >
             <img src={plan.image} alt="floor plan" className="fp-img" />
+            {wrapSize && plan.pins.some((p) => p.dir != null) && (
+              <svg
+                className="fp-cones"
+                width={wrapSize.w}
+                height={wrapSize.h}
+                viewBox={`0 0 ${wrapSize.w} ${wrapSize.h}`}
+                aria-hidden="true"
+              >
+                {plan.pins
+                  .filter((p) => p.dir != null)
+                  .map((pin) => {
+                    const px = pin.x * wrapSize.w;
+                    const py = pin.y * wrapSize.h;
+                    const r = Math.max(60, Math.min(wrapSize.w, wrapSize.h) * 0.16);
+                    const half = 30; // degrees each side — presentational
+                    const a = dirVec(pin.dir! - half);
+                    const b = dirVec(pin.dir! + half);
+                    return (
+                      <path
+                        key={pinDomKey(pin)}
+                        className="fp-cone"
+                        d={`M ${px} ${py} L ${px + a.dx * r} ${py + a.dy * r} A ${r} ${r} 0 0 1 ${px + b.dx * r} ${py + b.dy * r} Z`}
+                      />
+                    );
+                  })}
+              </svg>
+            )}
+            {editing &&
+              wrapSize &&
+              plan.pins.map((pin) => {
+                const key = pinDomKey(pin);
+                const v = dirVec(pin.dir ?? 0);
+                const hx = pin.x * wrapSize.w + v.dx * 46;
+                const hy = pin.y * wrapSize.h + v.dy * 46;
+                return (
+                  <button
+                    key={`dir-${key}`}
+                    type="button"
+                    className={`fp-dir-handle ${pin.dir != null ? "set" : ""}`}
+                    style={{ left: hx, top: hy, touchAction: "none" }}
+                    title={
+                      pin.dir != null
+                        ? `Drag to aim ${pin.camera}'s view cone · click to remove the cone`
+                        : `Drag to show which way ${pin.camera} points`
+                    }
+                    aria-label={`Set ${pin.camera}'s facing direction`}
+                    onPointerDown={startDirDrag(key, pin)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                );
+              })}
             {plan.pins.map((pin) => {
               const cam =
                 (pin.camera_id != null && cameras.find((c) => c.id === pin.camera_id)) ||

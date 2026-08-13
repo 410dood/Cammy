@@ -1980,6 +1980,18 @@ button.lastseen-item:hover { background: var(--surface-hover); }
 .fp-dot.off { background: var(--danger); }
 .fp-label { line-height: 1; }
 
+/* docs/11 P3 — FOV cones + the edit-mode bearing handle. The cone is
+   deliberately faint: it says which way a camera points, not what it sees. */
+.fp-cones { position: absolute; inset: 0; pointer-events: none; }
+.fp-cone { fill: var(--accent); opacity: 0.18; stroke: var(--accent); stroke-opacity: 0.45; }
+.fp-dir-handle {
+  position: absolute; transform: translate(-50%, -50%);
+  width: 18px; height: 18px; border-radius: 50%; cursor: grab; padding: 0;
+  background: rgba(10, 12, 16, 0.82); border: 2px dashed rgba(255, 255, 255, 0.45);
+}
+.fp-dir-handle.set { border-style: solid; border-color: var(--accent); }
+.fp-dir-handle:hover { border-color: var(--accent); }
+
 /* --- P3.1 journey fusion (Similar modal → Journey view) -------------------- */
 .journey { display: flex; flex-direction: column; gap: 14px; }
 .journey-h {
