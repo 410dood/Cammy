@@ -14,9 +14,43 @@ The differentiator: Blue Iris is Windows-only; Frigate needs Linux/Docker plus
 Coral/Nvidia. We combine **Moonfire-class efficient recording** with **portable
 GPU-accelerated AI** so the same model runs on Apple Silicon and any DirectX 12 GPU.
 
-## Current status: v0.4 — docs/11 COMPLETE (P0+P1+P2+P3), 2026-08-13
+## Current status: v0.4 — docs/11 COMPLETE + deferred-inventory batch 1, 2026-08-13
 
-### Latest: docs/11 P3 — the last six items, 2026-08-13
+### Latest: three deferred-inventory features, 2026-08-13
+
+`f655a2a`, `a8a4f14`, `d828c57`. **275 core tests** (one new), clippy -D + fmt
+clean, tsc + vite + 14 web tests green, all live-validated on :8081 with owner
+state restored (side's detect_config verified identical; test events unflagged
+so retention treats them normally).
+
+- **Global timed snooze** (`f655a2a`): KV-backed `snooze_until` (self-expiring;
+  absent/garbage/past all read NOT-snoozed — a corrupt row must never mute
+  alerts forever) quiets ntfy/email/push in `notify::fire_action` AND per-user
+  push+email in `push.rs` (severity-4/duress always delivers; the worker's
+  cursor still advances so a snoozed hour never floods back later; bell rows
+  written regardless). A clicked Test still delivers (event_id 0) — a
+  silently-skipped test reading as success is the lie the Test buttons exist
+  to prevent. `GET/POST /api/snooze` (minutes, capped 24 h, 0 clears) + a
+  30 min / 1 h / 8 h strip in the Notifications panel with an active banner +
+  Resume. Complements the existing per-rule `snoozed_until`.
+- **Browser upload for import** (`a8a4f14`): `POST /api/import/upload?name=`
+  streams the raw body to `<data>/imports/` (route-level body cap 4 GiB,
+  chunk-streamed, never buffered; Admin-gated in `min_role_for` + in-handler
+  re-check; filename sanitized + video-extension allowlist — `evil.exe` → 400
+  live; interrupted/empty uploads delete the partial; audited) and returns the
+  path for the EXISTING `/api/import`. Cameras import card gains "Upload…"
+  beside Browse…. Live E2E: generated clip → upload → import (3 frames) →
+  virtual camera + file removed.
+- **HD/SD playback on Recordings + Events** (`d828c57`, deferred P3.7 half):
+  new `web/src/playQuality.ts` (one persisted preference). SequencePlayer
+  keeps the MAIN queue as source of truth; SD resolves each clip's covering
+  sub sibling once (cached) via `recordingAt(stream=sub)`, silently main when
+  no sub covers that minute; quality switches reload the clip and resume
+  position. Events viewer resolves inline clips sub-first in SD. Live:
+  1920×1080 → 853×480 and back, resume verified; the toggle only appears on
+  dual-stream cameras.
+
+### Earlier: docs/11 P3 — the last six items, 2026-08-13
 
 `de0a65c`, `784884b`, `6c75672`, `56a44fd`, `dc16dc5`, `d966a25`. **274 core
 tests**, clippy -D + fmt clean, tsc + vite + 14 web tests green, every item

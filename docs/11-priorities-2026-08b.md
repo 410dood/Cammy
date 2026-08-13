@@ -365,8 +365,9 @@ child-height heuristic fragility.
 suppressed-events bin; cross-camera one-clip-one-notification collapse;
 actionable push buttons + animated thumbnails; package-still-present state
 machine + audio backchannel; NL-to-rule generation; stitched multi-camera
-Moments export; browser upload for import; dual-stream toggles on
-Recordings/Events; archive events/snapshots mirroring; global timed snooze;
+Moments export; ~~browser upload for import~~ **DONE `a8a4f14`**; ~~dual-stream
+toggles on Recordings/Events~~ **DONE `d828c57`**; archive events/snapshots
+mirroring; ~~global timed snooze~~ **DONE `f655a2a`** (2026-08-13);
 evidence bundle self-carried trust root; residential sub-items (sensitive-zone
 offsite exclusion, skeleton pose render, audio ring buffer, burst aggregator);
 docs/08 watch bucket (Matter camera, ONVIF Profile G gap-fill, iOS critical
