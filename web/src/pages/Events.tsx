@@ -5,6 +5,7 @@ import Timeline from "../Timeline";
 import CrossTimeline from "../CrossTimeline";
 import JourneyMap, { JourneyStep } from "../JourneyMap";
 import { useEventStream } from "../useEventStream";
+import { getPlayQuality, setPlayQuality, PlayQuality } from "../playQuality";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -372,12 +373,29 @@ export default function Events({
   const [openSegs, setOpenSegs] = useState<Segment[]>([]);
   const [segmentSecs, setSegmentSecs] = useState(60);
   const clipReq = useRef(0);
+  // Deferred P3.7 half — HD/SD for the inline viewer clip on a dual-stream
+  // camera. Resolution goes through the same recordingAt: SD asks for the sub
+  // segment and falls back to main when none covers that minute.
+  const [quality, setQuality] = useState<PlayQuality>(getPlayQuality);
+  const openHasSub = !!(
+    open && cameras.find((c) => c.id === open.camera_id)?.detect_config.record_substream
+  );
+  const resolveAt = async (cameraId: number, ts: number) => {
+    if (quality === "sd" && openHasSub) {
+      try {
+        return await api.recordingAt(cameraId, ts, "sub");
+      } catch {
+        /* no sub coverage there — fall through to main */
+      }
+    }
+    return api.recordingAt(cameraId, ts);
+  };
   useEffect(() => {
     setOpenClip(null);
     setOpenSegs([]);
     if (!open) return;
     const token = ++clipReq.current;
-    api.recordingAt(open.camera_id, open.ts).then(
+    resolveAt(open.camera_id, open.ts).then(
       (r) => {
         if (token === clipReq.current)
           // Land a few seconds before the event so you see it happen.
@@ -394,7 +412,8 @@ export default function Events({
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open?.id]);
+    // `quality` is a dep: toggling HD/SD re-resolves the inline clip.
+  }, [open?.id, quality]);
 
   // Scrub within the open event's viewer: resolve the covering segment at ts
   // and swap the inline player to it.
@@ -402,7 +421,7 @@ export default function Events({
     if (!open) return;
     const token = ++clipReq.current;
     try {
-      const r = await api.recordingAt(open.camera_id, ts);
+      const r = await resolveAt(open.camera_id, ts);
       if (token === clipReq.current) setOpenClip({ segId: r.segment.id, offset: r.offset_secs });
     } catch {
       toast.error("No recording covers that moment.");
@@ -1685,6 +1704,28 @@ export default function Events({
             {noRec && (
               <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
                 Snapshot only — no recording covers this moment.
+              </span>
+            )}
+            {openHasSub && !noRec && (
+              <span
+                className="row"
+                style={{ gap: 4 }}
+                title="HD plays the full-resolution recording; SD the lighter low-res copy this camera also records."
+              >
+                {(["hd", "sd"] as const).map((q) => (
+                  <button
+                    key={q}
+                    type="button"
+                    className={`btn btn-ghost ev-act ${quality === q ? "active" : ""}`}
+                    aria-pressed={quality === q}
+                    onClick={() => {
+                      setPlayQuality(q);
+                      setQuality(q);
+                    }}
+                  >
+                    {q.toUpperCase()}
+                  </button>
+                ))}
               </span>
             )}
             <span className="muted clock" style={{ marginLeft: "auto" }}>

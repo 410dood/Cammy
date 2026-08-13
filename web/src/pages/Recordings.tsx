@@ -584,6 +584,10 @@ export default function Recordings({ cameras }: { cameras: Camera[] }) {
           index={playing.index}
           offset={playing.offset}
           onClose={() => setPlaying(null)}
+          subAvailable={
+            !!cameras.find((c) => c.id === playing.queue[playing.index]?.camera_id)?.detect_config
+              .record_substream
+          }
         />
       )}
     </>
