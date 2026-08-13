@@ -4692,6 +4692,52 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
               />
             </label>
           </div>
+          {/* docs/11 P3 — these three settings existed in the API with NO UI
+              anywhere: the two face model paths (the pipeline gates the whole
+              face feature on both existing) and the detector's box-merge
+              threshold. They are expert knobs with good defaults, so they live
+              behind a disclosure rather than being dropped from the surface —
+              a knob you can only reach with curl isn't a knob. */}
+          <details className="adv" style={{ marginTop: 8 }}>
+            <summary>Expert model settings (advanced)</summary>
+            <div className="row" style={{ marginTop: 8 }}>
+              <InstalledModelField
+                label="Face detector model"
+                value={s.face_det_model}
+                onChange={(m) => set({ face_det_model: m })}
+                placeholder="det_10g.onnx"
+                help="Finds faces in a person detection. Face recognition needs both this and the recognizer below — the Models card above reports whether the pair loads."
+                statusKey="face"
+              />
+              <InstalledModelField
+                label="Face recognizer model"
+                value={s.face_rec_model}
+                onChange={(m) => set({ face_rec_model: m })}
+                placeholder="w600k_r50.onnx"
+                help="Turns a found face into the signature matched against the People page."
+              />
+              <label
+                className="field"
+                title="Non-maximum-suppression IoU threshold for the object detector. Two boxes overlapping more than this are merged into one."
+              >
+                overlapping-box merging
+                <input
+                  type="range"
+                  min="0.2"
+                  max="0.7"
+                  step="0.05"
+                  value={s.nms_iou}
+                  onChange={(e) => set({ nms_iou: num(e.target.value, s.nms_iou) })}
+                />
+                <span className="muted" style={{ fontSize: "var(--text-sm)" }}>
+                  {s.nms_iou.toFixed(2)}
+                  {s.nms_iou === 0.45 ? " (default)" : " (default 0.45)"} — lower merges
+                  overlapping detections more aggressively (two people standing close may become
+                  one box); higher keeps near-duplicate boxes of the same object.
+                </span>
+              </label>
+            </div>
+          </details>
         </div>
 
         <div className="row save-bar">
