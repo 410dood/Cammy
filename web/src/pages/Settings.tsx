@@ -1,5 +1,5 @@
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
-import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, CamEvent, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtSpan, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, PlateEntry, Role, Settings as S, User } from "../api";
+import { AlarmRule, api, ApiToken, ArchiveStatus, ArmMode, AuditEntry, CamEvent, Camera, Capability, ClipShare, DAY_NAMES, FeedbackSummary, fmtBytes, fmtSpan, fmtTime, HomekitInfo, Me, NotifyPref, Occupant, OffsiteStatus, PlateEntry, Role, capabilityUsable, Settings as S, User } from "../api";
 import { useToast, useDialog, RelTime, TogglePill, ErrorState, Callout, usePolling } from "../ui";
 import { LicensePane } from "../License";
 import SystemHealthCard from "../SystemHealth";
@@ -2719,7 +2719,7 @@ function TranscriptionReadiness({ enabled }: { enabled: boolean }) {
   useEffect(() => {
     api
       .capabilities()
-      .then((r) => setModelPresent(r.features.find((f) => f.key === "transcription")?.present ?? false))
+      .then((r) => setModelPresent(capabilityUsable(r.features.find((f) => f.key === "transcription"))))
       .catch(() => {});
     api.cameras().then(setCams).catch(() => {});
   }, []);
@@ -2741,11 +2741,9 @@ function TranscriptionReadiness({ enabled }: { enabled: boolean }) {
             </>
           ) : (
             <>
-              Speech model not downloaded yet — transcription won't run until it is. See the{" "}
-              <a href="https://github.com/410dood/Cammy#optional-ai-models" target="_blank" rel="noreferrer">
-                model download guide
-              </a>
-              .
+              Speech model not ready (missing or damaged) — transcription won't run until it
+              is. The <b>Models &amp; capabilities</b> card at the top of this tab downloads it
+              with one click.
             </>
           )}
         </div>
@@ -3662,17 +3660,36 @@ export default function Settings({ onError }: { onError: (e: string) => void }) 
                 onChange={() => set({ transcription_enabled: !s.transcription_enabled })}
               />
             </label>
+            {/* docs/11 P2 — this was a free-text path duplicating a choice the
+                Models card above already makes downloadable (Fast / More
+                accurate). Offer the two real tiers; a hand-set custom path
+                still renders, as a text box. */}
             <label className="field" style={{ flex: 1, minWidth: 320 }}>
-              speech model file
-              <input
-                type="text"
-                placeholder="ggml-tiny.en.bin"
-                value={s.transcription_model ?? ""}
-                onChange={(e) => set({ transcription_model: e.target.value })}
-              />
+              speech model
+              {["", "ggml-tiny.en.bin", "ggml-base.en.bin"].includes(s.transcription_model ?? "") ? (
+                <select
+                  value={s.transcription_model ?? ""}
+                  onChange={(e) => {
+                    if (e.target.value === "__other__") set({ transcription_model: "custom.bin" });
+                    else set({ transcription_model: e.target.value });
+                  }}
+                >
+                  <option value="">None chosen</option>
+                  <option value="ggml-tiny.en.bin">Fast (ggml-tiny.en.bin, ~75 MB)</option>
+                  <option value="ggml-base.en.bin">More accurate (ggml-base.en.bin, ~148 MB)</option>
+                  <option value="__other__">Other (type a path)…</option>
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  placeholder="ggml-tiny.en.bin"
+                  value={s.transcription_model ?? ""}
+                  onChange={(e) => set({ transcription_model: e.target.value })}
+                />
+              )}
               <small className="muted">
-                A Whisper GGML file, downloaded separately — ggml-tiny.en.bin (~75 MB) is a
-                good start; ggml-base.en.bin is more accurate.
+                Both tiers can be downloaded right here — the Models &amp; capabilities card at
+                the top of this tab fetches them with one click.
               </small>
             </label>
           </div>

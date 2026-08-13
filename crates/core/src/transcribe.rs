@@ -126,6 +126,25 @@ fn clean_transcript(raw: &str) -> Option<String> {
     })
 }
 
+/// Edge-triggered surface for the speech-to-text model (docs/11 P2): with
+/// transcription enabled and a bad/missing model file, audio events simply
+/// never gained transcripts and nothing anywhere said why.
+static STT_MODEL: crate::degraded::Latch = crate::degraded::Latch::new();
+
+fn stt_messages() -> crate::degraded::Messages<'static> {
+    crate::degraded::Messages {
+        kind: "transcription_error",
+        down_title: "Speech-to-text stopped working",
+        down_body: concat!(
+            "Transcription is turned on, but the speech model could not be loaded, so ",
+            "spoken words near your cameras are not being written down. Check the speech ",
+            "model under Settings \u{2192} Detection & AI."
+        ),
+        up_title: "Speech-to-text is working again",
+        up_body: "Spoken words near your cameras are being transcribed again.",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     db: Db,
@@ -176,10 +195,14 @@ pub fn run(
                     ctx = Some(c);
                     loaded_model = s.transcription_model.clone();
                     failed_model = None;
+                    STT_MODEL.report(&db, None, &stt_messages());
                 }
                 Err(e) => {
                     tracing::warn!("whisper model load failed ({}): {e}", s.transcription_model);
                     failed_model = Some(s.transcription_model.clone());
+                    // docs/11 P2 — transcription is ON, an audio event arrived,
+                    // and nothing will ever be written, silently. Say so once.
+                    STT_MODEL.report(&db, Some(&format!("{e}")), &stt_messages());
                     continue;
                 }
             }
