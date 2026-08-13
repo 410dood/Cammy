@@ -4,6 +4,7 @@ import { useToast, useDialog, Modal, RelTime, EmptyState, ErrorState, TogglePill
 import Timeline from "../Timeline";
 import CrossTimeline from "../CrossTimeline";
 import JourneyMap, { JourneyStep } from "../JourneyMap";
+import { useEventStream } from "../useEventStream";
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -920,16 +921,46 @@ export default function Events({
   // reload via this effect's deps.)
   const pollBusy = useRef(false);
   pollBusy.current = !!open || !!playing || !!similar || !!imgSearch || !!lifecycleFor || selectMode;
+  // docs/11 P3 — the live SSE feed drives refreshes the moment an event
+  // happens; the interval poll stays as the fallback, slowed way down while
+  // the stream is healthy (it still catches changes SSE doesn't carry —
+  // another session's edits — and everything when the stream is down).
+  // A refresh that can't run right now (hidden tab, open modal) is
+  // remembered and flushed when the blocker clears, so no event is missed.
+  const needRefresh = useRef(false);
+  const refresh = () => {
+    if (document.hidden || pollBusy.current) {
+      needRefresh.current = true;
+      return;
+    }
+    needRefresh.current = false;
+    load();
+  };
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const sseLive = useEventStream(() => refreshRef.current());
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden && needRefresh.current) refreshRef.current();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+  // Flush a deferred refresh the moment the blocking modal/selection closes.
+  const busyNow = pollBusy.current;
+  useEffect(() => {
+    if (!busyNow && needRefresh.current) refreshRef.current();
+  }, [busyNow]);
   useEffect(() => {
     load();
     const t = setInterval(() => {
       if (document.hidden || pollBusy.current) return;
       load();
-    }, 5000); // events appear as they happen
+    }, sseLive ? 60000 : 5000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // `day` is a dep: changing the day must refetch, not just re-render.
-  }, [cameraId, label, fromTime, toTime, flaggedOnly, tagFilter, day?.from, day?.to]);
+  }, [cameraId, label, fromTime, toTime, flaggedOnly, tagFilter, day?.from, day?.to, sseLive]);
 
   // Filter-option lists (rescanned only when the event set changes, not on every
   // keystroke/hover/modal toggle).
